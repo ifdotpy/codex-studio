@@ -1046,6 +1046,18 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # failure without renaming if generation cannot start: codex_rename.py:128-146,195-207.
         self.assertEqual(after["agent"], before["agent"])
         self.assertEqual(after["projection"], before["projection"])
+        replay = self.backend.request(
+            "POST",
+            "/api/rename",
+            body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=self.headers(),
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["request_id"], "smart-title-id")
+        self.assertEqual(replay.json()["status"], "failed")
+        replayed = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        self.assertEqual(replayed["agent"], before["agent"])
+        self.assertEqual(replayed["projection"], before["projection"])
 
     def post(self, path, body, status=200):
         response = self.backend.request("POST", path, body=body, headers=self.headers())

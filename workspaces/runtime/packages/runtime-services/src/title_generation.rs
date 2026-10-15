@@ -3,10 +3,10 @@
 //! Registered differences: Unknown outcomes and intents left pending at restart
 //! are held under their durable request identity and are never resent without a
 //! proven NotSent receipt. Malformed stored inputs are rejected with a located
-//! error. Python stores completed receipts as operation results (`id`, `name`,
-//! `request_id`, `status`); Rust stores state-machine results (`state`, `title`,
-//! and request identity). Rust reads completed Python receipts but writes its
-//! own shape. The model-supplied `orchestration_title` tool remains the caller's
+//! error. Public receipts keep Python's operation-result shape (`id`, `name`,
+//! `request_id`, `status`); execution certainty is stored in a separate generic
+//! operation receipt keyed from the public receipt id. The model-supplied
+//! `orchestration_title` tool remains the caller's
 //! responsibility; its `manualName` and name-change guards are enforced here.
 
 use std::{
@@ -25,6 +25,7 @@ const MAX_ITEMS: usize = 40;
 const MAX_ITEM_BYTES: usize = 1_048_576;
 /// Python's one-shot title generation deadline (`codex_rename.py:109-110`).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const TITLE_EFFECT_SIGNATURE: &str = "title-generation-effect-v1";
 
 #[derive(Debug, Error)]
 pub enum TitleError {
@@ -136,20 +137,121 @@ pub fn admit_python_request(
             )
             .optional()?
         {
-            if saved_signature != signature {
-                return Err(TitleError::Conflict);
-            }
             let saved: Value = serde_json::from_str(&raw_result)
                 .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
-            let start = saved.get("status").and_then(Value::as_str) == Some("pending");
-            return Ok((saved, start));
+            if saved_signature != signature
+                || saved.get("id").and_then(Value::as_str) != Some(agent_id)
+                || saved.get("request_id").and_then(Value::as_str) != Some(request_id)
+            {
+                return Err(TitleError::Conflict);
+            }
+            if saved.get("status").and_then(Value::as_str) != Some("pending") {
+                return Ok((saved, false));
+            }
+            // Only the internal durable effect proves that the request is safe
+            // to schedule. A Python-shaped pending receipt without it remains
+            // uncertain and is returned unchanged.
+            let effect = read_effect(tx, request_id, agent_id)?;
+            let should_finish = effect
+                .as_ref()
+                .is_some_and(|effect| matches!(effect.state.as_str(), "not_sent" | "scheduled"));
+            return Ok((saved, should_finish));
         }
         tx.execute(
             "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
             params![request_id, signature, pending.to_string()],
         )?;
+        write_effect(tx, request_id, agent_id, &json!({"state":"not_sent"}))?;
         Ok((pending, true))
     })
+}
+
+#[derive(Clone, Debug)]
+struct TitleEffect {
+    state: String,
+    record: Value,
+}
+
+fn effect_id(request_id: &str) -> String {
+    let digest = Sha256::digest(request_id.as_bytes());
+    format!(
+        "title-generation:{}",
+        data_encoding::HEXLOWER.encode(&digest)
+    )
+}
+
+fn read_effect(
+    tx: &Connection,
+    request_id: &str,
+    agent_id: &str,
+) -> Result<Option<TitleEffect>, TitleError> {
+    let id = effect_id(request_id);
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((signature, raw)) = row else {
+        return Ok(None);
+    };
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid("runtime_operation_receipts", &id))?;
+    if signature != TITLE_EFFECT_SIGNATURE
+        || record.get("request_id").and_then(Value::as_str) != Some(request_id)
+        || record.get("agent_id").and_then(Value::as_str) != Some(agent_id)
+    {
+        return Err(invalid("runtime_operation_receipts", &id));
+    }
+    let state = record
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("runtime_operation_receipts", &id))?
+        .to_owned();
+    Ok(Some(TitleEffect { state, record }))
+}
+
+fn write_effect(
+    tx: &Connection,
+    request_id: &str,
+    agent_id: &str,
+    effect: &Value,
+) -> Result<(), TitleError> {
+    let id = effect_id(request_id);
+    let mut record = effect.clone();
+    let object = record
+        .as_object_mut()
+        .ok_or_else(|| invalid("runtime_operation_receipts", &id))?;
+    object.insert("request_id".to_owned(), json!(request_id));
+    object.insert("agent_id".to_owned(), json!(agent_id));
+    let existing: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((signature, raw)) = existing {
+        let existing: Value =
+            serde_json::from_str(&raw).map_err(|_| invalid("runtime_operation_receipts", &id))?;
+        if signature != TITLE_EFFECT_SIGNATURE
+            || existing.get("request_id").and_then(Value::as_str) != Some(request_id)
+            || existing.get("agent_id").and_then(Value::as_str) != Some(agent_id)
+        {
+            return Err(invalid("runtime_operation_receipts", &id));
+        }
+        tx.execute(
+            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
+            params![record.to_string(), id, TITLE_EFFECT_SIGNATURE],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+            params![id, TITLE_EFFECT_SIGNATURE, record.to_string()],
+        )?;
+    }
+    Ok(())
 }
 
 /// Settle a pre-provider catalog failure as Python's asynchronous `_finish` does.
@@ -176,16 +278,18 @@ pub fn settle_catalog_failure(
         else {
             return Err(TitleError::Conflict);
         };
-        if saved_signature != signature {
-            return Ok(());
-        }
         let saved: Value = serde_json::from_str(&raw_result)
             .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
-        if saved.get("status").and_then(Value::as_str) == Some("pending") {
+        if saved_signature == signature
+            && saved.get("id").and_then(Value::as_str) == Some(agent_id)
+            && saved.get("request_id").and_then(Value::as_str) == Some(request_id)
+            && saved.get("status").and_then(Value::as_str) == Some("pending")
+        {
             tx.execute(
                 "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
                 params![failed.to_string(), request_id, signature],
             )?;
+            write_effect(tx, request_id, agent_id, &json!({"state":"failed"}))?;
         }
         Ok(())
     })
@@ -416,87 +520,109 @@ async fn generate_inner(
     }
     let snapshot = make_snapshot(store, agent_id, catalog, request_id)?;
     let fingerprint = signature(&snapshot);
-    let intent =
-        json!({"state":"pending","agent":agent_id,"epoch":snapshot.epoch,"requestId":request_id});
-    let intent_text = serde_json::to_string(&intent).map_err(StoreError::from)?;
     let admission = store.transaction_with(|tx| {
-        if let Some((saved_signature, raw_result)) = tx
+        let saved = tx
             .query_row(
                 "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
                 [request_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()?
-        {
+            .optional()?;
+        let public_receipt = if let Some((saved_signature, raw_result)) = saved {
             let result: Value = serde_json::from_str(&raw_result)
                 .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
-            let python_signature = saved_signature == python_rename_signature(agent_id);
-            if python_signature
-                && result.get("id").and_then(Value::as_str) == Some(agent_id)
-                && result.get("request_id").and_then(Value::as_str) == Some(request_id)
+            if saved_signature != python_rename_signature(agent_id)
+                || result.get("id").and_then(Value::as_str) != Some(agent_id)
+                || result.get("request_id").and_then(Value::as_str) != Some(request_id)
             {
-                match result.get("status").and_then(Value::as_str) {
-                    Some("applied") => {
-                        let saved = result
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                        return Ok(Admission::Held(TitleResult::Applied {
-                            title: saved.to_owned(),
-                        }));
-                    }
-                    Some("failed") => return Ok(Admission::Held(TitleResult::Skipped)),
-                    Some("pending") if admitted => {
-                        tx.execute(
-                            "UPDATE runtime_operation_receipts SET signature=?1,result=?2 WHERE id=?3",
-                            params![fingerprint, intent_text, request_id],
-                        )?;
-                    }
-                    Some("pending") => {
-                        return Ok(Admission::Held(TitleResult::HeldUnknown));
-                    }
-                    _ => return Err(invalid("runtime_operation_receipts", request_id)),
-                }
-            } else if saved_signature != fingerprint {
                 return Err(TitleError::Conflict);
             }
-            if python_signature && admitted {
-                // The prior branch converted the durable Python admission into this
-                // service's in-flight receipt; proceed with its verified snapshot.
-            } else {
-            match result.get("state").and_then(Value::as_str) {
-                Some("unknown" | "pending") => {
-                    return Ok(Admission::Held(TitleResult::HeldUnknown));
-                }
+            match result.get("status").and_then(Value::as_str) {
                 Some("applied") => {
+                    if let Some(effect) = read_effect(tx, request_id, agent_id)? {
+                        if effect.record.get("fingerprint").and_then(Value::as_str)
+                            != Some(&fingerprint)
+                            || effect.state != "applied"
+                        {
+                            return Err(TitleError::Conflict);
+                        }
+                    }
                     let title = result
-                        .get("title")
+                        .get("name")
                         .and_then(Value::as_str)
                         .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
                     return Ok(Admission::Held(TitleResult::Applied {
                         title: title.to_owned(),
                     }));
                 }
-                Some("discarded" | "invalid") => {
-                    return Ok(Admission::Held(TitleResult::Discarded));
-                }
-                Some("written") => {
-                    let title = result
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                    return Ok(Admission::Apply(title.to_owned()));
-                }
-                Some("not_sent") => {
-                    tx.execute(
-                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                        params![intent_text, request_id],
-                    )?;
-                }
+                Some("failed") => return Ok(Admission::Held(TitleResult::Skipped)),
+                Some("pending") => result,
                 _ => return Err(invalid("runtime_operation_receipts", request_id)),
             }
+        } else {
+            if admitted {
+                return Err(TitleError::Conflict);
             }
+            let result = json!({"id":agent_id,"request_id":request_id,"status":"pending"});
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                params![
+                    request_id,
+                    python_rename_signature(agent_id),
+                    result.to_string()
+                ],
+            )?;
+            write_effect(tx, request_id, agent_id, &json!({"state":"not_sent"}))?;
+            result
+        };
+        let Some(effect) = read_effect(tx, request_id, agent_id)? else {
+            return Ok(Admission::Held(TitleResult::HeldUnknown));
+        };
+        let effect_fingerprint = effect.record.get("fingerprint").and_then(Value::as_str);
+        if effect_fingerprint.is_some_and(|saved| saved != fingerprint) {
+            return Err(TitleError::Conflict);
         }
+        let admission = match effect.state.as_str() {
+            "written" => {
+                let title = effect
+                    .record
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(request_id)))?;
+                Admission::Apply(title.to_owned())
+            }
+            "not_sent" | "scheduled" => {
+                if public_receipt.get("status").and_then(Value::as_str) != Some("pending") {
+                    return Err(TitleError::Conflict);
+                }
+                write_effect(
+                    tx,
+                    request_id,
+                    agent_id,
+                    &json!({
+                        "state":"pending", "epoch":snapshot.epoch, "fingerprint":fingerprint
+                    }),
+                )?;
+                Admission::Request
+            }
+            "pending" | "unknown" => return Ok(Admission::Held(TitleResult::HeldUnknown)),
+            "failed" | "invalid" | "discarded" => return Ok(Admission::Held(TitleResult::Skipped)),
+            "applied" => {
+                let title = public_receipt
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
+                return Ok(Admission::Held(TitleResult::Applied {
+                    title: title.to_owned(),
+                }));
+            }
+            _ => {
+                return Err(invalid(
+                    "runtime_operation_receipts",
+                    &effect_id(request_id),
+                ));
+            }
+        };
 
         let current_agent = tx
             .query_row(
@@ -539,21 +665,7 @@ async fn generate_inner(
         {
             return Err(TitleError::Conflict);
         }
-        if tx
-            .query_row(
-                "SELECT 1 FROM runtime_operation_receipts WHERE id=?1",
-                [request_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_none()
-        {
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                params![request_id, fingerprint, intent_text],
-            )?;
-        }
-        Ok(Admission::Request)
+        Ok(admission)
     })?;
     let title = match admission {
         Admission::Held(result) => return Ok(result),
@@ -577,49 +689,77 @@ async fn generate_inner(
                 || receipt.epoch != snapshot.epoch
                 || receipt.account_key != snapshot.account_key
             {
-                persist_state(store, request_id, &json!({"state":"unknown"}))?;
+                persist_state(
+                    store,
+                    request_id,
+                    agent_id,
+                    snapshot.epoch,
+                    &json!({"state":"unknown"}),
+                )?;
                 return Ok(TitleResult::HeldUnknown);
             }
             match receipt.outcome {
                 WriteOutcome::NotSent => {
-                    persist_state(store, request_id, &json!({"state":"not_sent"}))?;
+                    persist_state(
+                        store,
+                        request_id,
+                        agent_id,
+                        snapshot.epoch,
+                        &json!({"state":"not_sent"}),
+                    )?;
                     return Ok(TitleResult::RetryableNotSent);
                 }
                 WriteOutcome::Unknown => {
-                    persist_state(store, request_id, &json!({"state":"unknown"}))?;
+                    persist_state(
+                        store,
+                        request_id,
+                        agent_id,
+                        snapshot.epoch,
+                        &json!({"state":"unknown"}),
+                    )?;
                     return Ok(TitleResult::HeldUnknown);
                 }
                 WriteOutcome::Written => {}
             }
             let Some(raw_title) = receipt.title.as_deref() else {
-                persist_state(store, request_id, &json!({"state":"invalid"}))?;
+                persist_state(
+                    store,
+                    request_id,
+                    agent_id,
+                    snapshot.epoch,
+                    &json!({"state":"invalid"}),
+                )?;
                 return Err(TitleError::InvalidTitle);
             };
             let title = match normalize_title(raw_title) {
                 Ok(title) => title,
                 Err(error) => {
-                    persist_state(store, request_id, &json!({"state":"invalid"}))?;
+                    persist_state(
+                        store,
+                        request_id,
+                        agent_id,
+                        snapshot.epoch,
+                        &json!({"state":"invalid"}),
+                    )?;
                     return Err(error);
                 }
             };
-            persist_state(store, request_id, &json!({"state":"written","title":title}))?;
+            persist_state(
+                store,
+                request_id,
+                agent_id,
+                snapshot.epoch,
+                &json!({"state":"written","title":title}),
+            )?;
             title
         }
     };
     let applied = store.transaction_with(|tx| {
-        let saved_receipt = tx
-            .query_row(
-                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                [request_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-        let receipt_result: Value =
-            serde_json::from_str(&saved_receipt.1).map_err(StoreError::from)?;
-        if saved_receipt.0 != fingerprint
-            || receipt_result.get("state").and_then(Value::as_str) != Some("written")
-            || receipt_result.get("title").and_then(Value::as_str) != Some(title.as_str())
+        let effect = read_effect(tx, request_id, agent_id)?
+            .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(request_id)))?;
+        if effect.record.get("fingerprint").and_then(Value::as_str) != Some(&fingerprint)
+            || effect.state != "written"
+            || effect.record.get("title").and_then(Value::as_str) != Some(title.as_str())
         {
             return Err(TitleError::Conflict);
         }
@@ -641,6 +781,26 @@ async fn generate_inner(
             || record.get("needsTitle").and_then(Value::as_bool) != Some(true)
             || record.get("deletedAt").is_some_and(truthy)
         {
+            let failed = json!({
+                "id":agent_id,"request_id":request_id,"status":"failed",
+                "error":"The chat name changed before the title was ready."
+            });
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
+                params![
+                    failed.to_string(),
+                    request_id,
+                    python_rename_signature(agent_id)
+                ],
+            )?;
+            write_effect(
+                tx,
+                request_id,
+                agent_id,
+                &json!({
+                    "state":"discarded", "epoch":snapshot.epoch, "fingerprint":fingerprint
+                }),
+            )?;
             return Ok(false);
         }
         record["name"] = json!(title);
@@ -652,13 +812,25 @@ async fn generate_inner(
             serde_json::from_value(record.clone()).map_err(StoreError::from)?;
         AgentRepository::put(tx, &typed)?;
         crate::agents_create::publish_agent(tx, &record)?;
+        let public_result = json!({
+            "id":agent_id,"request_id":request_id,"status":"applied","name":title
+        });
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
             params![
-                json!({"state":"applied","title":title}).to_string(),
+                public_result.to_string(),
                 request_id,
-                fingerprint
+                python_rename_signature(agent_id)
             ],
+        )?;
+        write_effect(
+            tx,
+            request_id,
+            agent_id,
+            &json!({
+                "state":"applied", "epoch":snapshot.epoch, "fingerprint":fingerprint,
+                "title":title
+            }),
         )?;
         Ok(true)
     })?;
@@ -814,13 +986,33 @@ fn validate_item(item: &Value, agent_id: &str) -> Result<(), TitleError> {
     Ok(())
 }
 
-fn persist_state(store: &RuntimeStore, id: &str, result: &Value) -> Result<(), TitleError> {
-    store.transaction(|tx| {
-        tx.execute(
-            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-            params![result.to_string(), id],
-        )?;
-        Ok(())
+fn persist_state(
+    store: &RuntimeStore,
+    id: &str,
+    agent_id: &str,
+    epoch: i64,
+    result: &Value,
+) -> Result<(), TitleError> {
+    store.transaction_with(|tx| {
+        let current = read_effect(tx, id, agent_id)?
+            .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(id)))?;
+        let mut next = current.record;
+        let object = next
+            .as_object_mut()
+            .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(id)))?;
+        object.insert(
+            "state".to_owned(),
+            result
+                .get("state")
+                .cloned()
+                .ok_or_else(|| invalid("runtime_operation_receipts", &effect_id(id)))?,
+        );
+        object.insert("epoch".to_owned(), json!(epoch));
+        if let Some(title) = result.get("title") {
+            object.insert("title".to_owned(), title.clone());
+        }
+        write_effect(tx, id, agent_id, &next)?;
+        Ok::<(), TitleError>(())
     })?;
     Ok(())
 }
