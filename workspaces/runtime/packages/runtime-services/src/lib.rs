@@ -129,8 +129,6 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
-pub mod tar_gzip;
-pub mod vm_preparation;
 pub use radio_runtime::{
     Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
     RadioCreation, handoff_interrupt,
@@ -155,6 +153,7 @@ pub mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod system_reads;
+pub mod tar_gzip;
 pub mod task_recovery;
 pub mod task_recovery_store;
 pub mod terminal_driver;
@@ -171,6 +170,7 @@ pub mod turn_prepare;
 pub mod usage;
 pub mod usage_resume;
 pub mod vault;
+pub mod vm_preparation;
 pub mod voice;
 pub mod voice_runtime;
 pub mod wakeups;

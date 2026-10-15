@@ -1465,6 +1465,9 @@ struct SameAccountProviderStatus {
     epoch: i64,
     runtime: tokio::runtime::Handle,
     started: tokio::sync::mpsc::UnboundedSender<()>,
+    result: tokio::sync::mpsc::UnboundedSender<
+        Result<super::retained::RequestResult, super::retained::PortError>,
+    >,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -1540,9 +1543,14 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
             params: json!({"threadId":"fake-thread-0"}),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
         };
-        let receipt = self
-            .runtime
-            .block_on(self.session.request(request))
+        let result = self.runtime.block_on(self.session.request(request));
+        let _sent = self.result.send(
+            result
+                .as_ref()
+                .map(|receipt| receipt.result.clone())
+                .map_err(Clone::clone),
+        );
+        let receipt = result
             .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/provider-request"))?;
         match receipt.result {
             super::retained::RequestResult::Reply(_) => Ok(json!({"providerRequest":"written"})),
@@ -1598,6 +1606,7 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
         .unwrap();
 
     let (started, mut callback_started) = tokio::sync::mpsc::unbounded_channel();
+    let (provider_result, mut provider_results) = tokio::sync::mpsc::unbounded_channel();
     let (release, callback_release) = std::sync::mpsc::channel();
     state.bridge.set_managed_tool_runtime(
         crate::provider_callbacks::ManagedToolRuntime::from_ports_for_test(
@@ -1608,6 +1617,7 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
                     epoch: state.epoch,
                     runtime: tokio::runtime::Handle::current(),
                     started,
+                    result: provider_result,
                     release: std::sync::Mutex::new(callback_release),
                 })),
                 child_creation: None,
@@ -1646,14 +1656,23 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
         }))
         .await;
     assert!(provider_reply_cursor > cursor);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), provider_results.recv())
+        .await
+        .expect("managed callback's retained request resolves after its committed provider reply")
+        .expect("retained request result witness");
+    assert_eq!(
+        result,
+        Ok(super::retained::RequestResult::Reply(
+            json!({"thread":{"id":"fake-thread-0"}})
+        ))
+    );
     let callback = peer.next_write().await;
     assert_eq!(callback.value["id"], "managed-same-account-callback");
-    let tool_result: Value = serde_json::from_str(
-        callback.value["result"]["contentItems"][0]["text"]
-            .as_str()
-            .expect("managed tool result text"),
-    )
-    .expect("managed tool result JSON");
+    let tool_result_text = callback.value["result"]["contentItems"][0]["text"]
+        .as_str()
+        .expect("managed tool result text");
+    let tool_result: Value = serde_json::from_str(tool_result_text)
+        .unwrap_or_else(|error| panic!("managed tool result JSON {tool_result_text:?}: {error}"));
     assert_eq!(tool_result["providerRequest"], "written");
     let (reply_journal_committed, checkpoint) = state
         .bridge
@@ -2052,10 +2071,18 @@ async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
     ));
     assert!(!state.bridge.accounts.lock().unwrap().contains("default"));
     drop(permit);
-    let peer = Peer::new();
-    let mut replacement = peer.worker(state.bridge.clone()).await;
+    assert_eq!(
+        state.event_status("input").await,
+        "pending",
+        "the wake was blocked before its claim transaction committed"
+    );
+    let mut replacement_peer = Peer::new();
+    let mut replacement = replacement_peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut replacement_peer, &replacement).await;
+    replacement_peer.accepted(&start).await;
+    replacement_peer.completed().await;
+    assert_eq!(state.event_status("input").await, "delivered");
     replacement.shutdown().await.unwrap();
-    assert_eq!(state.event_status("input").await, "reserved");
 }
 
 #[tokio::test(start_paused = true)]
@@ -4077,14 +4104,46 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
                 let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                     .expect("fixture agent");
                 record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
                 AgentRepository::put(tx, &record)
             })?;
             Ok(())
         })
         .await
         .expect("fixture becomes VM actor");
+    let guest = Arc::new(VmTurnGuest::default());
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
     let peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    state.wake(&worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let guest_state = guest.state.lock().unwrap();
+            let started = guest_state.starts == 1;
+            let acknowledged = guest_state.acknowledged >= 3;
+            drop(guest_state);
+            if started && acknowledged {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("fake VM actor is attached and its initial journal is acknowledged");
     let session = worker.retained_session();
     let frame = Frame::Notification(studio_runtime_providers::NotificationFrame {
         method: Method::TurnStarted,
@@ -4092,7 +4151,7 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
         fields: Default::default(),
     });
     session
-        .deliver_vm_notification("default", &state.agent, state.epoch, 2, frame.clone())
+        .deliver_vm_notification("default", &state.agent, state.epoch, 4, frame.clone())
         .await
         .expect("notification has a durable actor-scoped receipt");
 
@@ -4103,7 +4162,7 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
             store.transaction_with(|tx| {
                 // Committed journal receipts are compacted after their checkpoint
                 // advances, so the actor-scoped durable checkpoint is the proof.
-                assert_eq!(store::checkpoint(tx, &format!("default:vm:{agent}"), 1)?, 2);
+                assert_eq!(store::checkpoint(tx, &format!("default:vm:{agent}"), 1)?, 4);
                 Ok(())
             })
         })
@@ -4111,7 +4170,7 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
         .expect("durable notification state is readable");
 
     let stale = session
-        .deliver_vm_notification("default", &state.agent, state.epoch + 1, 3, frame)
+        .deliver_vm_notification("default", &state.agent, state.epoch + 1, 5, frame)
         .await;
     assert!(matches!(stale, Err(super::retained::PortError::Unknown)));
     worker.shutdown().await.expect("worker shuts down");

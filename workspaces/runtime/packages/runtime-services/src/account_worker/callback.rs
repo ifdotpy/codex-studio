@@ -372,9 +372,16 @@ mod tests {
             let mut plan = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {CALLBACK_CONTEXT_QUERY}"))
                 .expect("explain query");
-            plan.query_map(params!["account-a", 7_i64, "thread-a", "turn-a"], |row| {
-                row.get::<_, String>(3)
-            })
+            plan.query_map(
+                params![
+                    "account-a",
+                    7_i64,
+                    "thread-a",
+                    "turn-a",
+                    Option::<&str>::None
+                ],
+                |row| row.get::<_, String>(3),
+            )
             .expect("query plan")
             .collect::<Result<Vec<_>, _>>()
             .expect("query plan rows")
