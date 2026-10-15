@@ -34,7 +34,7 @@ impl OwnerLookup for TailscaleOwnerLookup {
     }
 }
 
-fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
+pub(crate) fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
     let mut child = Command::new("tailscale")
         .args(args)
         .stdin(Stdio::null())

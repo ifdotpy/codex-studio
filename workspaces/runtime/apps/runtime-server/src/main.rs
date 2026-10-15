@@ -10,6 +10,8 @@ mod host_runtime;
 mod io_runtime;
 mod monitor_port;
 mod multi_server_owner;
+#[cfg(unix)]
+mod peer_link;
 mod native_probe;
 mod provider_ports;
 #[cfg(unix)]
@@ -230,6 +232,15 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
+    #[cfg(unix)]
+    let mut peer_link_runtime = public_origin.as_ref().map(|origin| {
+        peer_link::PeerLinkRuntime::start(
+            Arc::clone(&store),
+            address.port(),
+            origin.clone(),
+            state_root.clone(),
+        )
+    });
     let cache_root = env::var_os("XDG_CACHE_HOME")
         .or_else(|| env::var_os("CODEX_AGENTS_CACHE_DIR"))
         .or_else(|| {
@@ -339,6 +350,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .with_credentials(credentials);
     if let Some(boundary) = multi_server_boundary {
         state = state.with_multi_server_boundary(Arc::new(boundary));
+    }
+    #[cfg(unix)]
+    {
+        let advert = peer_link_runtime
+            .as_ref()
+            .map(peer_link::PeerLinkRuntime::advert_handle)
+            .unwrap_or_else(|| Arc::new(std::sync::RwLock::new(None)));
+        state = state.with_peer_link_advert(advert);
     }
     #[cfg(unix)]
     {
@@ -600,6 +619,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     })
     .await;
     monitor_shutdown.send_replace(true);
+    #[cfg(unix)]
+    if let Some(peer_link) = peer_link_runtime.as_mut() {
+        peer_link.shutdown();
+    }
     federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
     let vault_jobs_cleanup = shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
     vault_jobs_cleanup?;

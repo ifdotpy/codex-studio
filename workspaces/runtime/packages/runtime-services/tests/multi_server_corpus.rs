@@ -2,6 +2,8 @@
 
 #[path = "multi_server/common.rs"]
 mod common;
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use common::*;
 use serde_json::{Value, json};
 use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
@@ -722,6 +724,98 @@ fn python_authentication_outputs_match_complete_principal_and_writes() {
             );
         }
     }
+}
+
+#[test]
+fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::Duration;
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
+    };
+
+    const SEED: [u8; 32] = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
+        0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
+        0x7f, 0x60,
+    ];
+    let key = Ed25519KeyPair::from_seed_unchecked(&SEED).expect("fixed test seed loads");
+    let method = "POST";
+    let target = "/api/multi-server/v1/auto-pair";
+    let server_id = "peer-server";
+    let client_id = "rust-server";
+    let timestamp = "1700000000";
+    let nonce = "abcdefghijklmnopqrstuvwxyz012345";
+    let request_id = "rust-request";
+    let body = br#"{"clientId":"rust-server","requestId":"rust-request"}"#;
+    let rust_wire = multi_server_signing_bytes(MultiServerSigningInput {
+        method,
+        target,
+        server_id,
+        client_id,
+        timestamp,
+        nonce,
+        request_id,
+        body,
+    });
+    let rust_signature = STANDARD.encode(key.sign(&rust_wire).as_ref());
+    UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
+        .verify(&rust_wire, &STANDARD.decode(&rust_signature).expect("signature decodes"))
+        .expect("Rust signature verifies locally");
+    let mut spki = vec![
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    spki.extend_from_slice(key.public_key().as_ref());
+    let public_key = format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+        STANDARD.encode(spki)
+    );
+    let python_input = json!({
+        "method":method, "target":target, "serverId":server_id,
+        "clientId":client_id, "timestamp":timestamp, "nonce":nonce,
+        "requestId":request_id, "body":STANDARD.encode(body),
+        "seed":STANDARD.encode(SEED), "rustSignature":rust_signature,
+        "publicKey":public_key,
+    });
+    let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/multi_server/interop_verify.py");
+    let mut command = Command::new(prepared_python::prepared_python(&server_source));
+    command
+        .arg(&script)
+        .arg(python_input.to_string())
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    let environment = prepared_python::IsolatedTestEnvironment::new();
+    environment.apply(&mut command);
+    let output = prepared_python::output_with_timeout(&mut command, &script, Duration::from_secs(30))
+        .expect("Python verification has a bounded deadline");
+    assert!(
+        output.status.success(),
+        "Python rejected the Rust signature: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let python_result: Value =
+        serde_json::from_slice(&output.stdout).expect("Python signing and verification JSON");
+    assert_eq!(python_result["verified"], true);
+    let python_signature = python_result["pythonSignature"]
+        .as_str()
+        .expect("Python produced a request signature");
+    let python_wire = multi_server_signing_bytes(MultiServerSigningInput {
+        method,
+        target,
+        server_id,
+        client_id,
+        timestamp,
+        nonce,
+        request_id,
+        body,
+    });
+    verify_signature(&public_key, &python_wire, python_signature)
+        .expect("Rust verifies Python's fixture request signature");
 }
 fn malformed_stored_rows_are_located_without_panics() {
     let data = &fixture().data;

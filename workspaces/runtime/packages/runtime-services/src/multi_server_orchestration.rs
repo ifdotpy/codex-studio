@@ -93,11 +93,19 @@ pub trait PairedTransport: Send + Sync {
 /// the durable outbox driver.
 pub struct HttpsPairedTransport {
     store: Arc<RuntimeStore>,
+    #[cfg(unix)]
+    peer_link: crate::remote_transport::PeerLinkClient,
 }
 
 impl HttpsPairedTransport {
     pub fn new(store: Arc<RuntimeStore>) -> Self {
-        Self { store }
+        #[cfg(unix)]
+        let peer_link = crate::remote_transport::PeerLinkClient::new(store.root());
+        Self {
+            store,
+            #[cfg(unix)]
+            peer_link,
+        }
     }
 }
 
@@ -173,33 +181,98 @@ impl PairedTransport for HttpsPairedTransport {
                 "The paired request could not be signed",
             )
         })?;
-        let headers = headers
+        let mut headers = headers
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        let response =
-            SignedHttpClient::exchange("POST", &url, &headers, &body, timeout, MAX_RESPONSE_BYTES)
+        headers.push(("Accept-Encoding", "identity"));
+        if !body.is_empty() {
+            headers.push(("Content-Type", "application/json"));
+        }
+        let path = "/api/servers/orchestration";
+        let response = {
+            #[cfg(unix)]
+            {
+                let link = self.peer_link.exchange(
+                    server,
+                    &public_key,
+                    "POST",
+                    path,
+                    &headers,
+                    &body,
+                    timeout,
+                );
+                match link {
+                    Ok(Some(response)) => response,
+                    Ok(None) | Err(crate::remote_transport::PeerLinkFailure { sent: false }) => {
+                        SignedHttpClient::exchange(
+                            "POST",
+                            &url,
+                            &headers,
+                            &body,
+                            timeout,
+                            MAX_RESPONSE_BYTES,
+                        )
+                        .map_err(|_| {
+                            refused(
+                                503,
+                                "exchange_unknown",
+                                "The paired delivery outcome is unknown",
+                            )
+                        })?
+                    }
+                    Err(crate::remote_transport::PeerLinkFailure { sent: true }) => {
+                        return Err(refused(
+                            503,
+                            "exchange_unknown",
+                            "The paired delivery outcome is unknown",
+                        ));
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                SignedHttpClient::exchange(
+                    "POST",
+                    &url,
+                    &headers,
+                    &body,
+                    timeout,
+                    MAX_RESPONSE_BYTES,
+                )
                 .map_err(|_| {
                     refused(
                         503,
                         "exchange_unknown",
                         "The paired delivery outcome is unknown",
                     )
-                })?;
-        if response.status != 200 {
+                })?
+            }
+        };
+        if !(200..300).contains(&response.status) {
             return Err(refused(
-                503,
-                "exchange_unknown",
-                "The paired delivery outcome is unknown",
+                response.status,
+                "peer_rejected",
+                "The paired server refused the request",
             ));
         }
-        verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
+        let value = verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
             refused(
                 503,
                 "invalid_receipt",
                 "The paired server returned an invalid receipt",
             )
-        })
+        })?;
+        #[cfg(unix)]
+        {
+            let advert = response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+                .map(|(_, value)| value.as_str());
+            self.peer_link.learn(server, advert);
+        }
+        Ok(value)
     }
 }
 /// Missing effects are refused before claiming a receipt. Implementations must

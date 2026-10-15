@@ -42,6 +42,7 @@ pub struct HttpState {
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
+    pub(crate) peer_link_advert: Arc<std::sync::RwLock<Option<String>>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
@@ -156,6 +157,7 @@ impl HttpState {
             voice_request_port: None,
             credentials: Arc::default(),
             multi_server_boundary: None,
+            peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
             token,
             workspace_id,
             native_path,
@@ -193,6 +195,15 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Advertise the running QUIC link to authenticated paired-server requests.
+    pub fn with_peer_link_advert(
+        mut self,
+        advert: Arc<std::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        self.peer_link_advert = advert;
         self
     }
 

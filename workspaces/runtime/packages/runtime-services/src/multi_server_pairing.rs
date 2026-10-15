@@ -120,12 +120,33 @@ impl MultiServerBoundary {
         logins: &[String],
         now: f64,
     ) -> Result<String, AccessError> {
-        if !request.is_orchestration() || text(request.body(), "requestId") != request.request_id()
-        {
+        if !request.is_orchestration() {
             return Err(refused(
                 400,
                 "invalid_request",
                 "Invalid cross-server request",
+            ));
+        }
+        self.authorize_server_request_incoming(store, request, address, logins, now)
+    }
+
+    /// Authenticate a signed operation from an already paired server and
+    /// consume its nonce before applying the operation's durable effect.
+    pub fn authorize_server_request_incoming(
+        &self,
+        store: &RuntimeStore,
+        request: &SignedRequest,
+        address: &str,
+        logins: &[String],
+        now: f64,
+    ) -> Result<String, AccessError> {
+        if !(request.is_orchestration() || request.is_name())
+            || text(request.body(), "requestId") != request.request_id()
+        {
+            return Err(refused(
+                400,
+                "invalid_request",
+                "Invalid signed server request",
             ));
         }
         let saved_client = store.read_transaction(|tx| {

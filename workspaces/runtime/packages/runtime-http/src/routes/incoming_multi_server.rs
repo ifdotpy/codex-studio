@@ -47,6 +47,11 @@ pub(crate) async fn serve(state: HttpState, request: Request<Body>) -> Response 
     response
 }
 async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
+    let peer_link_advert = state
+        .peer_link_advert
+        .read()
+        .ok()
+        .and_then(|advert| advert.clone());
     let peer_loopback = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -90,6 +95,8 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             "Not implemented: requires remote-transport/owner-lookup",
         );
     };
+    let credentials = state.credentials;
+    let public_origin = state.public_origin;
     if request.method() == "OPTIONS" {
         const ALLOWED: &str = "content-type, accept, x-canvas-workspace, x-studio-api-schema, x-codex-sync-protocol, last-event-id, if-none-match, cache-control, range, x-studio-client, x-studio-server, x-studio-timestamp, x-studio-nonce, x-studio-request-id, x-studio-signature";
         let requested = request
@@ -154,6 +161,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         ("GET", multi_server_auth::STATUS_PATH)
             | ("POST", multi_server_auth::PAIR_PATH)
             | ("POST", multi_server_auth::AUTO_PAIR_PATH)
+            | ("POST", multi_server_auth::NAME_PATH)
             | ("POST", "/api/servers/orchestration")
     );
     if !supported {
@@ -245,6 +253,12 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     };
     let is_orchestration = request.is_orchestration();
+    let is_name = request.is_name();
+    let advertise_link = is_orchestration
+        || request.is_status()
+        || request.is_pairing()
+        || request.is_auto_pairing()
+        || is_name;
     let request_id = request.request_id().to_owned();
     let driver = state.orchestration_driver;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -262,6 +276,21 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 })?;
                 let outcome = driver.receive(&principal, request.body(), now as i64)?;
                 Ok(outcome.to_value(&request_id))
+            } else if is_name {
+                let principal = boundary
+                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
+                let label = request
+                    .body()
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                credentials
+                    .rename(&store, "local", &label, &request_id, &principal)
+                    .map_err(credential_error)?;
+                credentials
+                    .identity(&store, public_origin.as_deref())
+                    .map_err(credential_error)
             } else {
                 boundary.handle_incoming(&store, &request, &address, &logins, now)
             }
@@ -269,7 +298,13 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     )
     .await;
     match result {
-        Ok(Ok(value)) if is_orchestration => Json(value).into_response(),
+        Ok(Ok(value)) if is_orchestration => {
+            let mut response = Json(value).into_response();
+            if advertise_link {
+                add_link_advert(&mut response, peer_link_advert.as_deref());
+            }
+            response
+        }
         Ok(Ok(value)) => {
             let checked = if method == "GET" {
                 super::generated_json::<crate::generated::ServerIdentityResponse>(value)
@@ -279,12 +314,27 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                     .map(IncomingMultiServerResponse::Pair)
             };
             match checked {
-                Ok(v) => Json(v).into_response(),
+                Ok(v) => {
+                    let mut response = Json(v).into_response();
+                    if advertise_link {
+                        add_link_advert(&mut response, peer_link_advert.as_deref());
+                    }
+                    response
+                }
                 Err(e) => e.into_response(),
             }
         }
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+fn add_link_advert(response: &mut Response, advert: Option<&str>) {
+    if response.status().is_success()
+        && let Some(advert) = advert
+        && let Ok(value) = axum::http::HeaderValue::from_str(advert)
+    {
+        response.headers_mut().insert("x-studio-link", value);
     }
 }
 
@@ -304,5 +354,26 @@ fn failure(error: AccessError) -> Response {
         )
             .into_response(),
         _ => error_response(status, "The server access operation failed"),
+    }
+}
+
+fn credential_error(
+    error: studio_runtime_services::federation_credentials::CredentialError,
+) -> AccessError {
+    use studio_runtime_services::federation_credentials::CredentialError;
+    match error {
+        CredentialError::Conflict => multi_server_auth::refused(
+            409,
+            "request_conflict",
+            "The request ID has different content",
+        ),
+        CredentialError::RemoteRequired => {
+            multi_server_auth::refused(403, "server_required", "A paired server is required")
+        }
+        _ => multi_server_auth::refused(
+            503,
+            "identity_unavailable",
+            "The server identity is unavailable",
+        ),
     }
 }

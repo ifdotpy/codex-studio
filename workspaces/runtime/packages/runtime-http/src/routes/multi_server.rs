@@ -18,7 +18,6 @@ const AUTO_PAIR_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("remote-transport/tailscale-discovery"),
     Dependency::new("remote-transport/owner-lookup"),
 ];
-const OWNER_DEPENDENCIES: [Dependency; 1] = [Dependency::new("remote-transport/owner-lookup")];
 const SIGNED_ORCHESTRATION_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("remote-transport/signed-server-requests"),
     Dependency::new("multi-server-runtime/orchestration"),
@@ -63,7 +62,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/multi-server/v1/identity",
-            OperationStatus::partial(&OWNER_DEPENDENCIES),
+            OperationStatus::Implemented,
             identity,
         ),
         post(
@@ -221,12 +220,25 @@ async fn auto_pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiErr
     ))
 }
 
-async fn identity() -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "GET",
-        "/api/multi-server/v1/identity",
-        &OWNER_DEPENDENCIES,
-    ))
+async fn identity(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ServerIdentityResponse>, ApiError> {
+    let credentials = state.credentials;
+    let origin = state.public_origin;
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server",
+        move || {
+            credentials
+                .identity(&store, origin.as_deref())
+                .map_err(map_credential_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(super::generated_json::<
+        crate::generated::ServerIdentityResponse,
+    >(value)?))
 }
 
 async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {

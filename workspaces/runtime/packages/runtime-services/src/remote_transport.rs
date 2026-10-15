@@ -8,12 +8,13 @@ use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use rustls_pki_types::{PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer, pem::PemObject};
 use serde_json::{Map, Value};
 use spki::{ObjectIdentifier, SubjectPublicKeyInfoRef};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
@@ -135,6 +136,40 @@ impl RemoteIdentity {
 /// Read Python's existing `multi-server/identity.json` without creating or replacing it.
 pub fn load_multi_server_identity(state_root: &Path) -> RemoteTransportResult<RemoteIdentity> {
     read_multi_server_identity(state_root)?.signing_identity()
+}
+
+/// Serialize the existing peer-link child configuration. The returned JSON
+/// line contains the private key and must be written only to the child's stdin.
+pub fn peer_link_config_line(
+    state_root: &Path,
+    listen: &str,
+    peers: &[String],
+    backend_port: u16,
+    forwarded_host: &str,
+    socket: &Path,
+) -> RemoteTransportResult<String> {
+    if listen.parse::<std::net::SocketAddr>().is_err()
+        || peers.len() > 1024
+        || forwarded_host.is_empty()
+        || forwarded_host.len() > 255
+        || socket.as_os_str().is_empty()
+    {
+        return Err(RemoteTransportError::InvalidInput);
+    }
+    for peer in peers {
+        ed25519_public_key(peer)?;
+    }
+    let identity = read_multi_server_identity(state_root)?;
+    serde_json::to_string(&serde_json::json!({
+        "listen": listen,
+        "privateKey": identity.private_key,
+        "publicKey": identity.public_key,
+        "peers": peers,
+        "backendPort": backend_port,
+        "forwardedHost": forwarded_host,
+        "socket": socket,
+    }))
+    .map_err(|_| RemoteTransportError::InvalidIdentity)
 }
 
 pub(crate) fn read_multi_server_identity(
@@ -913,7 +948,200 @@ pub fn consume_multi_server_nonce(
 
 pub struct HttpResponse {
     pub status: u16,
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+#[cfg(unix)]
+struct LearnedPeerLink {
+    address: String,
+    unavailable_until: Option<Instant>,
+}
+
+/// Local Unix-socket client for the existing `studio-peer-link` QUIC process.
+/// Routes are learned only from paired-server response headers.
+#[cfg(unix)]
+pub(crate) struct PeerLinkClient {
+    socket: std::path::PathBuf,
+    peers: Mutex<HashMap<String, LearnedPeerLink>>,
+}
+
+#[cfg(unix)]
+impl PeerLinkClient {
+    const MAX_REPLY_LINE: usize = 64 * 1024;
+    const DOWN_SECONDS: Duration = Duration::from_secs(60);
+    const SOCKET_GRACE: Duration = Duration::from_secs(5);
+
+    pub(crate) fn new(state_root: &Path) -> Self {
+        Self {
+            socket: state_root.join("multi-server").join("peer-link.sock"),
+            peers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn learn(&self, server: &str, advert: Option<&str>) {
+        let route = advert.and_then(parse_peer_link_advert);
+        if let Ok(mut peers) = self.peers.lock() {
+            match route {
+                Some(address) => {
+                    peers.insert(
+                        server.to_owned(),
+                        LearnedPeerLink {
+                            address,
+                            unavailable_until: None,
+                        },
+                    );
+                }
+                None => {
+                    peers.remove(server);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn exchange(
+        &self,
+        server: &str,
+        public_key: &str,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        timeout: Duration,
+    ) -> Result<Option<HttpResponse>, PeerLinkFailure> {
+        use std::os::unix::net::UnixStream;
+
+        let address = {
+            let peers = self.peers.lock().map_err(|_| PeerLinkFailure { sent: false })?;
+            let Some(peer) = peers.get(server) else {
+                return Ok(None);
+            };
+            if peer
+                .unavailable_until
+                .is_some_and(|until| Instant::now() < until)
+            {
+                return Ok(None);
+            }
+            peer.address.clone()
+        };
+        let mut connection = match UnixStream::connect(&self.socket) {
+            Ok(connection) => connection,
+            Err(_) => return Ok(None),
+        };
+        let socket_timeout = timeout.saturating_add(Self::SOCKET_GRACE);
+        if connection.set_read_timeout(Some(socket_timeout)).is_err()
+            || connection.set_write_timeout(Some(socket_timeout)).is_err()
+        {
+            return Ok(None);
+        }
+        let head = serde_json::json!({
+            "address": address,
+            "publicKey": public_key,
+            "method": method,
+            "path": path,
+            "headers": headers.iter().map(|(name, value)| [*name, *value]).collect::<Vec<_>>(),
+            "bodyLength": body.len(),
+            "timeout": timeout.as_secs_f64(),
+        });
+        let mut encoded = serde_json::to_vec(&head).map_err(|_| PeerLinkFailure { sent: false })?;
+        encoded.push(b'\n');
+        if connection.write_all(&encoded).is_err() || connection.write_all(body).is_err() {
+            // studio-peer-link forwards only a complete local request body.
+            return Ok(None);
+        }
+        let mut reader = BufReader::new(connection);
+        let mut line = Vec::new();
+        (&mut reader)
+            .take((Self::MAX_REPLY_LINE + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(|_| PeerLinkFailure { sent: true })?;
+        if line.len() > Self::MAX_REPLY_LINE || line.last() != Some(&b'\n') {
+            return Err(PeerLinkFailure { sent: true });
+        }
+        let reply: Value = serde_json::from_slice(&line[..line.len() - 1])
+            .map_err(|_| PeerLinkFailure { sent: true })?;
+        if reply.get("failure").is_some() {
+            let sent = reply.get("sent") != Some(&Value::Bool(false));
+            if !sent {
+                if let Ok(mut peers) = self.peers.lock() {
+                    if let Some(peer) = peers.get_mut(server) {
+                        peer.unavailable_until = Some(Instant::now() + Self::DOWN_SECONDS);
+                    }
+                }
+            }
+            return Err(PeerLinkFailure { sent });
+        }
+        let status = reply
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or(PeerLinkFailure { sent: true })?;
+        let response_headers = reply
+            .get("headers")
+            .and_then(Value::as_array)
+            .ok_or(PeerLinkFailure { sent: true })?
+            .iter()
+            .map(|header| {
+                let pair = header.as_array().ok_or(PeerLinkFailure { sent: true })?;
+                let name = pair
+                    .first()
+                    .and_then(Value::as_str)
+                    .ok_or(PeerLinkFailure { sent: true })?;
+                let value = pair
+                    .get(1)
+                    .and_then(Value::as_str)
+                    .ok_or(PeerLinkFailure { sent: true })?;
+                Ok((name.to_owned(), value.to_owned()))
+            })
+            .collect::<Result<Vec<_>, PeerLinkFailure>>()?;
+        let mut response_body = Vec::new();
+        let mut received = 0_usize;
+        loop {
+            let mut length = [0_u8; 4];
+            reader
+                .read_exact(&mut length)
+                .map_err(|_| PeerLinkFailure { sent: true })?;
+            let length = u32::from_be_bytes(length) as usize;
+            if length == 0 {
+                break;
+            }
+            received = received
+                .checked_add(length)
+                .filter(|size| *size <= MAX_RESPONSE_BYTES)
+                .ok_or(PeerLinkFailure { sent: true })?;
+            let start = response_body.len();
+            response_body.resize(start + length, 0);
+            reader
+                .read_exact(&mut response_body[start..])
+                .map_err(|_| PeerLinkFailure { sent: true })?;
+        }
+        Ok(Some(HttpResponse {
+            status,
+            headers: response_headers,
+            body: response_body,
+        }))
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PeerLinkFailure {
+    pub(crate) sent: bool,
+}
+
+#[cfg(unix)]
+fn parse_peer_link_advert(value: &str) -> Option<String> {
+    let (address, port) = value.rsplit_once(':')?;
+    if address.contains(':') || port.is_empty() || port.len() > 5 {
+        return None;
+    }
+    let ip = address.parse::<std::net::Ipv4Addr>().ok()?;
+    let octets = ip.octets();
+    if octets[0] != 100 || !(64..=127).contains(&octets[1]) {
+        return None;
+    }
+    let port = port.parse::<u16>().ok().filter(|port| *port > 0)?;
+    Some(format!("{ip}:{port}"))
 }
 
 /// Synchronous outbound HTTP with HTTPS, platform trust roots and bounded bodies.
@@ -985,6 +1213,16 @@ fn exchange_with_agent(
         _ => RemoteTransportError::ExchangeUnknown,
     })?;
     let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
     let response_body = response
         .into_body()
         .into_with_config()
@@ -996,6 +1234,7 @@ fn exchange_with_agent(
         })?;
     Ok(HttpResponse {
         status,
+        headers,
         body: response_body,
     })
 }
@@ -1689,6 +1928,7 @@ pub(crate) mod tests {
                 sends += 1;
                 Ok(super::HttpResponse {
                     status: 200,
+                    headers: Vec::new(),
                     body: response.clone(),
                 })
             },
@@ -1966,5 +2206,142 @@ pub(crate) mod tests {
             error,
             super::RemoteTransportError::ResponseTooLarge
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_link_client_uses_the_python_unix_framing_with_a_local_fake_peer() {
+        use serde_json::Value;
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+
+        let test_root = std::env::var_os("CODEX_SERVER_TEST_TMP_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        std::fs::create_dir_all(&test_root).expect("isolated test root exists");
+        let root = tempfile::Builder::new()
+            .prefix("peer-link-client-")
+            .tempdir_in(test_root)
+            .expect("isolated state directory");
+        let socket_directory = root.path().join("multi-server");
+        std::fs::create_dir_all(&socket_directory).expect("socket directory exists");
+        let socket = socket_directory.join("peer-link.sock");
+        let listener = UnixListener::bind(&socket).expect("fake peer-link socket binds locally");
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("local fake peer connects");
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            reader.read_until(b'\n', &mut line).expect("request head reads");
+            let head: Value = serde_json::from_slice(&line[..line.len() - 1])
+                .expect("Python-format head parses");
+            assert_eq!(head["address"], "100.80.1.2:4621");
+            assert_eq!(head["publicKey"], "fixture-peer-key");
+            assert_eq!(head["method"], "POST");
+            assert_eq!(head["path"], "/api/servers/orchestration");
+            assert_eq!(head["headers"][0], json!(["X-Studio-Signature", "fixture-signature"]));
+            let body_length = head["bodyLength"].as_u64().expect("body length") as usize;
+            let mut body = vec![0; body_length];
+            reader.read_exact(&mut body).expect("complete request body reads");
+            assert_eq!(body, br#"{"requestId":"request-1"}"#);
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(
+                    b"{\"status\":200,\"headers\":[[\"X-Studio-Link\",\"100.81.1.3:4621\"]]}\n",
+                )
+                .expect("response metadata writes");
+            let response = br#"{"requestId":"request-1","outcome":"applied"}"#;
+            stream
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .and_then(|_| stream.write_all(response))
+                .and_then(|_| stream.write_all(&0_u32.to_be_bytes()))
+                .expect("framed response writes");
+        });
+        let client = super::PeerLinkClient::new(root.path());
+        assert_eq!(super::parse_peer_link_advert("100.80.1.2:4621"), Some("100.80.1.2:4621".to_owned()));
+        assert!(super::parse_peer_link_advert("192.0.2.1:4621").is_none());
+        client.learn("peer-server", Some("100.80.1.2:4621"));
+        let headers = [("X-Studio-Signature", "fixture-signature")];
+        let response = client
+            .exchange(
+                "peer-server",
+                "fixture-peer-key",
+                "POST",
+                "/api/servers/orchestration",
+                &headers,
+                br#"{"requestId":"request-1"}"#,
+                Duration::from_secs(2),
+            )
+            .expect("local protocol exchange completes")
+            .expect("learned route uses the peer link");
+        peer.join().expect("fake peer exits");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"requestId":"request-1","outcome":"applied"}"#);
+        assert_eq!(response.headers[0].0, "X-Studio-Link");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_link_unsent_failure_allows_https_fallback_and_marks_route_down() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+        use serde_json::Value;
+
+        let test_root = std::env::var_os("CODEX_SERVER_TEST_TMP_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        std::fs::create_dir_all(&test_root).expect("isolated test root exists");
+        let root = tempfile::Builder::new()
+            .prefix("peer-link-fallback-")
+            .tempdir_in(test_root)
+            .expect("isolated fake peer state");
+        let socket_directory = root.path().join("multi-server");
+        std::fs::create_dir_all(&socket_directory).expect("socket directory exists");
+        let socket = socket_directory.join("peer-link.sock");
+        let listener = UnixListener::bind(&socket).expect("fake peer socket binds locally");
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("fake peer accepts one request");
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            reader.read_until(b'\n', &mut line).expect("head reads");
+            let head: Value = serde_json::from_slice(&line[..line.len() - 1])
+                .expect("Python peer-link head parses");
+            let body_length = head["bodyLength"].as_u64().expect("body size") as usize;
+            let mut body = vec![0; body_length];
+            reader.read_exact(&mut body).expect("request body reads");
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"{\"failure\":\"unreachable\",\"sent\":false}\n")
+                .expect("unsent failure writes");
+        });
+        let client = super::PeerLinkClient::new(root.path());
+        client.learn("peer-server", Some("100.80.1.2:4621"));
+        let headers = [("X-Studio-Signature", "fixture-signature")];
+        assert!(matches!(
+            client.exchange(
+                "peer-server",
+                "fixture-peer-key",
+                "POST",
+                "/api/servers/orchestration",
+                &headers,
+                br#"{"requestId":"request-1"}"#,
+                Duration::from_secs(2),
+            ),
+            Err(super::PeerLinkFailure { sent: false })
+        ));
+        peer.join().expect("fake peer exits");
+        assert!(client
+            .exchange(
+                "peer-server",
+                "fixture-peer-key",
+                "POST",
+                "/api/servers/orchestration",
+                &headers,
+                br#"{"requestId":"request-1"}"#,
+                Duration::from_secs(2),
+            )
+            .expect("down route selects HTTPS fallback")
+            .is_none());
     }
 }
