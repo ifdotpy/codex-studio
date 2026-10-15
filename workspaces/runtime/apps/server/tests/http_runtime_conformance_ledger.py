@@ -1461,6 +1461,14 @@ def analytics_probe_agent_identifier(backend: Any) -> str:
     return f"{prefix}analytics-contract-agent"
 
 
+def session_cost_cache_path(state: Path, root_id: str) -> Path:
+    """Resolve the cache path through the session-cost reader's path owner."""
+    from codex_session_costs import SessionCostReader
+
+    reader = SessionCostReader(state / "analytics.sqlite3", None, state_root=state)
+    return reader._cache_path(root_id)
+
+
 def valid_probe(
     method: str,
     template: str,
@@ -1616,12 +1624,11 @@ def probe_fixture_state(
                     (json.dumps(changed), command_id),
                 )
         if mutations.get("stale_session_cost_cache"):
-            cache_files = sorted((backend.state / "session-costs").glob(
-                f"cost-{identifiers['analyticsAgent']}*.json"
-            ))
-            if not cache_files:
+            path = session_cost_cache_path(
+                backend.state, identifiers["analyticsAgent"],
+            )
+            if not path.is_file() or path.is_symlink():
                 raise RuntimeError("seeded session-cost cache is missing")
-            path = cache_files[0]
             session_cost_cache = (path, path.read_bytes())
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1

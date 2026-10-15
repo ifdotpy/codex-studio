@@ -1010,10 +1010,13 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
     def test_session_cost_fixture_restores_cache_and_temporary_pricing_catalog(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ledger-pricing-restore-") as scratch:
             state = Path(scratch)
-            cache_dir = state / "session-costs"
-            cache_dir.mkdir()
-            cache = cache_dir / "cost-analytics-agent.json"
-            original_cache = json.dumps({"source": {"usage": {"generation": 1}}})
+            root_id = "analytics-agent"
+            cache = ledger.session_cost_cache_path(state, root_id)
+            cache.parent.mkdir()
+            original_cache = json.dumps({
+                "rootId": root_id,
+                "source": {"usage": {"generation": 1}},
+            })
             cache.write_text(original_cache)
             case = {
                 "fixture_mutations": {
@@ -1026,7 +1029,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             with self.assertRaisesRegex(RuntimeError, "probe failed"):
                 with ledger.probe_fixture_state(
                     SimpleNamespace(state=state),
-                    {"analyticsAgent": "analytics-agent"},
+                    {"analyticsAgent": root_id},
                     case,
                 ):
                     self.assertEqual(
