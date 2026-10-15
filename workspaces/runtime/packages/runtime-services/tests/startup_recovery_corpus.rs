@@ -43,7 +43,10 @@ fn oracle(root: &Path, command: &str) -> Value {
         .env("STUDIO_TEST_ISOLATION_ROOT", isolation.path())
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("TMPDIR", std::env::temp_dir())
-        .env("CODEX_NODE", "/usr/bin/node")
+        .env(
+            "CODEX_NODE",
+            std::env::var_os("CODEX_NODE").unwrap_or_else(|| "node".into()),
+        )
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()
         .expect("start isolated Runtime oracle");
