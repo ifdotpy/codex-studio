@@ -21,6 +21,11 @@ the home team. Native input still uses the destination's existing delivery path.
 Remote input keeps its delivery mode. Remote input rejects attachments before
 acceptance. An input cannot resume a worker after a concurrent stop changes its
 epoch. Explicit parent resume rebinds the remote link to the parent's new epoch.
+A message sent to a remote anchor is forwarded as managed input to the linked
+home parent and passes that server's message admission. The anchor records the
+message as `stored_only` locally for the receipts API without scheduling a local
+turn. Remote-worker and remote-anchor input reject asset-bearing messages before
+acceptance.
 A resume that arrives before its stop or parent update waits for those operations.
 Input for one worker follows queue order. A later input waits for the earlier
 input receipt, including during an offline retry. Other workers can proceed.

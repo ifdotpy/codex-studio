@@ -689,6 +689,136 @@ impl RuntimeOrchestrationEffects {
     }
 }
 
+fn receive_remote_anchor_input(
+    store: &RuntimeStore,
+    principal: &str,
+    envelope: &Value,
+) -> Result<ExchangeOutcome, AccessError> {
+    let payload = &envelope["payload"];
+    let key = text(envelope, "requestId");
+    let link_id = text(payload, "link");
+    let kind = text(payload, "kind");
+    let event_text = text(payload, "text");
+    let parent_epoch = payload
+        .get("parentEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote anchor input"))?;
+    let delivery = payload
+        .get("delivery")
+        .and_then(Value::as_str)
+        .unwrap_or("queue");
+    if key.is_empty()
+        || link_id.is_empty()
+        || event_text.len() > 32_000
+        || !matches!(kind, "user" | "followup")
+        || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
+    {
+        return Err(refused(
+            400,
+            "invalid_request",
+            "Invalid remote anchor input",
+        ));
+    }
+
+    let connection = store.read()?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record FROM runtime_server_links WHERE id=?1",
+            [link_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let link: Value = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .ok_or_else(|| {
+            refused(
+                404,
+                "link_unavailable",
+                "The remote-parent link is unavailable",
+            )
+        })?;
+    if link.get("side").and_then(Value::as_str) != Some("home")
+        || link.get("server").and_then(Value::as_str) != Some(principal)
+        || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
+    {
+        return Err(refused(
+            403,
+            "link_owner",
+            "The remote-parent link is invalid",
+        ));
+    }
+    let parent_id = link
+        .get("parent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
+    let parent = studio_runtime_store::AgentRepository::get(
+        &connection,
+        &studio_runtime_store::AgentId::from(parent_id),
+    )?
+    .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
+    if parent.epoch != parent_epoch {
+        return Err(refused(409, "parent_changed", "The home agent changed"));
+    }
+    let admission =
+        crate::message_admission::MessageIngressAdmission::load(store, &connection, parent_id)
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+    drop(connection);
+
+    let receipt = store.transaction_with(|tx| {
+        let current_link: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_server_links WHERE id=?1",
+                [link_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let current_link: Value = current_link
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "link_unavailable",
+                    "The remote-parent link is unavailable",
+                )
+            })?;
+        if current_link.get("side").and_then(Value::as_str) != Some("home")
+            || current_link.get("server").and_then(Value::as_str) != Some(principal)
+            || current_link.get("parent").and_then(Value::as_str) != Some(parent_id)
+            || current_link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
+        {
+            return Err(refused(
+                403,
+                "link_owner",
+                "The remote-parent link is invalid",
+            ));
+        }
+        let current = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(parent_id),
+        )?
+        .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
+        if current.epoch != parent_epoch {
+            return Err(refused(409, "parent_changed", "The home agent changed"));
+        }
+        let posted = crate::coordination::post_message_with_admission(
+            tx,
+            crate::coordination::PostManagedMessage {
+                room: parent_id,
+                id: key,
+                text: event_text,
+                delivery,
+                assets: &[],
+            },
+            &admission,
+        )
+        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+        Ok::<_, AccessError>(posted.receipt)
+    })?;
+    Ok(ExchangeOutcome::Applied(receipt))
+}
+
 fn receive_remote_input(
     store: &RuntimeStore,
     principal: &str,
@@ -999,6 +1129,13 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 });
         }
         if action == "input" {
+            if envelope["payload"]
+                .get(REMOTE_ANCHOR_INPUT_FIELD)
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                return receive_remote_anchor_input(&self.store, principal, envelope);
+            }
             return receive_remote_input(&self.store, principal, envelope);
         }
         if matches!(action, "message" | "move_send") {
@@ -1355,6 +1492,7 @@ pub struct OrchestrationDriver {
     effects: Arc<dyn OrchestrationEffects>,
 }
 const MAX_OUTBOX_BATCH: usize = 32;
+pub(crate) const REMOTE_ANCHOR_INPUT_FIELD: &str = "anchor";
 
 /// Persist a peer-delivery intent in the caller's owning transaction. The
 /// caller sends it only after that transaction commits.

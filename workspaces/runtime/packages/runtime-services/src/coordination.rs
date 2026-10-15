@@ -222,6 +222,23 @@ fn post_managed_message(
                 "This message id has different content",
             ));
         }
+        if event.status == "stored_only"
+            && crate::event_write::truthy(agent.extra.get("remoteAnchor"))
+            && let Some(receipt) = crate::event_write::read_receipt(
+                transaction,
+                Some(input.id),
+                &signature,
+                "runtime_events",
+                input.id,
+                |value| valid_message_receipt(value, input.id),
+            )
+            .map_err(event_write_error)?
+        {
+            return Ok(PostMessageResult {
+                receipt,
+                event_inserted: false,
+            });
+        }
         return Ok(PostMessageResult {
             receipt: studio_runtime_store::system_reads::validate(
                 "runtime_events",
@@ -250,7 +267,9 @@ fn post_managed_message(
     )
     .map_err(event_write_error)?
     {
-        if crate::event_write::truthy(agent.extra.get("remoteWorker")) {
+        if crate::event_write::truthy(agent.extra.get("remoteWorker"))
+            || crate::event_write::truthy(agent.extra.get("remoteAnchor"))
+        {
             return Ok(PostMessageResult {
                 receipt,
                 event_inserted: false,

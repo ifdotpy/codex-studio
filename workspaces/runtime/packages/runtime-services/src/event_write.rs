@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
@@ -314,9 +315,9 @@ fn enqueue(
         error: None,
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
-        // A remote anchor is a read-only proxy for a parent on the paired
-        // server. Match Python's stable `event` envelope; remote workers use a
-        // separate input protocol and are not converted into local events.
+        // Remote anchors forward user input through the paired input protocol;
+        // remote workers use its worker form. Neither proxy queues native work
+        // on this server.
         if !is_anchor {
             if !matches!(kind, "user" | "followup") {
                 return Err(EventWriteError::RemoteEventsUnavailable);
@@ -387,18 +388,68 @@ fn enqueue(
             .map_err(|_| EventWriteError::Conflict("Remote input could not be queued"))?;
             return Ok(true);
         }
+        let link_raw: Option<String> = transaction
+            .query_row(
+                "SELECT record FROM runtime_server_links WHERE id=?1",
+                [&link],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let link_record: Value = link_raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+        if link_record.get("side").and_then(Value::as_str) != Some("remote")
+            || link_record.get("home").and_then(Value::as_str) != Some(server.as_str())
+        {
+            return Err(EventWriteError::Conflict("Remote event link is invalid"));
+        }
+        let parent_epoch = link_record
+            .get("parentEpoch")
+            .and_then(Value::as_i64)
+            .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+        if matches!(kind, "user" | "followup") {
+            let metadata = QueueWriteRepository::metadata(transaction, &id)?
+                .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+            if metadata
+                .get("assets")
+                .and_then(Value::as_array)
+                .is_some_and(|assets| !assets.is_empty())
+            {
+                return Err(EventWriteError::InvalidRequest(
+                    "Remote anchor input does not support attachments",
+                ));
+            }
+            let mut stored = event.clone();
+            stored.status = "stored_only".to_owned();
+            EventWriteRepository::insert_event(transaction, &stored)?;
+            let request_id = crate::relocation::identity(&["anchor-input", &id]);
+            let mut payload = json!({
+                "link": link,
+                "parentEpoch": parent_epoch,
+                "kind": event.kind,
+                "text": event.text,
+                "delivery": metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+            });
+            payload[crate::multi_server_orchestration::REMOTE_ANCHOR_INPUT_FIELD] =
+                Value::Bool(true);
+            crate::multi_server_orchestration::enqueue_in_transaction(
+                transaction,
+                &server,
+                "input",
+                &payload,
+                &request_id,
+                created as i64,
+            )
+            .map_err(|_| EventWriteError::Conflict("Remote anchor input could not be queued"))?;
+            return Ok(true);
+        }
         let request_id = uuid::Uuid::new_v5(
             &uuid::Uuid::NAMESPACE_URL,
             format!("studio-cross-server:event:{id}").as_bytes(),
         )
         .to_string();
-        let parent_epoch: i64 = transaction
-            .query_row(
-                "SELECT json_extract(record,'$.parentEpoch') FROM runtime_server_links WHERE id=?1",
-                [&link],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
         let payload = json!({
             "link": link,
             "parentEpoch": parent_epoch,
