@@ -4,7 +4,7 @@ import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
 import { type GetOptions, type GetResult } from "../../../api";
 import { localDateTime } from "../../../local-time";
-import { peekSessionCost } from "../../../usage/sessionCostCache";
+import { useServerSessionCosts } from "../../../servers/ServerServicesContext";
 import type { Message } from "../../../types";
 import type { UsageAccount } from "../../Usage";
 import "./message-info.css";
@@ -39,6 +39,7 @@ export default function MessageInfo({
   accounts,
   onCopy,
 }: MessageInfoProps) {
+  const { peekSessionCost } = useServerSessionCosts();
   const { get } = useServerApi();
 
   const [open, setOpen] = useState(false);

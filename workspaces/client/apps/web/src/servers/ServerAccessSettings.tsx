@@ -1,11 +1,12 @@
+import { useServerStorage } from "./ServerServicesContext";
 import { useServerApi } from "./ServerServicesContext";
 import { ActionButton } from "../components/ui/primitives";
 import { Button, Textarea, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
-import { serverLocalStorage as localStorage } from "./storage";
 import type { ServerAccessState, ServerAccessRequest } from "./accessContract";
 export default function ServerAccessSettings({ active }: { active: boolean }) {
+  const localStorage = useServerStorage();
   const { serverAccess, refreshSession } = useServerApi();
 
   const [state, setState] = useState<ServerAccessState | null>(null);

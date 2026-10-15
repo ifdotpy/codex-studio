@@ -1,14 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
 import { onResume } from "../sync/resume";
-import {
-  deliverUpload,
-  pendingUploads,
-  removeUpload,
-  finishUpload,
-  uploadCancelled,
-  type PendingUpload,
-} from "../sync/uploads";
+import type { PendingUpload } from "../sync/uploads";
+import { useServerUploads } from "../servers/ServerServicesContext";
 import type { useAttachmentDrafts } from "./useAttachmentDrafts";
 
 export function useUploadRecovery(
@@ -16,6 +10,14 @@ export function useUploadRecovery(
   workspaceId: string,
   attach: ReturnType<typeof useAttachmentDrafts>[1],
 ) {
+  const uploads = useServerUploads();
+  const {
+    deliverUpload,
+    pendingUploads,
+    removeUpload,
+    finishUpload,
+    uploadCancelled,
+  } = uploads;
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [error, setError] = useState("");
   const wake = useRef(() => {});
@@ -106,7 +108,7 @@ export function useUploadRecovery(
       stopResume();
       window.removeEventListener("studio-uploads-changed", resume);
     };
-  }, [stateDir, workspaceId]);
+  }, [stateDir, workspaceId, uploads]);
   return {
     pending,
     error,

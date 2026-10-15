@@ -1,3 +1,6 @@
+import * as defaultProgress from "../components/agents/progressCache";
+import * as defaultSessionCosts from "../usage/sessionCostCache";
+import * as defaultUploads from "../sync/uploads";
 import { defaultServerAudio } from "../native/serverAudio";
 import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
@@ -94,3 +97,11 @@ export const useServerRecordings = () =>
 
 export const useServerAudio = () =>
   useServerServices()?.audio ?? defaultServerAudio;
+
+export const useServerUploads = () =>
+  useServerServices()?.uploads ?? defaultUploads;
+
+export const useServerProgress = () =>
+  useServerServices()?.progress ?? defaultProgress;
+export const useServerSessionCosts = () =>
+  useServerServices()?.sessionCosts ?? defaultSessionCosts;

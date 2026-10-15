@@ -71,7 +71,7 @@ import { isSendingMessage } from "./removeSendingMessages";
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
-import { queueUploads } from "../sync/uploads";
+import { useServerUploads } from "../servers/ServerServicesContext";
 import {
   statusLabel,
   type Agent,
@@ -255,6 +255,7 @@ export default function Conversation(p: {
   onPhase: (id: string | null, label: string) => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
+  const { queueUploads } = useServerUploads();
   const { get, post } = useServerApi();
   const { changeOutbox } = useServerOutbox();
 

@@ -7,7 +7,7 @@ import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
 import { errorText, type GetResult } from "../api";
-import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
+import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
@@ -187,6 +187,7 @@ export default function Usage({
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
 }) {
+  const { peekSessionCost, storeSessionCost } = useServerSessionCosts();
   const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
 

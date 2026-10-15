@@ -1,5 +1,9 @@
-import { useServerApi } from "../servers/ServerServicesContext";
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import {
+  useServerApi,
+  useServerStorage,
+  useServerStorageEventKey,
+  useServerLocalDrafts,
+} from "../servers/ServerServicesContext";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -12,10 +16,9 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { errorText, saved, type QueueItemDto } from "../api";
+import { errorText, type QueueItemDto } from "../api";
 import type { components } from "../generated/api";
 import type { Message } from "../types";
-import { writeLocalDraft } from "../sync/localDraft";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
 
@@ -90,7 +93,11 @@ type EditDraft = {
 type Drafts = { active: string | null; entries: Record<string, EditDraft> };
 const dragType = "application/x-studio-queued-message";
 
-function readDrafts(prefix: string): { drafts: Drafts; error: string } {
+function readDrafts(
+  prefix: string,
+  localStorage: Storage,
+  saved: typeof import("../api").saved,
+): { drafts: Drafts; error: string } {
   const entries: Record<string, EditDraft> = {};
   try {
     for (let index = 0; index < localStorage.length; index++) {
@@ -178,10 +185,15 @@ export default function MessageQueue(props: Props) {
 
 function ScopedMessageQueue(p: Props) {
   const { saved } = useServerApi();
+  const localStorage = useServerStorage();
+  const storageEventKey = useServerStorageEventKey();
+  const { writeLocalDraft } = useServerLocalDrafts();
 
   const storageKey = `codex-queue-edit:${encodeURIComponent(p.scope)}:`;
   const [writer] = useState(() => crypto.randomUUID());
-  const [recovery] = useState(() => readDrafts(storageKey));
+  const [recovery] = useState(() =>
+    readDrafts(storageKey, localStorage, saved),
+  );
   const [drafts, setDrafts] = useState(recovery.drafts);
   const [storageError, setStorageError] = useState(recovery.error);
   const draftsRef = useRef(drafts);
@@ -209,8 +221,9 @@ function ScopedMessageQueue(p: Props) {
   };
   useEffect(() => {
     const refresh = (event: StorageEvent) => {
-      if (event.key !== null && !event.key.startsWith(storageKey)) return;
-      const loaded = readDrafts(storageKey);
+      if (event.key !== null && !storageEventKey(event)?.startsWith(storageKey))
+        return;
+      const loaded = readDrafts(storageKey, localStorage, saved);
       const previous = draftsRef.current;
       const local = previous.active
         ? previous.entries[previous.active]
@@ -232,7 +245,7 @@ function ScopedMessageQueue(p: Props) {
     };
     window.addEventListener("storage", refresh);
     return () => window.removeEventListener("storage", refresh);
-  }, [storageKey, writer]);
+  }, [storageKey, writer, localStorage, saved, storageEventKey]);
   const persist = (draft: EditDraft, previous?: EditDraft) => {
     let problem = writeLocalDraft(draft.key, draft);
     const entries = { ...draftsRef.current.entries, [draft.key]: draft };

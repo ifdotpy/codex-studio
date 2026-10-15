@@ -1,3 +1,6 @@
+import { createProgressCache } from "../components/agents/progressCache";
+import { createSessionCostCache } from "../usage/sessionCostCache";
+import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
 import {
   createRecordingStorage,
@@ -62,6 +65,8 @@ export function createServerServices(server: StudioServer) {
     entityCheckpoint: sequences.getEntitySequenceCheckpointForWorkspace,
   });
   const audio = createServerAudio();
+  let progress: ReturnType<typeof createProgressCache> | undefined;
+  const sessionCosts = createSessionCostCache(storage);
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
   let runtime:
@@ -127,6 +132,22 @@ export function createServerServices(server: StudioServer) {
       storage: createDraftStorage(storage),
     }));
   };
+  const localDrafts = createLocalDraftStorage(
+    storage,
+    storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),
+  );
+  const uploads = createUploads({
+    databaseName: storageNameForServer(
+      transport.owner.id,
+      UPLOAD_DATABASE_NAME,
+    ),
+    storage,
+    syncGet: api.syncGet,
+    syncPost: api.syncPost,
+    refreshSession: api.refreshSession,
+    writeLocalDraft: localDrafts.writeLocalDraft,
+    syncDatabase: () => synchronization().sync.syncDatabase(),
+  });
   let initialization: Promise<void> | undefined;
   async function ready() {
     if (!initialization) {
@@ -147,14 +168,16 @@ export function createServerServices(server: StudioServer) {
   return {
     owner: transport.owner,
     audio,
+    sessionCosts,
+    get progress() {
+      return (progress ??= createProgressCache(api.get, storage));
+    },
     chatCreations: createChatCreationStore(storage),
     recordings: createRecordingStorage(
       storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
     ),
-    localDrafts: createLocalDraftStorage(
-      storage,
-      storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),
-    ),
+    localDrafts,
+    uploads,
     storageEventKey: createStorageEventKey(
       serverStoragePrefix(transport.owner.id),
     ),
@@ -185,6 +208,7 @@ export function createServerServices(server: StudioServer) {
     ready,
     close() {
       audio.close();
+      progress?.close();
       runtime?.resources.dispose();
       transport.close();
     },

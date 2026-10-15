@@ -1,22 +1,28 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerUploads,
+  useServerLocalDrafts,
+  useServerStorageEventKey,
+} from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState, type SetStateAction } from "react";
 import { errorText } from "../api";
-import { attachmentCancelled } from "../sync/uploads";
-import { updateLocalDraft } from "../sync/localDraft";
 import type { Attachment } from "./ComposerAttachments";
 
 type Attachments = Record<string, Attachment[]>;
-const retained = (stored: Attachments) =>
-  Object.fromEntries(
-    Object.entries(stored).map(([id, files]) => [
-      id,
-      files.filter((asset) => !attachmentCancelled(asset.id)),
-    ]),
-  );
 export function useAttachmentDrafts(
   key: string,
   notify: (message: string) => void,
 ) {
+  const { attachmentCancelled } = useServerUploads();
+  const { updateLocalDraft } = useServerLocalDrafts();
+  const storageEventKey = useServerStorageEventKey();
+  const retained = (stored: Attachments) =>
+    Object.fromEntries(
+      Object.entries(stored).map(([id, files]) => [
+        id,
+        files.filter((asset) => !attachmentCancelled(asset.id)),
+      ]),
+    );
   const { saved } = useServerApi();
 
   const scopes = useRef(new Map<string, Attachments>());
@@ -25,9 +31,11 @@ export function useAttachmentDrafts(
     scopes.current.set(key, retained(saved<Attachments>(key, {})));
   useEffect(() => {
     const refresh = (event: StorageEvent) => {
+      const changed = storageEventKey(event);
       if (
-        event.key === key ||
-        event.key?.startsWith("studio-upload-cancelled:")
+        event.key === null ||
+        changed === key ||
+        changed?.startsWith("studio-upload-cancelled:")
       ) {
         scopes.current.set(key, retained(saved<Attachments>(key, {})));
         render((version) => version + 1);
@@ -35,7 +43,7 @@ export function useAttachmentDrafts(
     };
     window.addEventListener("storage", refresh);
     return () => window.removeEventListener("storage", refresh);
-  }, [key]);
+  }, [key, saved, attachmentCancelled, storageEventKey]);
   const setAttachments = async (
     change: SetStateAction<Attachments>,
   ): Promise<boolean> => {

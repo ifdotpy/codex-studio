@@ -114,7 +114,8 @@ vi.mock("../api", async (importOriginal) => ({
   post,
   syncPost,
 }));
-vi.mock("../sync/localDraft", () => ({
+vi.mock("../sync/localDraft", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sync/localDraft")>()),
   updateLocalDraft: async (
     key: string,
     fallback: unknown,

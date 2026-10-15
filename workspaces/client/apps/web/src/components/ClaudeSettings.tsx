@@ -1,7 +1,7 @@
+import { useServerStorage } from "../servers/ServerServicesContext";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
-import { serverLocalStorage as localStorage } from "../servers/storage";
 import { SettingsSection, SettingsRow } from "./ui/primitives";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -88,6 +88,7 @@ export function ClaudeSettings({
   account?: Account;
   onSignIn?: (accountKey: string) => void;
 }) {
+  const localStorage = useServerStorage();
   const { post, saved } = useServerApi();
 
   const permissionsTarget = permissionsTargetId
