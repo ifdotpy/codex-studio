@@ -518,6 +518,7 @@ pub fn answer_approval(
                     crate::rules_engine::CheckResult {
                         code: None,
                         error: Some("User declined the command"),
+                        cancelled: false,
                         output: monitor
                             .get("tail")
                             .and_then(Value::as_str)

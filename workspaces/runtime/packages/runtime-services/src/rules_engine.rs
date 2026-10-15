@@ -223,6 +223,8 @@ pub struct RuleDecision {
 pub struct CheckResult<'a> {
     pub code: Option<i64>,
     pub error: Option<&'a str>,
+    /// Whether the monitor reached its cancelled terminal state.
+    pub cancelled: bool,
     pub output: &'a str,
 }
 
@@ -438,6 +440,7 @@ impl RuleSnapshot {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: &snapshot.rule.event_text,
                 },
             )
@@ -479,6 +482,7 @@ impl RuleSnapshot {
                     CheckResult {
                         code: Some(0),
                         error: None,
+                        cancelled: false,
                         output: &output,
                     },
                 );
@@ -637,7 +641,25 @@ impl RuleSnapshot {
         result: CheckResult<'_>,
         now: f64,
     ) -> Result<RuleDecision, RuleError> {
-        if &self.check() != check || self.owner.epoch != check.epoch {
+        if self.owner.epoch != check.epoch
+            || check.rule_id != self.rule.id
+            || check.agent_id != self.rule.agent
+        {
+            return Ok(RuleDecision::default());
+        }
+        // The reservation records the exact check submitted to the monitor. A rule may be
+        // paused while that monitor is still live, so settle that durable intent even when
+        // derived settings have since changed. Without a reservation, compare the snapshot.
+        let matches_check = match self
+            .raw
+            .get("launchIntent")
+            .filter(|value| !value.is_null())
+        {
+            Some(intent) => serde_json::from_value::<RuleCheck>(intent.clone())
+                .is_ok_and(|intent| intent == *check),
+            None => self.check() == *check,
+        };
+        if !matches_check {
             return Ok(RuleDecision::default());
         }
         if self.rule.in_flight {
@@ -645,7 +667,7 @@ impl RuleSnapshot {
         }
         // Python records a canceled monitor's result after the owning rule has
         // already been paused. Keep that receipt while leaving the rule paused.
-        if self.rule.status == Status::Paused && result.error == Some("Monitor cancelled") {
+        if self.rule.status == Status::Paused && result.cancelled {
             return self.finish(now, result);
         }
         let marker =
