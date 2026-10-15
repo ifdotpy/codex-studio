@@ -504,7 +504,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # no-write assertion below covers only the invalid-record read.
         before = no_write_snapshot(self.backend.state)
         response = self.request("/api/voice/records", {"agent": self.lead_id, "after": 0})
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn("voice_records", response.json()["error"])
         self.assertIn("python-user-record", response.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)

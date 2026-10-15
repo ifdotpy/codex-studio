@@ -110,10 +110,9 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::InvalidRequest(message) | QueueWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        QueueWriteError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid stored object {object}/{id}"),
-        ),
+        QueueWriteError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
         QueueWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
@@ -121,10 +120,7 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
             table,
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid stored object {table}/{id}"),
-        ),
+        }) => ApiError::invalid_stored(table, &id),
         QueueWriteError::Store(_) | QueueWriteError::Json(_) => ApiError::internal(),
     }
 }

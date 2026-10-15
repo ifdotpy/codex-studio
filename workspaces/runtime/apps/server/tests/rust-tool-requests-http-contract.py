@@ -722,7 +722,7 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:db.execute("UPDATE runtime_tool_requests SET record=? WHERE id='invalid-cancel'",(json.dumps(record),))
             before=database_snapshot(self.backend.state)
             response=self.backend.request("POST","/api/tool-requests/cancel",body={"agent":self.lead_id,"request_id":"invalid-cancel"},headers=self.headers())
-            self.assertEqual(response.status,500,response.body)
+            self.assertEqual(response.status,503,response.body)
             self.assertIn("runtime_tool_requests/invalid-cancel",response.json()["error"])
             self.assertEqual(database_snapshot(self.backend.state),before)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:db.execute("DELETE FROM runtime_tool_requests WHERE id='invalid-cancel'")

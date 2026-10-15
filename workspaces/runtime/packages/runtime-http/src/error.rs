@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 
 pub(crate) const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com https://*.ts.net:*; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors 'none'; base-uri 'none'";
+const STORED_DATA_UNAVAILABLE: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 
 /// Route-level error that always serializes using the server's common envelope.
 #[derive(Debug)]
@@ -61,6 +62,7 @@ impl InternalErrorKind {
             StoreError::InvalidSyncObject { .. }
             | StoreError::InvalidStoredRecord { .. }
             | StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidSyncObjectField { .. }
             | StoreError::Json(_)
             | StoreError::SchemaValidation(_) => Self::StoreData,
             StoreError::Sqlite(_) | StoreError::CommitOutcomeUnknown(_) => Self::StoreDatabase,
@@ -119,25 +121,32 @@ impl ApiError {
             format!("Not implemented: requires {name}"),
         )
     }
+
+    /// Refuse an operation when persisted data cannot be trusted. Keep the
+    /// affected identity in the safe response, without exposing field values.
+    pub(crate) fn invalid_stored(object: &str, id: &str) -> Self {
+        Self::new(
+            STORED_DATA_UNAVAILABLE,
+            format!("Stored data {object}/{id} is unavailable"),
+        )
+    }
 }
 
 impl ApiError {
     pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
         use studio_runtime_store::StoreError;
         let cause = InternalErrorKind::from_store_error(&error);
-        let mut api_error = match error {
-            StoreError::InvalidSyncObject { scope, id } => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {scope}/{id}"),
-            ),
-            StoreError::InvalidStoredObject { table, id } => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {table}/{id}"),
-            ),
+        match error {
+            StoreError::InvalidSyncObject { scope, id } => Self::invalid_stored(&scope, &id),
+            StoreError::InvalidStoredObject { table, id }
+            | StoreError::InvalidStoredRecord { object: table, id } => {
+                Self::invalid_stored(table, &id)
+            }
+            StoreError::InvalidSyncObjectField { scope, id, .. } => {
+                Self::invalid_stored(&scope, &id)
+            }
             _ => Self::internal_with_cause(cause),
-        };
-        api_error.internal_cause = Some(cause);
-        api_error
+        }
     }
 }
 
@@ -194,4 +203,26 @@ pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
         );
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiError;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use studio_runtime_store::StoreError;
+
+    #[test]
+    fn malformed_stored_rows_are_unavailable_without_reclassifying_store_failures() {
+        let malformed = ApiError::stored(StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: "agent-7".to_owned(),
+        })
+        .into_response();
+        assert_eq!(malformed.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let database_failure =
+            ApiError::stored(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
+        assert_eq!(database_failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }

@@ -172,19 +172,15 @@ fn questions_error(error: QuestionsReadsError) -> ApiError {
         QuestionsReadsError::UnknownComplaint => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown complaint")
         }
-        QuestionsReadsError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        QuestionsReadsError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
     }
 }
 
 fn invalid_stored_object(object: &'static str, id: &str) -> ApiError {
     let object = object.strip_prefix("runtime_").unwrap_or(object);
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}/{id}"),
-    )
+    ApiError::invalid_stored(object, id)
 }
 
 #[cfg(test)]

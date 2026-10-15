@@ -337,7 +337,7 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",(json.dumps(value),self.summary_agent))
                 before=database_snapshot(path)
                 response=self.backend.request("GET","/api/ui-summary",headers=self.headers())
-                self.assertEqual(response.status,500,response.body)
+                self.assertEqual(response.status,503,response.body)
                 self.assertIn("sync_entities/"+self.summary_agent,response.json()["error"])
                 self.assertEqual(database_snapshot(path),before)
         finally:

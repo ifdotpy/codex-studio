@@ -377,10 +377,9 @@ fn usage_error(error: UsageRepositoryError, path: &'static str) -> ApiError {
             };
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        UsageRepositoryError::InvalidStoredObject { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        UsageRepositoryError::InvalidStoredObject { table, id } => {
+            ApiError::invalid_stored(table, &id)
+        }
         UsageRepositoryError::Sqlite(_) | UsageRepositoryError::Store(_) => ApiError::internal(),
     }
 }

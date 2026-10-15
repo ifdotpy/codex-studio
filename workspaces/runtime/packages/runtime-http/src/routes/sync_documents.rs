@@ -588,9 +588,7 @@ pub(crate) async fn push_preferences(
         SyncPolicyError::InvalidPreferences => {
             ApiError::validation(vec![Value::String("body".to_owned())])
         }
-        SyncPolicyError::InvalidStoredObject { .. } => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
+        SyncPolicyError::InvalidStoredObject { scope, id } => ApiError::invalid_stored(&scope, &id),
         _ => ApiError::internal(),
     })?;
     Ok(Json(json!({"fields": merged})))
@@ -789,10 +787,7 @@ fn validate_generated<T: serde::Serialize>(
 
 fn map_sync_store_error(error: StoreError) -> ApiError {
     match error {
-        StoreError::InvalidSyncObject { scope, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored sync object {scope}/{id}"),
-        ),
+        StoreError::InvalidSyncObject { scope, id } => ApiError::invalid_stored(&scope, &id),
         _ => ApiError::internal(),
     }
 }
@@ -872,10 +867,7 @@ fn invalid_entity(collection: &str, id: &str) -> StoreError {
 }
 
 fn invalid_stored_draft(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored sync object drafts/{id}"),
-    )
+    ApiError::invalid_stored("drafts", id)
 }
 
 fn validate_draft_value(

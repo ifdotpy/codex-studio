@@ -697,11 +697,11 @@ fn dependency_error(
 }
 
 fn invalid_stored_agent() -> ApiError {
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid stored agent")
+    ApiError::invalid_stored("runtime_agents", "<agent>")
 }
 
 fn invalid_stored_task() -> ApiError {
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid stored task")
+    ApiError::invalid_stored("runtime_tasks", "<task>")
 }
 
 fn required_agent(params: &QueryParams) -> Result<&str, ApiError> {

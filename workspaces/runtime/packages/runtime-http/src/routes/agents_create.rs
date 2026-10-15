@@ -2079,9 +2079,7 @@ fn operation_error(error: OperationError) -> ApiError {
         }
         OperationError::Internal
         | OperationError::Store(_)
-        | OperationError::Create(
-            MutationError::Store(_) | MutationError::InvalidStoredObject { .. },
-        ) => StatusCode::INTERNAL_SERVER_ERROR,
+        | OperationError::Create(MutationError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
     if matches!(
@@ -2089,6 +2087,9 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Store(_) | OperationError::Create(MutationError::Store(_))
     ) {
         return ApiError::internal();
+    }
+    if let OperationError::Create(MutationError::InvalidStoredObject { table, id }) = &error {
+        return ApiError::invalid_stored(table, id);
     }
     let message = match &error {
         OperationError::Unavailable("account-driver/unavailable") => {

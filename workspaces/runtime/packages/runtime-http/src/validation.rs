@@ -449,14 +449,14 @@ fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)>
         }
         ValidationErrorKind::AnyOf { context } => context
             .iter()
-            .map(extra_only_branch)
+            .map(|branch| extra_only_branch(branch))
             .filter(|(other_errors, _)| *other_errors == 0)
             .min_by_key(|(_, fields)| fields.len())
             .map_or_else(Vec::new, |(_, fields)| fields),
         ValidationErrorKind::OneOfNotValid { context } => {
             let mut branches = context
                 .iter()
-                .map(extra_only_branch)
+                .map(|branch| extra_only_branch(branch))
                 .filter(|(other_errors, _)| *other_errors == 0);
             let selected = branches.next();
             if branches.next().is_none() {

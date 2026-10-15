@@ -166,7 +166,7 @@ class AgentChatHTTPContract(TimedHTTPContractTest,unittest.TestCase):
                 db.execute(f"UPDATE {table} SET {column}=? WHERE id=?",(value,key))
             before=snapshot(self.backend.state / "canvas.sqlite3")
             response=self.backend.request("GET",url,headers=self.headers())
-            self.assertEqual(response.status,500,response.body)
+            self.assertEqual(response.status,503,response.body)
             self.assertIn(f"{table}/{key}",response.json()["error"])
             self.assertEqual(snapshot(self.backend.state / "canvas.sqlite3"),before)
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
@@ -238,7 +238,7 @@ class AgentChatHTTPContract(TimedHTTPContractTest,unittest.TestCase):
             try:
                 before=snapshot(path)
                 response=self.backend.request(method,url,body=body,headers=self.headers())
-                self.assertEqual(response.status,500,response.body)
+                self.assertEqual(response.status,503,response.body)
                 self.assertIn(f"{table}/{key}",response.json()["error"])
                 self.assertEqual(snapshot(path),before)
             finally:

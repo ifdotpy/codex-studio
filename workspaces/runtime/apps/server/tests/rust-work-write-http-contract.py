@@ -742,7 +742,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     else {"id": self.agent_id, "read_state": {"thread_id": "thread-p16", "turn_id": "turn-p16", "read": True, "expected_revision": 0}}
                 )
                 response = self.organization(body)
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertIn("runtime_agents", response.body.decode())
                 self.assertIn(self.agent_id, response.body.decode())
                 self.assertEqual(no_write_snapshot(self.backend.state), before)

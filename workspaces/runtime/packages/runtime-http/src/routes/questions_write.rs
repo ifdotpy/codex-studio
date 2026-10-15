@@ -233,10 +233,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
         E::InvalidRequest(message) | E::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        E::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        E::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         E::Store(error) => ApiError::stored(error),
         E::Json(_) | E::Clock => ApiError::internal(),
         E::Coordination(error) => match error {
@@ -249,10 +246,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
             studio_runtime_services::coordination::CoordinationError::InvalidStored {
                 object,
                 id,
-            } => ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            ),
+            } => ApiError::invalid_stored(object, &id),
             other => ApiError::new(StatusCode::BAD_REQUEST, other.to_string()),
         },
         E::Projects(error) => match error {
@@ -293,10 +287,7 @@ fn monitor_approval_error(
             studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
         ) => ApiError::dependency("cross-server/remote-events"),
         E::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
-        E::InvalidStored { id, location } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object monitors/{id} at {location}"),
-        ),
+        E::InvalidStored { id, .. } => ApiError::invalid_stored("monitors", &id),
         _ => ApiError::internal(),
     }
 }
@@ -313,10 +304,7 @@ fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackEr
     match error {
         E::Dependency(name) => ApiError::dependency(name),
         E::Store(error) => ApiError::stored(error),
-        E::Stored(location) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored callback at {location}"),
-        ),
+        E::Stored(location) => ApiError::invalid_stored("provider_callbacks", &location),
         E::Invalid(_) | E::Conflict | E::Unknown | E::Stale => {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }
@@ -472,17 +460,13 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires provider-session/question-answer",
         ),
-        QuestionsWriteError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        QuestionsWriteError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
         QuestionsWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
             table,
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        }) => ApiError::invalid_stored(table, &id),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
         QuestionsWriteError::Store(_)
         | QuestionsWriteError::Json(_)

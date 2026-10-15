@@ -1178,7 +1178,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_lead_requests VALUES(?,?,?)", (body["id"], str(uuid.uuid4()), "{}"))
         before = self.snapshot_no_write()
-        result = self.post("/api/leads", body, 500)
+        result = self.post("/api/leads", body, 503)
         self.assertIn("runtime_lead_requests/" + body["id"], result["error"])
         self.assertEqual(self.snapshot_no_write(before=before), before)
 
@@ -1189,7 +1189,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save({**record, "cwd": 42})
             before = self.snapshot_no_write()
-            result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 500)
+            result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
             self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
@@ -1203,7 +1203,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             db.execute("UPDATE runtime_projects SET record='{' WHERE id=?", (str(self.backend.cwd),))
         try:
             before = self.snapshot_no_write()
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 500)
+            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 503)
             self.assertIn("runtime_projects/" + str(self.backend.cwd), result["error"])
             self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
@@ -1326,7 +1326,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save({**original, "name": 42})
             before = self.snapshot_no_write()
-            result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 500)
+            result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
             self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
@@ -1469,7 +1469,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.post("/api/agents", {**body, "profile_id": profile["id"]}, 200)
         self.assertEqual(self.stored(body["id"])["profileId"], profile["id"])
         self.quiesce_fixture_agent(body["id"])
-        for model, status in (("gpt-6-astra", 200), (42, 500)):
+        for model, status in (("gpt-6-astra", 200), (42, 503)):
             agent_id = str(uuid.uuid4())
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_profiles SET record=? WHERE id=?", (json.dumps({**profile, "model": model}), profile["id"]))
@@ -1639,7 +1639,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save(incomplete)
             before = self.snapshot_no_write()
-            result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
+            result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
             self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:

@@ -207,7 +207,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.backend.request(
             "GET", f"/api/work?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn("runtime_work/wrong-type-work", response.body.decode())
         with sqlite3.connect(state_file) as database:
             database.execute("DELETE FROM runtime_work WHERE id=?", (bad_work["id"],))
@@ -218,7 +218,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.backend.request(
             "GET", f"/api/work?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn("runtime_work/binary-work", response.body.decode())
         with sqlite3.connect(state_file) as database:
             database.execute("DELETE FROM runtime_work WHERE id='binary-work'")
@@ -233,7 +233,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.backend.request(
             "GET", f"/api/plan?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn(f"runtime_plans/{self.agent_id}", response.body.decode())
         with sqlite3.connect(state_file) as database:
             if prior_plan:
@@ -254,7 +254,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.backend.request(
             "GET", f"/api/queue?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", response.body.decode())
         agent.pop("queueMutationRevision")
         with sqlite3.connect(state_file) as database:
@@ -288,11 +288,13 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "INSERT OR REPLACE INTO runtime_event_meta(id,record) VALUES(?,?)",
                 ("python-queue-1", json.dumps({"assets": [asset["id"]]})),
             )
+        before_refusal = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "GET", f"/api/queue?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn("runtime_agents/deleted-owner", response.body.decode())
+        self.assertEqual(no_write_snapshot(self.backend.state), before_refusal)
         self.backend.stop()
         with sqlite3.connect(state_file) as database:
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (
@@ -302,11 +304,13 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "DELETE FROM runtime_assets WHERE id=?", (asset["id"],)
             )
         self.backend.start()
+        before_refusal = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "GET", f"/api/queue?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn("runtime_assets/deleted-owner-asset", response.body.decode())
+        self.assertEqual(no_write_snapshot(self.backend.state), before_refusal)
         self.backend.stop()
         with sqlite3.connect(state_file) as database:
             database.execute("DELETE FROM runtime_agents WHERE id='deleted-owner'")

@@ -344,7 +344,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "GET", "/api/task?" + urlencode({"id": "workspace-views-other-task"}),
             )
             if self.rust_backend:
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertIn(
                     f"Invalid stored object runtime_agents row {self.other_id}",
                     response.json()["error"],
@@ -364,7 +364,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "GET", "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),
             )
             if self.rust_backend:
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
             else:
                 self.assertEqual(response.status, 200, response.body[:1000])
@@ -379,7 +379,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ):
                 response = self.backend.request("GET", path)
                 if self.rust_backend:
-                    self.assertEqual(response.status, 500, response.body[:1000])
+                    self.assertEqual(response.status, 503, response.body[:1000])
                     self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
                 else:
                     self.assertEqual(response.status, 200, response.body[:1000])

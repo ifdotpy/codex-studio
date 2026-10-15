@@ -270,15 +270,22 @@ fn profile_read_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidStoredObject { table, id } => {
             let object = table.strip_prefix("runtime_").unwrap_or(table);
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            )
+            ApiError::invalid_stored(object, &id)
         }
         StoreError::SchemaMismatch(message)
             if message.starts_with("Invalid stored object profiles/") =>
         {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+            let id = message
+                .strip_prefix("Invalid stored object profiles/")
+                .unwrap_or(&message);
+            ApiError::invalid_stored("profiles", id)
+        }
+        StoreError::Sqlite(error)
+            if error
+                .to_string()
+                .contains("no such table: runtime_profiles") =>
+        {
+            ApiError::invalid_stored("runtime_profiles", "<schema>")
         }
         _ => ApiError::internal(),
     }

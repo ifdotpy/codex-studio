@@ -772,14 +772,16 @@ fn map_error(error: CheckpointsError) -> ApiError {
         CheckpointsError::WorkspaceUnavailable => {
             ApiError::new(StatusCode::BAD_REQUEST, "The workspace cannot be accessed")
         }
-        CheckpointsError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        CheckpointsError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
         CheckpointsError::Store(StoreError::SchemaMismatch(message))
             if message.starts_with("Invalid stored object ") =>
         {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+            let id = message
+                .strip_prefix("Invalid stored object ")
+                .unwrap_or(&message);
+            ApiError::invalid_stored("checkpoint", id)
         }
         CheckpointsError::Store(_) => ApiError::internal(),
     }

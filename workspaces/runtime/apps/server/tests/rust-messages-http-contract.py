@@ -556,13 +556,13 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 empty_id, room, "user", "", 3.0, json.dumps({"agent": "delivered"}),
             ))
         history = self.backend.request("GET", f"/api/messages?room={room}", headers=self.headers())
-        self.assertEqual(history.status, 500, history.body[:1000])
+        self.assertEqual(history.status, 503, history.body[:1000])
         self.assertIn(f"messages/{bad_id}", history.json()["error"])
         self.assertNotIn(f"messages/{room}", history.json()["error"])
         takeover = self.backend.request("POST", "/api/chats", body={
             "id": room, "name": "History", "members": [],
         }, headers=self.headers())
-        self.assertEqual(takeover.status, 500, takeover.body[:1000])
+        self.assertEqual(takeover.status, 503, takeover.body[:1000])
         self.assertIn(f"messages/{bad_id}", takeover.json()["error"])
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM messages WHERE id=?", (bad_id,))
@@ -821,7 +821,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "room": self.agent_id,
             "text": "Invalid stored row",
         }, headers=self.headers())
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", response.json()["error"])
         with closing(sqlite3.connect(path)) as database:
             database.execute(

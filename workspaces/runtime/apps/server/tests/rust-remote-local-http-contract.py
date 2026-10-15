@@ -153,7 +153,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_federation_settings SET record=? WHERE id='global'", ('{"enabled":true,"updated":1}',))
             database.execute("UPDATE runtime_federation_peers SET record=? WHERE id='peer-a'", ('{"stateId":"peer-a","label":42}',))
         response = self.backend.request("POST", "/api/federation", body={"action":"set_enabled","enabled":False}, headers=self.headers())
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             settings = __import__("json").loads(database.execute("SELECT record FROM runtime_federation_settings WHERE id='global'").fetchone()[0])
         self.assertTrue(settings["enabled"])

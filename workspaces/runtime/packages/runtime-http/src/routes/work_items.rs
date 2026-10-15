@@ -185,7 +185,11 @@ fn invalid_stored(object: &'static str, id: &str) -> ApiError {
 }
 
 fn stored_error(error: WorkPolicyError) -> ApiError {
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+    match error {
+        WorkPolicyError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
+    }
 }
 
 pub(crate) async fn save_plan(

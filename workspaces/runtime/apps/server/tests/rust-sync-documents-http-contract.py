@@ -71,7 +71,7 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for path in ("/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                          "/api/agent-chat?room="+room["id"]):
                 response=self.backend.request("GET",path,headers=self._common_headers())
-                self.assertEqual(response.status,500,response.body)
+                self.assertEqual(response.status,503,response.body)
                 self.assertIn("runtime_agents/"+actor["id"],response.json()["error"])
                 self.assertEqual(no_write_snapshot(self.backend.state),before)
         finally:
@@ -519,7 +519,7 @@ with canvas.connect() as db:
                 ]},
                 headers=headers,
             )
-            self.assertEqual(refusal.status, 500, refusal.body[:1000])
+            self.assertEqual(refusal.status, 503, refusal.body[:1000])
             self.assertIn(f"drafts/{invalid_master_id}", refusal.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_refusal)
         finally:
@@ -861,10 +861,10 @@ with canvas.connect() as db:
             body={"scope": "user", "fields": {}},
             headers=self._common_headers(),
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertEqual(
             response.json()["error"],
-            "invalid stored sync object uiPreferences/user",
+            "Stored data uiPreferences/user is unavailable",
         )
         self.assertEqual(no_write_snapshot(backend.state), before)
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
@@ -903,7 +903,7 @@ with canvas.connect() as db:
                 response = backend.request(
                     "GET", "/api/sync/pull?scope=drafts&after=0", headers=headers,
                 )
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertEqual(
                     response.json()["error"],
                     f"Invalid stored sync object drafts/{draft_id}",
@@ -1161,7 +1161,7 @@ with canvas.connect() as db:
                 "POST", "/api/sync/preferences", body={"scope": "user", "fields": {}},
                 headers=common,
             )
-            self.assertEqual(invalid_stored_preference.status, 500)
+            self.assertEqual(invalid_stored_preference.status, 503)
             self.assertIn("uiPreferences/user", invalid_stored_preference.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_preference)
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
@@ -1249,7 +1249,7 @@ with canvas.connect() as db:
             invalid_stored_draft = backend.request(
                 "GET", "/api/sync/pull?scope=drafts&after=0", headers=common,
             )
-            self.assertEqual(invalid_stored_draft.status, 500)
+            self.assertEqual(invalid_stored_draft.status, 503)
             self.assertIn("drafts/bad-json", invalid_stored_draft.json()["error"])
             self.assertNotIn("not-json", invalid_stored_draft.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_draft)

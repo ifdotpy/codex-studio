@@ -241,10 +241,7 @@ pub(crate) fn map_transcript_error(error: TranscriptError) -> ApiError {
         TranscriptError::HistoryCursor => {
             ApiError::new(StatusCode::BAD_REQUEST, "Use one history cursor")
         }
-        TranscriptError::InvalidStoredState { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        TranscriptError::InvalidStoredState { table, id } => ApiError::invalid_stored(&table, &id),
         TranscriptError::InvalidSearch => {
             ApiError::new(StatusCode::BAD_REQUEST, "Supply a valid search query")
         }
@@ -252,10 +249,7 @@ pub(crate) fn map_transcript_error(error: TranscriptError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
         ),
-        TranscriptError::InvalidStoredObject { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        TranscriptError::InvalidStoredObject { table, id } => ApiError::invalid_stored(table, &id),
         TranscriptError::Store => ApiError::internal(),
         TranscriptError::ReadOnlyRepair => ApiError::internal(),
     }

@@ -226,10 +226,7 @@ fn string_query<'a>(query: &'a QueryParams, name: &str) -> Option<&'a str> {
 }
 
 fn invalid_stored(object: &str, id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}/{id}"),
-    )
+    ApiError::invalid_stored(object, id)
 }
 
 fn map_store_error(error: StoreError) -> ApiError {
@@ -279,16 +276,13 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
         PayloadStoreError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        error @ PayloadStoreError::InvalidStoredAsset { .. } => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        PayloadStoreError::InvalidStoredAsset { id } => {
+            ApiError::invalid_stored("runtime_assets", &id)
         }
         PayloadStoreError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
             table: "runtime_assets",
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object runtime_assets/{id}"),
-        ),
+        }) => ApiError::invalid_stored("runtime_assets", &id),
         PayloadStoreError::Io(_)
         | PayloadStoreError::Store(_)
         | PayloadStoreError::Json(_)

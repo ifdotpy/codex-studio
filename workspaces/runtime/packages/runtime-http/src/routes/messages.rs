@@ -383,10 +383,7 @@ fn federation_error(
 }
 
 fn invalid_stored(object: &'static str, id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}/{id}"),
-    )
+    ApiError::invalid_stored(object, id)
 }
 
 inventory::submit! {

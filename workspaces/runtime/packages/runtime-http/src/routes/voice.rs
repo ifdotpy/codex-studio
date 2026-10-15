@@ -417,11 +417,8 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             }
             studio_runtime_services::monitor_policy::MonitorError::InvalidStored {
                 id,
-                location,
-            } => ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object monitors/{id} at {location}"),
-            ),
+                location: _,
+            } => ApiError::invalid_stored("monitors", &id),
             studio_runtime_services::monitor_policy::MonitorError::Event(
                 studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
             ) => ApiError::dependency("cross-server/remote-events"),
@@ -444,10 +441,7 @@ fn voice_error(error: VoiceError) -> ApiError {
     match error {
         VoiceError::InvalidRequest(_) => ApiError::validation(vec![Value::String("body".into())]),
         VoiceError::Conflict(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
-        VoiceError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        VoiceError::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         VoiceError::RequiresDependency(dependency) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
@@ -466,10 +460,7 @@ fn voice_error(error: VoiceError) -> ApiError {
             studio_runtime_services::coordination::CoordinationError::InvalidStored {
                 object,
                 id,
-            } => ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            ),
+            } => ApiError::invalid_stored(object, &id),
             studio_runtime_services::coordination::CoordinationError::AdmissionDenied(message) => {
                 ApiError::new(StatusCode::BAD_REQUEST, message)
             }
@@ -481,10 +472,7 @@ fn voice_error(error: VoiceError) -> ApiError {
             }
         },
         VoiceError::Store(studio_runtime_store::StoreError::InvalidStoredRecord { object, id }) => {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            )
+            ApiError::invalid_stored(object, &id)
         }
         VoiceError::Store(studio_runtime_store::StoreError::AlreadyOwned) => ApiError::new(
             StatusCode::CONFLICT,
@@ -516,10 +504,7 @@ fn voice_audio_error(error: voice::VoiceAudioError) -> ApiError {
         voice::VoiceAudioError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
             object,
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        }) => ApiError::invalid_stored(object, &id),
         voice::VoiceAudioError::Store(studio_runtime_store::StoreError::AlreadyOwned) => {
             ApiError::new(
                 StatusCode::CONFLICT,

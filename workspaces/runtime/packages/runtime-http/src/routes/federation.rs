@@ -299,9 +299,7 @@ async fn manage(
 
 fn map_service_error(error: FederationError) -> ApiError {
     match error {
-        FederationError::Store(error) => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-        }
+        FederationError::Store(error) => ApiError::stored(error),
         FederationError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         FederationError::NeedsIdentity => ApiError::new(
             StatusCode::BAD_REQUEST,

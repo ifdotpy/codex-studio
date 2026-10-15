@@ -330,17 +330,11 @@ fn terminal_error(error: TerminalError) -> ApiError {
             Value::String("query".to_owned()),
             Value::String("id".to_owned()),
         ]),
-        TerminalError::InvalidStoredObject(id) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object terminals/{id}"),
-        ),
+        TerminalError::InvalidStoredObject(id) => ApiError::invalid_stored("terminals", &id),
         TerminalError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
             table,
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        }) => ApiError::invalid_stored(table, &id),
         _ => ApiError::internal(),
     }
 }

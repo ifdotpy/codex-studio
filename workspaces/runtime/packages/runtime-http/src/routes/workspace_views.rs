@@ -629,10 +629,7 @@ fn invalid_request() -> ApiError {
 }
 
 fn invalid_stored(object: &str, id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object} row {id}"),
-    )
+    ApiError::invalid_stored(object, id)
 }
 
 fn invalid_cursor(parameter: &str) -> ApiError {

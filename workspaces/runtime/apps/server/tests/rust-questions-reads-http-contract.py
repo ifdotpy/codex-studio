@@ -245,7 +245,7 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             }[table]
             try:
                 response = backend.request("GET", path, headers=self._headers())
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertEqual(response.json()["error"], f"Invalid stored object {table.removeprefix('runtime_')}/{record_id}")
                 self.assertEqual(no_write_snapshot(backend.state), before)
             finally:

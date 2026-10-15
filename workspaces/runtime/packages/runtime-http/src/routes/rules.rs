@@ -273,10 +273,7 @@ enum RuleWriteResponse {
 
 fn rules_error(error: RulesError) -> ApiError {
     match error {
-        RulesError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        RulesError::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
     }
 }
 
@@ -309,10 +306,7 @@ fn monitor_api_error(error: studio_runtime_services::monitor_policy::MonitorErro
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {name}"),
         ),
-        MonitorError::InvalidStored { id, location } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object monitors/{id} at {location}"),
-        ),
+        MonitorError::InvalidStored { id, .. } => ApiError::invalid_stored("monitors", &id),
         MonitorError::Event(
             studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
         ) => ApiError::new(
@@ -327,10 +321,7 @@ fn store_api_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidStoredObject { table, id } => {
             let object = table.strip_prefix("runtime_").unwrap_or(table);
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            )
+            ApiError::invalid_stored(object, &id)
         }
         _ => ApiError::internal(),
     }
@@ -343,17 +334,11 @@ impl From<StoreError> for ApiError {
 }
 
 fn invalid_agent(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object agents/{id}"),
-    )
+    ApiError::invalid_stored("agents", id)
 }
 
 fn invalid_rule(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object rules/{id}"),
-    )
+    ApiError::invalid_stored("rules", id)
 }
 
 fn validate_agent(id: &str, value: &Value) -> Result<(), ApiError> {

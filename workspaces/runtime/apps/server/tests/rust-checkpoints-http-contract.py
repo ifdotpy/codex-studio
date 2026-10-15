@@ -376,7 +376,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 response = backend.request(
                     "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
                 )
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertEqual(response.json()["error"], expected_error)
                 self.assertEqual(
                     (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
@@ -605,7 +605,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
                 headers=self.headers(),
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(response.status, 503, response.body[:1000])
             self.assertFalse(marker.exists())
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:

@@ -829,12 +829,12 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
                     ManagementError::Invalid(_) => {
                         ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
                     }
-                    ManagementError::Stored { .. } => {
-                        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                    ManagementError::Stored { table, id } => {
+                        ApiError::invalid_stored(&table, &id)
                     }
                     ManagementError::Store(error) => {
                         eprintln!("agent lifecycle store operation failed: {error}");
-                        ApiError::internal()
+                        ApiError::stored(error)
                     }
                 }
             })?;

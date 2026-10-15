@@ -195,7 +195,9 @@ async fn transfer(
 fn error(error: TransferError) -> ApiError {
     let status = match error {
         TransferError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
-        TransferError::Stored { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        TransferError::Stored { object, pointer } => {
+            return ApiError::invalid_stored(object, &pointer);
+        }
         TransferError::Store(_) => return ApiError::internal(),
         TransferError::Refused(_) => StatusCode::BAD_REQUEST,
     };

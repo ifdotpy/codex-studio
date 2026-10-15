@@ -160,10 +160,7 @@ fn map_costs_error(error: CostsError) -> ApiError {
             cost_dependency("store-bootstrap/analytics-usage-schema")
         }
         CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::InvalidStoredRow(id)) => {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object analytics_usage/{id}"),
-            )
+            ApiError::invalid_stored("analytics_usage", &id)
         }
         CostsError::Usage(
             studio_runtime_store::CostUsageRepositoryError::Sqlite(_)
@@ -188,14 +185,12 @@ fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
         analytics::AnalyticsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Select an agent for analytics")
         }
-        analytics::AnalyticsError::InvalidStoredObject(object) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
-        ),
-        analytics::AnalyticsError::InvalidStoredRow { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        analytics::AnalyticsError::InvalidStoredObject(object) => {
+            ApiError::invalid_stored(object, "<record>")
+        }
+        analytics::AnalyticsError::InvalidStoredRow { table, id } => {
+            ApiError::invalid_stored(table, &id)
+        }
         analytics::AnalyticsError::Read(_)
         | analytics::AnalyticsError::Sqlite(_)
         | analytics::AnalyticsError::Serialization(_) => ApiError::internal(),

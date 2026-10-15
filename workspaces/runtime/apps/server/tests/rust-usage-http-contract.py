@@ -212,7 +212,7 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"id": self.malformed_id, "resume_id": self.malformed_resume, "enabled": False},
             headers=self.write_headers(),
         )
-        self.assertEqual(result.status, 500, result.body[:1000])
+        self.assertEqual(result.status, 503, result.body[:1000])
         self.assertIn(f"runtime_usage_resumes/{self.malformed_resume}", result.json()["error"])
         with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
             after = (

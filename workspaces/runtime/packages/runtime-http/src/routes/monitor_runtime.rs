@@ -114,10 +114,7 @@ fn error(error: MonitorError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {name}"),
         ),
-        MonitorError::InvalidStored { id, location } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object monitors/{id} at {location}"),
-        ),
+        MonitorError::InvalidStored { id, .. } => ApiError::invalid_stored("monitors", &id),
         MonitorError::Event(event_write::EventWriteError::RemoteEventsUnavailable) => {
             ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,

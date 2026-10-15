@@ -295,7 +295,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(response.status, 503, response.body[:1000])
             self.assertEqual(response.json()["error"], "Invalid stored object rules/visible")
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
@@ -323,7 +323,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(response.status, 503, response.body[:1000])
             self.assertEqual(
                 response.json()["error"],
                 f"Invalid stored object agents/{agent_id}",

@@ -1105,17 +1105,11 @@ fn projects_error(error: ProjectsError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
         ),
-        ProjectsError::InvalidStored { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored {table} record {id}"),
-        ),
+        ProjectsError::InvalidStored { table, id } => ApiError::invalid_stored(table, &id),
         ProjectsError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
             object,
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}/{id}"),
-        ),
+        }) => ApiError::invalid_stored(object, &id),
         ProjectsError::Store(_) => ApiError::internal(),
         ProjectsError::Sqlite(_) => ApiError::internal(),
     }

@@ -355,7 +355,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(response.status, 503, response.body[:1000])
             self.assertEqual(
                 response.json()["error"], f"Invalid stored object runtime_assets/{asset_id}"
             )
