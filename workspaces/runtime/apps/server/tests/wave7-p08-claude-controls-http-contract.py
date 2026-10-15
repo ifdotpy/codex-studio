@@ -73,6 +73,25 @@ class ClaudeControlsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn("location", response.json())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust account validation")
+    def test_non_claude_account_without_agent_provider_is_rejected_without_writes(self):
+        agent_id = _messages.seed_agent(self.backend, {
+            "accountKey": "default",
+            "threadId": "p08-codex-thread",
+            "autoWake": False,
+        })
+        _messages.update_agent(self.backend, agent_id, {}, remove=("provider",))
+        self.backend.start()
+
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST", "/api/claude/session",
+            body={"id": agent_id, "action": "state"}, headers=self.headers(),
+        )
+        self.assertEqual(response.status, 400, response.body)
+        self.assertEqual(response.json(), {"error": "Select a Claude Code chat"})
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
     def test_threadless_state_and_settings_do_not_need_a_provider_session(self):
         from codex_accounts import AccountStore
 
@@ -109,6 +128,7 @@ class ClaudeControlsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "threadId": None,
             "autoWake": False,
         })
+        _messages.update_agent(self.backend, agent_id, {}, remove=("provider",))
         self.backend.start()
 
         before = no_write_snapshot(self.backend.state)

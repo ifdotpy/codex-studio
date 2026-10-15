@@ -40,6 +40,7 @@ async fn session(
             .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("id")]))?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let (agent, _) = load_agent(store, id.to_owned()).await?;
+        require_claude_account(&state, &agent).await?;
         studio_runtime_services::claude_controls::ControlSnapshot::from_records(agent, None)
             .map_err(control_error)?;
         return command(state, body).await;
@@ -52,6 +53,7 @@ async fn session(
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let (agent, operation) = load_agent(store.clone(), id.clone()).await?;
+    require_claude_account(&state, &agent).await?;
     let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
         agent.clone(),
         operation.clone(),
@@ -125,6 +127,40 @@ async fn session(
     };
     state.event_wake.notify_one();
     result.map(Json).map_err(control_error)
+}
+
+async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), ApiError> {
+    let account_key = agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    let driver = state.account_driver.clone();
+    let policy = state.account_policy.clone();
+    let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/claude_controls/account",
+        move || match driver {
+            Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+            None => policy
+                .map(|policy| policy.accounts())
+                .ok_or_else(ApiError::internal),
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    let provider = accounts
+        .accounts
+        .iter()
+        .find(|account| account.get("id").and_then(Value::as_str) == Some(account_key.as_str()))
+        .and_then(|account| account.get("provider"))
+        .and_then(Value::as_str);
+    if provider != Some("claude") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Select a Claude Code chat",
+        ));
+    }
+    Ok(())
 }
 
 fn state_thread(agent: &Value) -> Option<&str> {

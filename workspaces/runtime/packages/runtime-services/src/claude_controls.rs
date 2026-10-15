@@ -34,7 +34,6 @@ struct Agent {
     account_key: String,
     thread_id: Option<String>,
     status: String,
-    provider: String,
 }
 fn default_account() -> String {
     "default".into()
@@ -131,7 +130,7 @@ impl ControlSnapshot {
         validate("PersistedAgentRecord", &agent)?;
         let typed: Agent = serde_json::from_value(agent.clone())
             .map_err(|_| ControlError::Invalid("agent".into()))?;
-        if typed.provider != "claude" || truthy(agent.get("deletedAt")) {
+        if truthy(agent.get("deletedAt")) {
             return Err(ControlError::Request);
         }
         let saved = operation;
