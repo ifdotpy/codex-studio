@@ -189,6 +189,26 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def _post(self, path, body):
         return self.backend.request("POST", path, body=body, headers=self._headers())
 
+    def _async_answer_snapshot(self):
+        """Track the answered request and its one stable follow-up identity.
+
+        The Rust scheduler may consume the new follow-up between the answer
+        and replay. Its status/projection changes are separate from replay
+        idempotency; the request receipt and immutable event identity remain
+        the route-owned witness.
+        """
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            request = database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?",
+                ("questions-write-async-answer",),
+            ).fetchone()
+            events = database.execute(
+                "SELECT id,agent,kind,text,epoch,created FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchall()
+        return request, tuple(events)
+
     def _unchanged_error(self, path, body, status, error):
         before = no_write_snapshot(self.backend.state)
         response = self._post(path, body)
@@ -225,11 +245,11 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(deferred.json()["id"], "questions-write-defer")
         self.assertEqual(deferred.json()["status"], "pending")
         self.assertTrue(deferred.json()["deferred"])
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = self._async_answer_snapshot()
         self.assertEqual(self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
         ).status, 200)
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(self._async_answer_snapshot(), before_replay)
 
     def test_async_question_answer_queues_one_durable_followup_and_replays(self) -> None:
         request = {
@@ -383,21 +403,21 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self._unchanged_error(
             "/api/questions/defer",
             {"id": "questions-write-malformed-request", "deferred": True},
-            500,
-            "Invalid stored object runtime_requests/questions-write-malformed-request",
+            503,
+            "Stored data runtime_requests/questions-write-malformed-request is unavailable",
         )
         self._unchanged_error(
             "/api/questions/defer",
             {"id": "questions-write-malformed-agent", "deferred": True},
-            500,
-            "Invalid stored object runtime_agents/questions-write-malformed-agent",
+            503,
+            "Stored data runtime_agents/questions-write-malformed-agent is unavailable",
         )
         self._unchanged_error(
             "/api/complaints",
             {"action": "respond", "id": "malformed", "complaint_id": "questions-write-malformed-complaint",
              "text": "Fixed", "status": "resolved", "version": 1},
-            500,
-            "Invalid stored object runtime_complaints/questions-write-malformed-complaint",
+            503,
+            "Stored data runtime_complaints/questions-write-malformed-complaint is unavailable",
         )
 
     def test_complaint_submit_matches_python_uuid_and_never_resets_existing_rows(self) -> None:

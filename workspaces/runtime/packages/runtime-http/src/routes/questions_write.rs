@@ -467,14 +467,9 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
         QuestionsWriteError::InvalidStoredObject { object, id } => {
             ApiError::invalid_stored(object, &id)
         }
-        QuestionsWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
-            table,
-            id,
-        }) => ApiError::invalid_stored(table, &id),
+        QuestionsWriteError::Store(error) => ApiError::stored(error),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
-        QuestionsWriteError::Store(_)
-        | QuestionsWriteError::Json(_)
-        | QuestionsWriteError::Clock => ApiError::internal(),
+        QuestionsWriteError::Json(_) | QuestionsWriteError::Clock => ApiError::internal(),
         QuestionsWriteError::Coordination(_) | QuestionsWriteError::Projects(_) => {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }

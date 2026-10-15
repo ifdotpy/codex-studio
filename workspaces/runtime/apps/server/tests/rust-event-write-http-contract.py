@@ -25,6 +25,10 @@ SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
+EVENT_WRITE_TABLES = frozenset({
+    "runtime_plans", "runtime_annotations", "runtime_operation_receipts",
+})
+
 _fixture_spec = importlib.util.spec_from_file_location(
     "event_write_runtime_fixture", HERE / "runtime-contract.py"
 )
@@ -138,6 +142,42 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-API-Schema": backend.schema_hash,
         }
 
+    def _plan_annotation_write_snapshot(self, agent_id):
+        """Track route-owned rows and this agent's immutable event identities.
+
+        Rust's scheduler may claim a successfully queued event between an
+        idempotent replay and this read. Status/turn progress remains a real
+        runtime transition; the write contract here is that the plan, note,
+        receipt, and durable event identities are not duplicated or changed.
+        """
+        tables = no_write_snapshot(
+            self.backend.state, include_tables=EVENT_WRITE_TABLES,
+        )
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            events = database.execute(
+                "SELECT id,agent,kind,text,epoch,created FROM runtime_events "
+                "WHERE agent=? ORDER BY id",
+                (agent_id,),
+            ).fetchall()
+        return tables, tuple(events)
+
+    def _event_refusal_snapshot(self, agent_id):
+        """Observe route-owned tables and this refused actor's durable events."""
+        tables = no_write_snapshot(
+            self.backend.state, include_tables=EVENT_WRITE_TABLES,
+        )
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            agent = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+            ).fetchone()
+            events = database.execute(
+                "SELECT id,agent,kind,text,epoch,created FROM runtime_events "
+                "WHERE agent=? ORDER BY id", (agent_id,),
+            ).fetchall()
+        return tables, agent, tuple(events)
+
     def test_plan_and_annotation_write_contract(self):
         plan_body = {
             "agent": self.agent_id,
@@ -178,7 +218,9 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         expected_status = "pending" if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else "cancelled"
         self.assertEqual([status for _, status in statuses], [expected_status, expected_status])
 
-        committed = no_write_snapshot(self.backend.state)
+        committed = self._plan_annotation_write_snapshot(
+            self.agent_id,
+        )
         for body in (
             {**plan_body, "version": 999},
             {**note_body, "line": 0},
@@ -188,7 +230,10 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(response.status, 400, response.body[:1000])
-            self.assertEqual(no_write_snapshot(self.backend.state), committed)
+            self.assertEqual(
+                self._plan_annotation_write_snapshot(self.agent_id, note_body["id"]),
+                committed,
+            )
 
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self._assert_rust_replay_and_python_scheduler(plan_body, note_body)
@@ -261,13 +306,18 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(rust_deltas, python_deltas)
 
     def _assert_rust_replay_and_python_scheduler(self, plan_body, note_body):
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = self._plan_annotation_write_snapshot(
+            self.agent_id,
+        )
         for path, body in (("/api/plan", plan_body), ("/api/annotation", note_body)):
             replay = self.backend.request(
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            self._plan_annotation_write_snapshot(self.agent_id),
+            before_replay,
+        )
 
         for path, body in (
             ("/api/plan", {**plan_body, "text": "conflicting plan"}),
@@ -277,19 +327,29 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            self._plan_annotation_write_snapshot(self.agent_id),
+            before_replay,
+        )
 
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             events = database.execute(
-                "SELECT id,agent,kind,status FROM runtime_events "
+                "SELECT id,agent,kind,text FROM runtime_events "
                 "WHERE id IN (?,?) ORDER BY id",
                 (f"plan:{self.agent_id}:1", f"annotation:{note_body['id']}"),
             ).fetchall()
         self.assertEqual(
             events,
             [
-                (f"annotation:{note_body['id']}", self.agent_id, "user", "pending"),
-                (f"plan:{self.agent_id}:1", self.agent_id, "plan_update", "pending"),
+                (
+                    f"annotation:{note_body['id']}", self.agent_id, "user",
+                    f"Review comment at {note_body['path']}:{note_body['line']} "
+                    f"(reported turn {note_body['turnId']})\nKeep the write transactional.",
+                ),
+                (
+                    f"plan:{self.agent_id}:1", self.agent_id, "plan_update",
+                    "The user updated the shared plan:\nShip the first Rust write path.",
+                ),
             ],
         )
 
@@ -319,7 +379,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.backend.stop()
         agent_id = seed_agent_with_event_rule(self.backend)
         self.backend.start()
-        before = no_write_snapshot(self.backend.state)
+        before = self._event_refusal_snapshot(agent_id)
         requests = (
             (
                 "/api/plan",
@@ -342,14 +402,14 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("rule-driver/event-rules", response.body.decode())
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self._event_refusal_snapshot(agent_id), before)
 
     def test_remote_event_writes_refuse_without_changes(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust remote-event boundary")
         agent_id = seed_remote_agent(self.backend)
         self.backend.start()
-        before = no_write_snapshot(self.backend.state)
+        before = self._event_refusal_snapshot(agent_id)
         for path, body in (
             ("/api/plan", {"agent": agent_id, "version": 0, "text": "blocked"}),
             ("/api/annotation", {"agent": agent_id, "path": "src/main.rs", "line": 1, "text": "blocked"}),
@@ -357,7 +417,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("cross-server/remote-events", response.body.decode())
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self._event_refusal_snapshot(agent_id), before)
 
     def test_rust_replays_python_annotation_receipt_by_content(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
