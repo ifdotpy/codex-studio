@@ -476,16 +476,6 @@ class FederationRouterTests(unittest.TestCase):
         self.assertTrue(all(port == 4321 for _, port in self.context.remote_fixture.calls))
         self.assertNotIn(1234, [port for _, port in self.context.remote_fixture.calls])
 
-    def test_get_has_no_api_counterpart_and_returns_legacy_not_found(self) -> None:
-        response = self.client.get("/api/federation/v1/status")
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"error": "Not found"})
-        self.assertEqual(self.runtime.service.calls, [])
-
-        management = self.client.get("/api/federation")
-        self.assertEqual(management.status_code, 404)
-        self.assertEqual(management.json(), {"error": "Not found"})
-
     def test_management_session_token_gate_runs_before_service(self) -> None:
         response = self.client.post(
             "/api/federation",
@@ -594,7 +584,10 @@ class FederationRouterTests(unittest.TestCase):
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(405, response.status_code)
-        # Signed POST behavior remains covered by the positive-operation test.
+                self.assertEqual(response.headers.get("allow"), "POST")
+        self.assertEqual(self.runtime.service.calls, [])
+        self.assertEqual(self.runtime.service.actions, [])
+        self.assertEqual(self.runtime.service.writes, 0)
 
     def test_openapi_documents_typed_signed_bodies(self) -> None:
         schema = self.client.get("/openapi.json").json()
