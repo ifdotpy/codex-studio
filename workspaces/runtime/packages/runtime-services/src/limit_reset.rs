@@ -120,47 +120,6 @@ fn read_attempts(
     })
 }
 
-fn latch_recovered_pending(
-    store: &RuntimeStore,
-    attempt_id: &str,
-    request_id: &str,
-) -> Result<Attempt, ResetError> {
-    store.transaction_with(|tx| {
-        let raw = tx.query_row(
-            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
-            [attempt_id],
-            |row| row.get::<_, String>(0),
-        )?;
-        let mut attempt = from_record(serde_json::from_str(&raw)?)?;
-        if attempt.status == "pending" && attempt.certainty.as_deref() != Some("not_sent") {
-            attempt.certainty = Some("unknown".to_owned());
-            attempt.status = "uncertain".to_owned();
-            attempt.error = Some(
-                "The reset result is unknown; inspect the same attempt before retrying".to_owned(),
-            );
-            attempt.updated = Some(now()?);
-            let record = serde_json::to_string(&attempt)?;
-            tx.execute(
-                "UPDATE runtime_limit_reset_attempts SET record=?1 WHERE id=?2 AND json_extract(record,'$.status')='pending' AND COALESCE(json_extract(record,'$.certainty'),'')!='not_sent'",
-                (&record, attempt_id),
-            )?;
-            // Reload after the conditional transition: an overlapping completed
-            // redemption must win over this stale recovery snapshot.
-            let current = tx.query_row(
-                "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
-                [attempt_id],
-                |row| row.get::<_, String>(0),
-            )?;
-            attempt = from_record(serde_json::from_str(&current)?)?;
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
-            (request_id, attempt_id),
-        )?;
-        Ok(attempt)
-    })
-}
-
 fn save_attempt(
     store: &RuntimeStore,
     attempt: &Attempt,
@@ -189,7 +148,7 @@ fn reserve_attempt(
     store: &RuntimeStore,
     candidate: Attempt,
     request_id: &str,
-) -> Result<(Attempt, bool), ResetError> {
+) -> Result<Attempt, ResetError> {
     store.transaction_with(|tx| {
         let alias = tx
             .query_row(
@@ -216,7 +175,7 @@ fn reserve_attempt(
                     "This reset request belongs to a different account or credit",
                 ));
             }
-            return Ok((attempt, false));
+            return Ok(attempt);
         }
         if let Some(attempt) = attempts.into_iter().rev().find(|attempt| {
             attempt.account_id == candidate.account_id
@@ -231,7 +190,7 @@ fn reserve_attempt(
                 "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
                 (request_id, &attempt.id),
             )?;
-            return Ok((attempt, false));
+            return Ok(attempt);
         }
         let record = serde_json::to_string(&candidate)?;
         tx.execute(
@@ -242,7 +201,7 @@ fn reserve_attempt(
             "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
             (request_id, &candidate.id),
         )?;
-        Ok((candidate, true))
+        Ok(candidate)
     })
 }
 
@@ -280,8 +239,8 @@ fn response(attempt: &Attempt, limits: Value) -> Value {
     })
 }
 
-/// Reserve the durable provider identity before dispatch. A recovered `pending` record is
-/// ambiguous and is latched as uncertain; only a receipt proving `NotSent` can retry.
+/// Persist the provider identity before dispatch. Retries of pending or uncertain attempts
+/// reuse that identity; the provider's idempotency key makes repeating the call safe.
 pub fn consume_reset(
     store: &RuntimeStore,
     session: &dyn AccountSessionPort,
@@ -326,8 +285,8 @@ pub fn consume_reset(
             "This exact reset credit is no longer available. Reload usage",
         ));
     }
-    let (mut attempt, is_new) = match attempt.take() {
-        Some(attempt) => (attempt, false),
+    let mut attempt = match attempt.take() {
+        Some(attempt) => attempt,
         None => reserve_attempt(
             store,
             Attempt {
@@ -346,16 +305,7 @@ pub fn consume_reset(
             &request_id,
         )?,
     };
-    if attempt.status == "pending" && !is_new && attempt.certainty.as_deref() != Some("not_sent") {
-        attempt = latch_recovered_pending(store, &attempt.id, &request_id)?;
-        if attempt.status != "completed" {
-            return Ok(response(&attempt, limits));
-        }
-    }
     if attempt.status == "completed" {
-        return Ok(response(&attempt, limits));
-    }
-    if attempt.status == "uncertain" {
         return Ok(response(&attempt, limits));
     }
     attempt.certainty = None;
@@ -447,7 +397,7 @@ pub fn consume_reset(
 
 #[cfg(test)]
 mod tests {
-    use super::{Attempt, consume_reset, latch_recovered_pending, read_attempts, save_attempt};
+    use super::{Attempt, RESET_OPERATION_PREFIX, consume_reset, read_attempts, save_attempt};
     use crate::account_session_runtime::{
         AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -574,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_provider_outcome_is_durable_and_never_resent() {
+    fn unknown_retry_reuses_the_same_provider_idempotency_key() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Unknown, Reply::Outcome("reset")]);
         let request_id = "11000000-0000-4000-8000-000000000002";
@@ -582,8 +532,41 @@ mod tests {
         let retry = consume_reset(&store, &provider, &request(request_id)).unwrap();
 
         assert_eq!(first["outcome"], "uncertain");
-        assert_eq!(retry["outcome"], "uncertain");
-        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(retry["outcome"], "reset");
+        let calls = provider.requests.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
+    }
+
+    #[test]
+    fn recovered_pending_attempt_reuses_its_durable_key() {
+        let (_root, store) = store();
+        let request_id = "11000000-0000-4000-8000-000000000014";
+        let stored_key = "11000000-0000-4000-8000-000000000015";
+        let pending = Attempt {
+            id: request_id.into(),
+            account_id: "account-A".into(),
+            account_key: "default".into(),
+            credit_id: "credit-A".into(),
+            idempotency_key: stored_key.into(),
+            status: "pending".into(),
+            certainty: None,
+            outcome: None,
+            error: Some("interrupted before the result was saved".into()),
+            created: Some(1.0),
+            updated: Some(2.0),
+        };
+        save_attempt(&store, &pending, request_id).unwrap();
+        let provider = FakeProvider::new([Reply::Outcome("reset")]);
+
+        let result = consume_reset(&store, &provider, &request(request_id)).unwrap();
+
+        assert_eq!(result["outcome"], "reset");
+        let calls = provider.requests.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1["idempotencyKey"], stored_key);
+        assert_eq!(calls[0].0, format!("{RESET_OPERATION_PREFIX}{stored_key}"));
     }
 
     #[test]
@@ -625,35 +608,29 @@ mod tests {
     }
 
     #[test]
-    fn stale_pending_recovery_preserves_a_completed_attempt() {
+    fn settled_attempt_followed_by_new_action_gets_a_new_idempotency_key() {
         let (_root, store) = store();
-        let request_id = "11000000-0000-4000-8000-000000000012";
-        let pending = Attempt {
-            id: request_id.into(),
-            account_id: "account-A".into(),
-            account_key: "default".into(),
-            credit_id: "credit-A".into(),
-            idempotency_key: "11000000-0000-4000-8000-000000000013".into(),
-            status: "pending".into(),
-            certainty: None,
-            outcome: None,
-            error: Some("in flight".into()),
-            created: Some(1.0),
-            updated: Some(2.0),
-        };
-        save_attempt(&store, &pending, request_id).unwrap();
-        let stale_snapshot = read_attempts(&store, request_id, "account-A", "credit-A")
+        let provider = FakeProvider::new([Reply::Outcome("noCredit"), Reply::Outcome("reset")]);
+        let first_id = "11000000-0000-4000-8000-000000000012";
+        let second_id = "11000000-0000-4000-8000-000000000013";
+        assert_eq!(
+            consume_reset(&store, &provider, &request(first_id)).unwrap()["outcome"],
+            "noCredit"
+        );
+        assert_eq!(
+            consume_reset(&store, &provider, &request(second_id)).unwrap()["outcome"],
+            "reset"
+        );
+        let calls = provider.requests.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_ne!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
+        let first = read_attempts(&store, first_id, "account-A", "credit-A")
             .unwrap()
             .unwrap();
-        assert_eq!(stale_snapshot.status, "pending");
-        let mut completed = stale_snapshot;
-        completed.status = "completed".into();
-        completed.certainty = Some("written".into());
-        completed.outcome = Some("reset".into());
-        completed.error = None;
-        save_attempt(&store, &completed, request_id).unwrap();
-        let result = latch_recovered_pending(&store, request_id, request_id).unwrap();
-        assert_eq!(result.status, completed.status);
-        assert_eq!(result.outcome, completed.outcome);
+        let second = read_attempts(&store, second_id, "account-A", "credit-A")
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.idempotency_key, second.idempotency_key);
     }
 }
