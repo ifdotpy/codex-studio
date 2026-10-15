@@ -44,6 +44,7 @@ MAX_MUTATION_SYNC_ENTITIES = 500
 # SQLite trigger schema owner for atomic event projection/window maintenance.
 ENTITY_EVENT_TRIGGER_PREFIX = "sync_entity_event"
 ENTITY_EVENT_INSERT_TRIGGER = ENTITY_EVENT_TRIGGER_PREFIX + "_INSERT"
+EVENT_SYNC_COLUMNS = ("id", "agent", "kind", "status", "created", "error")
 
 
 def entity_tombstone_prune_due(count: int) -> bool:
@@ -506,8 +507,8 @@ def event_window_statements(*, full: bool = False) -> tuple[str, str, str]:
     return backfill, retire, marker
 
 
-def event_trigger_sql(operation: str) -> str:
-    """Generate one event trigger; the Rust stored SQL is a checked consumer."""
+def event_trigger_statements(operation: str) -> tuple[str, ...]:
+    """Generate event triggers; the Rust stored SQL is a checked consumer."""
     if operation not in ('INSERT', 'UPDATE', 'DELETE'):
         raise ValueError('Invalid event trigger operation')
     old = operation == 'DELETE'
@@ -515,9 +516,13 @@ def event_trigger_sql(operation: str) -> str:
     key = 'OLD.id' if old else 'NEW.id'
     deleted = int(old)
     payload = f"sync_entity_payload('event',{key},{record},{deleted})"
-    statements = ';\n'.join(event_window_statements())
-    return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}
-          AFTER {operation} ON runtime_events BEGIN
+    def make_trigger(
+            suffix: str,
+            trigger_operation: str,
+            trigger_when: str,
+            statements: tuple[str, ...]) -> str:
+        return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{suffix}
+          AFTER {trigger_operation} ON runtime_events {trigger_when} BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',{key},(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
@@ -527,8 +532,40 @@ def event_trigger_sql(operation: str) -> str:
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
           WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;
-          {statements};
+          {';\n          '.join(statements)};
         END"""
+
+    window_statements = event_window_statements()
+    if operation != 'UPDATE':
+        return (make_trigger(operation, operation, '', window_statements),)
+
+    update_of = "UPDATE OF " + ",".join(EVENT_SYNC_COLUMNS)
+    payload_when = "WHEN OLD.id IS NEW.id AND OLD.created IS NEW.created AND (" \
+        "OLD.agent IS NOT NEW.agent OR OLD.kind IS NOT NEW.kind OR " \
+        "OLD.status IS NOT NEW.status OR OLD.error IS NOT NEW.error)"
+    membership_when = "WHEN OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created"
+    from codex_entity_contracts import EVENT_WINDOW
+    recent = f"SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"
+    dead_payload = "sync_entity_payload('event',NEW.id,'{}',1)"
+    retire_if_outside = f"""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+        SELECT 'event',NEW.id,(SELECT max(seq)+1 FROM (
+                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+               sync_entity_hash({dead_payload}),{dead_payload},1
+        WHERE NOT EXISTS (SELECT 1 FROM ({recent}) e WHERE e.id=NEW.id)
+        ON CONFLICT(collection,id) DO UPDATE SET
+            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
+        WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted"""
+    payload_statements = (retire_if_outside, event_window_statements()[2])
+    return (
+        make_trigger('UPDATE', update_of, payload_when, payload_statements),
+        make_trigger('UPDATE_WINDOW', update_of, membership_when, window_statements),
+    )
+
+
+def event_trigger_sql(operation: str) -> str:
+    return ';\n'.join(event_trigger_statements(operation))
 
 
 def install_bypass_triggers(db: sqlite3.Connection) -> None:
@@ -537,13 +574,24 @@ def install_bypass_triggers(db: sqlite3.Connection) -> None:
         # Retire the intermediate Python-only callback trigger if a development
         # state was prepared with it. Both runtimes keep the portable names.
         db.execute(f"DROP TRIGGER IF EXISTS sync_entity_event_window_v2_{operation}")
-        expected = event_trigger_sql(operation)
-        row = db.execute('SELECT sql FROM sqlite_master WHERE type=\'trigger\' AND name=?',
-                         (f'{ENTITY_EVENT_TRIGGER_PREFIX}_{operation}',)).fetchone()
-        if row and row[0] == expected.replace("CREATE TRIGGER IF NOT EXISTS", "CREATE TRIGGER", 1):
+        expected = event_trigger_statements(operation)
+        names = [f'{ENTITY_EVENT_TRIGGER_PREFIX}_{operation}']
+        if operation == 'UPDATE':
+            names.append(f'{ENTITY_EVENT_TRIGGER_PREFIX}_UPDATE_WINDOW')
+        installed = db.execute(
+            f"SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ({','.join('?' for _ in names)})",
+            names).fetchall()
+        expected_sql = {
+            name: statement.replace("CREATE TRIGGER IF NOT EXISTS", "CREATE TRIGGER", 1)
+            for name, statement in zip(names, expected)
+        }
+        if len(installed) == len(expected_sql) and all(
+                expected_sql.get(row[0]) == row[1] for row in installed):
             continue
-        db.execute(f'DROP TRIGGER IF EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}')
-        db.execute(expected)
+        for name in names:
+            db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        for statement in expected:
+            db.execute(statement)
 
 
 def _ensure_sequence_transaction(db: sqlite3.Connection) -> None:

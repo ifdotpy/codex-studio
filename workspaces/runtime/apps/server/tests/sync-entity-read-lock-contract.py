@@ -254,6 +254,38 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(after['documents'], [])
         self.assertEqual(after['checkpoint'], before['checkpoint'])
 
+    def test_payload_only_event_update_skips_window_projection(self):
+        import codex_sync_entities
+        with self.connect() as db:
+            for index in range(3):
+                db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?)",
+                           (f'event-{index}', 'owner', 'user', 'pending', index + 1, None))
+        with self.connect() as db:
+            original = db.execute(
+                "SELECT seq FROM sync_entities WHERE collection='event' AND id='event-2'").fetchone()[0]
+        self.statements.clear()
+        projected = []
+        original_project = codex_sync_entities.project
+
+        def count_projection(collection, record):
+            projected.append((collection, record.get('id')))
+            return original_project(collection, record)
+
+        with patch.object(codex_sync_entities, 'project', count_projection), self.connect() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id='event-2'")
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT seq,hash,payload,deleted FROM sync_entities "
+                "WHERE collection='event' AND id='event-2'").fetchone()
+        self.assertGreater(row[0], original)
+        self.assertEqual(row[3], 0)
+        self.assertEqual(projected, [('event', 'event-2')] * 2)
+        self.assertFalse(any(
+            'ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id)' in sql
+            or "s.id NOT IN (SELECT id FROM (SELECT id,agent,kind,status,created,error FROM runtime_events" in sql
+            for sql in self.statements
+        ))
+
     def test_boot_markers_are_repaired_before_pulls(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
