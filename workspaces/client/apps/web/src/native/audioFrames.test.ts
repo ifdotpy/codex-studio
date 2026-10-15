@@ -197,3 +197,82 @@ it("keeps the Rust voice peer and its events private to its owning server", asyn
     session: params.session,
   });
 });
+it("isolates direct server owners and releases capture when an owner closes", async () => {
+  let events: (value: unknown) => void = () => {};
+  const invoke = vi.fn(
+    async (_method: string, _params: unknown, _id?: string) => true,
+  );
+  const audio = bindAudioFrames(invoke, async (callback) => {
+    events = callback;
+    return () => {};
+  });
+  const a = audio.createClient();
+  const b = audio.createClient();
+  const receivedA = vi.fn();
+  const receivedB = vi.fn();
+  await a.listen(receivedA);
+  await b.listen(receivedB);
+  await a.request("desktop.requestMicrophone", {}, "gesture-a");
+  await expect(b.request("desktop.requestMicrophone", {})).rejects.toThrow(
+    "Another server",
+  );
+  await a.request("view.subscribe", {
+    topic: "microphone",
+    subscription: "same",
+    capture: "same",
+  });
+  const nativeA = (
+    invoke.mock.calls.find((call) => call[0] === "view.subscribe")![1] as {
+      subscription: string;
+    }
+  ).subscription;
+  await a.request("media.captureStart", { capture: "same" });
+  events({ event: nativeA, value: { pcm: "AAAA" } });
+  expect(receivedA).toHaveBeenCalledWith({
+    event: "same",
+    value: { pcm: "AAAA" },
+  });
+  expect(receivedB).not.toHaveBeenCalled();
+  await expect(
+    b.request("media.captureStop", { capture: "same" }),
+  ).rejects.toThrow();
+  a.close();
+  expect(invoke).toHaveBeenCalledWith("media.captureStop", {
+    capture: nativeA,
+  });
+  expect(invoke).toHaveBeenCalledWith("view.unsubscribe", {
+    subscription: nativeA,
+  });
+  await expect(a.request("desktop.requestMicrophone", {})).rejects.toThrow(
+    "closed",
+  );
+  await b.request("desktop.requestMicrophone", {}, "gesture-b");
+  await b.request("view.subscribe", {
+    topic: "microphone",
+    subscription: "same",
+    capture: "same",
+  });
+  const nativeB = (
+    invoke.mock.calls
+      .filter((call) => call[0] === "view.subscribe")
+      .at(-1)![1] as { subscription: string }
+  ).subscription;
+  expect(nativeB).not.toBe(nativeA);
+  events({ event: nativeA, value: { pcm: "AAAA" } });
+  expect(receivedA).toHaveBeenCalledTimes(1);
+  expect(receivedB).not.toHaveBeenCalled();
+  events({ event: nativeB, value: { pcm: "BBBB" } });
+  expect(receivedB).toHaveBeenCalledOnce();
+  await b.request(
+    "view.unsubscribe",
+    { subscription: "same" },
+    "unsubscribe-b",
+  );
+  expect(invoke).toHaveBeenLastCalledWith(
+    "view.unsubscribe",
+    { subscription: nativeB },
+    "unsubscribe-b",
+  );
+  b.close();
+  audio.dispose();
+});

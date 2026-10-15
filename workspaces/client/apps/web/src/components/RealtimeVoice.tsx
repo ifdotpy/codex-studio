@@ -1,7 +1,7 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { hasNativeClient } from "../native/client";
-import { dictationBridge } from "../native/dictation";
-import { nativeVoice } from "../native/voice";
+import { useServerAudio } from "../servers/ServerServicesContext";
+import type { nativeVoice } from "../native/voice";
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
@@ -44,6 +44,7 @@ function NativeVoice({
   agentId: string;
   notify: (text: string) => void;
 }) {
+  const { dictationBridge, nativeVoice } = useServerAudio();
   const watchResourceReads = useServerResourceReads();
   const { post } = useServerApi();
 

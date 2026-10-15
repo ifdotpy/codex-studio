@@ -1,3 +1,4 @@
+import { createServerAudio } from "../native/serverAudio";
 import {
   createRecordingStorage,
   DICTATION_DATABASE_NAME,
@@ -60,6 +61,7 @@ export function createServerServices(server: StudioServer) {
     beginActivity: activity.beginServerActivity,
     entityCheckpoint: sequences.getEntitySequenceCheckpointForWorkspace,
   });
+  const audio = createServerAudio();
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
   let runtime:
@@ -144,6 +146,7 @@ export function createServerServices(server: StudioServer) {
   }
   return {
     owner: transport.owner,
+    audio,
     chatCreations: createChatCreationStore(storage),
     recordings: createRecordingStorage(
       storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
@@ -181,6 +184,7 @@ export function createServerServices(server: StudioServer) {
     storage,
     ready,
     close() {
+      audio.close();
       runtime?.resources.dispose();
       transport.close();
     },

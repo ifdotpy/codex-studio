@@ -1,3 +1,4 @@
+import { defaultServerAudio } from "../native/serverAudio";
 import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
 import { serverStorageEventKey } from "./storage";
@@ -90,3 +91,6 @@ export const useServerStorageEventKey = () =>
 
 export const useServerRecordings = () =>
   useServerServices()?.recordings ?? defaultRecordings;
+
+export const useServerAudio = () =>
+  useServerServices()?.audio ?? defaultServerAudio;

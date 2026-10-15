@@ -1,6 +1,6 @@
 import { hasNativeClient } from "../native/client";
 import { saveFile } from "../fileActions";
-import { dictationBridge } from "../native/dictation";
+import { useServerAudio } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
 import { localTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
@@ -8,7 +8,6 @@ import { errorDetails } from "../errorPresentation";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Download, Mic, Square, Trash2 } from "lucide-react";
-import { captureAudio } from "../dictation/capture";
 import type { Recording } from "../dictation/storage";
 import { useServerRecordings } from "../servers/ServerServicesContext";
 import "./Dictation.css";
@@ -32,6 +31,7 @@ type DictationProps = {
   disabled?: boolean;
 };
 export function Dictation(props: DictationProps) {
+  const { dictationBridge } = useServerAudio();
   return dictationBridge() ? (
     <NativeDictation {...props} />
   ) : (
@@ -59,6 +59,7 @@ function NativeDictation({
     restoreRecording,
     deletedRecordings,
   } = useServerRecordings();
+  const { dictationBridge, captureAudio } = useServerAudio();
   const desktop = dictationBridge();
   const [open, setOpen] = useState(false),
     [rows, setRows] = useState<Recording[]>([]),

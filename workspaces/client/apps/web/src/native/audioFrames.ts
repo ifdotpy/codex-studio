@@ -6,7 +6,14 @@ type Invoke = (
   id?: string,
 ) => Promise<unknown>;
 type Listen = (callback: (value: unknown) => void) => Promise<() => void>;
-type Caller = { frame: HTMLIFrameElement; origin: string; live: () => boolean };
+type AudioEvent = { event: string; value: unknown };
+type Caller =
+  | { frame: HTMLIFrameElement; origin: string; live: () => boolean }
+  | {
+      owner: object;
+      deliver: (event: AudioEvent) => void;
+      live: () => boolean;
+    };
 type Subscription = {
   caller: Caller;
   logical: string;
@@ -42,8 +49,10 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
   let capture: { caller: Caller; id: string; voice?: boolean } | undefined;
   let closed = false;
   let listening: Promise<() => void> | undefined;
+  const identity = (caller: Caller) =>
+    "frame" in caller ? caller.frame : caller.owner;
   const same = (a: Caller | undefined, b: Caller) =>
-    a?.frame === b.frame && a.live() && b.live();
+    !!a && identity(a) === identity(b) && a.live() && b.live();
   const owns = (owner: Caller | undefined, caller: Caller) => {
     if (closed || !same(owner, caller))
       throw new Error(
@@ -98,18 +107,56 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         !same(running.get(value?.value?.id), row.caller)
       )
         return;
-      row.caller.frame.contentWindow?.postMessage(
-        {
-          kind: "studio-native-audio-event",
-          event: row.logical,
-          value: value.value,
-        },
-        row.caller.origin,
-      );
+      const event = { event: row.logical, value: value.value };
+      if ("frame" in row.caller)
+        row.caller.frame.contentWindow?.postMessage(
+          { kind: "studio-native-audio-event", ...event },
+          row.caller.origin,
+        );
+      else row.caller.deliver(event);
     });
     await listening;
   }
-  return {
+  const router = {
+    // Each mounted server connection receives an opaque owner, independent of
+    // selection and DOM nodes. Closing it releases only its audio resources.
+    createClient() {
+      let live = true;
+      const listeners = new Set<(event: AudioEvent) => void>();
+      const caller: Caller = {
+        owner: {},
+        live: () => live,
+        deliver: (event) => {
+          for (const listener of listeners) listener(event);
+        },
+      };
+      return {
+        request(
+          method: string,
+          params: unknown,
+          id: string = crypto.randomUUID(),
+        ) {
+          return router.request(
+            method === "view.unsubscribe" ? "audio.unsubscribe" : method,
+            params,
+            id,
+            caller,
+          );
+        },
+        async listen(listener: (event: AudioEvent) => void) {
+          if (!live || closed) throw new Error("The server view closed.");
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        close() {
+          live = false;
+          listeners.clear();
+          prune();
+        },
+      };
+    },
     async request(
       method: string,
       params: any,
@@ -341,4 +388,5 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
       void listening?.then((stop) => stop()).catch(() => {});
     },
   };
+  return router;
 }

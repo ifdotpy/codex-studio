@@ -1,8 +1,11 @@
 import { hasNativeClient } from "../native/client";
 import { captureNativeAudio } from "../native/dictation";
 import workletURL from "./capture-worklet.js?url";
-export async function captureAudio(onChunk: (pcm: Int16Array) => void) {
-  if (hasNativeClient()) return captureNativeAudio(onChunk);
+export async function captureAudio(
+  onChunk: (pcm: Int16Array) => void,
+  nativeCapture = captureNativeAudio,
+) {
+  if (hasNativeClient()) return nativeCapture(onChunk);
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1 },
     video: false,

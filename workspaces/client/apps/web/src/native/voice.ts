@@ -9,30 +9,31 @@ export type NativeVoiceEvent = {
 export function nativeVoice(
   session: string,
   onEvent: (event: NativeVoiceEvent) => void,
+  request: typeof nativeRequest = nativeRequest,
+  listen: typeof listenNativeEvents = listenNativeEvents,
 ) {
   const subscription = crypto.randomUUID();
   let closed = false;
   let listening: (() => void) | undefined;
   const unsubscribe = () =>
-    nativeRequest(isNativeFrame() ? "audio.unsubscribe" : "view.unsubscribe", {
+    request(isNativeFrame() ? "audio.unsubscribe" : "view.unsubscribe", {
       subscription,
     }).catch(() => {});
-  const closeNative = () =>
-    nativeRequest("voice.close", { session }).catch(() => {});
+  const closeNative = () => request("voice.close", { session }).catch(() => {});
   return {
     async offer() {
       try {
-        listening = await listenNativeEvents((event: any) => {
+        listening = await listen((event: any) => {
           if (!closed && event?.event === subscription) onEvent(event.value);
         });
         if (closed) throw new Error("Voice ended.");
-        await nativeRequest("view.subscribe", {
+        await request("view.subscribe", {
           topic: "voice",
           subscription,
           session,
         });
         if (closed) throw new Error("Voice ended.");
-        const result = await nativeRequest<{ sdp: string }>("voice.create", {
+        const result = await request<{ sdp: string }>("voice.create", {
           session,
         });
         if (closed) throw new Error("Voice ended.");
@@ -45,10 +46,10 @@ export function nativeVoice(
       }
     },
     answer(sdp: string) {
-      return nativeRequest("voice.answer", { session, sdp });
+      return request("voice.answer", { session, sdp });
     },
     mute(muted: boolean) {
-      return nativeRequest("voice.mute", { session, muted });
+      return request("voice.mute", { session, muted });
     },
     close() {
       closed = true;
