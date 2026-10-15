@@ -24,6 +24,8 @@ struct AgentFence {
     deleted_at: Option<Value>,
     archived_at: Option<Value>,
     attempt_id: Option<Value>,
+    attempt_epoch: Option<Value>,
+    attempt_connection_generation: Option<Value>,
 }
 impl PreparedHost {
     pub fn load(store: &RuntimeStore) -> Result<Self, ProjectsError> {
@@ -59,9 +61,11 @@ impl PreparedHost {
     }
 
     pub fn recheck(&self, db: &Connection) -> Result<(), ProjectsError> {
-        let agents = agent_fences(&ProjectsRepository::agents(db)?);
         if ProjectsRepository::list(db)? != self.projects
-            || !agent_fences_match(&self.agent_fences, &agents)
+            || !agent_fences_match(
+                &self.agent_fences,
+                &agent_fences(&ProjectsRepository::agents(db)?),
+            )
         {
             return Err(ProjectsError::Conflict(
                 "Project state changed during preparation. Retry",
@@ -141,6 +145,10 @@ fn agent_fences(agents: &[(String, Value)]) -> Vec<AgentFence> {
             deleted_at: row.get("deletedAt").cloned(),
             archived_at: row.get("archivedAt").cloned(),
             attempt_id: row.pointer("/startAttempt/id").cloned(),
+            attempt_epoch: row.pointer("/startAttempt/epoch").cloned(),
+            attempt_connection_generation: row
+                .pointer("/startAttempt/connectionGeneration")
+                .cloned(),
         })
         .collect::<Vec<_>>();
     fences.sort_by(|left, right| left.id.cmp(&right.id));
@@ -161,8 +169,73 @@ fn agent_fences_match(before: &[AgentFence], current: &[AgentFence]) -> bool {
                     || (before.status.as_ref().and_then(Value::as_str) == Some("idle")
                         && current.status.as_ref().and_then(Value::as_str) == Some("running")
                         && before.attempt_id.is_some()
-                        && before.attempt_id == current.attempt_id))
+                        && same_start_attempt(before, current))
+                    // The account dispatcher parks an already-starting agent
+                    // with no runnable event as waiting. This status-only
+                    // transition does not change the prepared path or attempt.
+                    || (before.status.as_ref().and_then(Value::as_str) == Some("starting")
+                        && current.status.as_ref().and_then(Value::as_str) == Some("waiting")
+                        && before.attempt_id.is_some()
+                        && same_start_attempt(before, current)))
         })
+}
+
+fn same_start_attempt(before: &AgentFence, current: &AgentFence) -> bool {
+    before.attempt_id == current.attempt_id
+        && before.attempt_epoch == current.attempt_epoch
+        && before.attempt_connection_generation == current.attempt_connection_generation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fence(status: &str) -> AgentFence {
+        AgentFence {
+            id: "agent".into(),
+            path: Some(json!("/workspace")),
+            cwd: Some(json!("/workspace")),
+            epoch: Some(json!(7)),
+            status: Some(json!(status)),
+            auto_wake: Some(json!(true)),
+            deleted_at: None,
+            archived_at: None,
+            attempt_id: Some(json!("attempt")),
+            attempt_epoch: Some(json!(7)),
+            attempt_connection_generation: Some(json!(3)),
+        }
+    }
+
+    #[test]
+    fn same_attempt_starting_to_waiting_keeps_prepared_host_valid() {
+        assert!(agent_fences_match(
+            &[fence("starting")],
+            &[fence("waiting")]
+        ));
+    }
+
+    #[test]
+    fn status_progression_does_not_hide_changed_attempt_identity_or_paths() {
+        let before = fence("starting");
+        for mutate in [
+            Box::new(|current: &mut AgentFence| current.attempt_id = Some(json!("other")))
+                as Box<dyn Fn(&mut AgentFence)>,
+            Box::new(|current: &mut AgentFence| current.attempt_epoch = Some(json!(8))),
+            Box::new(|current: &mut AgentFence| {
+                current.attempt_connection_generation = Some(json!(4))
+            }),
+            Box::new(|current: &mut AgentFence| current.epoch = Some(json!(8))),
+            Box::new(|current: &mut AgentFence| current.path = Some(json!("/other"))),
+            Box::new(|current: &mut AgentFence| current.cwd = Some(json!("/other"))),
+        ] {
+            let mut current = fence("waiting");
+            mutate(&mut current);
+            assert!(!agent_fences_match(
+                std::slice::from_ref(&before),
+                &[current]
+            ));
+        }
+    }
 }
 
 /// A checked local binding for P02's draft/commit transaction.

@@ -2546,6 +2546,14 @@ mod voice_composition_tests {
         let response: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(response["session_id"], "voice-session");
         assert_eq!(response["state"], "connecting");
+        // The HTTP acceptance boundary persists the connecting session before
+        // provider setup completes; wait on its existing completion barrier
+        // before staging deletion from the durable rows.
+        studio_runtime_services::voice::provider::wait_for_start_setup(
+            "voice-composed-agent",
+            "voice-session",
+        )
+        .await;
 
         // The deletion transaction persists stop authorization before removing
         // voice rows, matching Python's delete-before-post-commit-stop ordering.

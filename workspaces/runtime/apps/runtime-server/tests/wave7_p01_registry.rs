@@ -1168,6 +1168,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
         )
         .unwrap();
     assert_eq!(event_status, "pending");
+    drop(db);
     let held: Value = serde_json::from_str(&record()).unwrap();
     assert_eq!(held["status"], "paused");
     assert_eq!(held["error"], "workspace-state/image-execution");
