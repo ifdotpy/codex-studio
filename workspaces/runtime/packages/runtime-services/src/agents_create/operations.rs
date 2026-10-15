@@ -341,9 +341,24 @@ fn agent_needs_catalog(
         || profile_supplies_effort
 }
 
+fn merge_profile_catalog_fields(intent: &mut Value, original: &Value, profile: &Value) -> bool {
+    let mut needs_catalog = false;
+    for field in ["model", "effort"] {
+        let supplied = !original
+            .as_object()
+            .is_some_and(|body| body.contains_key(field))
+            && profile.get(field).is_some_and(|value| !value.is_null());
+        if supplied {
+            intent[field] = profile[field].clone();
+            needs_catalog = true;
+        }
+    }
+    needs_catalog
+}
+
 #[cfg(test)]
 mod agent_catalog_requirement_tests {
-    use super::agent_needs_catalog;
+    use super::{agent_needs_catalog, merge_profile_catalog_fields};
     use serde_json::json;
 
     #[test]
@@ -378,6 +393,22 @@ mod agent_catalog_requirement_tests {
         ));
         assert!(!agent_needs_catalog(false, None, false, false));
         assert!(agent_needs_catalog(true, None, false, false));
+    }
+
+    #[test]
+    fn profile_merges_model_and_effort_without_losing_either_field() {
+        // Python's `{profile fields, **data}` merge keeps both profile values
+        // when the request omitted them (`codex_runtime.py:4859-4872`).
+        let original = json!({"profile_id": "execution-profile"});
+        let profile = json!({"model": "gpt-6-luna", "effort": "high"});
+        let mut effective = original.clone();
+        assert!(merge_profile_catalog_fields(
+            &mut effective,
+            &original,
+            &profile
+        ));
+        assert_eq!(effective["model"], "gpt-6-luna");
+        assert_eq!(effective["effort"], "high");
     }
 }
 
@@ -459,16 +490,7 @@ fn create(
                 .and_then(Value::as_str)
                 .map(str::to_owned);
         }
-        request.catalog |= ["model", "effort"].iter().any(|field| {
-            let supplied = !intent
-                .as_object()
-                .is_some_and(|body| body.contains_key(*field))
-                && profile.get(*field).is_some_and(|value| !value.is_null());
-            if supplied {
-                request.intent[*field] = profile[*field].clone();
-            }
-            supplied
-        });
+        request.catalog |= merge_profile_catalog_fields(&mut request.intent, &intent, profile);
     }
     drop(read);
     if request.parent.is_some() {
