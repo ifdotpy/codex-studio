@@ -373,10 +373,7 @@ def no_write_snapshot(
                             and values["error"].startswith("WorkspaceRecoveryRequired:")
                         ):
                             values["error"] = None
-                    if "id" in values and (
-                        table != "runtime_events"
-                        or values.get("id") in baseline_events.get(database_path.name, {})
-                    ):
+                    if "id" in values:
                         for field in row_owned_fields.get(values["id"], frozenset()):
                             values[field] = None
                     for json_column in ("record", "payload", "result"):
