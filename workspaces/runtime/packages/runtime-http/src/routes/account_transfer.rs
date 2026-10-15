@@ -1,7 +1,7 @@
 //! Durable transfer requests, worker selection, and receipt replay.
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
@@ -12,14 +12,6 @@ use studio_runtime_services::{
     account_transfer_driver,
 };
 
-const TRANSFER: &[Dependency] = &[
-    Dependency::new("account-transfer/provider-history-executor"),
-    Dependency::new("account-transfer/destination-settings"),
-    Dependency::new("store-bootstrap/account-transfer-schema"),
-];
-const SELECTION: &[Dependency] = &[Dependency::new(
-    "account-transfer/usage-resume-cancellation",
-)];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(

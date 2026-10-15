@@ -17,9 +17,7 @@ use tokio::time::Instant;
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::routes::extractors::{ApiJson, QueryParams};
-use crate::routes::manifest::{
-    Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post,
-};
+use crate::routes::manifest::{OperationStatus, RouteGroup, get, post};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) fn routes() -> RouteGroup {
@@ -686,14 +684,6 @@ struct NativeCommandRequest {
 enum NativeCommandAction {
     Input,
     Cancel,
-}
-
-fn dependency_error(
-    method: &str,
-    path: &str,
-    dependencies: &[Dependency],
-) -> Result<ApiError, ApiError> {
-    dependency_unavailable(method, path, dependencies).map_err(|_| ApiError::internal())
 }
 
 fn invalid_stored_agent() -> ApiError {

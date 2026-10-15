@@ -1,7 +1,7 @@
 //! Local cost snapshots and persisted usage controls.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -12,17 +12,6 @@ use studio_runtime_store::{UsageRepositoryError, disable_usage_resume};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
-
-const CAPACITY_DEPENDENCIES: [Dependency; 3] = [
-    Dependency::new("event-driver/queue-mutations"),
-    Dependency::new("store-bootstrap/capacity-retry-schema"),
-    Dependency::new("turn-driver/capacity-retry"),
-];
-const USAGE_RESUME_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("store-bootstrap/usage-resume-schema"),
-    Dependency::new("turn-driver/usage-resume"),
-];
-const COSTS_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/local-scanner")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -382,10 +371,6 @@ fn usage_error(error: UsageRepositoryError, path: &'static str) -> ApiError {
         }
         UsageRepositoryError::Sqlite(_) | UsageRepositoryError::Store(_) => ApiError::internal(),
     }
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
 
 #[cfg(test)]

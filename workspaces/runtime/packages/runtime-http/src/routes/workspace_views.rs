@@ -18,7 +18,7 @@ use crate::router::HttpState;
 use crate::validation::Registry;
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{OperationStatus, RouteGroup, get};
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -637,10 +637,6 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
 
 fn invalid_cursor(parameter: &str) -> ApiError {
     ApiError::validation(vec![json!("query"), json!(parameter)])
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Thin HTTP lifecycle edge.
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Extension, Json, extract::State, http::StatusCode};
@@ -16,19 +16,6 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction};
 
-const LIFECYCLE: &[Dependency] = &[
-    Dependency::new("account-worker/agent-interrupt"),
-    Dependency::new("agent-management/snapshot-limit"),
-    Dependency::new("cross-server/agent-management"),
-    Dependency::new("event-driver/child-stop-notification"),
-    Dependency::new("monitor-driver/agent-stop"),
-    Dependency::new("account-worker/deleted-settlement"),
-    Dependency::new("usage-policy/agent-stop"),
-    Dependency::new("voice-driver/agent-stop"),
-    Dependency::new("work-driver/deletion-release"),
-    Dependency::new("workspace-state/agent-lifecycle"),
-];
-const NATIVE: &[Dependency] = &[Dependency::new("cross-server/native-review")];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post("/api/action", OperationStatus::Implemented, native_action),
