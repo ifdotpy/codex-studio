@@ -11,6 +11,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
 use studio_runtime_services::account_session_runtime::{
@@ -303,111 +304,87 @@ async fn branch(
         .as_ref()
         .and_then(|op| op.get("provider"))
         .cloned();
-    let scope = {
-        let port = port.clone();
-        let account = account.clone();
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/branches",
-            move || {
-                port.ensure_session(&account).map_err(|error| {
-                    ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("Could not ensure account session: {error}"),
-                    )
-                })
-            },
+    let scope = port.ensure_session_async(&account).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Could not ensure account session: {error}"),
         )
-        .await
-        .map_err(|_| ApiError::internal())??
-    };
+    })?;
     let branch_model = if source.get("isLead").and_then(Value::as_bool) == Some(true) {
         source["model"].as_str().unwrap_or("gpt-5.6-sol")
     } else {
         "gpt-5.6-sol"
     };
     let before = body.before.unwrap_or(false);
-    let fork_turn =
-        studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
-            let port = port.clone();
-            let account = account.clone();
-            let scope = scope.clone();
-            let operation = format!("{operation_id}:turns");
-            let actor = body.agent.clone();
-            let epoch = source["epoch"].as_i64().unwrap_or(0);
-            let thread_id = source["threadId"].as_str().map(str::to_owned);
-            let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
-            move || {
-                if before {
-                    // Python reads the full thread history before resolving `before`.
-                    // ThreadTurnsList is paged here; stable per-page operation IDs let
-                    // the retained broker replay a known page without resending an
-                    // uncertain one.
-                    let mut cursor: Option<String> = None;
-                    let mut seen_cursors = HashSet::new();
-                    let mut turn_ids = Vec::new();
-                    let mut page = 0_u64;
-                    loop {
-                        let mut params = json!({
-                            "threadId":thread_id,
-                            "limit":20,
-                            "sortDirection":"desc",
-                            "itemsView":"full"
-                        });
-                        if let Some(cursor_value) = &cursor {
-                            params["cursor"] = json!(cursor_value);
-                        }
-                        let result = provider_request(
-                            port.as_ref(),
-                            &account,
-                            &scope,
-                            format!("{operation}:{page}"),
-                            Some(RequestActor {
-                                agent: actor.clone(),
-                                epoch,
-                            }),
-                            Method::ThreadTurnsList,
-                            params,
-                        )?;
-                        let turns = result
-                            .get("data")
-                            .and_then(Value::as_array)
-                            .ok_or_else(ApiError::internal)?;
-                        for turn in turns {
-                            let id = turn
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .filter(|id| !id.is_empty())
-                                .ok_or_else(ApiError::internal)?;
-                            turn_ids.push(id.to_owned());
-                        }
-                        let Some(next) = result
-                            .get("nextCursor")
-                            .and_then(Value::as_str)
-                            .filter(|next| !next.is_empty())
-                        else {
-                            break;
-                        };
-                        if !seen_cursors.insert(next.to_owned()) {
-                            return Err(ApiError::internal());
-                        }
-                        cursor = Some(next.to_owned());
-                        page = page.checked_add(1).ok_or_else(ApiError::internal)?;
-                    }
-                    let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
-                    let position = turn_ids
-                        .iter()
-                        .position(|turn| turn == selected_turn)
-                        .ok_or_else(|| {
-                            bad_request("The selected turn is absent from native history")
-                        })?;
-                    Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
-                } else {
-                    Ok(selected_turn)
+    let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
+    let fork_turn = if before {
+        async {
+            // Python reads the full thread history before resolving `before`.
+            // Stable per-page operation IDs let the retained broker replay a known
+            // page without resending an uncertain one.
+            let mut cursor: Option<String> = None;
+            let mut seen_cursors = HashSet::new();
+            let mut turn_ids = Vec::new();
+            let mut page = 0_u64;
+            loop {
+                let mut params = json!({
+                    "threadId":source["threadId"],
+                    "limit":20,
+                    "sortDirection":"desc",
+                    "itemsView":"full"
+                });
+                if let Some(cursor_value) = &cursor {
+                    params["cursor"] = json!(cursor_value);
                 }
+                let result = provider_request(
+                    Arc::clone(&port),
+                    &account,
+                    &scope,
+                    format!("{operation_id}:turns:{page}"),
+                    Some(RequestActor {
+                        agent: body.agent.clone(),
+                        epoch: source["epoch"].as_i64().unwrap_or(0),
+                    }),
+                    Method::ThreadTurnsList,
+                    params,
+                )
+                .await?;
+                let turns = result
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .ok_or_else(ApiError::internal)?;
+                for turn in turns {
+                    let id = turn
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(ApiError::internal)?;
+                    turn_ids.push(id.to_owned());
+                }
+                let Some(next) = result
+                    .get("nextCursor")
+                    .and_then(Value::as_str)
+                    .filter(|next| !next.is_empty())
+                else {
+                    break;
+                };
+                if !seen_cursors.insert(next.to_owned()) {
+                    return Err(ApiError::internal());
+                }
+                cursor = Some(next.to_owned());
+                page = page.checked_add(1).ok_or_else(ApiError::internal)?;
             }
-        })
+            let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
+            let position = turn_ids
+                .iter()
+                .position(|turn| turn == selected_turn)
+                .ok_or_else(|| bad_request("The selected turn is absent from native history"))?;
+            Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
+        }
         .await
-        .map_err(|_| ApiError::internal())?;
+    } else {
+        Ok::<_, ApiError>(selected_turn)
+    };
     let fork_turn = match fork_turn {
         Ok(turn) => turn,
         Err(error) => {
@@ -592,8 +569,8 @@ async fn branch(
     >(branch_result)?))
 }
 
-fn provider_request(
-    port: &dyn AccountSessionPort,
+async fn provider_request(
+    port: Arc<dyn AccountSessionPort>,
     account: &str,
     scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
     operation: String,
@@ -611,30 +588,42 @@ fn provider_request(
         params,
         deadline: Instant::now() + Duration::from_secs(30),
     };
-    let mut receipt = port
-        .provider_request(request.clone())
+    let sender = Arc::clone(&port);
+    let initial_request = request.clone();
+    let mut receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || sender.provider_request(initial_request),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|error| match error {
+        AccountSessionError::Requires(name) => ApiError::dependency(name),
+        AccountSessionError::Unknown => unavailable(),
+        _ => bad_request(&error.to_string()),
+    })?;
+    if receipt.certainty == RequestCertainty::NotSent {
+        // A worker can disappear between ensuring the account session and
+        // submitting the request. A NotSent receipt permits retrying, but the
+        // operation identity and payload remain unchanged.
+        request.expected_scope =
+            Some(port.ensure_session_async(account).await.map_err(|error| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Could not ensure account session: {error}"),
+                )
+            })?);
+        let sender = Arc::clone(&port);
+        receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/branches",
+            move || sender.provider_request(request),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
         .map_err(|error| match error {
             AccountSessionError::Requires(name) => ApiError::dependency(name),
             AccountSessionError::Unknown => unavailable(),
             _ => bad_request(&error.to_string()),
         })?;
-    if receipt.certainty == RequestCertainty::NotSent {
-        // A worker can disappear between ensuring the account session and
-        // submitting the request. A NotSent receipt permits retrying, but the
-        // operation identity and payload remain unchanged.
-        request.expected_scope = Some(port.ensure_session(account).map_err(|error| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("Could not ensure account session: {error}"),
-            )
-        })?);
-        receipt = port
-            .provider_request(request)
-            .map_err(|error| match error {
-                AccountSessionError::Requires(name) => ApiError::dependency(name),
-                AccountSessionError::Unknown => unavailable(),
-                _ => bad_request(&error.to_string()),
-            })?;
     }
     match (receipt.certainty, receipt.result) {
         (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),

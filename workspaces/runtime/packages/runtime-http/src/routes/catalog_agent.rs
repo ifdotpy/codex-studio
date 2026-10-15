@@ -104,12 +104,13 @@ async fn account_provider_exchange(
     if account.provider == "claude" {
         let session = session.ok_or(CatalogReadError::ProviderExchangeFailed)?;
         let account_key = account.key;
+        session
+            .ensure_session_async(&account_key)
+            .await
+            .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
         return studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/catalog_agent",
             move || {
-                session
-                    .ensure_session(&account_key)
-                    .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
                 studio_runtime_services::catalog_reads::account_session_exchange(
                     session.as_ref(),
                     &account_key,
@@ -378,19 +379,10 @@ async fn native_command_cancel(
         .account_session
         .clone()
         .ok_or_else(|| ApiError::dependency("provider-session/native-request"))?;
-    let scope = {
-        let port = port.clone();
-        let account = account.clone();
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/catalog_agent",
-            move || {
-                port.ensure_session(&account)
-                    .map_err(|_| ApiError::dependency("provider-session/account-session"))
-            },
-        )
+    let scope = port
+        .ensure_session_async(&account)
         .await
-        .map_err(|_| ApiError::internal())??
-    };
+        .map_err(|_| ApiError::dependency("provider-session/account-session"))?;
     if scope.account != account {
         return Err(ApiError::new(
             StatusCode::CONFLICT,

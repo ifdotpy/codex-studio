@@ -132,12 +132,7 @@ async fn ensure_session(
             "provider-session/account-session",
         ),
     )?;
-    let account = account.to_owned();
-    tokio::task::spawn_blocking(move || session.ensure_session(&account))
-        .await
-        .map_err(|_| {
-            studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
-        })??;
+    session.ensure_session_async(account).await?;
     Ok(())
 }
 
@@ -318,19 +313,43 @@ mod tests {
     impl studio_runtime_services::account_session_runtime::AccountSessionPort for EnsuredSession {
         fn ensure_session(
             &self,
-            account: &str,
+            _account: &str,
         ) -> Result<
             studio_runtime_services::account_session_runtime::ConnectionScope,
             studio_runtime_services::account_session_runtime::AccountSessionError,
         > {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(
-                studio_runtime_services::account_session_runtime::ConnectionScope {
-                    account: account.to_owned(),
-                    connection: "fixture-connection".into(),
-                    generation: 1,
-                },
+            Err(
+                studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                    "sync ensure must not be called",
+                ),
             )
+        }
+
+        fn ensure_session_async<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            studio_runtime_services::account_session_runtime::ConnectionScope,
+                            studio_runtime_services::account_session_runtime::AccountSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let account = account.to_owned();
+            Box::pin(async move {
+                Ok(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account,
+                        connection: "fixture-connection".into(),
+                        generation: 1,
+                    },
+                )
+            })
         }
     }
 

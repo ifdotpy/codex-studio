@@ -1084,15 +1084,9 @@ async fn wait_for_agent_catalog(
     }
     for (account, home, provider) in candidate_data.1 {
         let session = std::sync::Arc::clone(session);
-        let account_for_session = account.clone();
-        let ensured = tokio::time::timeout_at(
-            deadline,
-            tokio::task::spawn_blocking(move || session.ensure_session(&account_for_session)),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .is_some_and(|result| result.is_ok());
+        let ensured = tokio::time::timeout_at(deadline, session.ensure_session_async(&account))
+            .await
+            .is_ok_and(|result| result.is_ok());
         if !ensured {
             continue;
         }

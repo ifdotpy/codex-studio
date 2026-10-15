@@ -209,30 +209,17 @@ pub(crate) async fn restore(
             json!({"status":"restored","checkpoint":checkpoint.id}),
         )));
     }
-    let scope = {
-        let port = port.clone();
-        let account = account.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/checkpoints",
-            move || {
-                port.ensure_session(&account)
-                    .map_err(|_| ApiError::dependency("provider-session/account-session"))
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())?;
-        match result {
-            Ok(scope) => scope,
-            Err(error) => {
-                settle_restore_failure(
-                    &store,
-                    &operation_id,
-                    &agent_id,
-                    true,
-                    "Provider session outcome is unknown",
-                )?;
-                return Err(error);
-            }
+    let scope = match port.ensure_session_async(&account).await {
+        Ok(scope) => scope,
+        Err(_) => {
+            settle_restore_failure(
+                &store,
+                &operation_id,
+                &agent_id,
+                true,
+                "Provider session outcome is unknown",
+            )?;
+            return Err(ApiError::dependency("provider-session/account-session"));
         }
     };
     let method = if checkpoint

@@ -98,6 +98,15 @@ pub trait AccountSessionPort: Send + Sync {
             "provider-session/account-session",
         ))
     }
+    /// Async callers should use this method so retained session owners can be
+    /// awaited directly instead of crossing a blocking-pool/runtime bridge.
+    fn ensure_session_async<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ConnectionScope, AccountSessionError>> + Send + 'a>>
+    {
+        Box::pin(async move { self.ensure_session(account) })
+    }
     fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
         None
     }
@@ -646,6 +655,25 @@ impl AccountSessionPort for AccountSessionRuntime {
             ));
         }
         Ok(scope)
+    }
+
+    fn ensure_session_async<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<ConnectionScope, AccountSessionError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "provider-session/account-session",
+            ))?;
+            let scope = session.ensure_session(account.to_owned()).await?;
+            if scope.account != account {
+                return Err(AccountSessionError::Refused(
+                    "Provider session account mismatch",
+                ));
+            }
+            Ok(scope)
+        })
     }
 
     fn claude_control_session(

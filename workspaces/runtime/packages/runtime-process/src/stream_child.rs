@@ -1,5 +1,5 @@
 //! Owned, bounded pipe child. Callers supply an explicitly selected environment.
-//! Drop joins an owner whose private runtime awaits group termination and reaping.
+//! Drop signals an owner whose private runtime awaits group termination and reaping.
 //! Output ordering is per pipe. Completion is published only after both pipes drain.
 
 use std::collections::BTreeMap;
@@ -100,7 +100,7 @@ impl StreamChild {
         let (done_tx, done_rx) = watch::channel(None);
         let (ready_tx, ready_rx) = oneshot::channel();
         // The owner keeps its own runtime alive through kill + reap. Dropping an
-        // application runtime cannot discard cleanup, and dropping this handle joins it.
+        // application runtime cannot discard cleanup; the handle only signals it.
         let owner = std::thread::Builder::new()
             .name("stream-child".into())
             .spawn(move || {
@@ -231,10 +231,9 @@ impl StreamChild {
 impl Drop for StreamChild {
     fn drop(&mut self) {
         self.cancel.send_replace(true);
-        if let Some(owner) = self.owner.take() {
-            // Cleanup is awaited by the owner even when no application runtime exists.
-            let _cleanup = owner.join();
-        }
+        // Dropping a JoinHandle detaches the owner. It owns a private runtime and
+        // continues kill + reap cleanup without blocking the caller's executor.
+        drop(self.owner.take());
     }
 }
 
@@ -623,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_reaps_descendant_holding_pipe_after_application_runtime_shutdown() {
+    fn drop_does_not_wait_for_owner_and_owner_reaps_after_application_runtime_shutdown() {
         let root = tempfile::tempdir().expect("root");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -642,7 +641,23 @@ mod tests {
             Some(ChildEvent::Output { .. })
         ));
         drop(runtime);
-        drop(child); // Joins the owner, which awaits process-group kill and reap.
+        let drop_started = std::time::Instant::now();
+        drop(child);
+        assert!(drop_started.elapsed() < Duration::from_millis(100));
+        let wait_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("wait runtime");
+        let mut done = done;
+        wait_runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while done.borrow().is_none() {
+                    done.changed().await.expect("owner completion sender");
+                }
+            })
+            .await
+            .expect("owner reaps after handle drop");
+        });
         assert!(matches!(
             done.borrow().as_ref(),
             Some(Ok(ChildEvent::Exited {
