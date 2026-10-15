@@ -197,6 +197,7 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     assert_eq!(first["invitation"]["label"], receiver_identity["label"]);
 
     let retry = app
+        .clone()
         .oneshot(send("0123456789abcdefghijklmnopqrstuv"))
         .await
         .expect("recovery response");
@@ -208,6 +209,60 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     )
     .expect("retry invitation JSON");
     assert_eq!(retry, first, "the same logical ID recovers the same secret");
+
+    let name_body = serde_json::json!({"label":"Renamed receiver","requestId":"fake-server-name"});
+    let name_raw = serde_json::to_vec(&name_body).expect("rename body serializes");
+    let name_request_id = "fake-server-name";
+    let name_url = format!("{origin}/api/multi-server/v1/name");
+    let name_signed = MultiServerRequest {
+        server_id: receiver_identity["serverId"].as_str().expect("receiver ID"),
+        method: "POST",
+        url: &name_url,
+        request_id: name_request_id,
+        timestamp: now,
+        nonce: "fedcba9876543210fedcba9876543210",
+        body: &name_raw,
+    };
+    let name_headers = multi_server_signed_headers(&caller_signing, &name_signed, now)
+        .expect("fake caller signs rename request");
+    let mut name_builder = Request::builder()
+        .method("POST")
+        .uri("/api/multi-server/v1/name")
+        .header("host", "127.0.0.1:4000")
+        .header("x-forwarded-host", "receiver.fixture.ts.net")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-for", "100.64.0.2")
+        .header("tailscale-user-login", "owner@example.test")
+        .header("content-type", "application/json")
+        .header("content-length", name_raw.len().to_string());
+    for (name, value) in name_headers {
+        name_builder = name_builder.header(name, value);
+    }
+    let mut name_request = name_builder
+        .body(Body::from(name_raw))
+        .expect("signed rename request builds");
+    name_request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:4321"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback peer address"),
+    ));
+    let renamed = app
+        .oneshot(name_request)
+        .await
+        .expect("signed rename response");
+    let rename_status = renamed.status();
+    let rename_body = to_bytes(renamed.into_body(), 4096)
+        .await
+        .expect("renamed identity body");
+    assert_eq!(
+        rename_status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&rename_body)
+    );
+    let renamed: Value = serde_json::from_slice(&rename_body).expect("renamed identity JSON");
+    assert_eq!(renamed["label"], "Renamed receiver");
+
     let invite_count = receiver_store
         .read_transaction(|tx| {
             tx.query_row("SELECT count(*) FROM runtime_access_invites", [], |row| {

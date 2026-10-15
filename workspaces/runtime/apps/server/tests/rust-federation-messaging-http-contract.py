@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from codex_federation import _crypto, _request_bytes, _sign
+from codex_federation import _crypto, _message_bytes, _request_bytes, _sign
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend
 
 
@@ -50,15 +50,16 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
                             "whoisUser": None, "created": 1, "updated": 1}),
             ))
 
-    def headers(self, action, body, nonce):
+    def headers(self, action, body, nonce, peer_id=None):
         timestamp = int(time.time())
         raw = json.dumps(body, separators=(",", ":")).encode()
+        peer_id = peer_id or self.peer_id
         signature = _sign(
             self.remote["privateKey"],
             _request_bytes("POST", f"/api/federation/v1/{action}", timestamp, nonce, raw),
         )
         return {
-            "X-Studio-Federation-State": self.peer_id,
+            "X-Studio-Federation-State": peer_id,
             "X-Studio-Federation-Time": str(timestamp),
             "X-Studio-Federation-Nonce": nonce,
             "X-Studio-Federation-Signature": signature,
@@ -171,6 +172,77 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn(response.status, (400, 422), response.body[:1000])
         self.assertNotIn(b"Not implemented", response.body)
         self.assertEqual(self.backend.request("GET", "/api/federation/v1/message").status, 404)
+
+    def test_signed_message_and_pair_routes_accept_fake_peer_requests(self):
+        room_id = "federated:fake-room-invite"
+        now = int(time.time())
+        envelope = {
+            "protocol": 1,
+            "senderServer": self.peer_id,
+            "id": "fake-peer-room-invite",
+            "kind": "room-invite",
+            "room": room_id,
+            "payload": {
+                "room": room_id,
+                "participants": [{"id": "fake-remote-lead", "role": "lead", "name": "Fake lead"}],
+                "shareNames": False,
+                "shareStatus": False,
+            },
+            "created": now,
+            "timestamp": now,
+            "nonce": "fake-peer-inner-message-nonce-12345",
+        }
+        envelope["signature"] = _sign(self.remote["privateKey"], _message_bytes(envelope))
+        message = {"protocol": 1, "envelope": envelope}
+        response = self.backend.request(
+            "POST", "/api/federation/v1/message", body=message,
+            headers=self.headers("message", message, "fake-peer-message-request-12345"),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["result"]["messageId"], envelope["id"])
+        self.assertTrue(response.json()["result"]["accepted"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            self.assertEqual(database.execute(
+                "SELECT count(*) FROM runtime_federation_inbox WHERE message_id=?", (envelope["id"],)
+            ).fetchone()[0], 1)
+            self.assertEqual(database.execute(
+                "SELECT json_extract(record,'$.remoteMembers[0].id') FROM runtime_federation_rooms WHERE id=?",
+                (room_id,),
+            ).fetchone()[0], "fake-remote-lead")
+
+        invite = self.backend.request(
+            "POST", "/api/federation", body={
+                "action": "create_invite", "label": "Fake receiver",
+            }, headers=self.local_headers(),
+        )
+        self.assertEqual(invite.status, 200, invite.body[:1000])
+        invitation = invite.json()["invitation"]
+        pair_peer_id = "44444444-4444-4444-8444-444444444444"
+        pair = {
+            "protocol": 1,
+            "inviteId": invitation["inviteId"],
+            "token": invitation["token"],
+            "stateId": pair_peer_id,
+            "label": "Fake pairing peer",
+            "origin": "https://pair-peer.ts.net",
+            "publicKey": self.remote["publicKey"],
+        }
+        paired = self.backend.request(
+            "POST", "/api/federation/v1/pair", body=pair,
+            headers=self.headers("pair", pair, "fake-pair-request-nonce-12345", peer_id=pair_peer_id),
+        )
+        self.assertEqual(paired.status, 200, paired.body[:1000])
+        self.assertEqual(paired.json()["result"]["protocol"], 1)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored_peer = database.execute(
+                "SELECT record FROM runtime_federation_peers WHERE id=?", (pair_peer_id,)
+            ).fetchone()
+            stored_invite = database.execute(
+                "SELECT record FROM runtime_federation_invites WHERE id=?", (invitation["inviteId"],)
+            ).fetchone()
+        self.assertIsNotNone(stored_peer)
+        self.assertEqual(json.loads(stored_peer[0])["publicKey"], self.remote["publicKey"])
+        self.assertEqual(json.loads(stored_invite[0])["usedBy"], pair_peer_id)
 
 
 if __name__ == "__main__":
