@@ -372,6 +372,142 @@ fn authenticated_consumer(corpus: &Corpus) {
     )
     .expect("fixture operation");
     assert_eq!(receipt["accepted"], true);
+    let before_replay = counts(&store);
+    assert!(
+        effects::handle(
+            &store,
+            request(),
+            effects::OriginObservation::observed(None),
+            corpus.now()
+        )
+        .is_err(),
+        "reused request nonce is refused"
+    );
+    assert_eq!(counts(&store), before_replay, "reused nonce writes nothing");
+}
+
+#[test]
+fn federation_inbound_authentication_refusals_match_python() {
+    // Match codex_federation.py:543-655: freshness, trusted peer identity,
+    // signature, nonce replay, and whois ownership are checked before effects.
+    let corpus = Corpus::new();
+    let (_, signer) = corpus.store("auth-refusal-signer", true);
+    let identity = transport::load_federation_identity(&signer).expect("fixture operation");
+    let body =
+        serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
+            .expect("fixture operation");
+    let action = effects::FederationAction::Message;
+    let sign = |timestamp: i64, nonce: &str| {
+        identity.sign(&transport::federation_signing_bytes(
+            "POST",
+            action.path(),
+            timestamp,
+            nonce,
+            &body,
+        ))
+    };
+
+    let (_, store) = corpus.store("bad-request-signature", false);
+    let before = counts(&store);
+    let mut bad_signature = sign(corpus.now() as i64, "bad-authenticated-nonce-12345");
+    bad_signature.push('x');
+    assert!(
+        effects::handle(
+            &store,
+            effects::SignedRequest {
+                action,
+                peer_id: corpus.peer(),
+                timestamp: corpus.now() as i64,
+                nonce: "bad-authenticated-nonce-12345",
+                signature: &bad_signature,
+                raw: &body
+            },
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .is_err(),
+        "bad signature is refused"
+    );
+    assert_eq!(counts(&store), before, "bad signature writes nothing");
+
+    let (_, store) = corpus.store("stale-request-timestamp", false);
+    let before = counts(&store);
+    let stale = corpus.now() as i64 - 301;
+    let stale_nonce = "stale-authenticated-nonce-12345";
+    let stale_signature = sign(stale, stale_nonce);
+    assert!(
+        effects::handle(
+            &store,
+            effects::SignedRequest {
+                action,
+                peer_id: corpus.peer(),
+                timestamp: stale,
+                nonce: stale_nonce,
+                signature: &stale_signature,
+                raw: &body
+            },
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .is_err(),
+        "timestamp outside the five-minute window is refused"
+    );
+    assert_eq!(counts(&store), before, "stale timestamp writes nothing");
+
+    let (_, store) = corpus.store("wrong-request-peer", false);
+    let before = counts(&store);
+    let unknown_peer = "99999999-9999-4999-8999-999999999999";
+    let wrong_peer_nonce = "wrong-peer-authenticated-nonce-123";
+    let wrong_peer_signature = sign(corpus.now() as i64, wrong_peer_nonce);
+    assert!(
+        effects::handle(
+            &store,
+            effects::SignedRequest {
+                action,
+                peer_id: unknown_peer,
+                timestamp: corpus.now() as i64,
+                nonce: wrong_peer_nonce,
+                signature: &wrong_peer_signature,
+                raw: &body
+            },
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .is_err(),
+        "unknown peer identity is refused"
+    );
+    assert_eq!(counts(&store), before, "unknown peer writes nothing");
+
+    let (_, store) = corpus.store("wrong-whois-owner", false);
+    store
+        .transaction(|tx| {
+            let mut peer = Repo::record(tx, Table::Peer, corpus.peer(), "")?.expect("peer fixture");
+            peer["whoisUser"] = json!("owner@example.test");
+            Repo::put(tx, Table::Peer, corpus.peer(), "", &peer)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("set trusted whois owner");
+    let before = counts(&store);
+    let whois_nonce = "wrong-whois-authenticated-nonce-123";
+    let whois_signature = sign(corpus.now() as i64, whois_nonce);
+    assert!(
+        effects::handle(
+            &store,
+            effects::SignedRequest {
+                action,
+                peer_id: corpus.peer(),
+                timestamp: corpus.now() as i64,
+                nonce: whois_nonce,
+                signature: &whois_signature,
+                raw: &body
+            },
+            effects::OriginObservation::observed(Some("other@example.test".into())),
+            corpus.now(),
+        )
+        .is_err(),
+        "mismatched whois owner is refused"
+    );
+    assert_eq!(counts(&store), before, "wrong whois owner writes nothing");
 }
 
 #[test]
@@ -448,8 +584,119 @@ fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() {
         rows(&receiver, "runtime_federation_invites")[0]["status"],
         "used"
     );
+    let consumed_invite = rows(&receiver, "runtime_federation_invites")[0].clone();
+    assert_eq!(consumed_invite["usedBy"], peer_id);
     request("pair-nonce-retry-67890").expect("same invitation and peer are replay safe");
+    assert_eq!(
+        rows(&receiver, "runtime_federation_invites")[0],
+        consumed_invite
+    );
     assert!(request("pair-nonce-initial-12345").is_err());
+
+    let mut other_body = body.clone();
+    let other_peer = "55555555-5555-4555-8555-555555555555";
+    other_body["stateId"] = json!(other_peer);
+    let other_raw = transport::canonical_json(&other_body)
+        .expect("canonical alternate pair body")
+        .into_bytes();
+    let other_nonce = "used-invite-other-peer-nonce";
+    let other_signature = identity.sign(&transport::federation_signing_bytes(
+        "POST",
+        effects::FederationAction::Pair.path(),
+        corpus.now() as i64,
+        other_nonce,
+        &other_raw,
+    ));
+    let before_used_invite = counts(&receiver);
+    let peers_before = rows(&receiver, "runtime_federation_peers");
+    let invites_before = rows(&receiver, "runtime_federation_invites");
+    assert!(
+        effects::handle(
+            &receiver,
+            effects::SignedRequest {
+                action: effects::FederationAction::Pair,
+                peer_id: other_peer,
+                timestamp: corpus.now() as i64,
+                nonce: other_nonce,
+                signature: &other_signature,
+                raw: &other_raw
+            },
+            effects::OriginObservation::observed(Some("peer@example.test".into())),
+            corpus.now(),
+        )
+        .is_err(),
+        "a consumed invitation cannot pair a second peer"
+    );
+    assert_eq!(counts(&receiver), before_used_invite);
+    assert_eq!(rows(&receiver, "runtime_federation_peers"), peers_before);
+    assert_eq!(
+        rows(&receiver, "runtime_federation_invites"),
+        invites_before
+    );
+
+    let expired_id = "66666666-6666-4666-8666-666666666666";
+    let expired_token = "expired-fake-peer-invitation";
+    receiver
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_federation_invites(id,record) VALUES(?1,?2)",
+                params![
+                    expired_id,
+                    json!({
+                        "id": expired_id,
+                        "tokenHash": studio_runtime_store::sha256_hex(expired_token.as_bytes()),
+                        "created": corpus.now() - 1000.0,
+                        "expires": corpus.now() as i64 - 1,
+                        "status": "open",
+                        "expectedUser": "peer@example.test"
+                    })
+                    .to_string()
+                ],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("insert expired invitation");
+    let mut expired_body = body.clone();
+    expired_body["inviteId"] = json!(expired_id);
+    expired_body["token"] = json!(expired_token);
+    expired_body["stateId"] = json!("77777777-7777-4777-8777-777777777777");
+    let expired_raw = transport::canonical_json(&expired_body)
+        .expect("canonical expired pair body")
+        .into_bytes();
+    let expired_nonce = "expired-invite-authenticated-nonce";
+    let expired_signature = identity.sign(&transport::federation_signing_bytes(
+        "POST",
+        effects::FederationAction::Pair.path(),
+        corpus.now() as i64,
+        expired_nonce,
+        &expired_raw,
+    ));
+    let before_expired = counts(&receiver);
+    let peers_before = rows(&receiver, "runtime_federation_peers");
+    let invites_before = rows(&receiver, "runtime_federation_invites");
+    assert!(
+        effects::handle(
+            &receiver,
+            effects::SignedRequest {
+                action: effects::FederationAction::Pair,
+                peer_id: "77777777-7777-4777-8777-777777777777",
+                timestamp: corpus.now() as i64,
+                nonce: expired_nonce,
+                signature: &expired_signature,
+                raw: &expired_raw
+            },
+            effects::OriginObservation::observed(Some("peer@example.test".into())),
+            corpus.now(),
+        )
+        .is_err(),
+        "expired invitation is refused"
+    );
+    assert_eq!(counts(&receiver), before_expired);
+    assert_eq!(rows(&receiver, "runtime_federation_peers"), peers_before);
+    assert_eq!(
+        rows(&receiver, "runtime_federation_invites"),
+        invites_before
+    );
 }
 
 #[test]
@@ -634,6 +881,8 @@ struct PeerTransport<'a> {
     lose_once: bool,
     calls: usize,
     bad_receipt: Option<&'static str>,
+    bad_response_signature: bool,
+    link_advert: Option<&'static str>,
     cancel_after: Option<&'a std::sync::atomic::AtomicBool>,
     deadlines: Vec<Instant>,
 }
@@ -695,6 +944,13 @@ impl delivery::FederationTransport for PeerTransport<'_> {
         } else {
             response
         };
+        let mut response = response;
+        if self.bad_response_signature {
+            let signature = response["signature"]
+                .as_str()
+                .expect("signed response has signature");
+            response["signature"] = json!(format!("{signature}x"));
+        }
         self.calls += 1;
         if let Some(cancelled) = self.cancel_after {
             cancelled.store(true, std::sync::atomic::Ordering::Release);
@@ -705,7 +961,7 @@ impl delivery::FederationTransport for PeerTransport<'_> {
         }
         Ok(delivery::FederationTransportResponse {
             body: serde_json::to_vec(&response).expect("fixture operation"),
-            link_advert: None,
+            link_advert: self.link_advert.map(str::to_owned),
         })
     }
 }
@@ -751,6 +1007,8 @@ fn lost_push_response(corpus: &Corpus) {
         lose_once: true,
         calls: 0,
         bad_receipt: None,
+        bad_response_signature: false,
+        link_advert: None,
         cancel_after: None,
         deadlines: Vec::new(),
     };
@@ -797,6 +1055,8 @@ fn lost_push_response(corpus: &Corpus) {
         lose_once: false,
         calls: 0,
         bad_receipt: None,
+        bad_response_signature: false,
+        link_advert: None,
         cancel_after: None,
         deadlines: Vec::new(),
     };
@@ -815,6 +1075,91 @@ fn lost_push_response(corpus: &Corpus) {
         rows(&receiver, "runtime_federation_inbox")[0]["ack"],
         "confirmed"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn bad_federation_response_signature_stays_unknown_and_does_not_learn_route() {
+    use std::os::unix::net::UnixListener;
+
+    let corpus = Corpus::new();
+    let (_, sender) = corpus.store("bad-response-signature-sender", false);
+    let (_, receiver) = corpus.store("bad-response-signature-receiver", true);
+    delivery::send_message(
+        &sender,
+        "lead",
+        corpus.room(),
+        "message with an unverified response",
+        "bad-response-signature-key",
+        corpus.now(),
+    )
+    .expect("queue message");
+
+    let socket_path = sender.root().join("multi-server").join("peer-link.sock");
+    std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
+        .expect("create socket directory");
+    let listener = UnixListener::bind(&socket_path).expect("bind peer-link fixture");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+
+    let local = corpus.data["seed"]["local"]["stateId"]
+        .as_str()
+        .expect("local identity");
+    let mut fake = PeerTransport {
+        receiver: &receiver,
+        sender: local,
+        now: corpus.now(),
+        lose_once: false,
+        calls: 0,
+        bad_receipt: None,
+        bad_response_signature: true,
+        link_advert: Some("100.80.1.2:443"),
+        cancel_after: None,
+        deadlines: Vec::new(),
+    };
+    assert!(
+        delivery::pump_peer(
+            &sender,
+            corpus.peer(),
+            corpus.now(),
+            &mut fake,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .is_err()
+    );
+    assert_eq!(fake.calls, 1);
+
+    let queued = rows(&sender, "runtime_federation_outbox");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0]["status"], "queued");
+    assert_eq!(queued[0]["attempts"], 1);
+    assert_eq!(
+        queued[0]["error"],
+        "Federation transport did not return a verified receipt"
+    );
+    assert_eq!(rows(&receiver, "runtime_federation_inbox").len(), 1);
+
+    let peer = &corpus.data["seed"]["peer"];
+    let client = transport::PeerLinkClient::new(sender.root());
+    assert!(
+        client
+            .exchange(
+                corpus.peer(),
+                peer["publicKey"].as_str().expect("peer public key"),
+                "GET",
+                "/",
+                &[],
+                &[],
+                Duration::from_millis(10),
+            )
+            .expect("no route learned from unverified response")
+            .is_none()
+    );
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
 }
 
 fn outbound_rollback(corpus: &Corpus) {
@@ -936,6 +1281,8 @@ fn delivery_failures(corpus: &Corpus) {
             } else {
                 None
             },
+            bad_response_signature: false,
+            link_advert: None,
             cancel_after: if kind == "cancel" {
                 Some(&cancelled)
             } else {
