@@ -463,6 +463,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "AnnotationReceipt",
         "CheckpointSummary",
         "CheckpointsResponse",
+        "CreateInvite",
         "ComplaintRecordResponse",
         "FederationParticipant",
         "JsonObjectResponse",

@@ -97,6 +97,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     };
     let credentials = state.credentials;
     let public_origin = state.public_origin;
+    let whoami = state.tailscale_whoami;
     if request.method() == "OPTIONS" {
         const ALLOWED: &str = "content-type, accept, x-canvas-workspace, x-studio-api-schema, x-codex-sync-protocol, last-event-id, if-none-match, cache-control, range, x-studio-client, x-studio-server, x-studio-timestamp, x-studio-nonce, x-studio-request-id, x-studio-signature";
         let requested = request
@@ -162,6 +163,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             | ("POST", multi_server_auth::PAIR_PATH)
             | ("POST", multi_server_auth::AUTO_PAIR_PATH)
             | ("POST", multi_server_auth::NAME_PATH)
+            | ("POST", "/api/multi-server")
             | ("POST", "/api/servers/orchestration")
     );
     if !supported {
@@ -254,11 +256,13 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     };
     let is_orchestration = request.is_orchestration();
     let is_name = request.is_name();
+    let is_management_invite = request.is_management_invite();
     let advertise_link = is_orchestration
         || request.is_status()
         || request.is_pairing()
         || request.is_auto_pairing()
-        || is_name;
+        || is_name
+        || is_management_invite;
     let request_id = request.request_id().to_owned();
     let driver = state.orchestration_driver;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -291,6 +295,30 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 credentials
                     .identity(&store, public_origin.as_deref())
                     .map_err(credential_error)
+            } else if is_management_invite {
+                let actor = boundary
+                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
+                let identity = credentials
+                    .identity(&store, public_origin.as_deref())
+                    .map_err(credential_error)?;
+                let owner = whoami
+                    .and_then(|probe| probe())
+                    .and_then(|value| super::multi_server::tailscale_login(&value))
+                    .ok_or_else(|| {
+                        multi_server_auth::refused(
+                            503,
+                            "identity_unavailable",
+                            "The Tailscale owner identity is unavailable",
+                        )
+                    })?;
+                studio_runtime_services::multi_server::create_invite(
+                    &store,
+                    &identity,
+                    request.body(),
+                    &actor,
+                    Some(&owner),
+                )
+                .map_err(map_invite_error)
             } else {
                 boundary.handle_incoming(&store, &request, &address, &logins, now)
             }
@@ -305,7 +333,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             }
             response
         }
-        Ok(Ok(value)) => match validate_response(&method, is_name, value) {
+        Ok(Ok(value)) => match validate_response(&method, is_name, is_management_invite, value) {
             Ok(v) => {
                 let mut response = Json(v).into_response();
                 if advertise_link {
@@ -317,6 +345,28 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         },
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+fn map_invite_error(error: studio_runtime_services::multi_server::MultiServerError) -> AccessError {
+    use studio_runtime_services::multi_server::MultiServerError;
+    match error {
+        MultiServerError::Conflict(_) => multi_server_auth::refused(
+            409,
+            "request_conflict",
+            "The request ID has different content",
+        ),
+        MultiServerError::Refused(_) => multi_server_auth::refused(
+            400,
+            "invalid_invite_request",
+            "The invitation request is invalid",
+        ),
+        MultiServerError::NeedsSignedRequest => {
+            multi_server_auth::refused(403, "server_required", "A paired server is required")
+        }
+        MultiServerError::Store(_) | MultiServerError::Sqlite(_) => {
+            multi_server_auth::refused(503, "invite_unavailable", "The invitation is unavailable")
+        }
     }
 }
 
@@ -334,14 +384,19 @@ fn add_link_advert(response: &mut Response, advert: Option<&str>) {
 enum IncomingMultiServerResponse {
     Identity(crate::generated::ServerIdentityResponse),
     Pair(crate::generated::DevicePairResponse),
+    Invite(crate::generated::InvitationResponse),
 }
 
 fn validate_response(
     method: &str,
     is_name: bool,
+    is_management_invite: bool,
     value: serde_json::Value,
 ) -> Result<IncomingMultiServerResponse, crate::error::ApiError> {
-    if method == "GET" || is_name {
+    if is_management_invite {
+        super::generated_json::<crate::generated::InvitationResponse>(value)
+            .map(IncomingMultiServerResponse::Invite)
+    } else if method == "GET" || is_name {
         super::generated_json::<crate::generated::ServerIdentityResponse>(value)
             .map(IncomingMultiServerResponse::Identity)
     } else {
@@ -366,7 +421,7 @@ mod tests {
         });
 
         assert!(matches!(
-            validate_response("POST", true, response),
+            validate_response("POST", true, false, response),
             Ok(IncomingMultiServerResponse::Identity(_))
         ));
     }
@@ -385,7 +440,7 @@ mod tests {
         });
 
         assert!(matches!(
-            validate_response("POST", false, response),
+            validate_response("POST", false, false, response),
             Ok(IncomingMultiServerResponse::Pair(_))
         ));
     }

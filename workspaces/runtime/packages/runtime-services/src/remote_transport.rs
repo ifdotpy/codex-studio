@@ -769,6 +769,17 @@ fn exchange_multi_server_with(
     )?;
     let target = canonical_request_target(input.url)?;
     let fingerprint = multi_server_request_fingerprint_normalized(&method, input.url, input.body)?;
+    let invitation_response = method == "POST"
+        && target == "/api/multi-server"
+        && serde_json::from_slice::<Value>(input.body)
+            .ok()
+            .and_then(|body| {
+                body.get("action")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("create_invite");
     let reserved = store.transaction_with(|transaction| {
         RemoteTransportRepository::reserve_multi_server_request(
             transaction,
@@ -779,6 +790,10 @@ fn exchange_multi_server_with(
         )
         .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
     })?;
+    let replay_redacted = matches!(
+        &reserved,
+        studio_runtime_store::OutboundReservation::Redacted
+    );
     match reserved {
         studio_runtime_store::OutboundReservation::Complete(value) => {
             let bytes =
@@ -793,6 +808,7 @@ fn exchange_multi_server_with(
                 key: format!("{}/{}", input.server_id, input.request_id),
             });
         }
+        studio_runtime_store::OutboundReservation::Redacted if invitation_response => {}
         studio_runtime_store::OutboundReservation::Redacted => {
             return Ok(serde_json::json!({"outcome":"redacted"}));
         }
@@ -843,38 +859,29 @@ fn exchange_multi_server_with(
         return Ok(value);
     }
 
-    let invitation_response = method == "POST"
-        && target == "/api/multi-server"
-        && serde_json::from_slice::<Value>(input.body)
-            .ok()
-            .and_then(|body| {
-                body.get("action")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .as_deref()
-            == Some("create_invite");
-    store.transaction_with(|transaction| {
-        if invitation_response {
-            RemoteTransportRepository::redact_multi_server_request(
-                transaction,
-                input.server_id,
-                input.request_id,
-                &fingerprint,
-                now as f64,
-            )
-        } else {
-            RemoteTransportRepository::complete_multi_server_request(
-                transaction,
-                input.server_id,
-                input.request_id,
-                &fingerprint,
-                &value,
-                now as f64,
-            )
-        }
-        .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
-    })?;
+    if !replay_redacted {
+        store.transaction_with(|transaction| {
+            if invitation_response {
+                RemoteTransportRepository::redact_multi_server_request(
+                    transaction,
+                    input.server_id,
+                    input.request_id,
+                    &fingerprint,
+                    now as f64,
+                )
+            } else {
+                RemoteTransportRepository::complete_multi_server_request(
+                    transaction,
+                    input.server_id,
+                    input.request_id,
+                    &fingerprint,
+                    &value,
+                    now as f64,
+                )
+            }
+            .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
+        })?;
+    }
     Ok(value)
 }
 
@@ -2140,6 +2147,83 @@ pub(crate) mod tests {
             Err(super::RemoteTransportError::ExchangeUnknown)
         ));
         assert_eq!(sends, 1, "unknown request identity is never sent again");
+        drop(store);
+        std::fs::remove_dir_all(root).expect("temporary state is removed");
+    }
+
+    #[test]
+    fn redacted_invitation_retry_reuses_the_same_request_and_recovers_its_secret() {
+        let (root, store) = runtime_store_fixture();
+        let identity = identity();
+        let public_key = spki_pem();
+        let body = br#"{"action":"create_invite","requestId":"invite-request"}"#;
+        let first_input = MultiServerExchangeInput {
+            server_id: "server-peer",
+            method: "POST",
+            url: "https://peer.example/api/multi-server",
+            request_id: "invite-request",
+            timestamp: 1_700_000_000,
+            nonce: "abcdefghijklmnopqrstuvwxyz012345",
+            body,
+            expected_public_key: &public_key,
+            timeout: Duration::from_secs(2),
+        };
+        let response = serde_json::to_vec(&json!({
+            "serverId":"server-peer",
+            "publicKey":public_key,
+            "invitation":{"serverId":"server-peer","token":"fixture-secret"},
+            "expires":1_700_000_900
+        }))
+        .expect("fixture invitation serializes");
+        let mut sends = 0;
+        let first = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &first_input,
+            1_700_000_000,
+            |_, _, headers, request_body, _, _| {
+                sends += 1;
+                assert_eq!(request_body, body);
+                assert!(headers.iter().any(|(name, value)| {
+                    *name == "X-Studio-Request-Id" && *value == "invite-request"
+                }));
+                Ok(super::HttpResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: response.clone(),
+                })
+            },
+        )
+        .expect("first invitation response is saved redacted");
+        drop(store);
+
+        let store = RuntimeStore::open(Some(&root)).expect("redacted request survives restart");
+        let retry_input = MultiServerExchangeInput {
+            nonce: "0123456789abcdefghijklmnopqrstuv",
+            ..first_input
+        };
+        let retry = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &retry_input,
+            1_700_000_000,
+            |_, _, headers, request_body, _, _| {
+                sends += 1;
+                assert_eq!(request_body, body);
+                assert!(headers.iter().any(|(name, value)| {
+                    *name == "X-Studio-Request-Id" && *value == "invite-request"
+                }));
+                Ok(super::HttpResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: response.clone(),
+                })
+            },
+        )
+        .expect("same logical invitation retrieves its receiver-saved response");
+        assert_eq!(retry, first);
+        assert_eq!(retry["invitation"]["token"], "fixture-secret");
+        assert_eq!(sends, 2);
         drop(store);
         std::fs::remove_dir_all(root).expect("temporary state is removed");
     }

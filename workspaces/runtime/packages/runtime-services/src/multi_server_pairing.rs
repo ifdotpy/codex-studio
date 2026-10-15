@@ -140,7 +140,7 @@ impl MultiServerBoundary {
         logins: &[String],
         now: f64,
     ) -> Result<String, AccessError> {
-        if !(request.is_orchestration() || request.is_name())
+        if !(request.is_orchestration() || request.is_name() || request.is_management_invite())
             || text(request.body(), "requestId") != request.request_id()
         {
             return Err(refused(

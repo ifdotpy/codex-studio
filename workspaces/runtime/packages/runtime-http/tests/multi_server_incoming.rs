@@ -8,7 +8,24 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use std::sync::{Arc, atomic::Ordering};
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::multi_server_auth::{AccessError, OwnerObservation};
+use studio_runtime_services::multi_server_pairing::{MultiServerBoundary, OwnerLookup};
+use studio_runtime_services::remote_transport::{
+    MultiServerRequest, load_multi_server_identity, multi_server_signed_headers,
+};
 use tower::ServiceExt;
+
+struct FixtureOwner;
+impl OwnerLookup for FixtureOwner {
+    fn observe(
+        &self,
+        _: &str,
+        _: &[String],
+        _: Option<&str>,
+    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
+        Ok((common::owner(), None))
+    }
+}
 
 fn incoming(case: &Value) -> Request<Body> {
     let raw = case["raw"].as_str().expect("raw");
@@ -34,6 +51,170 @@ fn incoming(case: &Value) -> Request<Body> {
             .expect("address"),
     ));
     request
+}
+
+#[tokio::test]
+async fn paired_fake_servers_create_and_recover_the_same_invitation() {
+    let caller_root = tempfile::tempdir().expect("caller state root");
+    let caller_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(caller_root.path()))
+            .expect("caller store opens"),
+    );
+    let caller_credentials =
+        Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
+    let caller_identity = caller_credentials
+        .identity(&caller_store, Some("https://caller.fixture.ts.net"))
+        .expect("caller identity exists");
+    let caller_signing =
+        load_multi_server_identity(caller_root.path()).expect("caller signing identity loads");
+
+    let receiver_root = tempfile::tempdir().expect("receiver state root");
+    let receiver_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(receiver_root.path()))
+            .expect("receiver store opens"),
+    );
+    let receiver_credentials =
+        Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
+    let origin = "https://receiver.fixture.ts.net";
+    let receiver_identity = receiver_credentials
+        .identity(&receiver_store, Some(origin))
+        .expect("receiver identity exists");
+    receiver_store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![
+                    caller_identity["serverId"].as_str().expect("caller ID"),
+                    serde_json::json!({
+                        "id":caller_identity["serverId"],
+                        "clientId":caller_identity["serverId"],
+                        "kind":"server",
+                        "status":"paired",
+                        "label":caller_identity["label"],
+                        "created":1,
+                        "publicKey":caller_identity["publicKey"],
+                        "origin":"https://caller.fixture.ts.net",
+                        "tailscaleUser":"owner@example.test"
+                    })
+                    .to_string(),
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("receiver trusts the paired fake server");
+
+    let boundary = MultiServerBoundary::new(receiver_identity.clone(), Arc::new(FixtureOwner))
+        .expect("receiver boundary is ready");
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        receiver_root.path().display().to_string(),
+        4000,
+        Some(origin.into()),
+        Some(Arc::clone(&receiver_store)),
+        None,
+    )
+    .with_credentials(Arc::clone(&receiver_credentials))
+    .with_multi_server_boundary(Arc::new(boundary))
+    .with_tailscale_whoami(Arc::new(|| {
+        Some(serde_json::json!({"user":"owner@example.test"}))
+    }));
+    let app = router(state).expect("receiver router");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "action":"create_invite",
+        "requestId":"fake-server-invite",
+        "label":null
+    }))
+    .expect("management body serializes");
+    let url = format!("{origin}/api/multi-server");
+
+    let send = |nonce: &'static str| {
+        let signed = MultiServerRequest {
+            server_id: receiver_identity["serverId"].as_str().expect("receiver ID"),
+            method: "POST",
+            url: &url,
+            request_id: "fake-server-invite",
+            timestamp: now,
+            nonce,
+            body: &raw,
+        };
+        let signed_headers = multi_server_signed_headers(&caller_signing, &signed, now)
+            .expect("fake caller signs request");
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/multi-server")
+            .header("host", "127.0.0.1:4000")
+            .header("x-forwarded-host", "receiver.fixture.ts.net")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "100.64.0.2")
+            .header("tailscale-user-login", "owner@example.test")
+            .header("content-type", "application/json")
+            .header("content-length", raw.len().to_string());
+        for (name, value) in signed_headers {
+            builder = builder.header(name, value);
+        }
+        let mut request = builder
+            .body(Body::from(raw.clone()))
+            .expect("signed request builds");
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:4321"
+                .parse::<std::net::SocketAddr>()
+                .expect("loopback peer address"),
+        ));
+        request
+    };
+
+    let first = app
+        .clone()
+        .oneshot(send("abcdefghijklmnopqrstuvwxyz012345"))
+        .await
+        .expect("first fake-server response");
+    let first_status = first.status();
+    let first_body = to_bytes(first.into_body(), 16 * 1024)
+        .await
+        .expect("first invitation body");
+    assert_eq!(
+        first_status,
+        StatusCode::OK,
+        "{}; receiver state: {}",
+        String::from_utf8_lossy(&first_body),
+        common::rows(&receiver_store)
+    );
+    serde_json::from_slice::<studio_runtime_http::generated::InvitationResponse>(&first_body)
+        .expect("signed invitation response matches the generated contract");
+    let first: Value = serde_json::from_slice(&first_body).expect("first invitation JSON");
+    assert_eq!(
+        first["invitation"]["serverId"],
+        receiver_identity["serverId"]
+    );
+    assert_eq!(first["invitation"]["label"], receiver_identity["label"]);
+
+    let retry = app
+        .oneshot(send("0123456789abcdefghijklmnopqrstuv"))
+        .await
+        .expect("recovery response");
+    assert_eq!(retry.status(), StatusCode::OK);
+    let retry: Value = serde_json::from_slice(
+        &to_bytes(retry.into_body(), 16 * 1024)
+            .await
+            .expect("retry invitation body"),
+    )
+    .expect("retry invitation JSON");
+    assert_eq!(retry, first, "the same logical ID recovers the same secret");
+    let invite_count = receiver_store
+        .read_transaction(|tx| {
+            tx.query_row("SELECT count(*) FROM runtime_access_invites", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(studio_runtime_store::StoreError::from)
+        })
+        .expect("invitation count reads");
+    assert_eq!(invite_count, 1);
 }
 #[tokio::test]
 async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write() {

@@ -247,17 +247,6 @@ async fn manage(
             "runtime-http/routes/multi_server",
             move || {
                 let action = body["action"].as_str().unwrap_or_default();
-                if action == "alias"
-                    && !credentials
-                        .is_local_target(&store, body["serverId"].as_str().unwrap_or_default())
-                        .map_err(map_credential_error)?
-                {
-                    return Err(unavailable_for(
-                        "POST",
-                        "/api/multi-server",
-                        MANAGEMENT_DEPENDENCIES,
-                    ));
-                }
                 if action == "name" {
                     let target = body["serverId"].as_str().unwrap_or_default();
                     if credentials
@@ -311,7 +300,7 @@ async fn manage(
     ))
 }
 
-fn tailscale_login(value: &Value) -> Option<String> {
+pub(super) fn tailscale_login(value: &Value) -> Option<String> {
     value
         .get("ownerLogin")
         .or_else(|| value.get("user"))

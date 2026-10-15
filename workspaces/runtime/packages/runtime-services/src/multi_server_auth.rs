@@ -178,6 +178,10 @@ impl SignedRequest {
         if request.is_name() {
             schema("RenameServer", &request.body)?;
         }
+        if request.method == "POST" && request.target.split('?').next() == Some("/api/multi-server")
+        {
+            schema("CreateInvite", &request.body)?;
+        }
         if request.is_auto_pairing()
             || (request.is_pairing() && text(&request.body, "kind") == "server")
         {
@@ -211,6 +215,11 @@ impl SignedRequest {
     }
     pub fn is_name(&self) -> bool {
         self.method == "POST" && self.target.split('?').next() == Some(NAME_PATH)
+    }
+    pub fn is_management_invite(&self) -> bool {
+        self.method == "POST"
+            && self.target.split('?').next() == Some("/api/multi-server")
+            && text(&self.body, "action") == "create_invite"
     }
     pub fn is_orchestration(&self) -> bool {
         self.method == "POST" && self.target.split('?').next() == Some("/api/servers/orchestration")
