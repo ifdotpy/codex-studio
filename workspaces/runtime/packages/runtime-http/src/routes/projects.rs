@@ -208,8 +208,6 @@ const PROJECT_WRITE_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("cross-server-driver/project-location-write"),
     Dependency::new("cross-server-driver/project-registration"),
 ];
-const LOCATION_READ_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("cross-server-driver/project-location-read")];
 const PEER_TEAM_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("cross-server-driver/peer-team-transport")];
 
@@ -223,7 +221,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/project-locations",
-            OperationStatus::partial(&LOCATION_READ_DEPENDENCIES),
+            OperationStatus::Implemented,
             project_locations,
         ),
         post(
@@ -309,6 +307,53 @@ async fn project_locations(
 ) -> Result<Json<crate::generated::ProjectLocationQueryResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let query = Value::Object((*query.into_typed()).clone());
+    let remote_request = {
+        let store = store.clone();
+        let query = query.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects/prepare-remote-location",
+            move || remote_location_request(&store, &query),
+        )
+        .await
+        .map_err(|_| ApiError::internal())??
+    };
+    if let Some((server, action, payload)) = remote_request {
+        let driver = state.orchestration_driver.ok_or_else(ApiError::internal)?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let now = studio_runtime_services::event_write::unix_time()
+            .map_err(|_| ApiError::internal())? as i64;
+        let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects/remote-location",
+            move || driver.exchange(&server, &action, &payload, &request_id, now),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                error.to_string(),
+            )
+        })?;
+        let value = match outcome {
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Applied(
+                value,
+            ) => value,
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(_) => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "The paired server could not read this project folder",
+                ));
+            }
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown => {
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The paired server read outcome is unknown",
+                ));
+            }
+        };
+        return super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value)
+            .map(Json);
+    }
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/projects",
         move || projects::location_query(&store, &query).map_err(projects_error),
@@ -316,6 +361,92 @@ async fn project_locations(
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value).map(Json)
+}
+
+fn remote_location_request(
+    store: &studio_runtime_store::RuntimeStore,
+    query: &Value,
+) -> Result<Option<(String, String, Value)>, ApiError> {
+    let requested = query
+        .get("server")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let local = store.local_server_id().map_err(ApiError::stored)?;
+    let server = if requested == "local" {
+        local.as_deref().unwrap_or_default()
+    } else {
+        requested
+    };
+    if server.is_empty() || local.as_deref() == Some(server) {
+        return Ok(None);
+    }
+    let project_id = query
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
+    let db = store.read().map_err(ApiError::stored)?;
+    let project = studio_runtime_store::ProjectsRepository::get(&db, project_id)
+        .map_err(ApiError::stored)?
+        .map(|(_, value)| value)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
+    drop(db);
+    let action = if query.get("action").and_then(Value::as_str) == Some("matches") {
+        let origin = project
+            .get("locations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find_map(|row| {
+                row.get("gitOrigin")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                project
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.starts_with("project:"))
+                    .and_then(|path| {
+                        studio_runtime_services::projects::peer_location_info(path).ok()
+                    })
+                    .and_then(|value| {
+                        value
+                            .get("gitOrigin")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+            })
+            .ok_or_else(|| {
+                ApiError::new(StatusCode::BAD_REQUEST, "The project has no Git origin")
+            })?;
+        (
+            "location_matches".to_owned(),
+            json!({"origin":origin,"cwd":query.get("path")}),
+        )
+    } else {
+        let path = query
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .or_else(|| {
+                project
+                    .get("locations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find(|row| row.get("serverId").and_then(Value::as_str) == Some(server))
+                    .and_then(|row| row.get("path").and_then(Value::as_str))
+            })
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This server has no folder for the project",
+                )
+            })?;
+        ("location_info".to_owned(), json!({"cwd":path}))
+    };
+    Ok(Some((server.to_owned(), action.0, action.1)))
 }
 
 async fn peer_teams(
@@ -431,7 +562,6 @@ inventory::submit! {
         dependencies: &[
             "cross-server-driver/local-identity",
             "cross-server-driver/peer-team-transport",
-            "cross-server-driver/project-location-read",
             "cross-server-driver/project-location-write",
             "cross-server-driver/project-registration",
             "provider-session/model-list",

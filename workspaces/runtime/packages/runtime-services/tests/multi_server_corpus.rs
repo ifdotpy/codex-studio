@@ -206,6 +206,88 @@ fn received_remote_event_replays_cached_receipt_after_restart_without_duplicate_
 }
 
 #[test]
+fn paired_project_location_read_uses_the_fake_peer_transport() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            Err(refused(503, "unused", "peer transport not expected"))
+        }
+    }
+    struct FakePeer(Arc<OrchestrationDriver>);
+    impl PairedTransport for FakePeer {
+        fn exchange(
+            &self,
+            server: &str,
+            envelope: &Value,
+            _: Duration,
+        ) -> Result<Value, AccessError> {
+            assert_eq!(server, "peer-server");
+            let key = envelope["requestId"]
+                .as_str()
+                .expect("stable request identity");
+            Ok(self.0.receive("local-server", envelope, 100)?.to_value(key))
+        }
+    }
+
+    let (_peer_root, peer_store) = store();
+    peer_store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES('local-server',?1)",
+                [json!({"id":"local-server","clientId":"local-client","kind":"server","label":"Fake local peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("pair reciprocal fake peer");
+    let peer = Arc::new(OrchestrationDriver::new(
+        Arc::clone(&peer_store),
+        Arc::new(NoTransport),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&peer_store))),
+    ));
+    let (local_root, local_store) = store();
+    local_store.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
+            [json!({"id":"peer-server","clientId":"peer-client","kind":"server","label":"Fake peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
+        )?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).expect("pair fake peer");
+    let local = OrchestrationDriver::new(
+        Arc::clone(&local_store),
+        Arc::new(FakePeer(peer)),
+        Arc::new(RuntimeOrchestrationEffects::new(local_store)),
+    );
+    let folder = local_root.path().join("remote-project");
+    std::fs::create_dir_all(folder.join(".git")).expect("fake remote project directory");
+    std::fs::write(
+        folder.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://example.invalid/team/repo.git\n",
+    )
+    .expect("fake Git origin");
+    let outcome = local
+        .exchange(
+            "peer-server",
+            "location_info",
+            &json!({"cwd":folder.to_string_lossy()}),
+            "project-location-read-1",
+            100,
+        )
+        .expect("fake remote location read");
+    let ExchangeOutcome::Applied(value) = outcome else {
+        panic!("expected applied location read")
+    };
+    assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
+    assert_eq!(value["matches"], json!([]));
+}
+
+#[test]
 fn moved_worker_send_reaches_a_local_descendant_once() {
     use std::sync::Arc;
     use std::time::Duration;

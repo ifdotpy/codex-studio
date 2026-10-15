@@ -36,19 +36,28 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         account_key: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>,
-    > {
+    >{
         Box::pin(async move {
-            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             use studio_runtime_services::provider_callbacks::ManagedCreationAccountRead;
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             let identity = DriverManagedAccountRead(self.accounts.as_ref())
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref()) else {
+            let (Some(home), Some(provider)) =
+                (account.home.as_deref(), account.provider.as_deref())
+            else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
-            match self.catalog.service.wait_for_admission_catalog(account_key, home, provider).await {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+            match self
+                .catalog
+                .service
+                .wait_for_admission_catalog(account_key, home, provider)
+                .await
+            {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -546,12 +555,9 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 8] = [
+    const LEAD_DEPENDENCIES: [Dependency; 5] = [
         Dependency::new("account-driver/unavailable"),
-        Dependency::new("cross-server-driver/local-identity"),
-        Dependency::new("cross-server-driver/project-binding"),
         Dependency::new("provider-session/model-list"),
-        Dependency::new("project-driver/folder-selection"),
         Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
@@ -905,6 +911,7 @@ fn operation_error(error: OperationError) -> ApiError {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
     }
     let status = match &error {
+        OperationError::Forbidden(_) => StatusCode::FORBIDDEN,
         OperationError::Unavailable(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_))
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
@@ -932,11 +939,8 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "account-driver/unavailable",
-            "cross-server-driver/local-identity",
-            "cross-server-driver/project-binding",
             "provider-session/model-list",
             "provider-session/title-generation",
-            "project-driver/folder-selection",
             "worker-driver/settings-catalog",
             "workspace-state/image-workspace",
             "workspace-state/vm-workspace",
