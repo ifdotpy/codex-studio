@@ -1029,6 +1029,10 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
             |row| row.get(0),
         )
         .unwrap();
+    assert_eq!(
+        status_before_restart, "uncertain",
+        "shutdown must retain the unknown submitted radio turn as uncertain"
+    );
     let mut restarted =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
             .await
