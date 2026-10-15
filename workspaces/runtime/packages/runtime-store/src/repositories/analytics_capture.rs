@@ -182,13 +182,74 @@ impl RuntimeStore {
     where
         E: From<StoreError>,
     {
-        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let mut db = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let diagnostics_enabled =
+            crate::DIAGNOSTICS_ENABLED.load(std::sync::atomic::Ordering::Acquire);
+        let waiting = diagnostics_enabled.then(std::time::Instant::now);
+        let mut did_wait = false;
+        let writer = match self.writer.try_lock() {
+            Ok(writer) => writer,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                did_wait = true;
+                let waiters = self
+                    .writer_waiters
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                self.writer_waiter_peak
+                    .fetch_max(waiters, std::sync::atomic::Ordering::Relaxed);
+                let writer = match self.writer.lock() {
+                    Ok(writer) => writer,
+                    Err(_) => {
+                        self.writer_waiters
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        return Err(StoreError::WriterPoisoned.into());
+                    }
+                };
+                self.writer_waiters
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                writer
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(StoreError::WriterPoisoned.into());
+            }
+        };
+        let wait = waiting.map_or(std::time::Duration::ZERO, |start| start.elapsed());
+        if diagnostics_enabled {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterAdmission {
+                wait,
+                waited: did_wait,
+                waiting_threads: self
+                    .writer_waiters
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                peak_waiters: self
+                    .writer_waiter_peak
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            });
+        }
+        let holding = diagnostics_enabled.then(std::time::Instant::now);
+        let mut db = self
+            .analytics
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(StoreError::from)?;
         let result = operation(&tx, &writer)?;
+        let commit_started = diagnostics_enabled.then(std::time::Instant::now);
         tx.commit().map_err(StoreError::CommitOutcomeUnknown)?;
+        if let Some(started) = commit_started {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
+                database: crate::StoreDatabaseKind::Analytics,
+                elapsed: started.elapsed(),
+            });
+        }
+        drop(db);
+        drop(writer);
+        if let Some(started) = holding {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
+                wait,
+                hold: started.elapsed(),
+            });
+        }
         Ok(result)
     }
 }
@@ -223,7 +284,8 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
             |r| r.get(0),
         )?;
         if exists {
-            let mut statement = db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
+            let mut statement =
+                db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
             let mut rows = statement.query([])?;
             let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
             while let Some(row) = rows.next()? {

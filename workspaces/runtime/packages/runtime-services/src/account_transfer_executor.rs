@@ -1069,7 +1069,7 @@ pub fn before_start(
     now: f64,
 ) -> Result<Value, TransferError> {
     let agent = studio_runtime_store::AgentRepository::get(
-        &store.read()?,
+        &*store.read()?,
         &studio_runtime_store::AgentId::from(agent_id),
     )?
     .ok_or(TransferError::Refused("Unknown transfer member"))?
@@ -1097,7 +1097,7 @@ pub fn before_start(
         crate::account_transfer::before_start(&agent)?;
     }
     Ok(studio_runtime_store::AgentRepository::get(
-        &store.read()?,
+        &*store.read()?,
         &studio_runtime_store::AgentId::from(agent_id),
     )?
     .ok_or(TransferError::Refused("Unknown transfer member"))?

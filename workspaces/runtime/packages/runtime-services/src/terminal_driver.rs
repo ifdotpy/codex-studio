@@ -166,7 +166,7 @@ pub fn history_output(
         return Err(TerminalError::InvalidHistoryRange);
     }
     let current =
-        TerminalsRepository::get(&store.read()?, id)?.ok_or(TerminalError::UnknownTerminal)?;
+        TerminalsRepository::get(&*store.read()?, id)?.ok_or(TerminalError::UnknownTerminal)?;
     let record = current.record;
     let row = store.transaction(|transaction| {
         let row = TerminalsRepository::get(transaction, id)?
@@ -281,7 +281,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
         }
         let signature = receipt_signature(submitted_request);
         if let Some((prior_signature, result)) =
-            TerminalsRepository::receipt(&self.store.read()?, request_id)?
+            TerminalsRepository::receipt(&*self.store.read()?, request_id)?
         {
             if prior_signature != signature {
                 return Err(TerminalError::ReceiptConflict);
@@ -371,7 +371,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
             .get("id")
             .and_then(Value::as_str)
             .ok_or(TerminalError::InvalidRequest)?;
-        let row = TerminalsRepository::get(&self.store.read()?, id)?
+        let row = TerminalsRepository::get(&*self.store.read()?, id)?
             .ok_or(TerminalError::UnknownTerminal)?;
         let record = row.record;
         match action {
@@ -625,7 +625,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
     /// Reconcile notifications delivered after reconnecting to the same
     /// supervisor handle. Existing process handles are never spawned again.
     pub fn reconcile_after_restart(&self) -> Result<usize, TerminalError> {
-        let rows = TerminalsRepository::list(&self.store.read()?)?;
+        let rows = TerminalsRepository::list(&*self.store.read()?)?;
         for record in &rows {
             if let Some(identity) = record.get("_processIdentity") {
                 self.session.cleanup_orphan(identity)?;
@@ -679,7 +679,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
     fn settle_outcome(&self, outcome: TerminalOutcome) -> Result<(), TerminalError> {
         if let Some(rest) = outcome.operation_id.strip_prefix("terminal-spawn:") {
             if let Some((request_id, id)) = rest.rsplit_once(':') {
-                let row = TerminalsRepository::get(&self.store.read()?, id)?
+                let row = TerminalsRepository::get(&*self.store.read()?, id)?
                     .ok_or(TerminalError::UnknownTerminal)?;
                 let mut record = row.record;
                 if let Err(error) = outcome.result {

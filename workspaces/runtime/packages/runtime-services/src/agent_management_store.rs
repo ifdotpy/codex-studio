@@ -31,7 +31,7 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
             .and_then(Value::as_str)
         {
             if let Some(agent) = studio_runtime_store::AgentRepository::get(
-                &store.read()?,
+                &*store.read()?,
                 &studio_runtime_store::AgentId::from(agent_id),
             )? {
                 if let Some(agent_archive) = agent.value().get("agentArchive") {

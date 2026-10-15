@@ -3,6 +3,7 @@ use crate::{python_json, python_json_with_separators, sha256_hex};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Mutex, MutexGuard},
 };
@@ -24,6 +25,7 @@ pub enum JournalError {
 pub type Result<T> = std::result::Result<T, JournalError>;
 pub struct SupervisorJournal {
     db: Mutex<Connection>,
+    buffered_by_handle: Mutex<HashMap<String, u64>>,
 }
 
 pub struct StoredHandle {
@@ -54,22 +56,28 @@ fn receipt(db: &Connection, handle: &str, operation: &str) -> Result<Option<Rece
         .transpose()
         .map_err(Into::into)
 }
-fn buffered(db: &Connection, handle: &str) -> Result<u64> {
-    let value: i64 = db.query_row(
-        "SELECT COALESCE(sum(size),0) FROM events WHERE handle=?",
-        [handle],
-        |row| row.get(0),
-    )?;
-    u64::try_from(value).map_err(|_| Refusal("Invalid supervisor event size").into())
+fn buffered_sizes(db: &Connection) -> Result<HashMap<String, u64>> {
+    let mut statement =
+        db.prepare("SELECT handle,COALESCE(sum(size),0) FROM events GROUP BY handle")?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .map(|row| {
+            let (handle, size) = row?;
+            let size = u64::try_from(size).map_err(|_| Refusal("Invalid supervisor event size"))?;
+            Ok((handle, size))
+        })
+        .collect()
 }
-fn stored(db: &Connection, handle: &str) -> Result<Option<StoredHandle>> {
+fn stored(db: &Connection, handle: &str, buffered: u64) -> Result<Option<StoredHandle>> {
     let row = db.query_row("SELECT h.signature,h.pid,h.init_result,h.closed_at,h.closed_reason,c.start_time,c.pgid,c.pid FROM handles h LEFT JOIN child_identities c ON c.handle=h.id WHERE h.id=?", [handle], |r| {
         Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<f64>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<u32>>(6)?,r.get::<_,Option<u32>>(7)?))
     }).optional()?;
     row.map(|(signature,pid,init,closed_at,closed_reason,start_time,pgid,identity_pid)| {
         if identity_pid.is_some_and(|identity| identity != pid) { return Err(Refusal("Supervisor child identity disagrees with its handle").into()); }
         let recovery_proof = db.query_row("SELECT 1 FROM degraded_handles d JOIN child_identities c ON c.handle=d.handle WHERE d.handle=? AND d.prior_pid=? AND c.pid=d.prior_pid AND c.start_time=d.start_time", params![handle,pid], |_| Ok(true)).optional()?.unwrap_or(false);
-        Ok(StoredHandle { id:handle.to_owned(), signature,pid, snapshot:snapshot(db,handle)?, init_result:init.map(|s|serde_json::from_str(&s)).transpose()?, closed_at,closed_reason,start_time,pgid,buffered:buffered(db,handle)?,recovery_proof })
+        Ok(StoredHandle { id:handle.to_owned(), signature,pid, snapshot:snapshot(db,handle)?, init_result:init.map(|s|serde_json::from_str(&s)).transpose()?, closed_at,closed_reason,start_time,pgid,buffered,recovery_proof })
     }).transpose()
 }
 
@@ -90,7 +98,11 @@ impl SupervisorJournal {
         let maximum = (1024 * 1024 * 1024 / page_size.max(1)).max(existing);
         db.pragma_update(None, "max_page_count", sql(maximum)?)?;
         migrate(&db)?;
-        let journal = Self { db: Mutex::new(db) };
+        let buffered_by_handle = buffered_sizes(&db)?;
+        let journal = Self {
+            db: Mutex::new(db),
+            buffered_by_handle: Mutex::new(buffered_by_handle),
+        };
         // Check every existing handle before any process effects.
         journal.handles(false)?;
         journal.validate_rows()?;
@@ -114,18 +126,49 @@ impl SupervisorJournal {
     fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
         self.db.lock().map_err(|_| JournalError::Poisoned)
     }
-    fn transaction<T>(&self, action: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn transaction<T>(
+        &self,
+        action: impl FnOnce(
+            &Transaction<'_>,
+            &HashMap<String, u64>,
+        ) -> Result<(T, Option<(String, i64)>)>,
+    ) -> Result<T> {
         let mut db = self.lock()?;
+        let mut buffered = self
+            .buffered_by_handle
+            .lock()
+            .map_err(|_| JournalError::Poisoned)?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let result = action(&tx)?;
+        let (result, delta) = action(&tx, &buffered)?;
         tx.commit()?;
+        if let Some((handle, delta)) = delta {
+            let current = buffered.entry(handle).or_default();
+            if delta >= 0 {
+                *current = current.saturating_add(delta as u64);
+            } else {
+                *current = current.saturating_sub(delta.unsigned_abs());
+            }
+        }
         Ok(result)
     }
     pub fn handle(&self, handle: &str) -> Result<Option<StoredHandle>> {
-        stored(&*self.lock()?, handle)
+        let db = self.lock()?;
+        let buffered = self
+            .buffered_by_handle
+            .lock()
+            .map_err(|_| JournalError::Poisoned)?;
+        stored(
+            &db,
+            handle,
+            buffered.get(handle).copied().unwrap_or_default(),
+        )
     }
     pub fn handles(&self, active: bool) -> Result<Vec<StoredHandle>> {
         let db = self.lock()?;
+        let buffered = self
+            .buffered_by_handle
+            .lock()
+            .map_err(|_| JournalError::Poisoned)?;
         let mut statement =
             db.prepare("SELECT id FROM handles WHERE ?=0 OR closed_at IS NULL ORDER BY rowid")?;
         let ids = statement
@@ -133,27 +176,28 @@ impl SupervisorJournal {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         ids.into_iter()
             .map(|id| {
-                stored(&db, &id)?.ok_or_else(|| Refusal("Supervisor handle disappeared").into())
+                stored(&db, &id, buffered.get(&id).copied().unwrap_or_default())?
+                    .ok_or_else(|| Refusal("Supervisor handle disappeared").into())
             })
             .collect()
     }
     /// Reserve before spawn. A crash at this point leaves an orphan refusal, never a duplicate child.
     pub fn reserve(&self, handle: &str, signature: &str, now: f64) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction(|tx, _buffered| {
             tx.execute(
                 "INSERT INTO handles(id,signature,pid,created) VALUES (?,?,0,?) ON CONFLICT(id) DO UPDATE SET pid=0,signature=excluded.signature,closed_at=NULL,closed_reason=NULL",
                 params![handle, signature, now],
             )?;
             tx.execute("DELETE FROM child_identities WHERE handle=?", [handle])?;
-            Ok(())
+            Ok(((), None))
         })
     }
     pub fn opened(&self, handle: &str, signature: &str, pid: u32, start: &str) -> Result<u64> {
-        self.transaction(|tx| {
+        self.transaction(|tx, _buffered| {
             tx.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,generation=generation+1,init_result=NULL,closed_at=NULL,closed_reason=NULL WHERE id=?",params![pid,signature,handle])?;
             tx.execute("INSERT INTO child_identities(handle,pid,pgid,start_time,job_name,job_kill_on_close) VALUES (?,?,?,?,'',0) ON CONFLICT(handle) DO UPDATE SET pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time,job_name='',job_kill_on_close=0",params![handle,pid,pid,start])?;
             tx.execute("DELETE FROM degraded_handles WHERE handle=?",[handle])?;
-            Ok(snapshot(tx,handle)?.generation())
+            Ok((snapshot(tx,handle)?.generation(), None))
         })
     }
     /// FULL-sync commit is the only admission point. The caller sends only Accept, once.
@@ -171,15 +215,21 @@ impl SupervisorJournal {
             .ok_or(Refusal("Invalid supervisor write message"))?
             .remove("id");
         let digest = sha256_hex(python_json_with_separators(&canonical, ",", ":").as_bytes());
-        self.transaction(|tx| {
+        self.transaction(|tx, buffered| {
             let state = snapshot(tx,handle)?;
             let prior = receipt(tx,handle,operation)?;
-            let decision = state.write(prior.as_ref(),&digest,native,message,buffered(tx,handle)?)?;
+            let decision = state.write(
+                prior.as_ref(),
+                &digest,
+                native,
+                message,
+                buffered.get(handle).copied().unwrap_or_default(),
+            )?;
             if let WriteDecision::Accept{remote_id,rpc_sequence,..} = &decision {
                 tx.execute("UPDATE handles SET rpc_sequence=? WHERE id=?",params![sql(*rpc_sequence)?,handle])?;
                 tx.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) VALUES (?,?,?,?,?,?)",params![handle,operation,digest,remote_id.map(sql).transpose()?,now,sql(state.generation())?])?;
             }
-            Ok(decision)
+            Ok((decision, None))
         })
     }
     pub fn operation_status(&self, handle: &str, operation: &str) -> Result<Value> {
@@ -205,12 +255,12 @@ impl SupervisorJournal {
             return Err(Refusal("Supervisor event sequence exhausted").into());
         }
         let raw = serde_json::to_string(payload)?;
-        self.transaction(|tx| {
+        self.transaction(|tx, buffered| {
             let state = snapshot(tx,handle)?;
-            if state.generation() != generation { return Ok(AppendResult::Obsolete); }
-            if state.sequence() == sequence { return Ok(AppendResult::Saved); }
+            if state.generation() != generation { return Ok((AppendResult::Obsolete, None)); }
+            if state.sequence() == sequence { return Ok((AppendResult::Saved, None)); }
             if state.sequence()+1 != sequence { return Err(Refusal("Supervisor output sequence changed before its receipt").into()); }
-            if buffered(tx,handle)?.saturating_add(raw.len() as u64) > HANDLE_LIMIT { return Ok(AppendResult::Full); }
+            if buffered.get(handle).copied().unwrap_or_default().saturating_add(raw.len() as u64) > HANDLE_LIMIT { return Ok((AppendResult::Full, None)); }
             tx.execute("UPDATE handles SET sequence=? WHERE id=?",params![sql(sequence)?,handle])?;
             tx.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES (?,?,?,?,?,?)",params![handle,sql(sequence)?,kind,raw,sql(raw.len() as u64)?,sql(generation)?])?;
             if kind == "stdout" {
@@ -221,12 +271,20 @@ impl SupervisorJournal {
                     tx.execute("UPDATE operations SET response=?,response_sequence=? WHERE handle=? AND native_id=? AND generation=? AND substr(operation_id,1,8)='monitor:' AND response IS NULL",params![raw,sql(sequence)?,handle,id,sql(generation)?])?;
                 }
             }
-            Ok(AppendResult::Saved)
+            Ok((
+                AppendResult::Saved,
+                Some((handle.to_owned(), raw.len() as i64)),
+            ))
         })
     }
     pub fn ack(&self, handle: &str, cursor: u64) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction(|tx, _buffered| {
             snapshot(tx, handle)?.cursor(cursor, true)?;
+            let reclaimed: i64 = tx.query_row(
+                "SELECT COALESCE(sum(size),0) FROM events WHERE handle=? AND sequence<=?",
+                params![handle, sql(cursor)?],
+                |row| row.get(0),
+            )?;
             tx.execute(
                 "DELETE FROM events WHERE handle=? AND sequence<=?",
                 params![handle, sql(cursor)?],
@@ -235,7 +293,7 @@ impl SupervisorJournal {
                 "UPDATE handles SET acknowledged=? WHERE id=?",
                 params![sql(cursor)?, handle],
             )?;
-            Ok(())
+            Ok(((), Some((handle.to_owned(), -reclaimed))))
         })
     }
     pub fn events(&self, handle: &str, cursor: u64, one: bool) -> Result<Value> {
@@ -256,7 +314,7 @@ impl SupervisorJournal {
         exited: bool,
         readers_done: bool,
     ) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction(|tx, buffered| {
             snapshot(tx, handle)?.retire(handle, generation, exited, readers_done)?;
             for table in [
                 "events",
@@ -267,22 +325,33 @@ impl SupervisorJournal {
                 tx.execute(&format!("DELETE FROM {table} WHERE handle=?"), [handle])?;
             }
             tx.execute("DELETE FROM handles WHERE id=?", [handle])?;
-            Ok(())
+            Ok((
+                (),
+                Some((
+                    handle.to_owned(),
+                    -(buffered.get(handle).copied().unwrap_or_default() as i64),
+                )),
+            ))
         })
     }
     pub fn close(&self, handle: &str, reason: &str, now: f64) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction(|tx, _buffered| {
             tx.execute(
                 "UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
                 params![now, reason, handle],
             )?;
-            Ok(())
+            Ok(((), None))
         })
     }
     /// Commit stronger identity before the caller may signal an adopted child.
     pub fn upgrade_identity(&self, expected: &StoredHandle, start: &str) -> Result<()> {
-        self.transaction(|tx| {
-            let current = stored(tx, &expected.id)?.ok_or(Refusal("Unknown supervisor handle"))?;
+        self.transaction(|tx, buffered| {
+            let current = stored(
+                tx,
+                &expected.id,
+                buffered.get(&expected.id).copied().unwrap_or_default(),
+            )?
+            .ok_or(Refusal("Unknown supervisor handle"))?;
             if current.closed_at.is_some()
                 || current.pid != expected.pid
                 || current.pgid != expected.pgid
@@ -295,7 +364,7 @@ impl SupervisorJournal {
                 "UPDATE child_identities SET start_time=? WHERE handle=?",
                 params![start, expected.id],
             )?;
-            Ok(())
+            Ok(((), None))
         })
     }
     pub fn recovered(
@@ -305,7 +374,7 @@ impl SupervisorJournal {
         detail: &str,
         now: f64,
     ) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction(|tx, _buffered| {
             tx.execute("INSERT INTO recovery_events(at,handle,pid,start_time,outcome,detail) VALUES (?,?,?,?,?,?)",params![now,row.id,row.pid,row.start_time.as_deref().unwrap_or(""),outcome,detail])?;
             tx.execute("DELETE FROM recovery_events WHERE handle=? AND id NOT IN (SELECT id FROM recovery_events WHERE handle=? ORDER BY id DESC LIMIT 16)",params![row.id,row.id])?;
             let closed = matches!(outcome, "already-exited"|"terminated"|"killed"|"identity-mismatch").then_some(now);
@@ -313,23 +382,28 @@ impl SupervisorJournal {
             if matches!(outcome,"already-exited"|"terminated"|"killed") {
                 tx.execute("INSERT OR REPLACE INTO degraded_handles VALUES (?,?,?,?)",params![row.id,row.pid,row.start_time,now])?;
             }
-            Ok(())
+            Ok(((), None))
         })
     }
     pub fn close_unknown(&self, expected: &StoredHandle, now: f64, recovery: &Value) -> Result<()> {
-        self.transaction(|tx| {
-            let current = stored(tx, &expected.id)?.ok_or(Refusal("Unknown supervisor handle"))?;
+        self.transaction(|tx, buffered| {
+            let current = stored(
+                tx,
+                &expected.id,
+                buffered.get(&expected.id).copied().unwrap_or_default(),
+            )?
+            .ok_or(Refusal("Unknown supervisor handle"))?;
             if current.closed_at.is_some() || current.pid != expected.pid
                 || current.start_time != expected.start_time || current.signature != expected.signature {
                 return Err(Refusal("Operator close refused: handle identity changed").into());
             }
             tx.execute("UPDATE handles SET closed_at=?,closed_reason='Closed by operator after verified test/unknown-client ownership' WHERE id=?", params![now,expected.id])?;
             tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [recovery.to_string()])?;
-            Ok(())
+            Ok(((), None))
         })
     }
     pub fn save_recovery(&self, recovery: &Value) -> Result<()> {
-        self.transaction(|tx| { tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[recovery.to_string()])?; Ok(()) })
+        self.transaction(|tx, _buffered| { tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[recovery.to_string()])?; Ok(((), None)) })
     }
 }
 #[derive(Debug, PartialEq, Eq)]

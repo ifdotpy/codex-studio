@@ -64,8 +64,8 @@ pub fn runtime_lock_operations() -> Vec<Value> {
             "count": samples.count,
             "totalWaitMs": samples.total_wait_ns as f64 / 1_000_000.0,
             "totalHoldMs": samples.total_hold_ns as f64 / 1_000_000.0,
-            "waitMs": quantiles(&waits, false, 1_000_000.0),
-            "holdMs": quantiles(&holds, false, 1_000_000.0),
+            "waitMs": quantiles(&waits, true, 1_000_000.0),
+            "holdMs": quantiles(&holds, true, 1_000_000.0),
         }));
     });
     result

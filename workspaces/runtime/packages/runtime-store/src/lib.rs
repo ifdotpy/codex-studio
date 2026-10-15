@@ -39,9 +39,10 @@ pub use repositories::system_reads;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -98,15 +99,34 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+/// Maximum concurrently checked-out read-only canvas connections per store.
+const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 
 /// Value-free observations emitted by the optional diagnostics callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreDiagnosticsEvent {
+    WriterAdmission {
+        wait: Duration,
+        waited: bool,
+        waiting_threads: usize,
+        peak_waiters: usize,
+    },
+    ReadAdmission {
+        wait: Duration,
+        waited: bool,
+        waiting_threads: usize,
+        peak_waiters: usize,
+        opened_connections: usize,
+    },
     WriterTransaction {
         wait: Duration,
         hold: Duration,
     },
     SqlProfile {
+        database: StoreDatabaseKind,
+        elapsed: Duration,
+    },
+    CommitDuration {
         database: StoreDatabaseKind,
         elapsed: Duration,
     },
@@ -148,16 +168,25 @@ fn emit_diagnostic(event: StoreDiagnosticsEvent) {
     }
 }
 
-fn profile_statement(event: TraceEvent<'_>) {
+fn profile_statement(database: StoreDatabaseKind, event: TraceEvent<'_>) {
     if let TraceEvent::Profile(_statement, elapsed) = event {
-        emit_diagnostic(StoreDiagnosticsEvent::SqlProfile {
-            database: StoreDatabaseKind::Canvas,
-            elapsed,
-        });
+        emit_diagnostic(StoreDiagnosticsEvent::SqlProfile { database, elapsed });
     }
 }
 
-fn install_profile(connection: &mut Connection) {
+fn profile_canvas(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Canvas, event);
+}
+
+fn profile_analytics(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Analytics, event);
+}
+
+fn profile_other(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Other, event);
+}
+
+fn install_profile(connection: &mut Connection, database: StoreDatabaseKind) {
     let enabled = diagnostics_callback()
         .try_lock()
         .map(|callback| callback.is_some())
@@ -168,7 +197,11 @@ fn install_profile(connection: &mut Connection) {
         } else {
             TraceEventCodes::empty()
         },
-        enabled.then_some(profile_statement),
+        enabled.then_some(match database {
+            StoreDatabaseKind::Canvas => profile_canvas,
+            StoreDatabaseKind::Analytics => profile_analytics,
+            StoreDatabaseKind::Other => profile_other,
+        }),
     );
 }
 
@@ -251,12 +284,152 @@ pub struct RuntimeStore {
     writer: Mutex<Connection>,
     analytics: Mutex<Connection>,
     version_reader: Mutex<Connection>,
+    read_pool: Arc<ReadConnectionPool>,
+    writer_waiters: AtomicUsize,
+    writer_waiter_peak: AtomicUsize,
     identity_registry_path: PathBuf,
     commit_notifiers: Mutex<CommitNotifiers>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
     committed_change_generation: AtomicU64,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
     entity_projection_maintenance_lock: Mutex<()>,
+}
+
+struct ReadConnectionPool {
+    path: PathBuf,
+    state: Mutex<ReadConnectionPoolState>,
+    available: Condvar,
+    waiters: AtomicUsize,
+    waiter_peak: AtomicUsize,
+}
+
+struct ReadConnectionPoolState {
+    idle: Vec<Connection>,
+    opened: usize,
+}
+
+/// A checked-out read-only canvas connection returned to its bounded pool on drop.
+pub struct ReadConnection {
+    connection: Option<Connection>,
+    pool: Arc<ReadConnectionPool>,
+}
+
+impl Deref for ReadConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("checked-out read connection")
+    }
+}
+
+impl DerefMut for ReadConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("checked-out read connection")
+    }
+}
+
+impl Drop for ReadConnection {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if let Ok(mut state) = self.pool.state.lock() {
+            state.idle.push(connection);
+            self.pool.available.notify_one();
+        }
+    }
+}
+
+impl ReadConnectionPool {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            state: Mutex::new(ReadConnectionPoolState {
+                idle: Vec::new(),
+                opened: 0,
+            }),
+            available: Condvar::new(),
+            waiters: AtomicUsize::new(0),
+            waiter_peak: AtomicUsize::new(0),
+        }
+    }
+
+    fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+        let started = Instant::now();
+        let mut waiting = false;
+        let mut state = self.state.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        loop {
+            if let Some(connection) = state.idle.pop() {
+                if waiting {
+                    self.waiters.fetch_sub(1, Ordering::Relaxed);
+                }
+                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+                    wait: started.elapsed(),
+                    waited: waiting,
+                    waiting_threads: self.waiters.load(Ordering::Relaxed),
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections: state.opened,
+                });
+                return Ok(ReadConnection {
+                    connection: Some(connection),
+                    pool: Arc::clone(self),
+                });
+            }
+            if state.opened < READ_CONNECTION_POOL_CAPACITY {
+                state.opened += 1;
+                drop(state);
+                let result = open_database(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(
+                    |connection| {
+                        connection.pragma_update(None, "query_only", "ON")?;
+                        Ok(connection)
+                    },
+                );
+                if result.is_err() {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.opened = state.opened.saturating_sub(1);
+                        self.available.notify_one();
+                    }
+                }
+                if waiting {
+                    self.waiters.fetch_sub(1, Ordering::Relaxed);
+                }
+                let opened_connections = self
+                    .state
+                    .lock()
+                    .map(|state| state.opened)
+                    .unwrap_or_default();
+                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+                    wait: started.elapsed(),
+                    waited: waiting,
+                    waiting_threads: self.waiters.load(Ordering::Relaxed),
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections,
+                });
+                return result.map(|connection| ReadConnection {
+                    connection: Some(connection),
+                    pool: Arc::clone(self),
+                });
+            }
+            if !waiting {
+                waiting = true;
+                let active = self.waiters.fetch_add(1, Ordering::Relaxed) + 1;
+                self.waiter_peak.fetch_max(active, Ordering::Relaxed);
+            }
+            state = self
+                .available
+                .wait(state)
+                .map_err(|_| StoreError::WriterPoisoned)?;
+        }
+    }
+
+    #[cfg(test)]
+    fn opened_count(&self) -> usize {
+        self.state.lock().expect("read pool lock").opened
+    }
 }
 
 #[derive(Default)]
@@ -298,7 +471,7 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
-        let mut analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         analytics.pragma_update(None, "journal_mode", "WAL")?;
         analytics.pragma_update(None, "synchronous", "FULL")?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -322,6 +495,9 @@ impl RuntimeStore {
             writer: Mutex::new(writer),
             analytics: Mutex::new(analytics),
             version_reader: Mutex::new(version_reader),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path,
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
@@ -420,10 +596,18 @@ impl RuntimeStore {
             *current = callback;
         }
         if let Ok(mut writer) = self.writer.lock() {
-            install_profile(&mut writer);
+            install_profile(&mut writer, StoreDatabaseKind::Canvas);
+        }
+        if let Ok(mut analytics) = self.analytics.lock() {
+            install_profile(&mut analytics, StoreDatabaseKind::Analytics);
         }
         if let Ok(mut reader) = self.version_reader.lock() {
-            install_profile(&mut reader);
+            install_profile(&mut reader, StoreDatabaseKind::Canvas);
+        }
+        if let Ok(mut pool) = self.read_pool.state.lock() {
+            for connection in &mut pool.idle {
+                install_profile(connection, StoreDatabaseKind::Canvas);
+            }
         }
         if callback.is_some() {
             let _ = self.checkpoint_wal_passive();
@@ -440,7 +624,10 @@ impl RuntimeStore {
         )?;
         drop(writer);
 
-        let analytics = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let analytics = self
+            .analytics
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
         self.checkpoint_connection(
             &analytics,
             StoreDatabaseKind::Analytics,
@@ -455,17 +642,14 @@ impl RuntimeStore {
         database: StoreDatabaseKind,
         wal_path: &Path,
     ) -> StoreResult<()> {
-        let (busy, log_frames, checkpointed_frames) = connection.query_row(
-            "PRAGMA wal_checkpoint(PASSIVE)",
-            [],
-            |row| {
+        let (busy, log_frames, checkpointed_frames) =
+            connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                 ))
-            },
-        )?;
+            })?;
         let wal_size_bytes = std::fs::metadata(wal_path).map_or(0, |metadata| metadata.len());
         emit_diagnostic(StoreDiagnosticsEvent::WalCheckpoint {
             database,
@@ -525,8 +709,37 @@ impl RuntimeStore {
     {
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
-        let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let mut did_wait = false;
+        let (mut writer, waiting_threads) = match self.writer.try_lock() {
+            Ok(writer) => (writer, self.writer_waiters.load(Ordering::Relaxed)),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                did_wait = true;
+                let active_waiters = self.writer_waiters.fetch_add(1, Ordering::Relaxed) + 1;
+                self.writer_waiter_peak
+                    .fetch_max(active_waiters, Ordering::Relaxed);
+                let writer = match self.writer.lock() {
+                    Ok(writer) => writer,
+                    Err(_) => {
+                        self.writer_waiters.fetch_sub(1, Ordering::Relaxed);
+                        return Err(StoreError::WriterPoisoned.into());
+                    }
+                };
+                let waiting_threads = self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                (writer, waiting_threads)
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(StoreError::WriterPoisoned.into());
+            }
+        };
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
+        if diagnostics_enabled {
+            emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
+                wait,
+                waited: did_wait,
+                waiting_threads,
+                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+            });
+        }
         let holding = diagnostics_enabled.then(Instant::now);
         let outcome = (|| {
             let transaction = writer
@@ -537,9 +750,16 @@ impl RuntimeStore {
             match operation(&transaction) {
                 Ok(value) => {
                     let changed = transaction.total_changes() != initial_changes;
+                    let commit_started = diagnostics_enabled.then(Instant::now);
                     transaction
                         .commit()
                         .map_err(StoreError::CommitOutcomeUnknown)?;
+                    if let Some(started) = commit_started {
+                        emit_diagnostic(StoreDiagnosticsEvent::CommitDuration {
+                            database: StoreDatabaseKind::Canvas,
+                            elapsed: started.elapsed(),
+                        });
+                    }
                     if changed {
                         self.committed_change_generation
                             .fetch_add(1, Ordering::Release);
@@ -580,14 +800,8 @@ impl RuntimeStore {
     }
 
     /// Open an independent read-only, query-only connection to the main DB.
-    pub fn read(&self) -> StoreResult<Connection> {
-        let mut connection = open_database(
-            &self.root.join("canvas.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        install_profile(&mut connection);
-        connection.pragma_update(None, "query_only", "ON")?;
-        Ok(connection)
+    pub fn read(&self) -> StoreResult<ReadConnection> {
+        self.read_pool.checkout()
     }
 
     /// Run related reads in one SQLite snapshot.
@@ -788,11 +1002,56 @@ fn invalid_local_identity(reason: &str) -> StoreError {
 
 fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     let mut connection = Connection::open_with_flags(path, flags)?;
-    install_profile(&mut connection);
+    let database = match path.file_name().and_then(|name| name.to_str()) {
+        Some("analytics.sqlite3") => StoreDatabaseKind::Analytics,
+        Some("canvas.sqlite3") => StoreDatabaseKind::Canvas,
+        _ => StoreDatabaseKind::Other,
+    };
+    install_profile(&mut connection, database);
     connection.busy_timeout(std::time::Duration::from_millis(u64::from(
         DATABASE_BUSY_TIMEOUT_MS,
     )))?;
     Ok(connection)
+}
+
+#[cfg(test)]
+mod read_pool_tests {
+    use super::*;
+
+    #[test]
+    fn sequential_reads_reuse_a_bounded_connection() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let canvas_path = directory.path().join("canvas.sqlite3");
+        Connection::open(&canvas_path).expect("canvas database");
+        let store = RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
+            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
+        };
+
+        for _ in 0..16 {
+            let reader = store.read().expect("read checkout");
+            assert_eq!(
+                reader
+                    .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+
+        assert_eq!(store.read_pool.opened_count(), 1);
+        assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+    }
 }
 
 #[cfg(test)]
@@ -817,6 +1076,11 @@ mod diagnostics_hook_tests {
             writer: Mutex::new(writer),
             analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(reader),
+            read_pool: Arc::new(ReadConnectionPool::new(
+                directory.path().join("canvas.sqlite3"),
+            )),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
@@ -860,6 +1124,11 @@ mod commit_notification_tests {
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
             analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
+            read_pool: Arc::new(ReadConnectionPool::new(
+                directory.path().join("canvas.sqlite3"),
+            )),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),

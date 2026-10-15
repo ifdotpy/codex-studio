@@ -585,7 +585,7 @@ async fn restart_history_case(outcome: &str) {
                     .bridge
                     .run(move |store| {
                         Ok(studio_runtime_store::TranscriptRepository::item(
-                            &store.read()?,
+                            &*store.read()?,
                             &agent,
                             &item_id,
                         )
@@ -608,7 +608,7 @@ async fn restart_history_case(outcome: &str) {
                         .bridge
                         .run(move |store| {
                             Ok(studio_runtime_store::TranscriptRepository::item(
-                                &store.read()?,
+                                &*store.read()?,
                                 &agent,
                                 &item_id,
                             )
@@ -786,7 +786,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
         .bridge
         .run(move |store| {
             Ok(
-                studio_runtime_store::TranscriptRepository::item(&store.read()?, &agent, &item_id)
+                studio_runtime_store::TranscriptRepository::item(&*store.read()?, &agent, &item_id)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
             )
         })

@@ -229,8 +229,12 @@ async fn diagnostics(
                 "count": group.count,
                 "queueWaitAvgMs": group.queue_wait_avg_ms,
                 "queueWaitMaxMs": group.queue_wait_max_ms,
+                "queueWaitP95Ms": group.queue_wait_p95_ms,
+                "queueWaitP99Ms": group.queue_wait_p99_ms,
                 "closureAvgMs": group.closure_avg_ms,
                 "closureMaxMs": group.closure_max_ms,
+                "closureP95Ms": group.closure_p95_ms,
+                "closureP99Ms": group.closure_p99_ms,
             })).collect::<Vec<_>>(),
         })
     };

@@ -180,7 +180,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         credentials.identity(&store, None)?;
     }
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store)?;
-    let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;
+    let workspace_id =
+        studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
     let state_root = store.root().canonicalize()?;
     let state_dir = state_root.to_string_lossy().into_owned();
     let registry_path = state_root.join("accounts/registry.json");
@@ -207,7 +208,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         }
         None => None,
     };
-    let limits_read = account_state::limits_snapshots(&store.read()?)?;
+    let limits_read = account_state::limits_snapshots(&*store.read()?)?;
     let account_policy = Arc::new(
         AccountPolicyState::from_store(registry_bytes.as_deref(), limits_read).map_err(
             |error| {
@@ -413,14 +414,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                 state.voice_request_port_handle(),
             ),
         );
-    let creation_environment = studio_runtime_http::routes::managed_creation_environment(
-        Arc::clone(&account_driver),
-        {
+    let creation_environment =
+        studio_runtime_http::routes::managed_creation_environment(Arc::clone(&account_driver), {
             let catalog = state.model_catalog_handle();
             catalog.set_account_session(Some(Arc::clone(&account_session)));
             catalog
-        },
-    );
+        });
     let managed_tool_runtime =
         studio_runtime_services::provider_callbacks::ManagedToolRuntime::with_creation(
             Arc::clone(&monitor_runtime),

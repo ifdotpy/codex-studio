@@ -451,7 +451,7 @@ fn capture_project_vault_snapshot(
     state_dir: &str,
 ) -> Result<
     (
-        studio_runtime_store::Connection,
+        studio_runtime_store::ReadConnection,
         sync_policy::ProjectVaultSnapshot,
     ),
     ApiError,

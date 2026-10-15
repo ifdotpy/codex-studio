@@ -12,8 +12,9 @@
 //! `blockingPoolMetrics`. No live backend is used by the fixture test.
 
 use std::{
+    collections::VecDeque,
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
@@ -21,6 +22,8 @@ use std::{
 
 const DIAGNOSTICS_ENV: &str = "CODEX_RUNTIME_BLOCKING_POOL_DIAGNOSTICS";
 const NANOS_PER_MILLISECOND: f64 = 1_000_000.0;
+/// Retained samples per call-site group for p95/p99 summaries.
+const SAMPLE_LIMIT_PER_GROUP: usize = 512;
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -119,6 +122,7 @@ struct GroupMetrics {
     queue_wait_max_ns: AtomicU64,
     duration_total_ns: AtomicU64,
     duration_max_ns: AtomicU64,
+    recent: Mutex<VecDeque<(u64, u64)>>,
 }
 
 struct QueuedGuard {
@@ -167,8 +171,12 @@ pub struct BlockingPoolGroupSnapshot {
     pub count: u64,
     pub queue_wait_avg_ms: f64,
     pub queue_wait_max_ms: f64,
+    pub queue_wait_p95_ms: f64,
+    pub queue_wait_p99_ms: f64,
     pub closure_avg_ms: f64,
     pub closure_max_ms: f64,
+    pub closure_p95_ms: f64,
+    pub closure_p99_ms: f64,
 }
 
 fn enabled() -> bool {
@@ -247,6 +255,12 @@ where
             .duration_total_ns
             .fetch_add(duration_ns, Ordering::Relaxed);
         record_max(&entry.duration_max_ns, duration_ns);
+        if let Ok(mut recent) = entry.recent.try_lock() {
+            if recent.len() == SAMPLE_LIMIT_PER_GROUP {
+                recent.pop_front();
+            }
+            recent.push_back((queue_wait_ns, duration_ns));
+        }
         entry.count.fetch_add(1, Ordering::Relaxed);
         match result {
             Ok(value) => value,
@@ -289,11 +303,15 @@ fn snapshot_with_collection(collect: bool) -> BlockingPoolSnapshot {
                     / NANOS_PER_MILLISECOND,
                 queue_wait_max_ms: value.queue_wait_max_ns.load(Ordering::Relaxed) as f64
                     / NANOS_PER_MILLISECOND,
+                queue_wait_p95_ms: group_quantile(value, |sample| sample.0, 95),
+                queue_wait_p99_ms: group_quantile(value, |sample| sample.0, 99),
                 closure_avg_ms: value.duration_total_ns.load(Ordering::Relaxed) as f64
                     / divisor
                     / NANOS_PER_MILLISECOND,
                 closure_max_ms: value.duration_max_ns.load(Ordering::Relaxed) as f64
                     / NANOS_PER_MILLISECOND,
+                closure_p95_ms: group_quantile(value, |sample| sample.1, 95),
+                closure_p99_ms: group_quantile(value, |sample| sample.1, 99),
             })
         })
         .collect();
@@ -304,6 +322,22 @@ fn snapshot_with_collection(collect: bool) -> BlockingPoolSnapshot {
         peak_occupancy: metrics.peak_occupancy.load(Ordering::Relaxed),
         groups,
     }
+}
+
+fn group_quantile(
+    entry: &GroupMetrics,
+    select: impl Fn((u64, u64)) -> u64,
+    percentile: usize,
+) -> f64 {
+    let Ok(recent) = entry.recent.try_lock() else {
+        return 0.0;
+    };
+    if recent.is_empty() {
+        return 0.0;
+    }
+    let mut values = recent.iter().copied().map(select).collect::<Vec<_>>();
+    values.sort_unstable();
+    values[(values.len() - 1) * percentile / 100] as f64 / NANOS_PER_MILLISECOND
 }
 
 #[cfg(test)]
@@ -374,6 +408,8 @@ mod tests {
             .unwrap();
         assert_eq!(queued.count, 1);
         assert!(queued.queue_wait_max_ms > 0.0);
+        assert!(queued.queue_wait_p95_ms > 0.0);
+        assert!(queued.queue_wait_p99_ms > 0.0);
         assert!(queued.closure_max_ms >= 0.0);
         assert!(
             snapshot

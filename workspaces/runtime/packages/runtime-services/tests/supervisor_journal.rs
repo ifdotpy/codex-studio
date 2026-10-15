@@ -149,8 +149,21 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
         journal.operation_status("fixture", "monitor:one").unwrap()["response"]["result"]["echo"],
         "é😀"
     );
+    let pending = json!({"notification":"still buffered"});
+    journal.append("fixture", 1, 2, "stdout", &pending).unwrap();
+    let pending_bytes = serde_json::to_string(&pending).unwrap().len() as u64;
+    assert_eq!(
+        journal.handle("fixture").unwrap().unwrap().buffered,
+        pending_bytes
+    );
     drop(journal);
     let journal = SupervisorJournal::open(root.path()).unwrap();
+    assert_eq!(
+        journal.handle("fixture").unwrap().unwrap().buffered,
+        pending_bytes
+    );
+    journal.ack("fixture", 2).unwrap();
+    assert_eq!(journal.handle("fixture").unwrap().unwrap().buffered, 0);
     assert!(matches!(
         journal
             .accept("fixture", "monitor:one", Some(99), &message, 200.0)
@@ -159,7 +172,7 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
     ));
     assert!(journal.events("fixture", 0, false).is_err());
     assert_eq!(
-        journal.events("fixture", 1, false).unwrap()["events"],
+        journal.events("fixture", 2, false).unwrap()["events"],
         json!([])
     );
     assert!(
