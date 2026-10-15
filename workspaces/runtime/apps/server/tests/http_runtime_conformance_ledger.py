@@ -392,7 +392,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "2xx"},
+        "primary": {
+            "query": {"agent": "$analyticsAgent"},
+            "fixture_mutations": {"seed_pricing_catalog": True},
+            "restore": ["pricing_file"],
+            "expected": "2xx",
+        },
         "additional": [{
             "name": "stale cost cache requires refresh",
             "query": {"agent": "$analyticsAgent"},
@@ -598,7 +603,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
         "additional": [{
             "name": "cross-server project registration dependency",
-            "body": {"action": "register", "path": "$projectPath", "name": "Remote project", "server": "remote"},
+            "body": {
+                "action": "register", "path": "$projectPath", "name": "Remote project",
+                "server": "remote", "request_id": "ledger-cross-server-project",
+            },
             "replace_body": True,
             "expected": "403",
             "expected_error": "The server is not paired or is revoked",
@@ -1176,6 +1184,11 @@ def ensure_operation_probe_cases(
             primary["unverified"] = True
 
 
+def account_fixture_namespace(backend: Any) -> str:
+    """Match account fixture IDs between the registry and probe inputs."""
+    return backend.fixture_namespace if backend.copy_mode else ""
+
+
 def seed_python_probe_state(backend: Any, python: str) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
     prefix = backend.fixture_namespace or "ledger-"
@@ -1457,7 +1470,7 @@ finally:
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
         "claudeAccount": f"{prefix}claude-ledger",
-        "disconnectedAccount": f"{prefix}disconnected",
+        "disconnectedAccount": f"{account_fixture_namespace(backend)}disconnected",
         "toolReceipt": f"{prefix}tool-receipt",
         "toolCancel": f"{prefix}tool-cancel",
     }
@@ -2404,7 +2417,7 @@ def seed_catalog_state(backend: Any, python: str) -> None:
         raise RuntimeError("ledger fixture refuses to overwrite a copied accounts directory")
     accounts.mkdir(parents=True)
     account_key = getattr(backend, "account_key", "default")
-    fixture_namespace = backend.fixture_namespace if backend.copy_mode else ""
+    fixture_namespace = account_fixture_namespace(backend)
     (accounts / "registry.json").write_text(json.dumps({
         "version": 1,
         "defaultAccountKey": account_key,

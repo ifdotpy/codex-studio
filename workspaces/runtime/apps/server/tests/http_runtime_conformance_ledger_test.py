@@ -750,6 +750,29 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         delete_probe = ledger.PROBE_CASES[("POST", "/api/conversation/delete")]["primary"]
         self.assertEqual(delete_probe["body"]["id"], "$deleteAgent")
 
+        session_cost = ledger.PROBE_CASES[("GET", "/api/session-cost")]["primary"]
+        self.assertEqual(session_cost["expected"], "2xx")
+        self.assertEqual(session_cost["fixture_mutations"], {"seed_pricing_catalog": True})
+        self.assertEqual(session_cost["restore"], ["pricing_file"])
+
+        remote_project = ledger.PROBE_CASES[("POST", "/api/projects")]["additional"][0]
+        self.assertEqual(remote_project["expected"], "403")
+        self.assertEqual(remote_project["body"]["request_id"], "ledger-cross-server-project")
+
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="", copy_mode=False,
+        )), "")
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="copy-123-", copy_mode=True,
+        )), "copy-123-")
+
+    def test_disconnected_account_probe_uses_registry_key_namespace(self) -> None:
+        probe = ledger.PROBE_CASES[("GET", "/api/limits")]["additional"][0]
+        self.assertEqual(probe["query"]["account_key"], "$disconnectedAccount")
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="", copy_mode=False,
+        )) + "disconnected", "disconnected")
+
     def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
         self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
 
