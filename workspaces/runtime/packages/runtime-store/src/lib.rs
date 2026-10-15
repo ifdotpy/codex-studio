@@ -104,6 +104,10 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+/// Maximum interval between maintenance checkpoints; the unit is elapsed seconds.
+pub const WAL_CHECKPOINT_CADENCE: Duration = Duration::from_secs(60);
+/// WAL size that permits an early maintenance checkpoint; the unit is bytes.
+const WAL_CHECKPOINT_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
 /// Maximum concurrently checked-out read-only canvas connections per store.
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 
@@ -309,6 +313,8 @@ pub struct RuntimeStore {
     committed_change_generation: AtomicU64,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
     entity_projection_maintenance_lock: Mutex<()>,
+    wal_checkpoint_requested: AtomicBool,
+    last_wal_checkpoint: Mutex<Instant>,
 }
 
 struct ReadConnectionPool {
@@ -583,6 +589,8 @@ impl RuntimeStore {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
+            wal_checkpoint_requested: AtomicBool::new(false),
+            last_wal_checkpoint: Mutex::new(Instant::now()),
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
@@ -689,9 +697,6 @@ impl RuntimeStore {
                 install_profile(connection, StoreDatabaseKind::Canvas);
             }
         }
-        if callback.is_some() {
-            let _ = self.checkpoint_wal_passive();
-        }
     }
 
     /// Checkpoint both WAL files without waiting on active readers or truncating them.
@@ -714,6 +719,46 @@ impl RuntimeStore {
             &self.root.join("analytics.sqlite3-wal"),
         )?;
         Ok(())
+    }
+
+    /// Coalesce write requests and apply WAL threshold/cadence policy from the maintenance owner.
+    /// This method performs filesystem and SQLite work; call it only in a bounded blocking stage.
+    pub fn checkpoint_wal_if_due(&self) -> StoreResult<bool> {
+        if !self.wal_checkpoint_requested.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let canvas_size = std::fs::metadata(self.root.join("canvas.sqlite3-wal"))
+            .map_or(0, |metadata| metadata.len());
+        let analytics_size = std::fs::metadata(self.root.join("analytics.sqlite3-wal"))
+            .map_or(0, |metadata| metadata.len());
+        let cadence_due = self
+            .last_wal_checkpoint
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .elapsed()
+            >= WAL_CHECKPOINT_CADENCE;
+        if canvas_size < WAL_CHECKPOINT_THRESHOLD_BYTES
+            && analytics_size < WAL_CHECKPOINT_THRESHOLD_BYTES
+            && !cadence_due
+        {
+            return Ok(false);
+        }
+        if !self.wal_checkpoint_requested.swap(false, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        if let Err(error) = self.checkpoint_wal_passive() {
+            self.wal_checkpoint_requested.store(true, Ordering::Release);
+            return Err(error);
+        }
+        *self
+            .last_wal_checkpoint
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)? = Instant::now();
+        Ok(true)
+    }
+
+    pub(crate) fn request_wal_checkpoint(&self) {
+        self.wal_checkpoint_requested.store(true, Ordering::Release);
     }
 
     fn checkpoint_connection(
@@ -742,6 +787,7 @@ impl RuntimeStore {
     }
 
     fn notify_commit(&self) {
+        self.request_wal_checkpoint();
         let (notifier, observers) = {
             let notifiers = self
                 .commit_notifiers
@@ -987,7 +1033,6 @@ impl RuntimeStore {
             .last_entity_projection_state
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)? = Some((generation, vault_signature));
-        self.checkpoint_wal_passive()?;
         Ok(())
     }
 
@@ -1141,6 +1186,8 @@ mod read_pool_tests {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
+            wal_checkpoint_requested: AtomicBool::new(false),
+            last_wal_checkpoint: Mutex::new(Instant::now()),
         };
 
         for _ in 0..16 {
@@ -1176,6 +1223,8 @@ mod read_pool_tests {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
+            wal_checkpoint_requested: AtomicBool::new(false),
+            last_wal_checkpoint: Mutex::new(Instant::now()),
         });
         let (ready_tx, ready_rx) = mpsc::channel();
         let (start_nested_tx, start_nested_rx) = mpsc::channel();
@@ -1304,6 +1353,8 @@ mod diagnostics_hook_tests {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
+            wal_checkpoint_requested: AtomicBool::new(false),
+            last_wal_checkpoint: Mutex::new(Instant::now()),
         };
         EVENTS.lock().expect("diagnostic events lock").clear();
         store.set_diagnostics_callback(Some(record_event));
@@ -1512,6 +1563,39 @@ mod diagnostics_hook_tests {
         );
         store.set_diagnostics_callback(None);
     }
+
+    #[test]
+    fn sync_pull_completion_after_a_commit_does_not_checkpoint_the_wal() {
+        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store.set_diagnostics_callback(Some(record_event));
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE checkpoint_witness(value INTEGER);")?;
+                transaction.execute("INSERT INTO checkpoint_witness VALUES (1)", [])?;
+                Ok(())
+            })
+            .expect("commit before pull maintenance completion");
+        assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
+        store
+            .mark_entity_projections_maintained(
+                store.committed_change_generation(),
+                "pull-witness".to_owned(),
+            )
+            .expect("record completed pull maintenance");
+        assert!(
+            !EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .any(|event| matches!(event, StoreDiagnosticsEvent::WalCheckpoint { .. })),
+            "sync-pull maintenance completion must not checkpoint after its commit"
+        );
+        assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
+        store.set_diagnostics_callback(None);
+    }
 }
 
 #[cfg(test)]
@@ -1538,6 +1622,8 @@ mod commit_notification_tests {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
+            wal_checkpoint_requested: AtomicBool::new(false),
+            last_wal_checkpoint: Mutex::new(Instant::now()),
         });
         let notifications = Arc::new(AtomicUsize::new(0));
         let notified = Arc::clone(&notifications);
@@ -1594,6 +1680,42 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert_eq!(replacement_notifications.load(Ordering::Relaxed), 1);
         assert_eq!(observer_notifications.load(Ordering::Relaxed), 2);
+    }
+}
+
+#[cfg(test)]
+mod sync_pull_admission_tests {
+    use super::*;
+    use crate::SyncDocumentsRepository;
+    use std::sync::Barrier;
+
+    #[test]
+    fn read_only_pull_completes_while_analytics_transaction_is_held() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store"));
+        let analytics_entered = Arc::new(Barrier::new(2));
+        let analytics_release = Arc::new(Barrier::new(2));
+        let analytics_store = Arc::clone(&store);
+        let entered = Arc::clone(&analytics_entered);
+        let release = Arc::clone(&analytics_release);
+        let analytics = std::thread::spawn(move || {
+            analytics_store
+                .analytics_transaction(|_, _| {
+                    entered.wait();
+                    release.wait();
+                    Ok::<_, StoreError>(())
+                })
+                .expect("held analytics transaction");
+        });
+
+        analytics_entered.wait();
+        let connection = store.read().expect("read-only pull connection");
+        let page = SyncDocumentsRepository::pull_drafts(&connection, 0, 100)
+            .expect("read-only pull page completes while analytics is held");
+        assert!(page.is_empty());
+        drop(connection);
+        analytics_release.wait();
+        analytics.join().expect("analytics transaction thread");
     }
 }
 

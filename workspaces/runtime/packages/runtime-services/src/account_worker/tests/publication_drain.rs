@@ -114,13 +114,6 @@ fn seed_analytics_agent(store: &RuntimeStore) {
         .expect("seed analytics agent identity");
 }
 
-fn start_rate_process(store: &RuntimeStore) -> String {
-    let process_id = "publication-drain-test-process".to_owned();
-    crate::analytics_capture::start_token_rate_process(store, &process_id)
-        .expect("start token-rate delivery epoch");
-    process_id
-}
-
 fn root() -> PathBuf {
     test_root().join(format!(
         "publication-drain-{}-{}",
@@ -541,7 +534,6 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         token_rates: Arc::clone(&token_rates),
         resources: Arc::clone(&resources),
         analytics_store: Arc::clone(&store),
-        process_id: start_rate_process(&store),
     };
     seed_analytics_agent(&store);
     let backlog = NotificationPublicationBatch {
@@ -696,7 +688,6 @@ async fn drained_effect_reaches_token_rate_and_resource_hubs() {
         token_rates,
         resources,
         analytics_store: Arc::clone(&store),
-        process_id: start_rate_process(&store),
     };
     seed_analytics_agent(&store);
     let started = analytics_effect(8, "turn/started", json!({"turnId":"turn"}));
@@ -736,7 +727,6 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
         token_rates,
         resources,
         analytics_store: Arc::clone(&store),
-        process_id: start_rate_process(&store),
     };
     let effect = analytics_effect(50, "turn/started", json!({"turnId":"turn"}));
     stage(&store, 1, 0, value(1, 0, effect));
@@ -965,7 +955,6 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
         )),
         resources: Arc::new(crate::resource_notify::ResourceNotifications::new(changes)),
         analytics_store: Arc::clone(&store),
-        process_id: start_rate_process(&store),
     };
     sink.publish(&effect).expect("publish streamed analytics");
 

@@ -326,10 +326,14 @@ pub struct AccountHandle {
     commands: mpsc::Sender<AccountCommand>,
     stop: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
+    finished: watch::Receiver<bool>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
 }
 impl AccountHandle {
+    pub fn completion_signal(&self) -> watch::Receiver<bool> {
+        self.finished.clone()
+    }
     pub fn retained_session(&self) -> retained::RetainedSessionPort {
         retained::RetainedSessionPort {
             scope: self.scope.clone(),
@@ -527,6 +531,7 @@ pub async fn start_account_worker_with_publication_sink(
         managed_callbacks: JoinSet::new(),
     };
     let mut cancelled_owner = stop.subscribe();
+    let (finished_tx, finished) = watch::channel(false);
     #[cfg(test)]
     let faults = bridge.faults.clone();
     let task = tokio::spawn(async move {
@@ -541,6 +546,7 @@ pub async fn start_account_worker_with_publication_sink(
             },
         };
         drop(lease);
+        let _ = finished_tx.send(true);
         result
     });
     Ok(AccountHandle {
@@ -548,6 +554,7 @@ pub async fn start_account_worker_with_publication_sink(
         commands,
         stop,
         task,
+        finished,
         #[cfg(test)]
         faults: bridge.faults.clone(),
     })
@@ -1586,18 +1593,21 @@ impl Worker {
                         Some(callback::tool_call_failure(request, dependency)),
                     );
                 }
-                let response = tokio::task::spawn_blocking(move || {
-                    callback::managed_response(
-                        &store,
-                        &account,
-                        generation,
-                        &frame,
-                        now,
-                        wake,
-                        monitor_dispatch_wake,
-                        managed_tool_runtime,
-                    )
-                })
+                let response = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/account_callback",
+                    move || {
+                        callback::managed_response(
+                            &store,
+                            &account,
+                            generation,
+                            &frame,
+                            now,
+                            wake,
+                            monitor_dispatch_wake,
+                            managed_tool_runtime,
+                        )
+                    },
+                )
                 .await
                 .ok()
                 .flatten();
@@ -1675,16 +1685,23 @@ impl Worker {
     }
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
-        let identity = format!(
-            "account={account};streams={}",
-            self.streams.boundary_identity()
-        );
         let streams = std::mem::take(&mut self.streams);
-        self.streams = self
-            .db_identified("flush_streams", identity, move |store| {
-                store::flush_streams(store, &account, streams)
-            })
+        let flush = move |store: &RuntimeStore| store::flush_streams(store, &account, streams);
+        #[cfg(test)]
+        let updated_streams = self
+            .db_identified(
+                "flush_streams",
+                format!(
+                    "account={};streams={}",
+                    self.account,
+                    self.streams.boundary_identity()
+                ),
+                flush,
+            )
             .await?;
+        #[cfg(not(test))]
+        let updated_streams = self.db("flush_streams", flush).await?;
+        self.streams = updated_streams;
         self.flush_at = None;
         self.arm_flush();
         self.schedule_publication_drain();

@@ -1,5 +1,6 @@
 //! Callback services plug into this typed dispatch boundary.
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads};
 use tokio::sync::Notify;
@@ -92,7 +93,7 @@ pub(super) fn managed_response(
 }
 
 pub(super) async fn wait_for_managed_catalog(
-    store: &RuntimeStore,
+    store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
     frame: &Frame,
@@ -130,8 +131,17 @@ pub(super) async fn wait_for_managed_catalog(
     else {
         return Ok(());
     };
-    let Some(context) = callback_context(store, account, generation, thread, turn)
-        .map_err(|_| "Managed tool callback context is unavailable")?
+    let context_store = Arc::clone(store);
+    let account = account.to_owned();
+    let thread = thread.to_owned();
+    let turn = turn.to_owned();
+    let Some(context) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_callback_context",
+        move || callback_context(&context_store, &account, generation, &thread, &turn),
+    )
+    .await
+    .map_err(|_| "Managed tool callback context is unavailable")?
+    .map_err(|_| "Managed tool callback context is unavailable")?
     else {
         return Ok(());
     };
@@ -141,6 +151,15 @@ pub(super) async fn wait_for_managed_catalog(
         .map_err(|_| "provider-session/model-list")
 }
 
+const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
+WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1
+  AND json_extract(record,'$.startAttempt.connectionGeneration')=?2
+  AND json_extract(record,'$.threadId')=?3
+  AND json_extract(record,'$.turnId')=?4
+  AND json_extract(record,'$.status')='running'
+  AND json_extract(record,'$.autoWake')=1
+LIMIT 2";
+
 fn callback_context(
     store: &RuntimeStore,
     account: &str,
@@ -149,28 +168,21 @@ fn callback_context(
     turn: &str,
 ) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
     let connection = store.read()?;
-    let rows = system_reads::all(&connection, "runtime_agents")?;
-    let mut candidates = rows.into_iter().filter(|agent| {
-        agent["status"] == "running"
-            && agent["autoWake"] == true
-            && agent
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                == account
-            && agent
-                .pointer("/startAttempt/connectionGeneration")
-                .and_then(Value::as_u64)
-                == Some(generation)
-            && agent["threadId"].as_str() == Some(thread)
-            && agent["turnId"].as_str() == Some(turn)
-    });
-    let Some(agent) = candidates.next() else {
+    let Ok(generation_value) = i64::try_from(generation) else {
         return Ok(None);
     };
-    if candidates.next().is_some() {
+    let mut statement = connection.prepare_cached(CALLBACK_CONTEXT_QUERY)?;
+    let candidates = statement
+        .query_map(
+            rusqlite::params![account, generation_value, thread, turn],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    if candidates.len() != 1 {
         return Ok(None);
     }
+    let (agent_id, raw) = &candidates[0];
+    let agent = system_reads::decode("runtime_agents", agent_id, raw)?;
     let Some(agent_id) = agent["id"].as_str() else {
         return Ok(None);
     };
@@ -238,4 +250,82 @@ pub(super) fn response(frame: &Frame) -> Option<Frame> {
         body,
         fields: Default::default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CALLBACK_CONTEXT_QUERY, callback_context};
+    use rusqlite::params;
+    use serde_json::json;
+    use studio_runtime_store::RuntimeStore;
+
+    #[test]
+    fn callback_lookup_uses_its_composite_index_and_rejects_ambiguous_rows() {
+        let directory = tempfile::tempdir().expect("temporary store");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let connection = store.read().expect("read connection");
+        let details = {
+            let mut plan = connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {CALLBACK_CONTEXT_QUERY}"))
+                .expect("explain query");
+            plan.query_map(params!["account-a", 7_i64, "thread-a", "turn-a"], |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("query plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query plan rows")
+        };
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("runtime_agent_callback_context")),
+            "callback lookup must use its selective index: {details:?}"
+        );
+        drop(connection);
+
+        let agent = |id: &str| {
+            json!({
+                "id": id, "rootId": id, "epoch": 1, "status": "running", "autoWake": true,
+                "accountKey": "account-a", "threadId": "thread-a", "turnId": "turn-a",
+                "startAttempt": {"connectionGeneration": 7, "connectionId": "connection-a"}
+            })
+        };
+        store
+            .transaction(|transaction| {
+                for id in ["agent-a", "agent-b"] {
+                    transaction.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                        params![id, agent(id).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("callback agents write");
+        assert!(
+            callback_context(&store, "account-a", 7, "thread-a", "turn-a")
+                .expect("callback lookup")
+                .is_none(),
+            "LIMIT 2 must preserve ambiguous-context rejection"
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute("DELETE FROM runtime_agents WHERE id='agent-b'", [])?;
+                Ok(())
+            })
+            .expect("remove ambiguous agent");
+        let context = callback_context(&store, "account-a", 7, "thread-a", "turn-a")
+            .expect("callback lookup")
+            .expect("one matching context");
+        assert_eq!(context.agent, "agent-a");
+        assert!(
+            callback_context(&store, "account-b", 7, "thread-a", "turn-a")
+                .expect("account-scoped lookup")
+                .is_none()
+        );
+        assert!(
+            callback_context(&store, "account-a", 8, "thread-a", "turn-a")
+                .expect("generation-scoped lookup")
+                .is_none()
+        );
+    }
 }

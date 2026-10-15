@@ -10,11 +10,12 @@ impl SchedulerRepository {
         after_agents: &BTreeMap<String, String>,
         account_limit: usize,
         agent_limit: usize,
-    ) -> StoreResult<BTreeMap<String, Vec<(String, i64)>>> {
+    ) -> StoreResult<BTreeMap<String, Vec<(String, i64, Option<String>)>>> {
         const TARGETS: &str = "WITH targets AS (
  SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
  json_type(a.record,'$.accountKey') account_type,
  json_extract(a.record,'$.epoch') epoch,
+ json_extract(a.record,'$.workspaceMode') workspace_mode,
  (json_extract(a.record,'$.status')='queued'
   AND json_extract(a.record,'$.autoWake')=1
   AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
@@ -74,20 +75,21 @@ impl SchedulerRepository {
         }
 
         let mut agent_statement = connection.prepare_cached(&format!(
-            "{TARGETS} SELECT id,epoch FROM targets
+            "{TARGETS} SELECT id,epoch,workspace_mode FROM targets
              WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
         ))?;
         let mut result = BTreeMap::new();
         for account in accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
-            let mut read_agents = |after: &str| -> rusqlite::Result<Vec<(String, i64)>> {
-                agent_statement
-                    .query_map(
-                        rusqlite::params![account, after, agent_limit as i64],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?
-                    .collect()
-            };
+            let mut read_agents =
+                |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
+                    agent_statement
+                        .query_map(
+                            rusqlite::params![account, after, agent_limit as i64],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )?
+                        .collect()
+                };
             let mut agents = read_agents(after)?;
             if agents.is_empty() && !after.is_empty() {
                 agents = read_agents("")?;

@@ -272,6 +272,7 @@ impl RuntimeStore {
         }
         drop(db);
         drop(writer);
+        self.request_wal_checkpoint();
         if let Some(started) = holding {
             crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
                 wait,

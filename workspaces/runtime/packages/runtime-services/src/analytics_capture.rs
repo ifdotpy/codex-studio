@@ -493,9 +493,8 @@ pub fn capture_notification_effect(
     })
 }
 
-/// Start a fresh volatile token-rate projection epoch. Token-rate snapshots are
-/// process-local; removing the prior epoch's watermarks lets restart replay
-/// rebuild them from pending durable publications.
+/// Retain the legacy process-scoped receipt tables while volatile token-rate
+/// publication is owned by `TokenRateHub`.
 pub fn start_token_rate_process(
     store: &RuntimeStore,
     process_id: &str,
@@ -577,76 +576,6 @@ pub fn record_publication_overflow(
         )?;
         Ok(())
     })
-}
-
-pub fn token_rate_delivery_pending(
-    store: &RuntimeStore,
-    process_id: &str,
-    provider_handle: &str,
-    generation: u64,
-    cursor: u64,
-    effect_kind: &str,
-) -> Result<bool, CaptureError> {
-    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
-    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
-    let effect_bit = token_rate_effect_bit(effect_kind)?;
-    store.analytics_transaction(|tx, _| {
-        let prior: Option<(i64, i64, i64)> = tx
-            .query_row(
-                "SELECT generation,cursor,effects FROM token_rate_publication_receipts WHERE process_id=?1 AND provider=?2",
-                params![process_id, provider_handle],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        Ok(!prior.is_some_and(|(saved_generation, saved_cursor, effects)| {
-            generation < saved_generation
-                || generation == saved_generation
-                    && (cursor < saved_cursor
-                        || cursor == saved_cursor && effects & effect_bit != 0)
-        }))
-    })
-}
-
-pub fn mark_token_rate_delivered(
-    store: &RuntimeStore,
-    process_id: &str,
-    provider_handle: &str,
-    generation: u64,
-    cursor: u64,
-    effect_kind: &str,
-) -> Result<(), CaptureError> {
-    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
-    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
-    let effect_bit = token_rate_effect_bit(effect_kind)?;
-    store.analytics_transaction(|tx, _| {
-        let prior: Option<(i64, i64)> = tx
-            .query_row(
-                "SELECT generation,cursor FROM token_rate_publication_receipts WHERE process_id=?1 AND provider=?2",
-                params![process_id, provider_handle],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if prior.is_some_and(|(saved_generation, saved_cursor)| {
-            generation < saved_generation
-                || generation == saved_generation && cursor < saved_cursor
-        }) {
-            return Ok(());
-        }
-        tx.execute(
-            "INSERT INTO token_rate_publication_receipts(process_id,provider,generation,cursor,effects) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(process_id,provider) DO UPDATE SET generation=excluded.generation,cursor=excluded.cursor,effects=CASE WHEN excluded.generation>token_rate_publication_receipts.generation OR excluded.cursor>token_rate_publication_receipts.cursor THEN excluded.effects ELSE token_rate_publication_receipts.effects | excluded.effects END",
-            params![process_id, provider_handle, generation, cursor, effect_bit],
-        )?;
-        Ok(())
-    })
-}
-
-fn token_rate_effect_bit(effect_kind: &str) -> Result<i64, CaptureError> {
-    match effect_kind {
-        "analytics" | "tokenRateUsage" => Ok(1),
-        "tokenRateStream" => Ok(2),
-        "tokenRateAssociation" => Ok(4),
-        _ => Err(CaptureError::Invalid("/effectKind")),
-    }
 }
 
 fn apply_stream_metrics(

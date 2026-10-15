@@ -149,8 +149,9 @@ async fn envelope_response(
             return original_response(parts, bytes);
         }
     };
-    let mut response = Response::from_parts(parts, Body::from(body.clone()));
-    if let Ok(value) = header::HeaderValue::from_bytes(body.len().to_string().as_bytes()) {
+    let body_length = body.len();
+    let mut response = Response::from_parts(parts, Body::from(body));
+    if let Ok(value) = header::HeaderValue::from_bytes(body_length.to_string().as_bytes()) {
         response.headers_mut().insert(header::CONTENT_LENGTH, value);
     }
     response

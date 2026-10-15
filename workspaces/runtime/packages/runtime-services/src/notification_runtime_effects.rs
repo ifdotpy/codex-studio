@@ -170,7 +170,6 @@ pub struct RuntimeNotificationPostCommitSink {
     pub token_rates: std::sync::Arc<crate::token_rate::TokenRateHub>,
     pub resources: std::sync::Arc<crate::resource_notify::ResourceNotifications>,
     pub analytics_store: Arc<RuntimeStore>,
-    pub process_id: String,
 }
 
 impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
@@ -256,55 +255,18 @@ impl RuntimeNotificationPostCommitSink {
         &self,
         effect: &NotificationPostCommit,
     ) -> Result<(), NotificationDispatchError> {
-        let observation = match effect {
-            NotificationPostCommit::Analytics { observation, .. }
-            | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation)
-            | NotificationPostCommit::TokenRateUsage(observation) => observation,
-            NotificationPostCommit::AnalyticsStream { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-            NotificationPostCommit::Recovered { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-        };
-        let kind = match effect {
-            NotificationPostCommit::Analytics { .. } => "analytics",
-            NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
-            NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
-            NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
-            NotificationPostCommit::AnalyticsStream { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-            NotificationPostCommit::Recovered { .. } => {
-                return Err(NotificationDispatchError::InvalidNotification);
-            }
-        };
-        let identity = &observation.delivery;
-        let pending = crate::analytics_capture::token_rate_delivery_pending(
-            &self.analytics_store,
-            &self.process_id,
-            &identity.provider_handle,
-            identity.generation,
-            identity.cursor,
-            kind,
-        )
-        .map_err(|_| NotificationDispatchError::Dependency("analytics/token-rate-receipt"))?;
-        if !pending {
-            return Ok(());
+        if !matches!(
+            effect,
+            NotificationPostCommit::Analytics { .. }
+                | NotificationPostCommit::TokenRateStream(_)
+                | NotificationPostCommit::TokenRateAssociation(_)
+                | NotificationPostCommit::TokenRateUsage(_)
+        ) {
+            return Err(NotificationDispatchError::InvalidNotification);
         }
         self.token_rates
             .publish_observation(effect.clone())
             .map_err(|_| NotificationDispatchError::Dependency("sync/token-rates/publication"))?;
-        crate::analytics_capture::mark_token_rate_delivered(
-            &self.analytics_store,
-            &self.process_id,
-            &identity.provider_handle,
-            identity.generation,
-            identity.cursor,
-            kind,
-        )
-        .map_err(|_| NotificationDispatchError::Dependency("analytics/token-rate-receipt"))?;
         Ok(())
     }
 

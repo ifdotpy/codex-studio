@@ -332,6 +332,7 @@ impl NotificationStreamBuffer {
         self.indexes = Arc::new(indexes);
     }
 
+    #[cfg(test)]
     pub(crate) fn boundary_identity(&self) -> String {
         let mut keys = self
             .entries

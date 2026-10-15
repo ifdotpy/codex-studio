@@ -1619,7 +1619,7 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
         let page = account_registry::target_page(&fixture.store, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
-        actual.extend(rows.iter().map(|(id, _)| id.clone()));
+        actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
         after.insert("default".into(), rows.last().unwrap().0.clone());
     }
     assert_eq!(actual, expected);
@@ -1632,7 +1632,7 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     assert_eq!(
         wrapped_agents["default"]
             .iter()
-            .map(|(id, _)| id)
+            .map(|(id, _, _)| id)
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );

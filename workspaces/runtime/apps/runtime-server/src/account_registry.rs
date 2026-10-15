@@ -52,7 +52,7 @@ enum RegistryTrigger {
     Wake,
     Retry,
     Ensure(EnsureRequest),
-    WorkerExited(String, Result<(), WorkerError>),
+    WorkerExited(String, u64),
 }
 
 struct EnsureRequest {
@@ -89,6 +89,9 @@ pub(crate) struct AccountRegistry {
     launcher: Arc<dyn AccountLauncher>,
     radio_clock: Arc<dyn Fn() -> f64 + Send + Sync>,
     workers: BTreeMap<String, AccountHandle>,
+    worker_completion_ids: BTreeMap<String, u64>,
+    next_worker_completion_id: u64,
+    worker_completions: FuturesUnordered<Pin<Box<dyn Future<Output = (String, u64)> + Send>>>,
     session_broker: AccountSessionBroker,
     last_accepted_archive_tick: Option<Instant>,
     accepted_archive_tick_enabled: bool,
@@ -660,6 +663,9 @@ impl AccountRegistry {
             launcher,
             radio_clock: Arc::new(event_time),
             workers: BTreeMap::new(),
+            worker_completion_ids: BTreeMap::new(),
+            next_worker_completion_id: 0,
+            worker_completions: FuturesUnordered::new(),
             session_broker,
             last_accepted_archive_tick: None,
             accepted_archive_tick_enabled: config.accepted_archive_tick_enabled,
@@ -702,6 +708,23 @@ impl AccountRegistry {
             .map_err(|_| WorkerError::TaskFailed)?
             .insert(account.to_owned(), worker.retained_session());
         self.workers.insert(account.to_owned(), worker);
+        self.next_worker_completion_id = self
+            .next_worker_completion_id
+            .checked_add(1)
+            .ok_or(WorkerError::TaskFailed)?;
+        let completion_id = self.next_worker_completion_id;
+        let mut finished = self
+            .workers
+            .get(account)
+            .ok_or(WorkerError::Closed)?
+            .completion_signal();
+        let completion_account = account.to_owned();
+        self.worker_completion_ids
+            .insert(completion_account.clone(), completion_id);
+        self.worker_completions.push(Box::pin(async move {
+            let _ = finished.wait_for(|done| *done).await;
+            (completion_account, completion_id)
+        }));
         Ok(())
     }
 
@@ -714,6 +737,7 @@ impl AccountRegistry {
             return Ok(scope);
         }
         if let Some(mut worker) = self.workers.remove(account) {
+            self.worker_completion_ids.remove(account);
             if let Ok(mut sessions) = self.session_broker.sessions.write() {
                 sessions.remove(account);
             }
@@ -771,17 +795,12 @@ impl AccountRegistry {
                 break;
             }
             self.after_account.clone_from(&account);
-            let image_agents = image_workspace_agents(&self.store, &pending_agents)?;
-            hold_image_workspace_agents(&self.store, &image_agents)?;
+            let (image_agents, agents, image_recovery) =
+                classify_pending_agents(self.store.clone(), account.clone(), pending_agents)
+                    .await?;
             for agent_id in &image_agents {
                 self.after_agent.insert(account.clone(), agent_id.clone());
             }
-            let agents = pending_agents
-                .into_iter()
-                .filter(|(agent_id, _)| !image_agents.contains(agent_id))
-                .collect::<Vec<_>>();
-            let image_recovery =
-                agents.is_empty() && has_image_workspace_recovery(&self.store, &account)?;
             // An image-only pending page must not start an account provider
             // outside the workspace image's shared mount namespace.
             if agents.is_empty()
@@ -906,20 +925,11 @@ impl AccountRegistry {
             if *stop.borrow() {
                 break;
             }
-            // Borrow existing join handles rather than introducing another
-            // account task or a second command queue.
             let trigger = {
-                let mut exits: FuturesUnordered<_> =
-                    self.workers
-                        .iter_mut()
-                        .map(|(account, worker)| async move {
-                            (account.clone(), worker.completion().await)
-                        })
-                        .collect();
                 tokio::select! { biased;
                     _ = Shutdown::cancelled(&mut stop) => break,
-                    exit = exits.next(), if !exits.is_empty() => {
-                        exit.map(|(account, result)| RegistryTrigger::WorkerExited(account, result))
+                    exit = self.worker_completions.next(), if !self.worker_completions.is_empty() => {
+                        exit.map(|(account, id)| RegistryTrigger::WorkerExited(account, id))
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
                     request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
@@ -927,8 +937,15 @@ impl AccountRegistry {
                 }
             };
             match trigger {
-                Some(RegistryTrigger::WorkerExited(account, result)) => {
-                    self.workers.remove(&account);
+                Some(RegistryTrigger::WorkerExited(account, id))
+                    if self.worker_completion_ids.get(&account) == Some(&id) =>
+                {
+                    self.worker_completion_ids.remove(&account);
+                    let result = if let Some(mut worker) = self.workers.remove(&account) {
+                        worker.completion().await
+                    } else {
+                        Ok(())
+                    };
                     if let Ok(mut sessions) = self.session_broker.sessions.write() {
                         sessions.remove(&account);
                     }
@@ -938,6 +955,7 @@ impl AccountRegistry {
                     // Do not reconnect in a hot loop after an unavailable provider.
                     continue;
                 }
+                Some(RegistryTrigger::WorkerExited(_, _)) => continue,
                 Some(RegistryTrigger::Ensure(request)) => {
                     let response = match self.ensure_account_session(&request.account).await {
                         Ok(scope) if scope.account == request.account => Ok(scope),
@@ -958,7 +976,16 @@ impl AccountRegistry {
                     // Committed rows remain durable until the scheduled retry.
                     continue;
                 }
-                Some(RegistryTrigger::Wake | RegistryTrigger::Retry) => {}
+                Some(RegistryTrigger::Retry) => {
+                    let store = self.store.clone();
+                    studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-server/wal-checkpoint-maintenance",
+                        move || store.checkpoint_wal_if_due(),
+                    )
+                    .await
+                    .map_err(|_| WorkerError::TaskFailed)??;
+                }
+                Some(RegistryTrigger::Wake) => {}
                 None => continue,
             }
             match self.reconcile(Some(&shutdown)).await {
@@ -1007,11 +1034,40 @@ impl AccountRegistry {
     }
 }
 
+async fn classify_pending_agents(
+    store: Arc<RuntimeStore>,
+    account: String,
+    pending_agents: Vec<(String, i64, Option<String>)>,
+) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/account_registry",
+        move || {
+            let image_agents = pending_agents
+                .iter()
+                .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
+                .map(|(id, _, _)| id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            hold_image_workspace_agents(&store, &image_agents)?;
+            let agents = pending_agents
+                .into_iter()
+                .filter_map(|(id, epoch, mode)| {
+                    (mode.as_deref() != Some("image")).then_some((id, epoch))
+                })
+                .collect::<Vec<_>>();
+            let image_recovery =
+                agents.is_empty() && has_image_workspace_recovery(&store, &account)?;
+            Ok::<_, WorkerError>((image_agents, agents, image_recovery))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+}
+
 pub(crate) fn target_page(
     store: &RuntimeStore,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, Vec<(String, i64)>>, WorkerError> {
+) -> Result<BTreeMap<String, Vec<(String, i64, Option<String>)>>, WorkerError> {
     let db = store.read()?;
     SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
         .map_err(Into::into)
@@ -1082,30 +1138,14 @@ fn event_time() -> f64 {
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
-fn image_workspace_agents(
-    store: &RuntimeStore,
-    agents: &[(String, i64)],
-) -> Result<std::collections::BTreeSet<String>, WorkerError> {
-    let db = store.read()?;
-    let mut image_agents = std::collections::BTreeSet::new();
-    for (agent_id, _) in agents {
-        let mode = db.query_row(
-            "SELECT json_extract(record,'$.workspaceMode') FROM runtime_agents WHERE id=?1",
-            [agent_id],
-            |row| row.get::<_, Option<String>>(0),
-        )?;
-        if mode.as_deref() == Some("image") {
-            image_agents.insert(agent_id.clone());
-        }
-    }
-    Ok(image_agents)
-}
-
 /// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
 fn hold_image_workspace_agents(
     store: &RuntimeStore,
     agents: &std::collections::BTreeSet<String>,
 ) -> Result<(), WorkerError> {
+    if agents.is_empty() {
+        return Ok(());
+    }
     store.transaction_with(|tx| {
         for id in agents {
             let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
@@ -1179,6 +1219,114 @@ fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<b
         [account],
         |row| row.get(0),
     )?)
+}
+
+#[cfg(test)]
+mod bounded_reconcile_tests {
+    use super::*;
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::mpsc,
+        thread,
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, StoreError};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn image_classification_waits_off_executor_while_writer_is_held() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store"));
+        let id = AgentId::from("image-agent");
+        store
+            .transaction(|transaction| {
+                AgentRepository::put(
+                    transaction,
+                    &AgentRecord {
+                        id: id.clone(),
+                        root_id: id.clone(),
+                        epoch: 1,
+                        status: AgentStatus::Queued,
+                        extra: BTreeMap::from([
+                            ("accountKey".to_owned(), serde_json::json!("account-a")),
+                            ("workspaceMode".to_owned(), serde_json::json!("image")),
+                            ("autoWake".to_owned(), serde_json::json!(true)),
+                            ("inFlight".to_owned(), serde_json::json!(false)),
+                        ]),
+                    },
+                )?;
+                Ok(())
+            })
+            .expect("image agent stored");
+
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_store = Arc::clone(&store);
+        let writer = thread::spawn(move || {
+            writer_store
+                .transaction_with(|_| {
+                    held_tx.send(()).expect("announce held writer");
+                    release_rx.recv().expect("release held writer");
+                    Ok::<_, StoreError>(())
+                })
+                .expect("held writer transaction");
+        });
+        held_rx.recv().expect("writer reaches barrier");
+
+        let classification = tokio::spawn(classify_pending_agents(
+            Arc::clone(&store),
+            "account-a".to_owned(),
+            vec![("image-agent".to_owned(), 1, Some("image".to_owned()))],
+        ));
+        tokio::task::yield_now().await;
+        let unrelated_executor_work = tokio::spawn(async { "executor progressed" });
+        assert_eq!(
+            unrelated_executor_work.await.expect("executor task"),
+            "executor progressed"
+        );
+
+        release_tx.send(()).expect("release writer barrier");
+        writer.join().expect("writer thread");
+        let (image_agents, agents, recovery) = classification
+            .await
+            .expect("classification task")
+            .expect("classification succeeds");
+        assert_eq!(image_agents, BTreeSet::from(["image-agent".to_owned()]));
+        assert!(agents.is_empty());
+        assert!(!recovery);
+    }
+
+    #[test]
+    fn account_wake_page_returns_workspace_mode_with_pending_agents() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let id = AgentId::from("image-agent");
+        store
+            .transaction(|transaction| {
+                AgentRepository::put(
+                    transaction,
+                    &AgentRecord {
+                        id: id.clone(),
+                        root_id: id.clone(),
+                        epoch: 1,
+                        status: AgentStatus::Queued,
+                        extra: BTreeMap::from([
+                            ("accountKey".to_owned(), serde_json::json!("default")),
+                            ("workspaceMode".to_owned(), serde_json::json!("image")),
+                            ("autoWake".to_owned(), serde_json::json!(true)),
+                            ("inFlight".to_owned(), serde_json::json!(false)),
+                        ]),
+                    },
+                )?;
+                transaction.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)",
+                    [id.0.as_str()],
+                )?;
+                Ok(())
+            })
+            .expect("pending image agent stored");
+
+        let page = target_page(&store, "", &BTreeMap::new()).expect("pending target page");
+        assert_eq!(page["default"][0].2.as_deref(), Some("image"));
+    }
 }
 
 #[cfg(test)]

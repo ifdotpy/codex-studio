@@ -77,15 +77,19 @@ pub struct TokenRateHub {
 #[derive(Default)]
 struct RateProjector {
     agents: BTreeMap<String, ProjectedAgent>,
+    // One volatile delivery watermark per provider, matching the durable outbox identity.
+    watermarks: BTreeMap<String, DeliveryWatermark>,
+}
+
+struct DeliveryWatermark {
+    generation: u64,
+    cursor: u64,
+    effects: u8,
 }
 
 #[derive(Default)]
 struct ProjectedAgent {
     root: String,
-    provider: String,
-    generation: u64,
-    cursor: u64,
-    seen_effects: u8,
     turn: String,
     active: bool,
     estimated: bool,
@@ -111,6 +115,8 @@ const MIN_GENERATION_DURATION_SECONDS: f64 = 0.25;
 const TOKEN_ESTIMATE_TOKENS_PER_CHARACTER: f64 = 0.25;
 const TOKEN_RATE_WINDOW_SECONDS: f64 = 4.0;
 const MAX_PROJECTED_AGENTS: usize = TOKEN_RATE_MAX_ENTRIES;
+// Retain provider delivery watermarks across snapshot eviction.
+const MAX_TOKEN_RATE_WATERMARKS: usize = MAX_PROJECTED_AGENTS * 2;
 // Parity owner: apps/server/src/codex_token_rate.py::MAX_PENDING_RESPONSE_DURATION_ENTRIES.
 const MAX_PENDING_RESPONSE_DURATION_ENTRIES: usize = 1024;
 
@@ -185,9 +191,9 @@ impl TokenRateHub {
         self.sender.subscribe()
     }
 
-    /// Project one committed provider observation into the snapshot channel
-    /// served by HTTP sync. Per-agent cursor/effect watermarks make receipt
-    /// replay a no-op without a shared, globally-evicting receipt cache.
+    /// Project one committed provider observation into HTTP sync. The exact
+    /// provider/generation/cursor/effect watermark stays with this owner even
+    /// when its bounded snapshot entry is evicted.
     pub fn publish_observation(
         &self,
         effect: NotificationPostCommit,
@@ -204,35 +210,57 @@ impl TokenRateHub {
         let effect_bit = match effect {
             NotificationPostCommit::Analytics { .. }
             | NotificationPostCommit::TokenRateUsage(_) => 1,
-            NotificationPostCommit::AnalyticsStream { .. } => 2,
-            NotificationPostCommit::TokenRateStream(_) => 4,
-            NotificationPostCommit::TokenRateAssociation(_) => 8,
-            NotificationPostCommit::Recovered { .. } => return Err(TokenRateError::Unavailable),
+            NotificationPostCommit::TokenRateStream(_) => 2,
+            NotificationPostCommit::TokenRateAssociation(_) => 4,
+            NotificationPostCommit::AnalyticsStream { .. }
+            | NotificationPostCommit::Recovered { .. } => {
+                return Err(TokenRateError::Unavailable);
+            }
         };
         let snapshot = {
             let mut projector = self
                 .projector
                 .lock()
                 .map_err(|_| TokenRateError::Unavailable)?;
+            let new_generation = match projector.watermarks.get_mut(&delivery.provider_handle) {
+                Some(watermark) if delivery.generation < watermark.generation => return Ok(false),
+                Some(watermark) if delivery.generation > watermark.generation => {
+                    *watermark = DeliveryWatermark {
+                        generation: delivery.generation,
+                        cursor: delivery.cursor,
+                        effects: effect_bit,
+                    };
+                    true
+                }
+                Some(watermark) if delivery.cursor < watermark.cursor => return Ok(false),
+                Some(watermark) if delivery.cursor == watermark.cursor => {
+                    if watermark.effects & effect_bit != 0 {
+                        return Ok(false);
+                    }
+                    watermark.effects |= effect_bit;
+                    false
+                }
+                Some(watermark) => {
+                    watermark.cursor = delivery.cursor;
+                    watermark.effects = effect_bit;
+                    false
+                }
+                None => {
+                    projector.watermarks.insert(
+                        delivery.provider_handle.clone(),
+                        DeliveryWatermark {
+                            generation: delivery.generation,
+                            cursor: delivery.cursor,
+                            effects: effect_bit,
+                        },
+                    );
+                    true
+                }
+            };
+            if new_generation {
+                projector.agents.remove(agent_id);
+            }
             let entry = projector.agents.entry(agent_id.to_owned()).or_default();
-            if entry.provider != delivery.provider_handle || entry.generation != delivery.generation
-            {
-                *entry = ProjectedAgent {
-                    provider: delivery.provider_handle.clone(),
-                    generation: delivery.generation,
-                    ..ProjectedAgent::default()
-                };
-            }
-            if delivery.cursor < entry.cursor
-                || (delivery.cursor == entry.cursor && entry.seen_effects & effect_bit != 0)
-            {
-                return Ok(false);
-            }
-            if delivery.cursor > entry.cursor {
-                entry.cursor = delivery.cursor;
-                entry.seen_effects = 0;
-            }
-            entry.seen_effects |= effect_bit;
             entry.root = agent
                 .get("rootId")
                 .and_then(serde_json::Value::as_str)
@@ -244,6 +272,12 @@ impl TokenRateHub {
                 let oldest = projector.agents.keys().next().cloned();
                 if let Some(oldest) = oldest {
                     projector.agents.remove(&oldest);
+                }
+            }
+            while projector.watermarks.len() > MAX_TOKEN_RATE_WATERMARKS {
+                let oldest = projector.watermarks.keys().next().cloned();
+                if let Some(oldest) = oldest {
+                    projector.watermarks.remove(&oldest);
                 }
             }
             snapshot_from_projector(&projector)
@@ -614,10 +648,34 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
-        TokenRateHub,
+        MAX_PROJECTED_AGENTS, ProjectedAgent, TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
+        TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub,
+    };
+    use crate::notification_dispatch::{
+        NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity,
     };
     use serde_json::json;
+
+    fn usage_effect(
+        agent_id: &str,
+        provider: &str,
+        generation: u64,
+        cursor: u64,
+        turn: &str,
+    ) -> NotificationPostCommit {
+        NotificationPostCommit::TokenRateUsage(NotificationObservation {
+            agent: Some(json!({"id":agent_id,"rootId":agent_id,"turnId":turn})),
+            method: "turn/started".into(),
+            params: json!({"turnId":turn}),
+            delivery: ProviderDeliveryIdentity {
+                provider_handle: provider.into(),
+                generation,
+                cursor,
+            },
+            observed_at: cursor as f64,
+            provider_at: cursor as f64,
+        })
+    }
 
     #[test]
     fn token_rate_projection_constants_match_python_owner() {
@@ -749,6 +807,67 @@ mod tests {
             hub.publish(json!({"rates":{},"teams":{},"extra":true}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn delivery_watermark_survives_projection_eviction_and_acknowledgement_loss() {
+        let hub = TokenRateHub::new();
+        let original = usage_effect("agent-0000", "provider-a", 1, 1, "turn-a");
+        assert!(
+            hub.publish_observation(original.clone())
+                .expect("first publish")
+        );
+        let after_publish = hub.snapshot();
+        assert!(
+            !hub.publish_observation(original.clone())
+                .expect("retry after lost acknowledgement")
+        );
+        assert!(
+            !hub.publish_observation(usage_effect(
+                "agent-other",
+                "provider-a",
+                1,
+                1,
+                "turn-other"
+            ))
+            .expect("provider identity deduplicates across replay")
+        );
+        assert_eq!(hub.snapshot(), after_publish);
+
+        {
+            let mut projector = hub.projector.lock().expect("token-rate projector");
+            for index in 1..MAX_PROJECTED_AGENTS {
+                projector
+                    .agents
+                    .insert(format!("agent-{index:04}"), ProjectedAgent::default());
+            }
+        }
+        assert!(
+            hub.publish_observation(usage_effect("agent-zzzz", "provider-b", 1, 1, "turn-b"))
+                .expect("fill bounded projection")
+        );
+        assert!(!hub.snapshot().rates.contains_key("agent-0000"));
+        assert!(
+            !hub.publish_observation(original)
+                .expect("replay after projection eviction")
+        );
+        assert!(!hub.snapshot().rates.contains_key("agent-0000"));
+    }
+
+    #[test]
+    fn an_older_generation_cannot_replace_a_newer_projection() {
+        let hub = TokenRateHub::new();
+        assert!(
+            hub.publish_observation(usage_effect("agent", "provider-a", 9, 1, "new-turn"))
+                .expect("new generation publishes")
+        );
+        let current = hub.snapshot();
+        assert!(
+            !hub.publish_observation(usage_effect("agent", "provider-a", 8, 99, "old-turn"))
+                .expect("old generation is stale")
+        );
+        assert_eq!(hub.snapshot(), current);
+        assert_eq!(hub.snapshot().rates["agent"].turn_id, "new-turn");
     }
 
     #[test]
