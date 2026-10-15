@@ -21,6 +21,7 @@ from pathlib import Path
 isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from studio_api.models import MAX_SAFE_INTEGER
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from http_runtime_test_support import answer_refusal_error
@@ -197,7 +198,10 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertIsInstance(body["_syncEntities"], list)
         if "_syncEntitiesAfter" in body:
             self.assertIn("_syncEntities", body)
-            self.assertIsInstance(body["_syncEntitiesAfter"], int)
+            sync_after = body["_syncEntitiesAfter"]
+            self.assertIs(type(sync_after), int)
+            self.assertGreaterEqual(sync_after, 0)
+            self.assertLessEqual(sync_after, MAX_SAFE_INTEGER)
         self.assertEqual({key: body[key] for key in expected}, expected)
 
     def _async_answer_snapshot(self):
