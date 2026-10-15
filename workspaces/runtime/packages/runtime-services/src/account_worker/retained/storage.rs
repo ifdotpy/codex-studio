@@ -423,10 +423,10 @@ pub(super) fn submitted(
         } else {
             // The replay read and this admission are separate transactions. Two
             // concurrent callers can both observe a miss, then race to persist
-            // the same operation key with different call identities. Validate
-            // the winner's durable intent, but refuse the loser at the request
-            // boundary instead of treating the expected race as corrupt store
-            // data and terminating the account worker.
+            // the same operation key. Validate the winner's durable intent,
+            // then resolve a changed identity as a caller refusal and an exact
+            // identity as uncertain. Neither race may overwrite the intent or
+            // submit a second provider request.
             if let Some(prior) = store::receipt(tx, &call.key(), "submitted")? {
                 let prior_call: Call = serde_json::from_value(prior["call"].clone())
                     .map_err(|_| WorkerError::Capacity)?;
@@ -441,7 +441,11 @@ pub(super) fn submitted(
                 {
                     return Err(WorkerError::Capacity);
                 }
-                return Ok(Err(PortError::Identity));
+                return Ok(Err(if same_replay_identity(&prior_call, call) {
+                    PortError::Unknown
+                } else {
+                    PortError::Identity
+                }));
             }
             store::save(
                 tx,
@@ -615,6 +619,36 @@ mod replay_identity_tests {
         assert!(matches!(
             replay(&store, &conflicting).unwrap(),
             Err(PortError::Identity)
+        ));
+
+        let exact = Call {
+            operation: "import:fixture:exact-read".into(),
+            ..first.clone()
+        };
+        let exact_retry = exact.clone();
+        assert!(matches!(
+            replay(&store, &exact).unwrap().unwrap(),
+            Replay::Miss
+        ));
+        assert!(matches!(
+            replay(&store, &exact_retry).unwrap().unwrap(),
+            Replay::Miss
+        ));
+        assert_eq!(
+            submitted(&store, &exact, &recovered(&exact), None).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            submitted(&store, &exact_retry, &recovered(&exact_retry), None).unwrap(),
+            Err(PortError::Unknown)
+        );
+        assert!(matches!(
+            replay(&store, &exact_retry).unwrap().unwrap(),
+            Replay::Return(SessionReceipt {
+                result: RequestResult::Unknown,
+                replayed: true,
+                ..
+            })
         ));
     }
 }

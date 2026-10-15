@@ -387,6 +387,69 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = request(&state, &port, "import:fixture:exact-read");
+    let start = Arc::new(tokio::sync::Barrier::new(3));
+    let first_start = Arc::clone(&start);
+    let first_port = port.clone();
+    let first_call = call.clone();
+    let first_task = tokio::spawn(async move {
+        first_start.wait().await;
+        first_port.request(first_call).await
+    });
+    let retry_start = Arc::clone(&start);
+    let retry_port = port.clone();
+    let retry_call = call.clone();
+    let retry_task = tokio::spawn(async move {
+        retry_start.wait().await;
+        retry_port.request(retry_call).await
+    });
+    start.wait().await;
+
+    let write = peer.write("thread/read").await;
+    peer.reply(&write, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let outcomes = [first_task.await.unwrap(), retry_task.await.unwrap()];
+    assert!(
+        outcomes.iter().any(
+            |outcome| matches!(outcome, Ok(receipt) if matches!(receipt.result, RequestResult::Reply(_)))
+        ),
+        "the submitted operation must eventually return its provider result"
+    );
+    assert!(
+        outcomes.iter().all(|outcome| match outcome {
+            Ok(receipt) => matches!(
+                receipt.result,
+                RequestResult::Reply(_) | RequestResult::Unknown
+            ),
+            Err(PortError::Unknown) => true,
+            _ => false,
+        }),
+        "an exact concurrent retry may remain unknown, but must not be refused as a changed identity"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "concurrent exact retries issue only one provider write"
+    );
+
+    let replay = port.request(call).await.unwrap();
+    assert_eq!(
+        replay.result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    assert!(replay.replayed);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "replay never resends the write"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     let state = State::new().await;
     let mut peer = Peer::new();
