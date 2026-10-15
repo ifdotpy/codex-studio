@@ -2948,6 +2948,7 @@ struct VmTurnGuestState {
     acknowledged: u64,
     starts: usize,
     uncertain_start_once: bool,
+    codex_refresh_on_start: bool,
     stops: Vec<Value>,
 }
 
@@ -2994,6 +2995,17 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
             "agent.context" => Ok(json!({"projectId":params["projectId"],"line":"main"})),
             "provider.start" => {
                 state.starts += 1;
+                if state.codex_refresh_on_start {
+                    state.codex_refresh_on_start = false;
+                    Self::enqueue_frame(
+                        &mut state,
+                        json!({
+                            "id":"vm-auth-refresh",
+                            "method":"account/chatgptAuthTokens/refresh",
+                            "params":{"previousAccountId":"fixture-account"}
+                        }),
+                    );
+                }
                 if state.uncertain_start_once {
                     state.uncertain_start_once = false;
                     return Err(crate::linux_vm_guest::GuestError::Transport {
@@ -3070,6 +3082,19 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
                 ),
                 bootstrap: None,
             })
+        })
+    }
+
+    fn refresh_codex(
+        &self,
+        _account_key: String,
+        previous_account_id: String,
+    ) -> preparation::VmProviderAuthFuture<'_> {
+        Box::pin(async move {
+            Ok(json!({
+                "accessToken":"fake-fresh-access-token",
+                "chatgptAccountId":previous_account_id
+            }))
         })
     }
 }
@@ -3204,6 +3229,73 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
         .deliver_vm_notification("default", &state.agent, state.epoch + 1, 3, frame)
         .await;
     assert!(matches!(stale, Err(super::retained::PortError::Unknown)));
+    worker.shutdown().await.expect("worker shuts down");
+}
+
+#[tokio::test]
+async fn retained_vm_auth_callback_replies_through_the_account_session() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture becomes VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    guest.state.lock().unwrap().codex_refresh_on_start = true;
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    state.wake(&worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let response_written_and_acked = {
+                let state = guest.state.lock().unwrap();
+                let response = state
+                    .writes
+                    .iter()
+                    .find(|write| write["id"] == "vm-auth-refresh");
+                if let Some(response) = response.filter(|_| state.acknowledged >= 1) {
+                    assert_eq!(response["result"]["accessToken"], "fake-fresh-access-token");
+                    assert_eq!(response["result"]["chatgptAccountId"], "fixture-account");
+                    assert!(response["result"].get("refreshToken").is_none());
+                    true
+                } else {
+                    false
+                }
+            };
+            if response_written_and_acked {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("retained account callback replies through the VM actor session");
     worker.shutdown().await.expect("worker shuts down");
 }
 

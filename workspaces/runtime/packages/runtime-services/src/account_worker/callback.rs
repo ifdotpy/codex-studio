@@ -13,6 +13,84 @@ pub fn dispatch(_request: &Frame) -> CallbackDecision {
     CallbackDecision::Unsupported
 }
 
+/// Resolve a Codex VM token refresh only for the actor whose guest emitted it.
+/// The resolver owns host account validation and the stable retained refresh ID.
+pub(super) fn is_vm_codex_refresh_request(frame: &Frame) -> bool {
+    match frame {
+        Frame::Request(request) => request.method.as_str() == "account/chatgptAuthTokens/refresh",
+        Frame::UnknownMethod(request) => {
+            request.method == "account/chatgptAuthTokens/refresh"
+                && request.fields.contains_key("id")
+        }
+        _ => false,
+    }
+}
+
+pub(super) async fn vm_codex_refresh_response(
+    account: &str,
+    emitting_actor: Option<&str>,
+    frame: &Frame,
+    resolver: Option<
+        std::sync::Arc<dyn crate::account_worker::preparation::VmProviderLaunchResolver>,
+    >,
+) -> Option<Frame> {
+    if !is_vm_codex_refresh_request(frame) {
+        return None;
+    }
+    let (id, params) = match frame {
+        Frame::Request(request) => (request.id.clone(), request.params.as_ref()),
+        Frame::UnknownMethod(request) => (
+            serde_json::from_value(request.fields.get("id")?.clone()).ok()?,
+            request.fields.get("params"),
+        ),
+        _ => return None,
+    };
+    let failed = || Frame::Response {
+        id: id.clone(),
+        body: ResponseBody::Error(json!({
+            "code": -32000,
+            "message": "Host access token refresh failed. Check the host sign-in. The guest has no refresh token."
+        })),
+        fields: Default::default(),
+    };
+    if emitting_actor.is_none_or(str::is_empty) {
+        return Some(failed());
+    }
+    let Some(previous_account_id) = params
+        .and_then(|params| params.get("previousAccountId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return Some(failed());
+    };
+    let Some(resolver) = resolver else {
+        return Some(failed());
+    };
+    let result = resolver
+        .refresh_codex(account.to_owned(), previous_account_id.to_owned())
+        .await;
+    let Ok(payload) = result else {
+        return Some(failed());
+    };
+    if payload.get("chatgptAccountId").and_then(Value::as_str) != Some(previous_account_id)
+        || payload
+            .get("accessToken")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Some(failed());
+    }
+    let result = json!({
+        "accessToken": payload["accessToken"],
+        "chatgptAccountId": payload["chatgptAccountId"],
+    });
+    Some(Frame::Response {
+        id,
+        body: ResponseBody::Result(result),
+        fields: Default::default(),
+    })
+}
+
 /// Resolve a tool callback only when this account worker has one active turn
 /// bound to its current provider generation. Tool arguments never supply actor
 /// identity. Ambiguous account sessions fail closed.
@@ -247,6 +325,7 @@ fn tool_call_failure_body(message: &str) -> ResponseBody {
         "contentItems": [{"type": "inputText", "text": message}]
     }))
 }
+
 pub(super) fn response(frame: &Frame) -> Option<Frame> {
     let id = match frame {
         Frame::Request(request) => request.id.clone(),
@@ -341,5 +420,112 @@ mod tests {
                 .expect("generation-scoped lookup")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod vm_auth_tests {
+    use super::*;
+    use crate::account_worker::preparation::{
+        VmProviderAuthFuture, VmProviderLaunchFuture, VmProviderLaunchRequest,
+        VmProviderLaunchResolver,
+    };
+    use serde_json::Map;
+    use std::sync::{Arc, Mutex};
+    use studio_runtime_providers::{RequestId, UnknownMethodFrame};
+
+    struct Resolver {
+        calls: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl VmProviderLaunchResolver for Resolver {
+        fn resolve(&self, _request: VmProviderLaunchRequest) -> VmProviderLaunchFuture<'_> {
+            Box::pin(async { Err(crate::account_worker::WorkerError::TaskFailed) })
+        }
+
+        fn refresh_codex(
+            &self,
+            account: String,
+            previous_account_id: String,
+        ) -> VmProviderAuthFuture<'_> {
+            let calls = Arc::clone(&self.calls);
+            Box::pin(async move {
+                calls
+                    .lock()
+                    .map_err(|_| crate::account_worker::WorkerError::TaskFailed)?
+                    .push((account, previous_account_id.clone()));
+                Ok(json!({
+                    "accessToken":"fresh-fixture-token",
+                    "chatgptAccountId":previous_account_id,
+                    "refreshToken":"test-only-secret"
+                }))
+            })
+        }
+    }
+
+    fn refresh_request() -> Frame {
+        let fields = serde_json::from_value::<Map<String, Value>>(json!({
+            "id": 41,
+            "params": {"previousAccountId":"fixture-account"}
+        }))
+        .expect("valid provider request fields");
+        Frame::UnknownMethod(UnknownMethodFrame {
+            method: "account/chatgptAuthTokens/refresh".into(),
+            fields,
+        })
+    }
+
+    #[tokio::test]
+    async fn vm_codex_refresh_uses_the_emitting_actor_account_scope() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let resolver: Arc<dyn VmProviderLaunchResolver> = Arc::new(Resolver {
+            calls: Arc::clone(&calls),
+        });
+        let response = vm_codex_refresh_response(
+            "account-key",
+            Some("vm-agent"),
+            &refresh_request(),
+            Some(resolver),
+        )
+        .await
+        .expect("refresh response");
+        let Frame::Response { id, body, .. } = response else {
+            panic!("expected response frame");
+        };
+        assert_eq!(id, RequestId::Number(41));
+        assert_eq!(
+            body,
+            ResponseBody::Result(json!({
+                "accessToken":"fresh-fixture-token",
+                "chatgptAccountId":"fixture-account"
+            }))
+        );
+        assert_eq!(
+            *calls.lock().expect("read refresh calls"),
+            vec![("account-key".into(), "fixture-account".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn vm_codex_refresh_without_an_emitting_actor_fails_closed() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let resolver: Arc<dyn VmProviderLaunchResolver> = Arc::new(Resolver {
+            calls: Arc::clone(&calls),
+        });
+        let response =
+            vm_codex_refresh_response("account-key", None, &refresh_request(), Some(resolver))
+                .await
+                .expect("failure response");
+        let Frame::Response {
+            id,
+            body: ResponseBody::Error(error),
+            ..
+        } = response
+        else {
+            panic!("expected refresh error response");
+        };
+        assert_eq!(id, RequestId::Number(41));
+        assert_eq!(error["code"], -32000);
+        assert!(calls.lock().expect("read refresh calls").is_empty());
     }
 }

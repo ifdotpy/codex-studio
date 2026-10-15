@@ -484,6 +484,30 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
             )
         })
     }
+
+    fn refresh_codex(
+        &self,
+        account_key: String,
+        previous_account_id: String,
+    ) -> studio_runtime_services::account_worker::preparation::VmProviderAuthFuture<'_> {
+        let accounts = Arc::clone(&self.accounts);
+        let account_session = self.account_session.clone();
+        Box::pin(async move {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/vm-codex-refresh",
+                move || {
+                    refresh_vm_codex_token(
+                        &accounts,
+                        account_session.as_deref(),
+                        &account_key,
+                        &previous_account_id,
+                    )
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)?
+        })
+    }
 }
 
 /// This follows Python's `codex_linux_workspaces.py:83-104`: provider comes
@@ -565,7 +589,12 @@ fn resolve_vm_launch_inputs(
             // The host CLI path is not portable and can expose host layout.
             // The guest bridge resolves its own `claude` executable.
             let mut options = options;
-            options.remove("binaryPath");
+            options
+                .as_object_mut()
+                .ok_or_else(|| {
+                    WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
+                })?
+                .remove("binaryPath");
             let explicit_host_config = options
                 .get("configDir")
                 .and_then(serde_json::Value::as_str)
@@ -632,8 +661,13 @@ fn resolve_vm_launch_inputs(
             // Python clears legacy copied Codex credentials before bootstrapping
             // external auth through the retained provider session.
             let credential_path = format!("{profile_relative}/auth.json");
-            let bootstrap =
-                read_vm_codex_bootstrap(accounts, account_session, &request.account_key, account, false)?;
+            let bootstrap = read_vm_codex_bootstrap(
+                accounts,
+                account_session,
+                &request.account_key,
+                account,
+                false,
+            )?;
             (
                 vec![
                     "codex".into(),
@@ -760,7 +794,9 @@ fn read_vm_codex_bootstrap(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| WorkerError::TaskFailed)?
         .as_secs_f64();
-    if force_refresh || expires.is_some_and(|value| value <= now + CODEX_ACCESS_REFRESH_WINDOW_SECONDS) {
+    if force_refresh
+        || expires.is_some_and(|value| value <= now + CODEX_ACCESS_REFRESH_WINDOW_SECONDS)
+    {
         let port = session.ok_or_else(|| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
@@ -846,6 +882,48 @@ fn read_vm_codex_bootstrap(
     // The raw credential payload is returned only in memory for guest login;
     // durable receipts use its digest and never store token bytes.
     Ok(payload)
+}
+
+fn refresh_vm_codex_token(
+    accounts: &AccountDriver,
+    account_session: Option<
+        &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+    >,
+    account_key: &str,
+    previous_account_id: &str,
+) -> Result<Value, WorkerError> {
+    let snapshot = accounts
+        .snapshot()
+        .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-auth/account-unavailable".into()))?;
+    if account.get("provider").and_then(Value::as_str) != Some("codex")
+        || account.get("status").and_then(Value::as_str) != Some("ready")
+        || account.get("accountId").and_then(Value::as_str) != Some(previous_account_id)
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-auth/account-changed".into(),
+        ));
+    }
+    let payload = read_vm_codex_bootstrap(accounts, account_session, account_key, account, true)?;
+    if payload.get("type").and_then(Value::as_str) != Some("chatgptAuthTokens")
+        || payload.get("chatgptAccountId").and_then(Value::as_str) != Some(previous_account_id)
+        || payload
+            .get("accessToken")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-auth/account-changed".into(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "accessToken":payload["accessToken"],
+        "chatgptAccountId":payload["chatgptAccountId"],
+    }))
 }
 
 /// Mirror Python `claude_access` (codex_linux_vm_auth.py:168-185): refresh
@@ -999,7 +1077,10 @@ fn read_vm_claude_oauth(
     #[cfg(target_os = "macos")]
     let keychain_bytes = read_vm_claude_keychain(path, explicit_config_dir)?;
     #[cfg(not(target_os = "macos"))]
-    let keychain_bytes: Option<Vec<u8>> = None;
+    let keychain_bytes: Option<Vec<u8>> = {
+        let _ = explicit_config_dir;
+        None
+    };
     let bytes = match keychain_bytes {
         Some(bytes) => bytes,
         None => {
@@ -1144,20 +1225,15 @@ mod vm_claude_keychain_tests {
 
     #[test]
     fn default_claude_keychain_service_stays_unsuffixed() {
-        assert_eq!(
-            vm_claude_keychain_service(None),
-            "Claude Code-credentials"
-        );
+        assert_eq!(vm_claude_keychain_service(None), "Claude Code-credentials");
     }
 
     #[test]
     fn explicitly_selected_claude_config_uses_scoped_service() {
         assert_eq!(
             vm_claude_keychain_service(Some("/tmp/claude-profile/")),
-            "Claude Code-credentials-"
-                .to_owned()
-                + &data_encoding::HEXLOWER
-                    .encode(&Sha256::digest(b"/tmp/claude-profile"))[..8]
+            "Claude Code-credentials-".to_owned()
+                + &data_encoding::HEXLOWER.encode(&Sha256::digest(b"/tmp/claude-profile"))[..8]
         );
     }
 }
@@ -2696,14 +2772,14 @@ IFS= read -r release
         ]);
 
         run_vm_claude_refresh_helper(&node, &helper, &environment, || {
-            let access =
-                read_vm_claude_oauth(&credential_path).map_err(|_| WorkerError::TaskFailed)?;
+            let access = read_vm_claude_oauth(&credential_path, true)
+                .map_err(|_| WorkerError::TaskFailed)?;
             Ok(access["expiresAt"].as_f64().unwrap()
                 > unix_time_ms().unwrap() + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
         })
         .unwrap();
 
-        let access = read_vm_claude_oauth(&credential_path).unwrap();
+        let access = read_vm_claude_oauth(&credential_path, true).unwrap();
         assert_eq!(access["accessToken"], "fresh-fake-token");
         assert!(access["expiresAt"].as_f64().unwrap() > now_ms);
     }

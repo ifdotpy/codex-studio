@@ -2200,6 +2200,28 @@ impl Worker {
                 (cursor, actor, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
+            && callback::is_vm_codex_refresh_request(frame)
+        {
+            let account = self.account.clone();
+            let actor = actor_id.map(str::to_owned);
+            let frame = frame.clone();
+            let resolver = self.resources.vm_provider_launch.clone();
+            if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
+                return Err(WorkerError::Capacity);
+            }
+            self.managed_callback_cursors
+                .insert((actor.clone(), cursor.0));
+            self.managed_callbacks.spawn(async move {
+                let response = callback::vm_codex_refresh_response(
+                    &account,
+                    actor.as_deref(),
+                    &frame,
+                    resolver,
+                )
+                .await;
+                (cursor, actor, response)
+            });
+        } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
             self.push(Effect::Callback(
