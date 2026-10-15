@@ -38,6 +38,7 @@ const PROVIDER_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const EVENT_PAYLOAD_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const EVENT_CHUNK_MAX_BYTES: u64 = 1024 * 1024;
 const CREDENTIAL_RECEIPT_PREFIX: &str = "linux-vm-credential-copy:";
+pub const MAX_GUEST_CREDENTIAL_BYTES: usize = 1024 * 1024;
 
 pub type Result<T> = std::result::Result<T, GuestProviderError>;
 
@@ -485,7 +486,7 @@ impl GuestProviderSession {
     ) -> Result<Value> {
         if operation_id.is_empty()
             || operation_id.len() > 256
-            || !matches!(native_id, Value::String(_) | Value::Number(_))
+            || !matches!(native_id, Value::Null | Value::String(_) | Value::Number(_))
             || !message.is_object()
         {
             return Err(GuestProviderError::Invalid);
@@ -742,10 +743,11 @@ pub async fn copy_guest_credentials(
         || account_key.is_empty()
         || relative_path.is_empty()
         || relative_path.starts_with('/')
+        || relative_path.contains(['\\', '\0'])
         || relative_path
             .split('/')
-            .any(|part| part == ".." || part.is_empty())
-        || credential_document.len() > 1024 * 1024
+            .any(|part| part == ".." || part == "." || part.is_empty())
+        || credential_document.len() > MAX_GUEST_CREDENTIAL_BYTES
     {
         return Err(GuestProviderError::Invalid);
     }
@@ -1283,7 +1285,14 @@ mod tests {
         assert_eq!(receipt.result, "complete");
         assert!(!receipt.result.contains("private-token"));
         assert!(!receipt.signature.contains("private-token"));
-        assert!(receipt.signature.contains(&digest));
+        let expected_material = serde_json::to_vec(&json!({
+            "agentId": "agent-1",
+            "accountKey": "account-1",
+            "path": ".claude/studio-accounts/key/.credentials.json",
+            "digest": digest,
+        }))
+        .unwrap();
+        assert_eq!(receipt.signature, hex_digest(&expected_material));
     }
 
     #[tokio::test]

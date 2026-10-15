@@ -2939,6 +2939,311 @@ struct TurnStartGuest {
     project_id: std::sync::Mutex<Option<String>>,
 }
 
+#[derive(Default)]
+struct VmTurnGuestState {
+    calls: Vec<String>,
+    writes: Vec<Value>,
+    events: std::collections::VecDeque<Value>,
+    sequence: u64,
+    acknowledged: u64,
+    starts: usize,
+    uncertain_start_once: bool,
+    stops: Vec<Value>,
+}
+
+#[derive(Default)]
+struct VmTurnGuest {
+    state: std::sync::Mutex<VmTurnGuestState>,
+}
+
+impl VmTurnGuest {
+    fn enqueue_frame(state: &mut VmTurnGuestState, payload: Value) {
+        state.sequence += 1;
+        state.events.push_back(json!({
+            "sequence": state.sequence,
+            "generation": 31,
+            "kind": "stdout",
+            "payload": payload.to_string(),
+        }));
+    }
+}
+
+impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
+    fn stream(
+        &self,
+        method: &str,
+        params: &Value,
+        _request_id: Option<&str>,
+        _timeout: std::time::Duration,
+        _on_frame: &mut dyn FnMut(
+            Value,
+        )
+            -> std::result::Result<(), crate::linux_vm_guest::GuestError>,
+    ) -> std::result::Result<Value, crate::linux_vm_guest::GuestError> {
+        let mut state = self.state.lock().unwrap();
+        state.calls.push(method.to_owned());
+        match method {
+            "project.ensure" => Ok(json!({"projectId":params["projectId"],"stateId":"ready"})),
+            "line.bind" => Ok(json!({
+                "cwd":"/home/studio/project","projectId":params["projectId"],
+                "line":"main","owner":"guest-owner","home":"/home/studio",
+                "stateId":"ready"
+            })),
+            "health" => Ok(json!({"ok":true})),
+            "agent.context" => Ok(json!({"projectId":params["projectId"],"line":"main"})),
+            "provider.start" => {
+                state.starts += 1;
+                if state.uncertain_start_once {
+                    state.uncertain_start_once = false;
+                    return Err(crate::linux_vm_guest::GuestError::Transport {
+                        message: "simulated lost provider start response".into(),
+                        uncertain: true,
+                    });
+                }
+                Ok(json!({
+                    "handle":params["handle"],"generation":31,"sequence":0,
+                    "acknowledged":0,"pid":42,"resumed":false,
+                    "initResult":{"capabilities":{}},"state":"running"
+                }))
+            }
+            "provider.rpc" => match params["action"].as_str().unwrap_or("") {
+                "next" => Ok(json!({"event":state.events.pop_front()})),
+                "write" => {
+                    let message = params["message"].clone();
+                    state.writes.push(message.clone());
+                    if message["method"] == "thread/resume" {
+                        Self::enqueue_frame(
+                            &mut state,
+                            json!({"id":message["id"],"result":{"thread":{"id":"fake-thread-0"}}}),
+                        );
+                    } else if message["method"] == "turn/start" {
+                        Self::enqueue_frame(
+                            &mut state,
+                            json!({"id":message["id"],"result":{"turn":{"id":"vm-turn"}}}),
+                        );
+                        Self::enqueue_frame(
+                            &mut state,
+                            json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"vm-turn","status":"completed"}}}),
+                        );
+                    }
+                    Ok(
+                        json!({"accepted":true,"remoteId":message.get("id").cloned().unwrap_or(Value::Null)}),
+                    )
+                }
+                "ack" => {
+                    state.acknowledged = params["sequence"].as_u64().unwrap_or(0);
+                    Ok(json!({"acknowledged":state.acknowledged}))
+                }
+                "info" => Ok(json!({
+                    "handle":params["handle"],"generation":31,"sequence":state.sequence,
+                    "acknowledged":state.acknowledged,"pid":42,"resumed":true,
+                    "initResult":{"capabilities":{}},"state":"running"
+                })),
+                _ => Err(crate::linux_vm_guest::GuestError::InvalidRequest),
+            },
+            "provider.stop" => {
+                state.stops.push(params.clone());
+                Ok(json!({"handle":params["handle"],"state":"exited"}))
+            }
+            _ => Err(crate::linux_vm_guest::GuestError::InvalidRequest),
+        }
+    }
+}
+
+struct VmTurnResolver;
+impl preparation::VmProviderLaunchResolver for VmTurnResolver {
+    fn resolve(
+        &self,
+        request: preparation::VmProviderLaunchRequest,
+    ) -> preparation::VmProviderLaunchFuture<'_> {
+        Box::pin(async move {
+            Ok(preparation::VmProviderLaunch {
+                provider: "codex".into(),
+                profile: format!("profile:{}", request.account_key),
+                launch: ProviderLaunchSpec::new(
+                    vec!["codex".into(), "app-server".into()],
+                    BTreeMap::from([("CODEX_HOME".into(), request.guest_home + "/.codex")]),
+                    PathBuf::from(request.cwd),
+                ),
+                bootstrap: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let expected_agent_id = agent_id.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let guest = Arc::new(VmTurnGuest::default());
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    state.wake(&worker).await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let state = guest.state.lock().unwrap();
+            let has_turn = state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "turn/start");
+            let completed = state.acknowledged >= 3;
+            drop(state);
+            if has_turn && completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("guest turn starts and completion evidence is acknowledged");
+
+    let guest_state = guest.state.lock().unwrap();
+    assert_eq!(guest_state.starts, 1);
+    assert!(
+        guest_state
+            .writes
+            .iter()
+            .any(|write| write["method"] == "thread/resume")
+    );
+    assert!(
+        guest_state
+            .writes
+            .iter()
+            .any(|write| write["method"] == "turn/start")
+    );
+    assert_eq!(guest_state.acknowledged, 3);
+    drop(guest_state);
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+    let guest_state = guest.state.lock().unwrap();
+    assert_eq!(guest_state.stops.len(), 1);
+    assert_eq!(
+        guest_state.stops[0]["handle"],
+        format!("linux-worker:{expected_agent_id}")
+    );
+}
+
+#[tokio::test]
+async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let guest = Arc::new(VmTurnGuest::default());
+    guest.state.lock().unwrap().uncertain_start_once = true;
+    let make_resources = || {
+        let mut resources = test_resources().unwrap();
+        resources.guest_rpc = Some(guest.clone());
+        resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+        resources
+    };
+    let first_peer = Peer::new();
+    let mut first_worker = first_peer
+        .open_worker_with_resources(state.bridge.clone(), make_resources())
+        .await;
+    let mut first_ready = first_peer.ready.clone();
+    while !*first_ready.borrow_and_update() {
+        first_ready.changed().await.unwrap();
+    }
+    state.wake(&first_worker).await;
+    let first_exit = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        first_worker.completion(),
+    )
+    .await
+    .expect("uncertain provider start releases the failed worker");
+    assert!(
+        first_exit.is_err(),
+        "unknown launch outcome requires recovery"
+    );
+
+    let second_peer = Peer::new();
+    let mut second_worker = second_peer
+        .open_worker_with_resources(state.bridge.clone(), make_resources())
+        .await;
+    let mut second_ready = second_peer.ready.clone();
+    while !*second_ready.borrow_and_update() {
+        second_ready.changed().await.unwrap();
+    }
+    state.wake(&second_worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let state = guest.state.lock().unwrap();
+            let has_turn = state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "turn/start");
+            let completed = state.acknowledged >= 3;
+            drop(state);
+            if has_turn && completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recovered guest session completes the queued actor turn");
+    let guest_state = guest.state.lock().unwrap();
+    assert_eq!(guest_state.starts, 1, "provider.start must never be resent");
+    assert!(guest_state.calls.contains(&"provider.rpc".to_owned()));
+    assert!(
+        guest_state
+            .writes
+            .iter()
+            .any(|write| write["method"] == "turn/start")
+    );
+    drop(guest_state);
+    assert_eq!(state.event_status("input").await, "delivered");
+    second_worker.shutdown().await.unwrap();
+}
+
 impl crate::linux_vm_guest::GuestRpc for TurnStartGuest {
     fn stream(
         &self,

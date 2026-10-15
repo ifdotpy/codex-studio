@@ -417,8 +417,7 @@ struct ServerVmProviderLaunchResolver {
     guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
 }
 
-const VM_CREDENTIAL_MAX_BYTES: usize = 1024 * 1024;
-const CODEX_ACCESS_REFRESH_WINDOW_SECONDS: f64 = 315.0;
+const CODEX_ACCESS_REFRESH_WINDOW_SECONDS: f64 = 300.0;
 const CODEX_ACCESS_MIN_REMAINING_SECONDS: f64 = 30.0;
 
 impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResolver
@@ -645,7 +644,7 @@ fn read_vm_codex_bootstrap(
         let bytes = std::fs::read(home.join("auth.json")).map_err(|_| {
             WorkerError::PreparationRefused("provider-session/codex-auth-unavailable".into())
         })?;
-        if bytes.len() > VM_CREDENTIAL_MAX_BYTES {
+        if bytes.len() > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES {
             return Err(WorkerError::PreparationRefused(
                 "provider-session/codex-auth-invalid".into(),
             ));
@@ -797,7 +796,9 @@ fn read_vm_codex_bootstrap(
 fn read_vm_claude_credentials(path: &Path) -> Result<Vec<u8>, WorkerError> {
     let metadata = std::fs::metadata(path)
         .map_err(|_| WorkerError::PreparationRefused("vm-credentials/unavailable".into()))?;
-    if metadata.len() > 1024 * 1024 {
+    if metadata.len()
+        > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES as u64
+    {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/size-limit".into(),
         ));
