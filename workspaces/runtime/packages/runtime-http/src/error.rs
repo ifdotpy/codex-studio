@@ -196,10 +196,10 @@ pub(crate) fn with_api_headers(
 
 pub(crate) fn method_not_allowed_response(path: &str) -> Response {
     let mut response = error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
-    if let Some(methods) = crate::schema::methods_for_path(path) {
-        if let Ok(value) = HeaderValue::from_str(&methods.join(", ")) {
-            response.headers_mut().insert(header::ALLOW, value);
-        }
+    if let Some(methods) = crate::schema::methods_for_path(path)
+        && let Ok(value) = HeaderValue::from_str(&methods.join(", "))
+    {
+        response.headers_mut().insert(header::ALLOW, value);
     }
     response
 }
