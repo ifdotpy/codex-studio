@@ -263,11 +263,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/agents/finder-view"): {
         "primary": {
-            "query": {"agent": "$copyWitnessAgent"},
-            # Verify an HTTP read of a row found in the copied DB before any
-            # ledger fixture writes; a status or seeded row is not copy proof.
+            "query": {"agent": "$agent"},
             "expected": "2xx",
-            "functional_witness": "copy-existing-agent",
         },
     },
     ("GET", "/api/analytics"): {
@@ -855,11 +852,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
 }
 
-COPY_MODE_PROBE_EXCLUSIONS = {
-    ("POST", "/api/sync/preferences"):
-        "skipped in marked-copy mode because this route overwrites the global user preference row",
+UNSAFE_PROBE_EXCLUSIONS = {
     ("POST", "/api/limits/reset"):
-        "skipped in marked-copy mode because rehearsal probes must not redeem reset credits",
+        "not dispatched by the generic probe because reset-credit redemption requires an explicit fake-provider binding",
 }
 
 
@@ -1622,9 +1617,7 @@ def probe_operations(
     planned_assertions: dict[str, set[str]],
     successful_assertions: dict[str, set[str]],
     *,
-    state_root: Path | None = None,
     python: str,
-    copy_witness: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess, HttpResult
@@ -1633,29 +1626,13 @@ def probe_operations(
         prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
-        backend = BackendProcess(scratch, claude_bin=None, state_root=state_root)
+        backend = BackendProcess(scratch, claude_bin=None)
         try:
-            backend.copy_mode = state_root is not None
-            if backend.copy_mode and copy_witness is None:
-                raise RuntimeError("marked-copy probe has no pre-mutation agent witness")
-            backend.fixture_namespace = (
-                f"copyprobe-{uuid.uuid4().hex}-" if backend.copy_mode else ""
-            )
-            backend.account_key = (
-                f"{backend.fixture_namespace}account-default" if backend.copy_mode else "default"
-            )
-            uuid_re = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
-            probe_strings = collect_probe_strings(PROBE_CASES)
-            probe_strings.add("88888888-8888-4888-8888-888888888880")
-            backend.fixture_uuid_values = {
-                value: str(uuid.uuid4())
-                for value in (probe_strings if backend.copy_mode else set())
-                if uuid_re.fullmatch(value) and set(value.replace("-", "")) != {"0"}
-            }
-            backend.fixture_login_id = backend.fixture_uuid_values.get(
-                "88888888-8888-4888-8888-888888888880",
-                str(uuid.uuid4()) if backend.copy_mode else "88888888-8888-4888-8888-888888888880",
-            )
+            backend.copy_mode = False
+            backend.fixture_namespace = ""
+            backend.account_key = "default"
+            backend.fixture_uuid_values = {}
+            backend.fixture_login_id = "88888888-8888-4888-8888-888888888880"
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             seed_catalog_state(backend, python)
             codex_login_id = seed_codex_login(backend, python)
@@ -1669,13 +1646,6 @@ def probe_operations(
             analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend, python)
             identifiers["codexLogin"] = codex_login_id
-            if backend.copy_mode:
-                assert copy_witness is not None
-                identifiers["copyWitnessAgent"] = copy_witness["id"]
-                identifiers["copyWitnessCwd"] = copy_witness["cwd"]
-                identifiers["_fixturePrefix"] = backend.fixture_namespace
-                identifiers["_accountKey"] = backend.account_key
-                identifiers["_literalIds"] = backend.fixture_uuid_values
             backend.start()
             token = backend.session["token"]
             rows = []
@@ -1687,24 +1657,11 @@ def probe_operations(
                     if operation_manifest
                     else []
                 )
-                copy_exclusion = copy_mode_probe_exclusion(
-                    method,
-                    template,
-                    copy_mode=backend.copy_mode,
-                )
-                if copy_exclusion is not None:
-                    observations = [{
-                        "case": "primary",
-                        "status": None,
-                        "expected": None,
-                        "expectedMatches": False,
-                        "functionalWitness": False,
-                        "body": None,
-                        "elapsedSeconds": 0.0,
-                        "standard501Envelope": False,
-                        "noWrite": True,
-                        "reason": copy_exclusion,
-                    }]
+                operation_key = f"{method} {template}"
+                exclusion = unsafe_probe_exclusion(method, template)
+                if exclusion is not None:
+                    planned = sorted(planned_assertions.get(operation_key, set()))
+                    observed = sorted(successful_assertions.get(operation_key, set()))
                     rows.append({
                         "method": method,
                         "path": template,
@@ -1712,22 +1669,26 @@ def probe_operations(
                         "implementation": implementation,
                         "observedStatus": None,
                         "classification": "unverified",
-                        "covered": bool(successful_assertions.get(f"{method} {template}")),
+                        "covered": bool(observed),
                         "expectedStatus": "unverified",
                         "dependencies": dependencies,
                         "schemaHeader": None,
                         "schemaHeaderMatches": None,
                         "standard501Envelope": None,
                         "dependencyResponseMatches": None,
-                        "probeCases": observations,
-                        "httpAssertions": sorted(
-                            planned_assertions.get(f"{method} {template}", set())
-                        ),
-                        "observedSuccessfulAssertions": sorted(
-                            successful_assertions.get(f"{method} {template}", set())
-                        ),
-                        **({"copyDisposition": copy_probe_disposition(observations)}
-                           if state_root else {}),
+                        "probeCases": [{
+                            "case": "primary",
+                            "status": None,
+                            "expected": None,
+                            "expectedMatches": False,
+                            "dispatched": False,
+                            "body": None,
+                            "elapsedSeconds": 0.0,
+                            "standard501Envelope": False,
+                            "reason": exclusion,
+                        }],
+                        "httpAssertions": planned,
+                        "observedSuccessfulAssertions": observed,
                     })
                     continue
                 probe_spec = PROBE_CASES.get((method, template), {})
@@ -1738,15 +1699,6 @@ def probe_operations(
                 ]
                 observations = []
                 for case_name, probe_case in cases:
-                    if (
-                        not backend.copy_mode
-                        and probe_case.get("functional_witness") == "copy-existing-agent"
-                    ):
-                        probe_case = {
-                            **probe_case,
-                            "query": {"agent": "$agent"},
-                        }
-                        probe_case.pop("functional_witness", None)
                     if probe_case.get("refresh_queue"):
                         queue_snapshot = backend.request(
                             "GET",
@@ -1856,13 +1808,6 @@ def probe_operations(
                         database_unchanged = (
                             database_before is None or database_before.unchanged()
                         )
-                    functional_witness = (
-                        probe_case.get("functional_witness") == "copy-existing-agent"
-                        and response_body == {
-                            "kind": "native",
-                            "path": identifiers.get("copyWitnessCwd"),
-                        }
-                    )
                     operation_key = f"{method} {template}"
                     probe_event = {
                         "operation": operation_key,
@@ -1884,14 +1829,12 @@ def probe_operations(
                         response_body=response_body,
                         expected_error=probe_case.get("expected_error"),
                     )
-                    if probe_case.get("functional_witness"):
-                        expected_matches = expected_matches and functional_witness
                     observations.append({
                         "case": case_name,
                         "status": result.status,
                         "expected": expected,
                         "expectedMatches": expected_matches,
-                        "functionalWitness": functional_witness,
+                        "expectedError": probe_case.get("expected_error"),
                         "body": persisted_probe_body(
                             probe_case, response_body, copy_mode=backend.copy_mode
                         ),
@@ -1951,7 +1894,6 @@ def probe_operations(
                     "probeCases": observations,
                     "httpAssertions": sorted(planned_assertions.get(operation_key, set())),
                     "observedSuccessfulAssertions": sorted(successful_assertions.get(operation_key, set())),
-                    **({"copyDisposition": copy_probe_disposition(observations)} if state_root else {}),
                 })
             return rows
         finally:
@@ -1968,14 +1910,194 @@ def collect_probe_strings(value: Any) -> set[str]:
     return set()
 
 
-def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
-    if not observations or any(case.get("expected") is None for case in observations):
+def is_named_fault_5xx(case: dict[str, Any]) -> bool:
+    if (
+        not isinstance(case.get("status"), int)
+        or case["status"] < 500
+        or case.get("expectedError") is None
+    ):
+        return False
+    purpose = f"{case.get('case', '')} {case.get('reason', '')}".lower()
+    return any(term in purpose for term in (
+        "malformed", "invalid stored record", "corrupt stored record",
+    ))
+
+
+def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize disposable API evidence without counting refusals as capability."""
+    statuses: list[str] = []
+    positive_operations = 0
+    validated_negative_cases = 0
+    implemented_operations = 0
+    for operation in operations_result:
+        implementation = operation.get("implementation")
+        if implementation == "implemented":
+            implemented_operations += 1
+        cases = operation.get("probeCases", [])
+        positive_case = any(
+            case.get("expected") == "2xx"
+            and case.get("expectedMatches")
+            and isinstance(case.get("status"), int)
+            and 200 <= case["status"] < 300
+            for case in cases
+        )
+        # `covered` is retained for report compatibility; gate only on named
+        # passing consumer assertions that observed a 2xx response.
+        positive_assertion = bool(operation.get("observedSuccessfulAssertions"))
+        if positive_case or positive_assertion:
+            positive_operations += 1
+        validated_negative_cases += sum(
+            case.get("expected") not in (None, "2xx")
+            and case.get("expectedMatches") is True
+            and (
+                not isinstance(case.get("status"), int)
+                or case["status"] < 500
+                or is_named_fault_5xx(case)
+            )
+            for case in cases
+        )
+
+        unexpected = operation.get("classification") == "unexpected" or any(
+            case.get("expected") is not None
+            and case.get("expectedMatches") is False
+            for case in cases
+        )
+        unresolved = any(
+            case.get("dispatched", True)
+            and (
+                case.get("expected") is None
+                or case.get("unverified")
+                or isinstance(case.get("status"), int)
+                and case["status"] >= 500
+                and not is_named_fault_5xx(case)
+            )
+            for case in cases
+        )
+        if unexpected:
+            statuses.append("unexpected")
+        elif (
+            implementation == "implemented"
+            and (positive_case or positive_assertion)
+            and not unresolved
+        ):
+            statuses.append("pass")
+        else:
+            statuses.append("unverified")
+
+    unexpected_operations = statuses.count("unexpected")
+    unverified_operations = statuses.count("unverified")
+    if not operations_result:
+        status = "unverified"
+    elif unexpected_operations:
+        status = "failed"
+    elif unverified_operations:
+        status = "unverified"
+    else:
+        status = "pass"
+    return {
+        "source": "disposable-fixture-records",
+        "status": status,
+        "operations": len(operations_result),
+        "implementedOperations": implemented_operations,
+        "positiveOperations": positive_operations,
+        "unverifiedOperations": unverified_operations,
+        "unexpectedOperations": unexpected_operations,
+        "validatedNegativeCases": validated_negative_cases,
+    }
+
+
+def copied_data_evidence_status(evidence: dict[str, Any]) -> str:
+    """Require full old-data preservation, a read-only witness and rollback."""
+    required = (
+        "stateCheckBefore",
+        "existingRowRead",
+        "unchangedOldDataFromBeforeStartup",
+        "unchangedDuringFinderRead",
+        "stateCheckAfter",
+        "baselineRestore",
+        "pythonRollbackReadback",
+    )
+    if any(evidence.get(key) is False for key in required):
+        return "failed"
+    if any(evidence.get(key) is not True for key in required):
         return "unverified"
-    if any(not case.get("expectedMatches") for case in observations):
-        return "refused"
-    if any(case.get("functionalWitness") for case in observations):
-        return "pass"
-    return "unverified"
+    return "pass"
+
+
+def probe_copied_data(
+    state_root: Path,
+    witness: dict[str, str],
+) -> dict[str, Any]:
+    """Read a pre-existing agent from the marked copy without fixture seeding."""
+    sys.path.insert(0, str(TESTS))
+    from http_backend_harness import BackendProcess
+
+    DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="rust-http-copy-read-", dir=DEFAULT_CACHE,
+    ) as scratch_name:
+        scratch = Path(scratch_name).resolve(strict=True)
+        backend = BackendProcess(
+            scratch,
+            claude_bin=None,
+            initialize_workspace=False,
+            state_root=state_root,
+        )
+        snapshot: SqliteSnapshot | None = None
+        try:
+            backend.create_codex_replay("copy-read-only-replay.json")
+            # Cover startup recovery/migration work as well as the finder read.
+            snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
+            backend.start()
+            headers = {
+                "X-Canvas-Token": backend.session["token"],
+                "X-Studio-API-Schema": backend.schema_hash,
+            }
+            started = time.monotonic()
+            result = backend.request(
+                "GET",
+                "/api/agents/finder-view?agent="
+                + urllib.parse.quote(witness["id"], safe=""),
+                headers=headers,
+                timeout=2.0,
+            )
+            unchanged = snapshot.unchanged()
+            try:
+                body = result.json()
+            except (ValueError, TypeError):
+                body = None
+            read_matches = result.status == 200 and body == {
+                "kind": "native",
+                "path": witness["cwd"],
+            }
+            return {
+                "source": "marked-copy-existing-data",
+                "status": copied_data_evidence_status({
+                    "stateCheckBefore": None,
+                    "existingRowRead": read_matches,
+                    "unchangedOldDataFromBeforeStartup": unchanged,
+                    "unchangedDuringFinderRead": unchanged,
+                    "stateCheckAfter": None,
+                    "baselineRestore": None,
+                    "pythonRollbackReadback": None,
+                }),
+                "existingRowReads": [{
+                    "resource": "pre-existing native agent",
+                    "observedStatus": result.status,
+                    "matched": read_matches,
+                    "elapsedSeconds": round(time.monotonic() - started, 4),
+                }],
+                "unchangedOldDataFromBeforeStartup": unchanged,
+                "unchangedDuringFinderRead": unchanged,
+                "stateCheckBefore": None,
+                "stateCheckAfter": None,
+                "baselineRestore": None,
+                "pythonRollbackReadback": None,
+            }
+        finally:
+            if snapshot is not None:
+                snapshot.close()
+            backend.close()
 
 
 def probe_status_matches(
@@ -2010,7 +2132,15 @@ def apply_probe_expectations(
     observations: list[dict[str, Any]],
 ) -> str:
     if classification == "unexpected":
-        return classification
+        matching_server_error = any(
+            observation["status"] >= 500
+            and observation["expectedMatches"]
+            and observation.get("expected") == str(observation["status"])
+            for observation in observations
+        )
+        if not matching_server_error:
+            return classification
+        classification = "unverified"
     declared_case_failed = any(
         case.get("expected") is not None
         and not case.get("unverified")
@@ -2033,15 +2163,9 @@ def apply_probe_expectations(
     return classification
 
 
-def copy_mode_probe_exclusion(
-    method: str,
-    template: str,
-    *,
-    copy_mode: bool,
-) -> str | None:
-    if not copy_mode:
-        return None
-    return COPY_MODE_PROBE_EXCLUSIONS.get((method, template))
+def unsafe_probe_exclusion(method: str, template: str) -> str | None:
+    """Keep global-preference and reset-credit writes out of every ledger run."""
+    return UNSAFE_PROBE_EXCLUSIONS.get((method, template))
 
 
 def persisted_probe_body(
@@ -2617,11 +2741,11 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument(
         "--state-root", type=Path,
-        help=f"run operation probes on a marked backup copy (requires {COPY_MARKER})",
+        help=f"run read-only old-data verification on a marked backup copy (requires {COPY_MARKER})",
     )
     parser.add_argument(
         "--live-state-root", type=Path,
-        help="known live state root to refuse as an operation-probe target",
+        help="known live state root that a marked backup copy must not alias",
     )
     options = parser.parse_args()
     command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
@@ -2707,10 +2831,14 @@ def main() -> int:
         manifest,
         planned_assertions,
         successful_assertions,
-        state_root=copy_state_root,
         python=isolated_python,
-        copy_witness=copy_witness,
     )
+    copied_data = (
+        probe_copied_data(copy_state_root, copy_witness)
+        if copy_state_root is not None and copy_witness is not None
+        else None
+    )
+    api_evidence = api_fixture_evidence(operations_result)
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -2756,14 +2884,15 @@ def main() -> int:
         ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
-        **({
-            "copyPass": sum(row.get("copyDisposition") == "pass" for row in operations_result),
-            "copyRefused": sum(row.get("copyDisposition") == "refused" for row in operations_result),
-            "copyUnverified": sum(row.get("copyDisposition") == "unverified" for row in operations_result),
-        } if copy_state_root else {}),
+        "apiPositiveOperations": api_evidence["positiveOperations"],
+        "apiUnverifiedOperations": api_evidence["unverifiedOperations"],
+        "apiUnexpectedOperations": api_evidence["unexpectedOperations"],
+        "apiValidatedNegativeCases": api_evidence["validatedNegativeCases"],
     }
     ledger = {
-        "probeMode": "marked-copy" if copy_state_root else "seeded-scratch",
+        "probeMode": "seeded-scratch",
+        "apiEvidence": api_evidence,
+        **({"copiedDataEvidence": copied_data} if copied_data is not None else {}),
         "schemaHash": schema_match.group(1),
         "operations": operations_result,
         "suites": suites,

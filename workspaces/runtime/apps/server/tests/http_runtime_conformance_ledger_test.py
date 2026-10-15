@@ -286,7 +286,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertEqual({path.name for path in root.iterdir()}, set(before))
 
     def test_copy_witness_report_redacts_copied_row_contents(self) -> None:
-        probe_case = {"functional_witness": "copy-existing-agent"}
+        probe_case = {}
         response_body = {
             "kind": "native",
             "path": "/private/copied/project",
@@ -294,11 +294,13 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "record": "private-row-content",
         }
         observation = {
-            "functionalWitness": True,
-            "body": ledger.persisted_probe_body(probe_case, response_body),
+            "matched": True,
+            "body": ledger.persisted_probe_body(
+                probe_case, response_body, copy_mode=True,
+            ),
         }
         report = json.dumps(observation)
-        self.assertTrue(observation["functionalWitness"])
+        self.assertTrue(observation["matched"])
         self.assertIsNone(observation["body"])
         for copied_value in (
             "/private/copied/project",
@@ -311,16 +313,133 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         body = {"error": "Not found"}
         self.assertEqual(ledger.persisted_probe_body({}, body), body)
 
-    def test_copy_disposition_requires_an_explicit_functional_witness(self) -> None:
-        status_only = [{"expected": "2xx", "expectedMatches": True, "status": 200}]
-        self.assertEqual(ledger.copy_probe_disposition(status_only), "unverified")
-        functional = [{
-            "expected": "2xx", "expectedMatches": True, "status": 200,
-            "functionalWitness": True,
+    def test_api_and_copied_data_gates_require_independent_evidence(self) -> None:
+        api_positive = [{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [{
+                "expected": "2xx", "expectedMatches": True, "status": 200,
+            }],
         }]
-        self.assertEqual(ledger.copy_probe_disposition(functional), "pass")
-        functional[0]["expectedMatches"] = False
-        self.assertEqual(ledger.copy_probe_disposition(functional), "refused")
+        api_report = ledger.api_fixture_evidence(api_positive)
+        self.assertEqual(api_report["status"], "pass")
+        self.assertEqual(api_report["positiveOperations"], 1)
+        self.assertEqual(
+            ledger.copied_data_evidence_status({
+                "existingRowRead": True,
+                "unchangedDuringFinderRead": True,
+            }),
+            "unverified",
+            "API fixture success cannot stand in for copy validation or rollback",
+        )
+
+        copied_data = {
+            "stateCheckBefore": True,
+            "existingRowRead": True,
+            "unchangedOldDataFromBeforeStartup": True,
+            "stateCheckAfter": True,
+            "unchangedDuringFinderRead": True,
+            "baselineRestore": True,
+            "pythonRollbackReadback": True,
+        }
+        self.assertEqual(ledger.copied_data_evidence_status(copied_data), "pass")
+        refusal_only = [{
+            "implementation": "implemented",
+            "classification": "unverified",
+            "covered": False,
+            "probeCases": [{
+                "expected": "403", "expectedMatches": True, "status": 403,
+            }],
+        }]
+        refusal_report = ledger.api_fixture_evidence(refusal_only)
+        self.assertEqual(refusal_report["positiveOperations"], 0)
+        self.assertEqual(refusal_report["validatedNegativeCases"], 1)
+        self.assertEqual(
+            refusal_report["status"], "unverified",
+            "a valid refusal cannot count as positive API capability",
+        )
+        positive_with_refusal_contract = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {"expected": "403", "expectedMatches": True, "status": 403},
+            ],
+        }])
+        self.assertEqual(positive_with_refusal_contract["status"], "pass")
+        self.assertEqual(positive_with_refusal_contract["validatedNegativeCases"], 1)
+
+        legacy_coverage_flag = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": True,
+            "probeCases": [{
+                "expected": None, "expectedMatches": False, "status": 403,
+            }],
+        }])
+        self.assertEqual(legacy_coverage_flag["status"], "unverified")
+        named_success = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": True,
+            "observedSuccessfulAssertions": ["fixture::valid request succeeds"],
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "status": None,
+            }],
+        }])
+        self.assertEqual(named_success["status"], "pass")
+
+    def test_api_evidence_does_not_auto_pass_empty_unresolved_or_server_error(self) -> None:
+        self.assertEqual(ledger.api_fixture_evidence([])["status"], "unverified")
+        unresolved = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [{"expected": None, "expectedMatches": False, "status": 200}],
+        }])
+        self.assertEqual(unresolved["status"], "unverified")
+        server_error = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "unexpected",
+            "covered": True,
+            "probeCases": [{"expected": "2xx", "expectedMatches": False, "status": 503}],
+        }])
+        self.assertEqual(server_error["status"], "failed")
+        self.assertEqual(server_error["unexpectedOperations"], 1)
+
+        named_server_error = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "unverified",
+            "covered": False,
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {
+                    "expected": "503", "expectedMatches": True, "status": 503,
+                    "expectedError": "Optional adapter is unavailable",
+                    "reason": "the child fixture has no adapter binding",
+                },
+            ],
+        }])
+        self.assertEqual(named_server_error["status"], "unverified")
+        self.assertEqual(named_server_error["unverifiedOperations"], 1)
+
+        malformed_record = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {
+                    "expected": "503", "expectedMatches": True, "status": 503,
+                    "expectedError": "Stored row is invalid",
+                    "reason": "seeded malformed stored record fault contract",
+                },
+            ],
+        }])
+        self.assertEqual(malformed_record["status"], "pass")
+        self.assertEqual(malformed_record["positiveOperations"], 1)
 
     def test_copy_backend_command_requires_ephemeral_port(self) -> None:
         self.assertEqual(
@@ -427,7 +546,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "disconnectedAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
-            "liveTerminal", "copyWitnessAgent",
+            "liveTerminal",
         }
 
         def references(value):
@@ -889,7 +1008,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 os.replace(replacement, database)
                 self.assertFalse(snapshot.unchanged())
 
-    def test_copy_mode_hides_response_bodies_and_skips_global_writes_and_reset(self) -> None:
+    def test_copy_privacy_and_reset_probe_is_always_preserved(self) -> None:
         copied_response = {
             "stateDir": "/copied/private/state",
             "entities": [{"id": "private-agent", "record": "private record"}],
@@ -899,8 +1018,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertIsNone(ledger.persisted_probe_body(
             {"functional_witness": "copy-existing-agent"}, copied_response,
         ))
-        skipped_observation = [{"expected": None}]
-        self.assertEqual(ledger.copy_probe_disposition(skipped_observation), "unverified")
+        self.assertEqual(ledger.copied_data_evidence_status({}), "unverified")
 
         with tempfile.TemporaryDirectory(prefix="ledger-copy-skip-") as scratch:
             database = Path(scratch) / "canvas.sqlite3"
@@ -914,33 +1032,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 )
                 connection.commit()
 
-            requests = []
-            for method, path in [
-                ("POST", "/api/sync/preferences"),
-                ("POST", "/api/limits/reset"),
-            ]:
-                reason = ledger.copy_mode_probe_exclusion(method, path, copy_mode=True)
-                if reason is None:
-                    requests.append((method, path))
-                    if path == "/api/sync/preferences":
-                        with closing(sqlite3.connect(database)) as connection:
-                            connection.execute(
-                                "UPDATE sync_preferences SET record=? WHERE scope='user'",
-                                ('{"scope":"user","fields":{}}',),
-                            )
-                            connection.commit()
-            self.assertEqual(requests, [])
-            self.assertEqual(
-                ledger.copy_mode_probe_exclusion(
-                    "POST", "/api/sync/preferences", copy_mode=False,
-                ),
-                None,
-            )
-            self.assertIn("global user preference", ledger.copy_mode_probe_exclusion(
-                "POST", "/api/sync/preferences", copy_mode=True,
-            ))
-            self.assertIn("reset credits", ledger.copy_mode_probe_exclusion(
-                "POST", "/api/limits/reset", copy_mode=True,
+            self.assertIsNone(ledger.unsafe_probe_exclusion(
+                "POST", "/api/sync/preferences",
+            ), "global preference writes are allowed only on disposable scratch state")
+            self.assertIn("reset-credit", ledger.unsafe_probe_exclusion(
+                "POST", "/api/limits/reset",
             ))
             with closing(sqlite3.connect(database)) as connection:
                 self.assertEqual(
