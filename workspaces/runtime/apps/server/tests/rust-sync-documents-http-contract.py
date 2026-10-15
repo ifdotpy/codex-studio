@@ -654,6 +654,59 @@ with canvas.connect() as db:
                         (original_sequence, original_preference),
                     )
 
+    def test_fresh_refill_preserves_rows_below_tombstone_floor(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("fresh tombstone-floor refill is a Rust backend contract")
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
+        with sqlite3.connect(database_path) as database:
+            original_rows = database.execute(
+                "SELECT collection,id,seq,hash,payload,deleted FROM sync_entities"
+            ).fetchall()
+            original_floor = database.execute(
+                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
+            ).fetchone()
+            database.execute("DELETE FROM sync_entities")
+            database.execute(
+                "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',10) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,0)",
+                [
+                    ("workspace", "floor-valid-1", 1, "fixture", json.dumps({"collection": "workspace", "id": "floor-valid-1", "value": {}})),
+                    ("workspace", "floor-invalid", 2, "fixture", "[]"),
+                    ("workspace", "floor-valid-3", 3, "fixture", json.dumps({"collection": "workspace", "id": "floor-valid-3", "value": {}})),
+                ],
+            )
+        try:
+            response = backend.request(
+                "GET",
+                "/api/sync/pull?scope=state:entities:v1&after=0&limit=2&fresh=1&reset=1",
+                headers=headers,
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            body = response.json()
+            self.assertEqual(
+                [document["id"] for document in body["documents"]],
+                ["entity:workspace:floor-valid-1", "entity:workspace:floor-valid-3"],
+            )
+            self.assertEqual(body["checkpoint"]["seq"], 3)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute("DELETE FROM sync_entities")
+                database.executemany(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,?)",
+                    original_rows,
+                )
+                database.execute("DELETE FROM sync_entity_meta WHERE key='entity_tombstone_floor'")
+                if original_floor:
+                    database.execute(
+                        "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',?)",
+                        original_floor,
+                    )
+
     def test_invalid_agent_source_projection_is_skipped(self) -> None:
         import sqlite3
 

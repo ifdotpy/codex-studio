@@ -750,8 +750,8 @@ fn pull_entities(
             transaction,
             next_after,
             limit,
-            false,
-            0,
+            fresh,
+            initial_high,
             reset_support,
             None,
         )?;
