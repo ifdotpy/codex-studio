@@ -10,6 +10,7 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,30 @@ use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
 use studio_runtime_store::{RuntimeStore, SchedulerRepository, TurnAttemptIdentity};
+
+const ORACLE_ENVIRONMENT_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+];
+
+fn isolated_oracle_environment(
+    environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(name, _)| {
+            ORACLE_ENVIRONMENT_ALLOWLIST
+                .iter()
+                .any(|allowed| name == OsStr::new(allowed))
+        })
+        .collect()
+}
 
 struct Oracle {
     child: Child,
@@ -36,7 +61,7 @@ impl Oracle {
             // Studio agent's prompt, skills, or provider-home configuration.
             // Its Python bootstrap installs disposable homes before imports.
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .envs(isolated_oracle_environment(std::env::vars_os()))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -60,6 +85,32 @@ impl Oracle {
         assert!(response.get("error").is_none(), "{}", response["error"]);
         response["result"].clone()
     }
+}
+
+#[test]
+fn oracle_environment_keeps_python_loader_path_and_strips_provider_homes() {
+    let filtered = isolated_oracle_environment([
+        ("PATH".into(), "/toolchain/bin".into()),
+        ("LD_LIBRARY_PATH".into(), "/toolchain/lib".into()),
+        ("CODEX_HOME".into(), "/live/codex".into()),
+        ("CLAUDE_CONFIG_DIR".into(), "/live/claude".into()),
+        ("OPENAI_API_KEY".into(), "secret".into()),
+    ]);
+    let filtered = filtered
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert_eq!(
+        filtered.get(OsStr::new("PATH")),
+        Some(&OsString::from("/toolchain/bin"))
+    );
+    assert_eq!(
+        filtered.get(OsStr::new("LD_LIBRARY_PATH")),
+        Some(&OsString::from("/toolchain/lib"))
+    );
+    assert!(!filtered.contains_key(OsStr::new("CODEX_HOME")));
+    assert!(!filtered.contains_key(OsStr::new("CLAUDE_CONFIG_DIR")));
+    assert!(!filtered.contains_key(OsStr::new("OPENAI_API_KEY")));
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
