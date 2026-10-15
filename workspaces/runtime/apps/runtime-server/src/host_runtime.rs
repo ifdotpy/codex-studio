@@ -2549,11 +2549,15 @@ mod voice_composition_tests {
         // The HTTP acceptance boundary persists the connecting session before
         // provider setup completes; wait on its existing completion barrier
         // before staging deletion from the durable rows.
-        studio_runtime_services::voice::provider::wait_for_start_setup(
-            "voice-composed-agent",
-            "voice-session",
+        tokio::time::timeout(
+            super::HOST_RUNTIME_SHUTDOWN_WAIT,
+            studio_runtime_services::voice::provider::wait_for_start_setup(
+                "voice-composed-agent",
+                "voice-session",
+            ),
         )
-        .await;
+        .await
+        .expect("voice provider setup did not finish before timeout");
 
         // The deletion transaction persists stop authorization before removing
         // voice rows, matching Python's delete-before-post-commit-stop ordering.
