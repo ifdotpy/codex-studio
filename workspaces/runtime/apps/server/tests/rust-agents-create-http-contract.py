@@ -1391,6 +1391,41 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
                 self.assertEqual(self.snapshot_no_write(before=before), before)
 
+    def test_agent_replay_precedes_catalog_admission(self):
+        self.rust_only()
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "prompt": "Task",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/agents", body)
+        self.quiesce_fixture_agent(body["id"], status="idle")
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/agents", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(replayed.get(field), projection.get(field))
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
+            self.backend.start()
+
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
         body = self.draft()

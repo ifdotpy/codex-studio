@@ -93,6 +93,16 @@ pub struct Conversation {
     pub non_defaults: bool,
 }
 
+/// Read-only result of the ordered create admission phase. The HTTP layer uses
+/// it before waiting on a provider catalog, then `agent` repeats the durable
+/// replay check inside its write path to cover concurrent creation.
+pub struct AgentAdmission {
+    pub replay: Option<Value>,
+    pub account: Option<String>,
+    pub model: Option<String>,
+    pub needs_catalog: bool,
+}
+
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
@@ -177,8 +187,8 @@ pub fn conversation_account_key(
         return Err(MutationError::Stale.into());
     }
     // Python's conversation update uses the requested project account when cwd
-    // changes and otherwise keeps this conversation's account; worker defaults
-    // are resolved separately (`codex_runtime.py:5067-5131`).
+    // changes and otherwise keeps this conversation's account; settings then
+    // resolve their catalogs separately (`codex_runtime.py:5484-5491`).
     if let Some(cwd) = cwd {
         account_key(context, None, &project_directory(cwd)?)
     } else {
@@ -186,9 +196,206 @@ pub fn conversation_account_key(
     }
 }
 
+/// Return the currently selected worker account for Python's review-defaults
+/// settings-catalog path (`codex_runtime.py:5487-5491`).
+pub fn conversation_worker_account_key(
+    context: &Context<'_>,
+    id: &str,
+    expected_account: Option<&str>,
+) -> Result<Option<String>, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let record = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+    let account = record
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if expected_account.is_some_and(|expected| expected != account) {
+        return Err(MutationError::Stale.into());
+    }
+    Ok(record
+        .pointer("/workerDefaults/accountKey")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
 pub fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, false)
 }
+
+/// Transcribe `Runtime.create`'s pre-write ordering for the HTTP admission
+/// edge: replay first, then profile and account resolution, then decide whether
+/// Python's catalog-dependent fields require a catalog. The write path repeats
+/// replay and profile validation to handle races after this read-only phase.
+pub fn prepare_agent_admission(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<AgentAdmission, OperationError> {
+    // Python's durable existing-agent replay is the no-side-effect fast path;
+    // `codex_runtime.py:4902-4913`. Keep it ahead of profile/account/catalog work.
+    let Some(id) = request.id.as_deref() else {
+        return prepare_new_agent_admission(context, request);
+    };
+    let intent = agent_creation_intent(request)?;
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let replayed = {
+        let read = context.store.read()?;
+        super::replay_agent(&read, id, &intent, validate)?
+    };
+    if replayed.is_some() {
+        let replay = context.store.transaction_with_error(|tx| {
+            let record =
+                super::replay_agent(tx, id, &intent, validate)?.ok_or(CreateError::Conflict)?;
+            Ok::<Value, OperationError>(sync_projection(tx, &record)?)
+        })?;
+        return Ok(AgentAdmission {
+            replay: Some(replay),
+            account: None,
+            model: None,
+            needs_catalog: false,
+        });
+    }
+    prepare_new_agent_admission(context, request)
+}
+
+fn prepare_new_agent_admission(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<AgentAdmission, OperationError> {
+    // Python resolves the parent delegation/profile before deciding whether a
+    // catalog is needed (`codex_runtime.py:4853-4888`). A profile contributes
+    // only non-null model/effort values that the request did not override.
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let profile = {
+        let read = context.store.read()?;
+        request
+            .profile
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .map(|id| {
+                load_record(&read, "runtime_profiles", "ProfileRecord", id, &validate)?
+                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+            })
+            .transpose()?
+    };
+    let explicit = request.intent.as_object();
+    let profile_model_value = profile
+        .as_ref()
+        .and_then(|profile| profile.get("model"))
+        .filter(|value| !value.is_null());
+    let profile_model = profile_model_value.and_then(Value::as_str);
+    let profile_effort = profile
+        .as_ref()
+        .and_then(|profile| profile.get("effort"))
+        .filter(|value| !value.is_null());
+    let model = explicit
+        .and_then(|body| body.get("model"))
+        .and_then(Value::as_str)
+        .or(profile_model)
+        .map(str::to_owned);
+    let profile_supplies_model =
+        explicit.is_none_or(|body| !body.contains_key("model")) && profile_model_value.is_some();
+    let profile_supplies_effort =
+        explicit.is_none_or(|body| !body.contains_key("effort")) && profile_effort.is_some();
+    // Python's `needs_catalog` is based on the merged data keys, not on the
+    // mere presence of `profile_id` (`codex_runtime.py:4875-4888`).
+    let needs_catalog = agent_needs_catalog(
+        request.parent.is_some(),
+        explicit,
+        profile_supplies_model,
+        profile_supplies_effort,
+    );
+    // Standalone create resolves its project/account binding before fetching a
+    // catalog; child account selection is resolved from the parent at the
+    // admission boundary (`codex_runtime.py:4876-4888`).
+    let account = if request.parent.is_none() {
+        Some(creation_account_key(context, request)?)
+    } else {
+        None
+    };
+    Ok(AgentAdmission {
+        replay: None,
+        account,
+        model,
+        needs_catalog,
+    })
+}
+
+fn agent_needs_catalog(
+    is_child: bool,
+    explicit: Option<&serde_json::Map<String, Value>>,
+    profile_supplies_model: bool,
+    profile_supplies_effort: bool,
+) -> bool {
+    is_child
+        || [
+            "model",
+            "effort",
+            "fast_mode",
+            "daybreak_enabled",
+            "worker_defaults",
+        ]
+        .iter()
+        .any(|field| explicit.is_some_and(|body| body.contains_key(*field)))
+        || profile_supplies_model
+        || profile_supplies_effort
+}
+
+#[cfg(test)]
+mod agent_catalog_requirement_tests {
+    use super::agent_needs_catalog;
+    use serde_json::json;
+
+    #[test]
+    fn catalog_is_required_for_merged_model_or_effort_but_not_profile_presence() {
+        // Python merges non-null profile fields before evaluating `needs_catalog`
+        // (`codex_runtime.py:4859-4888`).
+        let profile_only = json!({"profile_id": "role-only", "role": "reviewer"});
+        assert!(!agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            false,
+            false
+        ));
+        assert!(agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            true,
+            false
+        ));
+        assert!(agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            false,
+            true
+        ));
+        let explicit_model = json!({"model": "gpt-6-astra"});
+        assert!(agent_needs_catalog(
+            false,
+            explicit_model.as_object(),
+            false,
+            false
+        ));
+        assert!(!agent_needs_catalog(false, None, false, false));
+        assert!(agent_needs_catalog(true, None, false, false));
+    }
+}
+
+fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
+    let mut intent = request.intent.clone();
+    let object = intent.as_object_mut().ok_or(OperationError::Internal)?;
+    if let Some(imported_from) = &request.imported_from {
+        object.insert("imported_from".to_owned(), json!(imported_from));
+    }
+    object.remove("id");
+    intent["prompt"] = json!(python_strip(&request.prompt));
+    intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
+    if let Some(cwd) = request.cwd.as_deref().map(project_directory).transpose()? {
+        intent["cwd"] = json!(cwd);
+    }
+    Ok(intent)
+}
+
 fn create(
     context: &Context<'_>,
     mut request: Creation,
@@ -208,23 +415,7 @@ fn create(
         // Import source is part of the durable creation identity. Keep it in
         // the intent compared by replay_agent, including the transaction's
         // concurrent recheck, rather than relying on an earlier route read.
-        if let Some(imported_from) = &request.imported_from {
-            request
-                .intent
-                .as_object_mut()
-                .ok_or(OperationError::Internal)?
-                .insert("imported_from".to_owned(), json!(imported_from));
-        }
-        request
-            .intent
-            .as_object_mut()
-            .ok_or(OperationError::Internal)?
-            .remove("id");
-        request.intent["prompt"] = json!(python_strip(&request.prompt));
-        request.intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
-        if let Some(cwd) = &requested_cwd {
-            request.intent["cwd"] = json!(cwd);
-        }
+        request.intent = agent_creation_intent(&request)?;
     }
     let signature = lead_signature(&request.intent, workspace, requested_cwd.as_deref());
     let read = context.store.read()?;
@@ -269,11 +460,14 @@ fn create(
                 .map(str::to_owned);
         }
         request.catalog |= ["model", "effort"].iter().any(|field| {
-            !request
-                .intent
+            let supplied = !intent
                 .as_object()
                 .is_some_and(|body| body.contains_key(*field))
-                && profile.get(*field).is_some_and(|value| !value.is_null())
+                && profile.get(*field).is_some_and(|value| !value.is_null());
+            if supplied {
+                request.intent[*field] = profile[*field].clone();
+            }
+            supplied
         });
     }
     drop(read);
@@ -283,7 +477,7 @@ fn create(
                 "Only a lead can change worker defaults",
             ));
         }
-        return create_child(context, &request, &id, &intent, &validate);
+        return create_child(context, &request, &id, &request.intent, &intent, &validate);
     }
     if workspace != "worktree" {
         return Err(OperationError::Unavailable(match workspace {
@@ -616,7 +810,8 @@ fn create_child(
     context: &Context<'_>,
     request: &Creation,
     id: &str,
-    intent: &Value,
+    execution_intent: &Value,
+    creation_intent: &Value,
     validate: &impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -698,7 +893,7 @@ fn create_child(
         return Err(MutationError::IdentityChanged.into());
     }
     let provider = identity.provider.as_deref().unwrap_or("codex");
-    let model = intent
+    let model = execution_intent
         .get("model")
         .and_then(Value::as_str)
         .or_else(|| defaults.get("model").and_then(Value::as_str))
@@ -708,16 +903,16 @@ fn create_child(
         } else {
             DEFAULT_LEAD_MODEL
         });
-    let effort = intent
+    let effort = execution_intent
         .get("effort")
         .and_then(Value::as_str)
         .or_else(|| defaults.get("effort").and_then(Value::as_str));
-    let fast_mode = intent
+    let fast_mode = execution_intent
         .get("fast_mode")
         .and_then(Value::as_bool)
         .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
         .unwrap_or(false);
-    let daybreak = intent
+    let daybreak = execution_intent
         .get("daybreak_enabled")
         .and_then(Value::as_bool)
         .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
@@ -772,7 +967,7 @@ fn create_child(
     )?;
     let checked = crate::host_worker_create::persisted_record(&draft)?;
     let mut record = checked.value();
-    record["creationIntent"] = intent.clone();
+    record["creationIntent"] = creation_intent.clone();
     record["provider"] = json!(provider);
     record["yoloMode"] = root.get("yoloMode").cloned().unwrap_or(json!(true));
     record["maxAgents"] = root
@@ -785,7 +980,7 @@ fn create_child(
         .and_then(Value::as_f64)
         .ok_or(OperationError::Internal)?;
     let prompt = request.prompt.trim();
-    let task_id = intent
+    let task_id = creation_intent
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_owned);

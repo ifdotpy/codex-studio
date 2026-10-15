@@ -691,6 +691,34 @@ async fn lead_catalog_account(
     .map_err(|_| ApiError::internal())?
 }
 
+async fn prepare_agent_admission(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<agents_create::AgentAdmission, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/admission",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::prepare_agent_admission(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
 async fn conversation_catalog_account(
     state: &HttpState,
     id: String,
@@ -719,6 +747,40 @@ async fn conversation_catalog_account(
                 &id,
                 expected_account.as_deref(),
                 cwd.as_deref(),
+            )
+            .map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn conversation_worker_catalog_account(
+    state: &HttpState,
+    id: String,
+    expected_account: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/worker-account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::conversation_worker_account_key(
+                &context,
+                &id,
+                expected_account.as_deref(),
             )
             .map_err(operation_error)
         },
@@ -764,17 +826,23 @@ async fn create_lead_with_model(
         reuse_empty: body.reuse_empty,
         ..Creation::default()
     };
+    // Python `new_lead` checks the durable request alias before resolving the
+    // project/account or reading a catalog (`codex_runtime.py:5099-5120`).
     if needs_catalog
         && let Some(replay) =
             preflight_lead_replay::<generated::AgentResponse>(&state, request.clone()).await?
     {
         return Ok(replay);
     }
+    // Python resolves project binding/account after replay and before catalog
+    // validation (`codex_runtime.py:5120-5130`).
     let catalog_account = if needs_catalog {
         Some(lead_catalog_account(&state, request.clone()).await?)
     } else {
         None
     };
+    // Python validates execution only after obtaining the required catalog
+    // (`codex_runtime.py:5124-5131`).
     wait_for_agent_catalog(
         &state,
         None,
@@ -820,26 +888,12 @@ async fn create_agent_with_import(
     if state.store.is_none() && state.account_driver.is_none() {
         return Err(ApiError::internal());
     }
-    wait_for_agent_catalog(
-        &state,
-        body.parent.as_ref().and_then(Option::as_deref),
-        body.account_key.as_deref(),
-        body.model.as_ref().and_then(Option::as_deref),
-        body.parent.as_ref().is_some_and(Option::is_some)
-            || body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
-            || body.profile_id.is_some(),
-    )
-    .await?;
-    let request = Creation {
+    let mut request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.as_ref().is_some_and(Option::is_some)
             || body.effort.is_some()
             || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
-            || body.profile_id.is_some(),
+            || body.daybreak_enabled.is_some(),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -857,6 +911,27 @@ async fn create_agent_with_import(
         imported_from,
         ..Creation::default()
     };
+    // Python resolves a durable existing-agent replay before profile/account
+    // admission, so an accepted request remains replayable if its catalog has
+    // since gone cold (`codex_runtime.py:4902-4913`).
+    let admission = prepare_agent_admission(&state, request.clone()).await?;
+    if let Some(replay) = admission.replay {
+        return Ok(Json(super::generated_json::<generated::AgentResponse>(
+            replay,
+        )?));
+    }
+    request.catalog = admission.needs_catalog;
+    // Python merges profile model/effort before computing `needs_catalog`; a
+    // role/instructions-only profile does not itself require provider access
+    // (`codex_runtime.py:4859-4888`).
+    wait_for_agent_catalog(
+        &state,
+        request.parent.as_deref(),
+        admission.account.as_deref().or(request.account.as_deref()),
+        admission.model.as_deref(),
+        admission.needs_catalog,
+    )
+    .await?;
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::agent(context, request)
     })
@@ -1145,6 +1220,8 @@ async fn conversation(
     let needs_settings_conversation_account =
         conversation_settings_need_conversation_account(&value);
     let catalog_account = if needs_conversation_catalog || needs_settings_conversation_account {
+        // Python first resolves the existing target and its expected account;
+        // worker/review defaults use that conversation context at 5484-5491.
         let catalog_cwd =
             catalog_cwd_for_conversation(request.worker_settings, request.cwd.as_deref())
                 .map(str::to_owned);
@@ -1160,7 +1237,13 @@ async fn conversation(
     } else {
         None
     };
-    let parent_id = Some(body.id.as_str());
+    // This updates an existing conversation. Python resolves its stored
+    // account, then validates settings; root worker-selection exclusions only
+    // apply while creating a new child (`codex_runtime.py:4820-4837`,
+    // `5484-5491`). Therefore don't pass a parent selector here.
+    let parent_id = existing_conversation_catalog_parent();
+    // Runtime.update only reads the target catalog for execution changes
+    // outside defaults-only updates (`codex_runtime.py:5481-5483`).
     wait_for_agent_catalog(
         &state,
         parent_id,
@@ -1173,6 +1256,8 @@ async fn conversation(
         .get("worker_defaults")
         .filter(|entry| !entry.is_null())
     {
+        // Python resolves worker_defaults against settings_catalog after the
+        // target account is known (`codex_runtime.py:5484-5486`).
         let worker_model = defaults.get("model").and_then(Value::as_str);
         let worker_account = worker_settings_catalog_account(defaults, catalog_account.as_deref());
         if worker_model.is_some() || worker_account.is_some() {
@@ -1186,11 +1271,30 @@ async fn conversation(
             .await?;
         }
     }
-    if let Some(defaults) = value.get("review_defaults") {
-        let review_account = review_settings_catalog_account(defaults, catalog_account.as_deref());
-        let model = defaults.get("model").and_then(Value::as_str);
-        if let (Some(account), Some(model)) = (review_account.as_deref(), model) {
-            wait_for_agent_catalog(&state, parent_id, Some(account), Some(model), true).await?;
+    if value.get("review_defaults").is_some() {
+        // Runtime.update calls settings_catalog for review defaults even when
+        // model is null; its account comes from supplied worker_defaults or
+        // the target's stored worker account (`codex_runtime.py:5487-5491`).
+        let stored_worker_account = if value.get("worker_defaults").is_none() {
+            conversation_worker_catalog_account(
+                &state,
+                request.id.clone(),
+                request.expected_account.clone(),
+            )
+            .await?
+        } else {
+            None
+        };
+        let review_account = review_settings_catalog_account(
+            value.get("worker_defaults"),
+            stored_worker_account.as_deref(),
+            catalog_account.as_deref(),
+        );
+        if let Some(account) = review_account.as_deref() {
+            let review_model = value
+                .pointer("/review_defaults/model")
+                .and_then(Value::as_str);
+            wait_for_agent_catalog(&state, parent_id, Some(account), review_model, true).await?;
         }
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
@@ -1206,11 +1310,9 @@ fn conversation_needs_catalog(value: &Value) -> bool {
 }
 
 fn conversation_settings_need_conversation_account(value: &Value) -> bool {
-    let has_review_model = value
-        .get("review_defaults")
-        .and_then(|defaults| defaults.get("model"))
-        .and_then(Value::as_str)
-        .is_some();
+    // Runtime.update calls settings_catalog for every review_defaults payload,
+    // including model:null (`codex_runtime.py:5487-5491`).
+    let has_review_defaults = value.get("review_defaults").is_some();
     let has_unpinned_worker_defaults = value
         .get("worker_defaults")
         .filter(|defaults| !defaults.is_null())
@@ -1219,7 +1321,7 @@ fn conversation_settings_need_conversation_account(value: &Value) -> bool {
                 .get("account_key")
                 .is_none_or(|account| account.is_null())
         });
-    has_review_model || has_unpinned_worker_defaults
+    has_review_defaults || has_unpinned_worker_defaults
 }
 
 fn catalog_cwd_for_conversation(
@@ -1227,6 +1329,24 @@ fn catalog_cwd_for_conversation(
     requested_cwd: Option<&str>,
 ) -> Option<&str> {
     if worker_settings { None } else { requested_cwd }
+}
+
+fn existing_conversation_catalog_parent() -> Option<&'static str> {
+    None
+}
+
+#[cfg(test)]
+mod creation_catalog_flow_tests {
+    use super::{catalog_cwd_for_conversation, existing_conversation_catalog_parent};
+
+    #[test]
+    fn conversation_catalog_wait_does_not_apply_new_worker_account_exclusions() {
+        // Runtime.update operates on the existing target account. Passing its
+        // id as a worker-selection parent would apply exclusions that Python
+        // only applies to new children (`codex_runtime.py:5484-5491`).
+        assert_eq!(catalog_cwd_for_conversation(true, Some("/ignored")), None);
+        assert_eq!(existing_conversation_catalog_parent(), None);
+    }
 }
 
 fn worker_settings_catalog_account(
@@ -1241,13 +1361,18 @@ fn worker_settings_catalog_account(
 }
 
 fn review_settings_catalog_account(
-    defaults: &Value,
+    request_worker_defaults: Option<&Value>,
+    stored_worker_account: Option<&str>,
     conversation_account: Option<&str>,
 ) -> Option<String> {
-    defaults
-        .get("model")
-        .and_then(Value::as_str)
-        .and_then(|_| conversation_account.map(str::to_owned))
+    request_worker_defaults.map_or_else(
+        || {
+            stored_worker_account
+                .map(str::to_owned)
+                .or_else(|| conversation_account.map(str::to_owned))
+        },
+        |defaults| worker_settings_catalog_account(defaults, conversation_account),
+    )
 }
 
 #[cfg(test)]
@@ -1274,7 +1399,7 @@ mod conversation_catalog_admission_tests {
     }
 
     #[test]
-    fn review_defaults_admission_uses_the_conversation_account() {
+    fn review_defaults_admission_uses_the_effective_worker_account() {
         let request = json!({
             "review_defaults": {"model": "gpt-6-astra", "effort": "medium"}
         });
@@ -1282,7 +1407,17 @@ mod conversation_catalog_admission_tests {
         assert!(!conversation_needs_catalog(&request));
         assert_eq!(
             review_settings_catalog_account(
-                &request["review_defaults"],
+                None,
+                Some("worker-account"),
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("worker-account")
+        );
+        assert_eq!(
+            review_settings_catalog_account(
+                Some(&json!({"account_key": null})),
+                None,
                 Some("conversation-account")
             )
             .as_deref(),
