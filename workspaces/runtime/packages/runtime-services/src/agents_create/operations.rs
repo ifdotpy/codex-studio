@@ -590,7 +590,18 @@ fn create_child(
                 .and_then(Value::as_str)
                 .unwrap_or("default")
         });
-    let identity = account_identity(context, account)?;
+    let (identity, account_status, can_attempt_native_proof) =
+        account_identity_with_status(context, account)?;
+    let parent_account_key = parent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if account != parent_account_key
+        && account_status != AccountStatus::Ready
+        && !can_attempt_native_proof
+    {
+        return Err(OperationError::Unavailable("account-driver/unavailable"));
+    }
     if defaults
         .get("accountKey")
         .and_then(Value::as_str)
@@ -1568,39 +1579,50 @@ fn account_identity(
     context: &Context<'_>,
     account_key: &str,
 ) -> Result<AccountIdentity, OperationError> {
+    account_identity_with_status(context, account_key).map(|(identity, _, _)| identity)
+}
+
+fn account_identity_with_status(
+    context: &Context<'_>,
+    account_key: &str,
+) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
     let Some(driver) = &context.driver else {
         return Err(OperationError::Internal);
     };
-    if driver.get(account_key).map_err(|error| match error {
+    let status = driver.get(account_key).map_err(|error| match error {
         AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
         _ => OperationError::Internal,
-    })? == AccountStatus::Unavailable
-    {
-        return Err(OperationError::Invalid("Account is unavailable"));
-    }
+    })?;
     let snapshot = driver.snapshot().map_err(|_| OperationError::Internal)?;
     let row = snapshot
         .accounts
         .into_iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
         .ok_or(OperationError::Invalid("Unknown account"))?;
-    if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+    if truthy(row.get("deleted")) {
         return Err(OperationError::Invalid(
             "This account was deleted. Select another account for new chats",
         ));
     }
-    if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+    if truthy(row.get("disconnected")) {
         return Err(OperationError::Invalid(
             "Reconnect this account before creating a chat",
         ));
     }
     let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
-    Ok(AccountIdentity {
-        provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
-        home: string_field("home"),
-        account_id: string_field("accountId"),
-        email: string_field("email"),
-    })
+    let can_attempt_native_proof = row
+        .as_object()
+        .is_some_and(|record| crate::account_policy::can_attempt_native_proof(Some(record)));
+    Ok((
+        AccountIdentity {
+            provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
+            home: string_field("home"),
+            account_id: string_field("accountId"),
+            email: string_field("email"),
+        },
+        status,
+        can_attempt_native_proof,
+    ))
 }
 
 fn resolve_project_binding(

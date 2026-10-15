@@ -555,29 +555,21 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 8] = [
-        Dependency::new("account-driver/unavailable"),
+    // Account-readiness refusal is kept as a runtime condition, not a missing
+    // implementation: Python raises the same ValueError for cross-account
+    // children in codex_runtime.py:4928-4930.
+    const LEAD_DEPENDENCIES: [Dependency; 5] = [
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
-        Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
-        Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 5] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
+    const AGENT_DEPENDENCIES: [Dependency; 2] = [
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
-    ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 3] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
     ];
     RouteGroup::new(vec![
         post(
@@ -588,7 +580,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
-            OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
+            OperationStatus::Implemented,
             conversation,
         ),
         post(
@@ -648,11 +640,39 @@ async fn create_lead_with_model(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    let needs_catalog = body.model.as_ref().is_some_and(Option::is_some)
+        || body.effort.is_some()
+        || body.fast_mode.is_some()
+        || body.daybreak_enabled.is_some()
+        || body.worker_defaults.is_some()
+        || body.review_defaults.is_some();
+    let requested_model = body.model.as_ref().and_then(Option::as_deref);
+    let requested_account = body.account_key.as_deref();
+    wait_for_agent_catalog(
+        &state,
+        None,
+        requested_account,
+        requested_model,
+        needs_catalog,
+    )
+    .await?;
+    if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
+        let worker_model = defaults.model.as_deref();
+        let worker_account = defaults.account_key.as_ref().and_then(Option::as_deref);
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
+        }
+    }
+    if let Some(Some(review)) = body.review_defaults.as_ref() {
+        if let Some(model) = review.model.as_deref() {
+            wait_for_agent_catalog(&state, None, requested_account, Some(model), true).await?;
+        }
+    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
+        catalog: body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
@@ -694,17 +714,19 @@ async fn create_agent_with_import(
         body.model.as_ref().and_then(Option::as_deref),
         body.parent.as_ref().is_some_and(Option::is_some)
             || body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
+            || body.profile_id.is_some(),
     )
     .await?;
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
+            || body.profile_id.is_some(),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -950,8 +972,37 @@ async fn conversation(
             ]));
         }
     }
-    let body: generated::ConversationRequest = serde_json::from_value(value)
+    let body: generated::ConversationRequest = serde_json::from_value(value.clone())
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
+    let needs_catalog = ["model", "effort", "fast_mode", "daybreak_enabled"]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+        || value
+            .get("worker_defaults")
+            .is_some_and(|entry| !entry.is_null())
+        || value
+            .get("review_defaults")
+            .is_some_and(|entry| !entry.is_null());
+    let parent_id = Some(body.id.as_str());
+    let requested_model = body.model.as_ref().and_then(Option::as_deref);
+    wait_for_agent_catalog(&state, parent_id, None, requested_model, needs_catalog).await?;
+    if let Some(defaults) = value
+        .get("worker_defaults")
+        .filter(|entry| !entry.is_null())
+    {
+        let worker_model = defaults.get("model").and_then(Value::as_str);
+        let worker_account = defaults.get("account_key").and_then(Value::as_str);
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(&state, parent_id, worker_account, worker_model, true).await?;
+        }
+    }
+    if let Some(model) = value
+        .get("review_defaults")
+        .and_then(|defaults| defaults.get("model"))
+        .and_then(Value::as_str)
+    {
+        wait_for_agent_catalog(&state, parent_id, None, Some(model), true).await?;
+    }
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         model_present: body.model.is_some(),
@@ -1200,17 +1251,16 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     let implemented_but_unavailable = matches!(
         &error,
-        OperationError::Create(
-            MutationError::CapabilityUnavailable(
-                "provider-session/title-generation" | "account-driver/unavailable"
-            )
-        )
+        OperationError::Create(MutationError::CapabilityUnavailable(
+            "provider-session/title-generation" | "account-driver/unavailable"
+        ))
     );
     if implemented_but_unavailable {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
     }
     let status = match &error {
-        OperationError::Unavailable("provider-session/model-list")
+        OperationError::Unavailable("account-driver/unavailable")
+        | OperationError::Unavailable("provider-session/model-list")
         | OperationError::Create(MutationError::CapabilityUnavailable(
             "provider-session/model-list" | "worker-driver/settings-catalog",
         )) => StatusCode::BAD_REQUEST,
@@ -1232,6 +1282,9 @@ fn operation_error(error: OperationError) -> ApiError {
         return ApiError::internal();
     }
     let message = match &error {
+        OperationError::Unavailable("account-driver/unavailable") => {
+            "Sign in to the worker account before creating a worker"
+        }
         OperationError::Unavailable("provider-session/model-list")
         | OperationError::Create(MutationError::CapabilityUnavailable(
             "provider-session/model-list",
