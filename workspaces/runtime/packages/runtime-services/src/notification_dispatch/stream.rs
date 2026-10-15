@@ -71,12 +71,24 @@ impl<T> Shared<T> {
         self.0.as_ref()
     }
 
+    fn shares_allocation_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     fn value_mut(&mut self) -> &mut T
     where
         T: Clone,
     {
         Arc::make_mut(&mut self.0)
     }
+}
+
+fn shared_entries_changed<T>(current: &[Shared<T>], previous: &[Shared<T>]) -> bool {
+    current.len() != previous.len()
+        || current
+            .iter()
+            .zip(previous)
+            .any(|(current, previous)| !current.shares_allocation_with(previous))
 }
 
 impl<T> Deref for Shared<T> {
@@ -182,6 +194,15 @@ impl NotificationStreamBuffer {
                 .collect(),
             analytics_overflow: std::mem::take(&mut self.analytics_overflow),
         })
+    }
+    pub(super) fn changed_from(&self, previous: &Self) -> bool {
+        self.publication_sequence != previous.publication_sequence
+            || self.analytics_overflow != previous.analytics_overflow
+            || shared_entries_changed(&self.entries, &previous.entries)
+            || shared_entries_changed(&self.closed, &previous.closed)
+            || shared_entries_changed(&self.analytics, &previous.analytics)
+            || shared_entries_changed(&self.post_commit, &previous.post_commit)
+            || shared_entries_changed(&self.analytics_skipped, &previous.analytics_skipped)
     }
     pub(super) fn queue_effect(&mut self, effect: NotificationPostCommit) {
         // As in Python, excess analytics captures are dropped, counted and never

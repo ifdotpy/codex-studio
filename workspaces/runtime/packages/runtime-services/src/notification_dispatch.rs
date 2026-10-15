@@ -644,7 +644,7 @@ pub fn dispatch_notification_with_effects(
         // The cloned buffer is a shallow transactional snapshot. Any mutated
         // entries have detached; a fresh receipt can safely return it without
         // comparing every retained stream tree to find changed entries.
-        stream_update: fresh.then_some(next_streams),
+        stream_update: (fresh && next_streams.changed_from(streams)).then_some(next_streams),
         post_commit,
     })
 }
@@ -1966,6 +1966,29 @@ mod tests {
             .query_row("SELECT count(*) FROM runtime_items", [], |r| r.get(0))
             .expect("count");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn fresh_no_op_receipt_does_not_return_stream_update() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let result = super::dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &NotificationStreamBuffer::default(),
+            &identity(1),
+            &frame(&json!({
+                "method":"model/safetyBuffering/updated",
+                "params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}
+            })),
+            1234.5,
+        )
+        .expect("no-op safety notice records a receipt");
+        assert!(
+            result.stream_update.is_none(),
+            "a fresh receipt without stream changes must not replace the buffer"
+        );
     }
 
     #[test]
