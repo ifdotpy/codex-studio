@@ -805,8 +805,8 @@ async fn run_setup_job(
             match site {
                 Some(site) => {
                     if let Err(error) = refresh_mac_views(&vm_state_dir, &host_command).await {
-                        // The deploy already succeeded. Keep its receipt successful and let
-                        // the next sync tick retry the best-effort local status refresh.
+                        // The deploy already succeeded; keep its receipt successful. The local
+                        // status refresh is best-effort.
                         eprintln!("Vault setup succeeded, but Mac status refresh failed: {error}");
                     }
                     sync_changes.notify_one();
