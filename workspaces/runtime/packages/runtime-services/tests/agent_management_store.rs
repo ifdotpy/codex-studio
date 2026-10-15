@@ -387,6 +387,17 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
             };
             let before = state(&store);
             let result = execute(&store, &action, 1234567.5);
+            if delete && effect.starts_with("voice-") {
+                // This fixture has no native thread or connection identity to
+                // cancel. Deletion can remove its stale session row; live
+                // provider sessions are covered by the production-port tests.
+                assert_eq!(
+                    result.expect("delete stale voice session"),
+                    json!({"deleted":["worker"]})
+                );
+                assert_eq!(state(&store)["tables"]["voice_sessions"], json!([]));
+                continue;
+            }
             if delete && effect == "child-stop" {
                 // Python tombstones the worker before stopping it, suppressing the parent event.
                 assert_eq!(

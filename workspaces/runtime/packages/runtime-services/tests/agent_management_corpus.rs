@@ -167,32 +167,38 @@ impl LifecyclePorts for PostCommitCleanup<'_> {
     }
 
     fn committed(&self) -> Result<(), ManagementError> {
-        let reader = self.store.read()?;
-        let records = repository::read(&reader)?;
-        for agent in records
-            .get("runtime_agents")
-            .into_iter()
-            .flatten()
-            .filter(|agent| {
-                agent
-                    .pointer("/workspaceCleanupIntent/phase")
-                    .and_then(Value::as_str)
-                    == Some("queued")
-            })
-        {
-            let action = serde_json::from_value(
-                agent
-                    .pointer("/workspaceCleanupIntent/action")
-                    .cloned()
-                    .ok_or(ManagementError::Invalid("Missing cleanup action"))?,
-            )
-            .map_err(|_| ManagementError::Invalid("Invalid cleanup action"))?;
-            let id = agent["id"]
-                .as_str()
-                .ok_or(ManagementError::Invalid("Invalid cleanup agent"))?;
+        let queued = {
+            let reader = self.store.read()?;
+            repository::read(&reader)?
+                .get("runtime_agents")
+                .into_iter()
+                .flatten()
+                .filter(|agent| {
+                    agent
+                        .pointer("/workspaceCleanupIntent/phase")
+                        .and_then(Value::as_str)
+                        == Some("queued")
+                })
+                .map(|agent| {
+                    let action = serde_json::from_value(
+                        agent
+                            .pointer("/workspaceCleanupIntent/action")
+                            .cloned()
+                            .ok_or(ManagementError::Invalid("Missing cleanup action"))?,
+                    )
+                    .map_err(|_| ManagementError::Invalid("Invalid cleanup action"))?;
+                    let id = agent["id"]
+                        .as_str()
+                        .ok_or(ManagementError::Invalid("Invalid cleanup agent"))?
+                        .to_owned();
+                    Ok::<_, ManagementError>((id, action))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (id, action) in queued {
             workspace_cleanup_runtime::cleanup_agent_workspace_with_ports(
                 self.store,
-                id,
+                &id,
                 action,
                 &FakeCleanup,
             )

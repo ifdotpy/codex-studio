@@ -676,6 +676,7 @@ fn python_stop_corpus_complete_records_and_exact_descendants() {
             "{} notification recipients and count",
             case["name"]
         );
+        drop(db);
         assert_records(&store, &case);
         drop(store);
         let store = RuntimeStore::open(Some(root.path())).expect("restart");
@@ -891,6 +892,7 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
                 .expect("agent row");
             let agent: Value = serde_json::from_str(&raw).expect("agent record");
             assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
+            drop(reader);
             let actual = state(&store);
             for (table, expected) in case["expected"]["records"]["tables"]
                 .as_object()

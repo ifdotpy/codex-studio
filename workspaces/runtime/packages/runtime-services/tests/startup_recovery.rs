@@ -44,18 +44,21 @@ fn add_event(tx: &rusqlite::Transaction<'_>, id: &str, agent: &str, status: &str
 }
 
 fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
-    let connection = store.read().expect("read startup state");
-    let monitor = MonitorsRepository::get(&connection, id)
-        .expect("read monitor")
-        .expect("monitor exists")
-        .value()
-        .clone();
-    let requests = Table::<RequestRecord>::new(&connection)
-        .list()
-        .expect("read requests")
-        .into_iter()
-        .map(|request| request.value().clone())
-        .collect::<Vec<_>>();
+    let (monitor, requests) = {
+        let connection = store.read().expect("read startup state");
+        let monitor = MonitorsRepository::get(&connection, id)
+            .expect("read monitor")
+            .expect("monitor exists")
+            .value()
+            .clone();
+        let requests = Table::<RequestRecord>::new(&connection)
+            .list()
+            .expect("read requests")
+            .into_iter()
+            .map(|request| request.value().clone())
+            .collect::<Vec<_>>();
+        (monitor, requests)
+    };
     let events = fixtures::events(store);
     json!({"monitor": monitor, "requests": requests, "events": events})
 }
