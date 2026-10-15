@@ -63,7 +63,12 @@ impl Oracle {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
                     Ok(0) => {
-                        let _ = sender.send(Err("oracle closed stdout before replying".to_owned()));
+                        if sender
+                            .send(Err("oracle closed stdout before replying".to_owned()))
+                            .is_err()
+                        {
+                            return;
+                        }
                         return;
                     }
                     Ok(_) => {
@@ -72,7 +77,12 @@ impl Oracle {
                         }
                     }
                     Err(error) => {
-                        let _ = sender.send(Err(format!("could not read oracle stdout: {error}")));
+                        if sender
+                            .send(Err(format!("could not read oracle stdout: {error}")))
+                            .is_err()
+                        {
+                            return;
+                        }
                         return;
                     }
                 }
