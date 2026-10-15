@@ -189,6 +189,17 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def _post(self, path, body):
         return self.backend.request("POST", path, body=body, headers=self._headers())
 
+    def _assert_mutation_payload(self, body, expected):
+        """Compare owned payload fields and validate the documented sync envelope."""
+        sync_fields = {"_syncEntities", "_syncEntitiesAfter"}
+        self.assertEqual(set(body) - sync_fields, set(expected))
+        if "_syncEntities" in body:
+            self.assertIsInstance(body["_syncEntities"], list)
+        if "_syncEntitiesAfter" in body:
+            self.assertIn("_syncEntities", body)
+            self.assertIsInstance(body["_syncEntitiesAfter"], int)
+        self.assertEqual({key: body[key] for key in expected}, expected)
+
     def _async_answer_snapshot(self):
         """Track the answered request and its one stable follow-up identity.
 
@@ -258,7 +269,18 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
         )
         self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(replay.json(), deferred.json())
+        first_body = deferred.json()
+        replay_body = replay.json()
+        self._assert_mutation_payload(
+            first_body, {"id": "questions-write-defer", "status": "pending", "deferred": True},
+        )
+        self._assert_mutation_payload(
+            replay_body, {"id": "questions-write-defer", "status": "pending", "deferred": True},
+        )
+        self.assertEqual(
+            {key: first_body[key] for key in ("id", "status", "deferred")},
+            {key: replay_body[key] for key in ("id", "status", "deferred")},
+        )
         self.assertEqual(
             self._question_request_snapshot("questions-write-defer"), before_replay,
         )
@@ -337,7 +359,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 200, response.body[:1000])
         worker.join(timeout=5)
         self.assertFalse(worker.is_alive(), "host bridge did not receive the answer")
-        self.assertEqual(response.json(), {
+        self._assert_mutation_payload(response.json(), {
             "status": "answered", "openUrl": "https://login.example.test/",
         })
         self.assertEqual(len(requests), 1)
