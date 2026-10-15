@@ -276,24 +276,60 @@ fn check_sync_entities(connection: &Connection) -> StoreResult<StateCheckTable> 
         return Ok(report);
     }
     let mut statement =
-        connection.prepare("SELECT collection,id,payload,deleted FROM sync_entities")?;
+        connection.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities")?;
     let mut rows = statement.query([])?;
     let mut failures = BTreeMap::new();
     while let Some(row) = rows.next()? {
         report.row_count += 1;
-        let (collection, id, raw, deleted) = match (
+        let (collection, id, sequence, hash, payload, deleted) = match (
             row.get::<_, String>(0),
             row.get::<_, String>(1),
-            row.get::<_, String>(2),
-            row.get::<_, i64>(3),
+            row.get::<_, i64>(2),
+            row.get::<_, String>(3),
+            row.get::<_, Option<String>>(4),
+            row.get::<_, i64>(5),
         ) {
-            (Ok(collection), Ok(id), Ok(raw), Ok(deleted @ 0..=1)) => {
-                (collection, id, raw, deleted == 1)
+            (Ok(collection), Ok(id), Ok(sequence), Ok(hash), Ok(payload), Ok(deleted)) => {
+                (collection, id, sequence, hash, payload, deleted)
             }
             _ => {
                 record_failure(&mut failures, &mut report.rejected_count, "", "storageType");
                 continue;
             }
+        };
+        if collection.starts_with("transcript:") {
+            if let Some((pointer, keyword)) =
+                crate::repositories::transcript::hash_only_sync_entity_storage_error(
+                    &collection,
+                    &id,
+                    sequence,
+                    &hash,
+                    payload.is_none(),
+                    deleted,
+                )
+            {
+                record_failure(&mut failures, &mut report.rejected_count, pointer, keyword);
+            }
+            continue;
+        }
+        if !matches!(deleted, 0 | 1) {
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                "/deleted",
+                "enum",
+            );
+            continue;
+        }
+        let deleted = deleted == 1;
+        let Some(raw) = payload else {
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                "/payload",
+                "storageType",
+            );
+            continue;
         };
         let mut payload = match serde_json::from_str::<Value>(&raw) {
             Ok(value) => value,
@@ -344,7 +380,9 @@ mod tests {
                 "CREATE TABLE sync_entities (
                     collection TEXT NOT NULL,
                     id TEXT NOT NULL,
-                    payload TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    hash TEXT NOT NULL,
+                    payload TEXT,
                     deleted INTEGER NOT NULL
                 );",
             )
@@ -394,17 +432,35 @@ mod tests {
         for (collection, id, payload, deleted) in rows {
             connection
                 .execute(
-                    "INSERT INTO sync_entities(collection,id,payload,deleted) VALUES (?1,?2,?3,?4)",
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                     VALUES (?1,?2,1,'fixture-hash',?3,?4)",
                     (collection, id, payload.to_string(), deleted),
                 )
                 .expect("sync fixture row inserts");
         }
+        connection
+            .execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                 VALUES ('transcript:agent-1','@meta',1,?1,NULL,1)",
+                ["a".repeat(64)],
+            )
+            .expect("hash-only transcript fixture inserts");
+        connection
+            .execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                 VALUES ('transcript:agent-1','item:item-2',2,?1,'{}',0)",
+                ["b".repeat(64)],
+            )
+            .expect("malformed hash-only transcript fixture inserts");
 
         let report = check_sync_entities(&connection).expect("sync entities validate");
-        assert_eq!(report.row_count, 4);
-        assert_eq!(report.rejected_count, 2);
+        assert_eq!(report.row_count, 6);
+        assert_eq!(report.rejected_count, 3);
         assert!(report.failures.iter().any(|failure| {
             failure.pointer == "/collection" && failure.keyword == "unknownCollection"
+        }));
+        assert!(report.failures.iter().any(|failure| {
+            failure.pointer == "/payload" && failure.keyword == "storageRepresentation"
         }));
         assert!(
             report

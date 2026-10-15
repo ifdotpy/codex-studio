@@ -1246,6 +1246,48 @@ fn canonical_hash(value: &Value) -> String {
     crate::sha256_hex(value.to_string().as_bytes())
 }
 
+/// Validate the hash-only projection rows stored for the private transcript index.
+/// These rows are intentionally excluded from the public sync entity union.
+pub(crate) fn hash_only_sync_entity_storage_error(
+    collection: &str,
+    id: &str,
+    sequence: i64,
+    hash: &str,
+    payload_is_null: bool,
+    deleted: i64,
+) -> Option<(&'static str, &'static str)> {
+    let valid_scope = collection
+        .strip_prefix("transcript:")
+        .is_some_and(|agent| !agent.is_empty() && collection.chars().count() < 300);
+    if !valid_scope {
+        return Some(("/collection", "scope"));
+    }
+    let valid_id = matches!(id, "@meta" | "@revision" | "@order" | "@floor")
+        || id
+            .strip_prefix("item:")
+            .is_some_and(|item| !item.is_empty());
+    if !valid_id {
+        return Some(("/id", "syncIndexKey"));
+    }
+    if sequence < 0 {
+        return Some(("/seq", "minimum"));
+    }
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Some(("/hash", "format"));
+    }
+    if !payload_is_null {
+        return Some(("/payload", "storageRepresentation"));
+    }
+    if !matches!(deleted, 0 | 1) {
+        return Some(("/deleted", "enum"));
+    }
+    None
+}
+
 fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
     if !table_exists(connection, "runtime_search_rollout")? {
         return Ok("legacy".to_owned());
