@@ -1101,9 +1101,16 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             codex_home = root / "codex"
             for directory in (state, cwd, home, codex_home):
                 directory.mkdir()
-            node = os.environ.get("CODEX_NODE") or shutil.which("node")
-            if node is None:
-                self.skipTest("synthetic Runtime identity setup requires the local Node crypto helper")
+            if "CODEX_NODE" in os.environ:
+                configured_node = os.environ["CODEX_NODE"]
+                node = shutil.which(configured_node) if configured_node else None
+                if node is None:
+                    self.fail("configured CODEX_NODE must resolve to an executable")
+                node = os.path.abspath(node)
+            else:
+                node = shutil.which("node")
+                if node is None:
+                    self.skipTest("synthetic Runtime identity setup requires the local Node crypto helper")
             namespace = "copyprobe-ledger-test-"
             environment = {
                 "HOME": str(home),
