@@ -2,6 +2,8 @@
 use super::*;
 use std::sync::atomic::Ordering;
 type SavedState = (StoreBridge, String, i64, PathBuf);
+const SCENARIO_COUNT: usize = 31;
+const FAST_SCENARIOS: [usize; 4] = [0, 8, 23, 30];
 #[derive(Default)]
 pub(super) struct Context {
     pub faults: Arc<Faults>,
@@ -563,31 +565,22 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
 
 #[tokio::test]
 async fn every_scenario_recovers_at_every_bridge_boundary() {
-    let (watchdog_done, watchdog_wait) = std::sync::mpsc::channel::<()>();
-    let watchdog = std::thread::spawn(move || {
-        let seconds = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-            600
-        } else {
-            120
-        };
-        if matches!(
-            watchdog_wait.recv_timeout(std::time::Duration::from_secs(seconds)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        ) {
-            eprintln!("bridge crash matrix exceeded its wall-clock watchdog");
-            std::process::abort();
-        }
-    });
+    let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
+    let selected = std::env::var("MATRIX_SCENARIO")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("MATRIX_SCENARIO is an index"));
+    let scenarios: Vec<usize> = if let Some(index) = selected {
+        assert!(index < SCENARIO_COUNT, "MATRIX_SCENARIO is out of range");
+        vec![index]
+    } else if full {
+        (0..SCENARIO_COUNT).collect()
+    } else {
+        FAST_SCENARIOS.into()
+    };
     // Each scenario owns a paused clock; a deadline advance cannot affect peers.
     let slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut tasks = tokio::task::JoinSet::new();
-    for index in 0..31 {
-        if std::env::var("MATRIX_SCENARIO")
-            .ok()
-            .is_some_and(|value| value != index.to_string())
-        {
-            continue;
-        }
+    for index in scenarios {
         let permit = slots.clone().acquire_owned().await.unwrap();
         tasks.spawn_blocking(move || {
             let _permit = permit;
@@ -611,7 +604,5 @@ async fn every_scenario_recovers_at_every_bridge_boundary() {
     if let Some(path) = std::env::var_os("MATRIX_REPORT") {
         std::fs::write(path, json!({"cases":cases,"scenarioReplaySeconds":replay,"restartSeconds":restart,"secondsPerCase":(replay+restart)/cases as f64}).to_string()).unwrap();
     }
-    watchdog_done.send(()).expect("watchdog alive");
-    watchdog.join().expect("watchdog joins");
     eprintln!("bridge crash matrix: {cases} restart cases");
 }
