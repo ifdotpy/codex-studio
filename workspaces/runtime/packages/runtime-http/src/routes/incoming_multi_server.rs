@@ -305,25 +305,16 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             }
             response
         }
-        Ok(Ok(value)) => {
-            let checked = if method == "GET" {
-                super::generated_json::<crate::generated::ServerIdentityResponse>(value)
-                    .map(IncomingMultiServerResponse::Identity)
-            } else {
-                super::generated_json::<crate::generated::DevicePairResponse>(value)
-                    .map(IncomingMultiServerResponse::Pair)
-            };
-            match checked {
-                Ok(v) => {
-                    let mut response = Json(v).into_response();
-                    if advertise_link {
-                        add_link_advert(&mut response, peer_link_advert.as_deref());
-                    }
-                    response
+        Ok(Ok(value)) => match validate_response(&method, is_name, value) {
+            Ok(v) => {
+                let mut response = Json(v).into_response();
+                if advertise_link {
+                    add_link_advert(&mut response, peer_link_advert.as_deref());
                 }
-                Err(e) => e.into_response(),
+                response
             }
-        }
+            Err(e) => e.into_response(),
+        },
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
@@ -344,6 +335,62 @@ enum IncomingMultiServerResponse {
     Identity(crate::generated::ServerIdentityResponse),
     Pair(crate::generated::DevicePairResponse),
 }
+
+fn validate_response(
+    method: &str,
+    is_name: bool,
+    value: serde_json::Value,
+) -> Result<IncomingMultiServerResponse, crate::error::ApiError> {
+    if method == "GET" || is_name {
+        super::generated_json::<crate::generated::ServerIdentityResponse>(value)
+            .map(IncomingMultiServerResponse::Identity)
+    } else {
+        super::generated_json::<crate::generated::DevicePairResponse>(value)
+            .map(IncomingMultiServerResponse::Pair)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IncomingMultiServerResponse, validate_response};
+    use serde_json::json;
+
+    #[test]
+    fn signed_name_post_validates_identity_response() {
+        let response = json!({
+            "serverId": "remote-server",
+            "label": "Renamed",
+            "origin": "https://remote.example",
+            "publicKey": "key",
+            "tailscaleUser": null
+        });
+
+        assert!(matches!(
+            validate_response("POST", true, response),
+            Ok(IncomingMultiServerResponse::Identity(_))
+        ));
+    }
+
+    #[test]
+    fn signed_pair_post_still_validates_pair_response() {
+        let response = json!({
+            "protocol": 1,
+            "serverId": "remote-server",
+            "clientId": "client",
+            "label": "Remote",
+            "origin": "https://remote.example",
+            "publicKey": "key",
+            "tailscaleUser": "owner@example.test",
+            "paired": true
+        });
+
+        assert!(matches!(
+            validate_response("POST", false, response),
+            Ok(IncomingMultiServerResponse::Pair(_))
+        ));
+    }
+}
+
 fn failure(error: AccessError) -> Response {
     let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
     // Stored-object locations are operator diagnostics, not remote response data.
