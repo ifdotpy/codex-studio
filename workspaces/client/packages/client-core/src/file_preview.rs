@@ -253,7 +253,7 @@ fn prepare(data: Value) -> Result<File, String> {
         _ => Value::Null,
     };
     let formatted_json = if format == "json" {
-        match serde_json::from_str::<Value>(&text) {
+        match serde_json::from_str::<crate::ordered_json::OrderedJson>(&text) {
             Ok(value) => {
                 json!({"text":serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,"error":""})
             }
