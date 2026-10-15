@@ -451,15 +451,8 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
 
-    def test_reset_credit_probes_are_named_refusals_without_redemption(self) -> None:
-        reset = ledger.PROBE_CASES[("POST", "/api/limits/reset")]
-        self.assertEqual(set(reset), {"primary"})
-        self.assertEqual(reset["primary"]["expected"], "501")
-        self.assertTrue(reset["primary"]["assert_no_write"])
-        self.assertEqual(
-            reset["primary"]["reason"],
-            "redemption is never performed or simulated in tests",
-        )
+    def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
+        self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
 
     def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
         for operation in (

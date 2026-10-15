@@ -13,8 +13,6 @@ use studio_runtime_store::{UsageRepositoryError, disable_usage_resume};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const RESET_REDEMPTION: [Dependency; 1] =
-    [Dependency::new("account-driver/reset-credit-redemption")];
 const CAPACITY_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("event-driver/queue-mutations"),
     Dependency::new("store-bootstrap/capacity-retry-schema"),
@@ -31,7 +29,7 @@ pub(crate) fn routes() -> RouteGroup {
         get("/api/costs", OperationStatus::Implemented, costs),
         post(
             "/api/limits/reset",
-            OperationStatus::partial(&RESET_REDEMPTION),
+            OperationStatus::Implemented,
             reset_limits,
         ),
         post(
@@ -139,12 +137,34 @@ async fn costs(
     >(result)?))
 }
 
-async fn reset_limits(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "POST",
-        "/api/limits/reset",
-        &RESET_REDEMPTION,
-    ))
+async fn reset_limits(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let session = state
+        .account_session
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/usage",
+        move || {
+            studio_runtime_services::limit_reset::consume_reset(&store, session.as_ref(), &body)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(reset_error)?;
+    Ok(Json(result))
+}
+
+fn reset_error(error: studio_runtime_services::limit_reset::ResetError) -> ApiError {
+    use studio_runtime_services::limit_reset::ResetError;
+    match error {
+        ResetError::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        ResetError::Provider(message) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message),
+        ResetError::Store(_) | ResetError::Sql(_) | ResetError::Json(_) => ApiError::internal(),
+    }
 }
 
 async fn capacity_retry(
@@ -372,11 +392,155 @@ fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> Ap
 #[cfg(test)]
 mod tests {
     use super::current_time;
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Method as HttpMethod, Request, StatusCode};
+    use serde_json::{Value, json};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::{Arc, Mutex};
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::account_session_runtime::{
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+        ProviderResponse, RequestCertainty, SessionReceipt,
+    };
+    use tower::ServiceExt;
+
+    struct FakeResetSession {
+        calls: Mutex<Vec<(String, Value)>>,
+        reads: Mutex<usize>,
+        scope: ConnectionScope,
+    }
+
+    impl AccountSessionPort for FakeResetSession {
+        fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
+            assert_eq!(account, "default");
+            Ok(self.scope.clone())
+        }
+
+        fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
+            assert_eq!(account, "default");
+            *self.reads.lock().unwrap() += 1;
+            Ok(
+                json!({"accountKey":"default","data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{"id":"credit-A","status":"available","resetType":"codexRateLimits"}]}}}),
+            )
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
+            self.calls
+                .lock()
+                .unwrap()
+                .push((request.operation.clone(), request.params.clone()));
+            let (certainty, result, ticket) = if self.calls.lock().unwrap().len() == 1 {
+                (RequestCertainty::NotSent, None, None)
+            } else {
+                (
+                    RequestCertainty::Written,
+                    Some(ProviderResponse::Reply(json!({"outcome":"reset"}))),
+                    Some(RequestTicket {
+                        generation: self.scope.generation,
+                        id: RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    }),
+                )
+            };
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation,
+                ticket,
+                certainty,
+                result,
+                not_sent_reason: None,
+                replayed: false,
+            })
+        }
+    }
+
+    fn reset_request(body: Value) -> Request<Body> {
+        Request::builder()
+            .method(HttpMethod::POST)
+            .uri("/api/limits/reset")
+            .header("host", "127.0.0.1:49172")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "reset-test-token")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                12345,
+            )))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
 
     #[test]
     fn runtime_clock_is_a_finite_epoch_timestamp() {
         let now = current_time().expect("system epoch clock");
         assert!(now.is_finite() && now > 0.0);
+    }
+
+    #[tokio::test]
+    async fn reset_http_route_retries_only_a_proven_not_sent_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(root.path())).unwrap());
+        let session = Arc::new(FakeResetSession {
+            calls: Mutex::new(Vec::new()),
+            reads: Mutex::new(0),
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "fake-account-session".into(),
+                generation: 1,
+            },
+        });
+        let mut state = crate::router::HttpState::new(
+            "reset-test-token".into(),
+            "reset-test-workspace".into(),
+            None,
+            root.path().to_string_lossy().into_owned(),
+            49_172,
+            None,
+            Some(store),
+            None,
+        );
+        state.account_session = Some(session.clone());
+        let app = crate::router::router(state).unwrap();
+        let body = json!({
+            "account_key":"default",
+            "account_id":"account-A",
+            "credit_id":"credit-A",
+            "request_id":"11000000-0000-4000-8000-000000000005"
+        });
+        let first = app
+            .clone()
+            .oneshot(reset_request(body.clone()))
+            .await
+            .unwrap();
+        let first_status = first.status();
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_json: Value = serde_json::from_slice(&first_body).unwrap();
+        assert_eq!(first_status, StatusCode::OK, "{first_json}");
+        assert_eq!(first_json["outcome"], "uncertain");
+
+        let second = app.oneshot(reset_request(body)).await.unwrap();
+        let second_status = second.status();
+        let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second_json: Value = serde_json::from_slice(&second_body).unwrap();
+        assert_eq!(second_status, StatusCode::OK, "{second_json}");
+        assert_eq!(second_json["outcome"], "reset");
+        let calls = session.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0].1["creditId"], "credit-A");
+        assert_eq!(*session.reads.lock().unwrap(), 4);
     }
 }
 
@@ -385,13 +549,12 @@ inventory::submit! {
         name: "usage",
         routes: Some(routes),
         dependencies: &[
-            "account-driver/reset-credit-redemption",
+            "costs/local-scanner",
             "event-driver/queue-mutations",
             "store-bootstrap/capacity-retry-schema",
             "store-bootstrap/usage-resume-schema",
             "turn-driver/capacity-retry",
             "turn-driver/usage-resume",
-            "costs/local-scanner",
         ],
     }
 }

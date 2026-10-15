@@ -1,7 +1,7 @@
 //! HTTP adaptation for project secrets and the platform-bound vault actions.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use axum::{Json, extract::State, http::StatusCode};
@@ -12,7 +12,6 @@ use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsErr
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-const VAULT_DESK: &[Dependency] = &[Dependency::new("macos-platform/layr-desk")];
 const VAULT_SETUP_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_SETUP_TIMEOUT;
 const VAULT_LOGIN_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_LOGIN_TIMEOUT;
 const VAULT_PROGRESS_LINE_MAX_BYTES: usize = 16 * 1024;
@@ -25,6 +24,7 @@ const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress l
 enum VaultJobKind {
     Setup,
     Login,
+    Pull,
 }
 
 struct VaultJobs {
@@ -198,22 +198,14 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             aws_login,
         ),
-        post(
-            "/api/vault/pull",
-            OperationStatus::partial(VAULT_DESK),
-            pull,
-        ),
+        post("/api/vault/pull", OperationStatus::Implemented, pull),
         post("/api/vault/setup", OperationStatus::Implemented, setup),
         post(
             "/api/vault/setup/facts",
             OperationStatus::Implemented,
             setup_facts,
         ),
-        post(
-            "/api/vault/unlock",
-            OperationStatus::partial(VAULT_DESK),
-            unlock,
-        ),
+        post("/api/vault/unlock", OperationStatus::Implemented, unlock),
     ])
 }
 
@@ -333,8 +325,69 @@ async fn aws_login(
     Ok(Json(job))
 }
 
-async fn pull(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    unavailable("POST", "/api/vault/pull", VAULT_DESK)
+async fn pull(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let project_id = request_string(&body, "projectId")?.to_owned();
+    let request_id = request_string(&body, "requestId")?.to_owned();
+    let job_client = vault_job_client(&state)?;
+    if let Some(job) = find_job(&job_client, VaultJobKind::Pull, &request_id).await? {
+        return Ok(Json(job));
+    }
+    let view = studio_runtime_services::vault::view(&state.vm_state_dir, &project_id)
+        .map_err(vault_error)?
+        .filter(|view| view.get("state").and_then(Value::as_str) != Some("none"))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The project has no vault"))?;
+    let site = view
+        .get("site")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "The Desk site of this vault is not known; run codex_vault.py site",
+            )
+        })?;
+    let prefix = view
+        .get("prefix")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The project has no vault"))?;
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(ApiError::internal)?;
+    let requested_parent = body.get("to").and_then(Value::as_str);
+    let parent = match requested_parent {
+        Some(path) if path == "~" => home.clone(),
+        Some(path) if path.starts_with("~/") => home.join(&path[2..]),
+        Some(path) => std::path::PathBuf::from(path),
+        None => home.join("Downloads"),
+    };
+    let target =
+        studio_runtime_services::vault::pull_target(&parent, prefix).map_err(vault_error)?;
+    let host_command = state
+        .vault_host_command
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let host_command =
+        host_command.with_desk_program(host_command.desk_program().map_err(vault_error)?);
+    let initial = serde_json::json!({"requestId":request_id,"state":"running","folder":target});
+    let (job, started) = reserve_job(&job_client, VaultJobKind::Pull, &request_id, initial).await?;
+    if started {
+        let args = vec![
+            "pull".to_owned(),
+            "--site".to_owned(),
+            site.to_owned(),
+            "--project".to_owned(),
+            prefix.to_owned(),
+            "--to".to_owned(),
+            target.to_string_lossy().into_owned(),
+            "--json".to_owned(),
+        ];
+        tokio::spawn(run_pull_job(request_id, args, host_command, job_client));
+    }
+    Ok(Json(job))
 }
 
 async fn setup(
@@ -825,26 +878,322 @@ fn desk_reason(stderr: &str, stdout: &str) -> String {
         .collect()
 }
 
-async fn unlock(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    unavailable("POST", "/api/vault/unlock", VAULT_DESK)
+async fn unlock(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let project_id = request_string(&body, "projectId")?.to_owned();
+    let words = request_string(&body, "words")?.to_owned();
+    let view = studio_runtime_services::vault::view(&state.vm_state_dir, &project_id)
+        .map_err(vault_error)?
+        .filter(|view| {
+            view.get("site").and_then(Value::as_str).is_some()
+                && view.get("prefix").and_then(Value::as_str).is_some()
+        })
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "The project has no vault with a Desk site",
+            )
+        })?;
+    let host_command = state
+        .vault_host_command
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let host_command =
+        host_command.with_desk_program(host_command.desk_program().map_err(vault_error)?);
+    let args = vec![
+        "unlock".to_owned(),
+        "--site".to_owned(),
+        view["site"].as_str().unwrap_or_default().to_owned(),
+        "--project".to_owned(),
+        view["prefix"].as_str().unwrap_or_default().to_owned(),
+        "--paper-file".to_owned(),
+        "-".to_owned(),
+    ];
+    let mut discard_output = |_: bool, _: &str| {};
+    let result = host_command
+        .run_desk_with_input(
+            &args,
+            words.as_bytes(),
+            studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+            &mut discard_output,
+        )
+        .await
+        .map_err(vault_error)?;
+    if result.timed_out {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "layr-desk command timed out",
+        ));
+    }
+    if result.code != Some(0) {
+        let output = if result.stderr.trim().is_empty() {
+            &result.stdout
+        } else {
+            &result.stderr
+        };
+        let lines = output.trim().lines().collect::<Vec<_>>();
+        let reason = lines
+            .iter()
+            .find(|line| {
+                ["does not open", "checksum", "not a word"]
+                    .iter()
+                    .any(|part| line.contains(part))
+            })
+            .copied()
+            .or_else(|| lines.last().copied())
+            .unwrap_or("layr-desk failed");
+        let sanitized = sanitize_unlock_reason(reason);
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, sanitized));
+    }
+    refresh_mac_views(&state.vm_state_dir, &host_command)
+        .await
+        .map_err(vault_error)?;
+    state.sync_changes.notify_one();
+    Ok(Json(serde_json::json!({"unlocked":true})))
 }
 
-fn unavailable(
-    method: &str,
-    path: &str,
-    dependencies: &[Dependency],
-) -> Result<Json<Value>, ApiError> {
-    Err(dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal()))
+async fn run_pull_job(
+    request_id: String,
+    args: Vec<String>,
+    host_command: studio_runtime_services::vault::VaultHostCommand,
+    job_client: VaultJobClient,
+) {
+    let mut discard_output = |_: bool, _: &str| {};
+    let result = host_command
+        .run_desk(
+            &args,
+            studio_runtime_services::vault::VAULT_PULL_TIMEOUT,
+            &mut discard_output,
+        )
+        .await;
+    let fields = match result {
+        Ok(result) if result.timed_out => {
+            serde_json::json!({"state":"failed","error":"layr-desk pull timed out"})
+        }
+        Ok(result) if result.code == Some(0) => match serde_json::from_str::<Value>(&result.stdout)
+        {
+            Ok(value)
+                if value.get("seq").is_some()
+                    && value.get("files").is_some()
+                    && value.get("bytes").is_some() =>
+            {
+                serde_json::json!({"state":"done","seq":value["seq"],"files":value["files"],"bytes":value["bytes"]})
+            }
+            _ => serde_json::json!({"state":"failed","error":"KeyError: 'seq'"}),
+        },
+        Ok(result) => {
+            serde_json::json!({"state":"failed","error":desk_reason(&result.stderr,&result.stdout)})
+        }
+        Err(error) => serde_json::json!({"state":"failed","error":error.to_string()}),
+    };
+    finish_job(&job_client, VaultJobKind::Pull, &request_id, fields).await;
+}
+
+async fn refresh_mac_views(
+    state_dir: &std::path::Path,
+    host_command: &studio_runtime_services::vault::VaultHostCommand,
+) -> Result<(), studio_runtime_services::vault::VaultError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let state_dir = state_dir.to_owned();
+    let update_dir = state_dir.clone();
+    let projects = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/host_secrets",
+        move || {
+            let mut projects = BTreeMap::new();
+            let directory = state_dir.join("layr-projects");
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return Ok(projects);
+            };
+            for entry in entries {
+                let entry = entry.map_err(|_| {
+                    studio_runtime_services::vault::VaultError::InvalidStoredRecord("project.json")
+                })?;
+                let Some(project_id) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if !entry.path().join("project.json").is_file() {
+                    continue;
+                }
+                if let Some(view) = studio_runtime_services::vault::view(&state_dir, &project_id)?
+                    && let (Some(site), Some(prefix)) = (
+                        view.get("site").and_then(Value::as_str),
+                        view.get("prefix").and_then(Value::as_str),
+                    )
+                {
+                    projects.insert(project_id, (site.to_owned(), prefix.to_owned()));
+                }
+            }
+            Ok(projects)
+        },
+    )
+    .await
+    .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)??;
+    if projects.is_empty() {
+        return Ok(());
+    }
+    let sites = projects
+        .values()
+        .map(|(site, _)| site.clone())
+        .collect::<BTreeSet<_>>();
+    let first_site = sites
+        .first()
+        .cloned()
+        .ok_or(studio_runtime_services::vault::VaultError::DeskFailed)?;
+    let mut discard_output = |_: bool, _: &str| {};
+    let service_status = host_command
+        .run_desk(
+            &["service".to_owned(), "status".to_owned()],
+            studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+            &mut discard_output,
+        )
+        .await?;
+    let mut service = serde_json::from_str::<Value>(&service_status.stdout)
+        .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
+    let program = host_command.desk_program()?;
+    let current_program = service
+        .get("program")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from);
+    let current = service.get("installed").and_then(Value::as_bool) == Some(true)
+        && service.get("site").and_then(Value::as_str) == Some(first_site.trim_end_matches('/'))
+        && current_program.is_some_and(|path| {
+            path.canonicalize().unwrap_or(path) == program.canonicalize().unwrap_or(program.clone())
+        });
+    if host_command.is_bundled_desk()? && !current {
+        let result = host_command
+            .run_desk(
+                &[
+                    "service".to_owned(),
+                    "install".to_owned(),
+                    "--site".to_owned(),
+                    first_site.trim_end_matches('/').to_owned(),
+                ],
+                studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+                &mut discard_output,
+            )
+            .await?;
+        if result.code != Some(0) {
+            return Err(studio_runtime_services::vault::VaultError::DeskFailed);
+        }
+        service = serde_json::from_str::<Value>(
+            &host_command
+                .run_desk(
+                    &["service".to_owned(), "status".to_owned()],
+                    studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+                    &mut discard_output,
+                )
+                .await?
+                .stdout,
+        )
+        .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
+    }
+    let disk = service
+        .get("at")
+        .and_then(Value::as_str)
+        .filter(|_| {
+            service.get("installed").and_then(Value::as_bool) == Some(true)
+                && service.get("site").and_then(Value::as_str)
+                    == Some(first_site.trim_end_matches('/'))
+        })
+        .map(str::to_owned);
+    let mut unlocked_by_site = BTreeMap::new();
+    for site in &sites {
+        let result = host_command
+            .run_desk(
+                &[
+                    "status".to_owned(),
+                    "--site".to_owned(),
+                    site.clone(),
+                    "--json".to_owned(),
+                ],
+                studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+                &mut discard_output,
+            )
+            .await?;
+        if result.code != Some(0) {
+            return Err(studio_runtime_services::vault::VaultError::DeskFailed);
+        }
+        let status = serde_json::from_str::<Value>(&result.stdout)
+            .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
+        let unlocked = status
+            .get("projects")
+            .and_then(Value::as_array)
+            .ok_or(studio_runtime_services::vault::VaultError::DeskFailed)?
+            .iter()
+            .filter_map(|project| {
+                Some((
+                    project.get("name")?.as_str()?.to_owned(),
+                    project.get("unlocked")?.as_bool()?,
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        unlocked_by_site.insert(site.clone(), unlocked);
+    }
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/host_secrets",
+        move || {
+            for (project_id, (site, prefix)) in projects {
+                let unlocked = unlocked_by_site
+                    .get(&site)
+                    .and_then(|projects| projects.get(&prefix))
+                    .copied()
+                    .unwrap_or(false);
+                let project_disk = (site == first_site)
+                    .then(|| {
+                        disk.as_ref().map(|path| {
+                            std::path::PathBuf::from(path)
+                                .join(&prefix)
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                    })
+                    .flatten();
+                studio_runtime_services::vault::store_mac_state(
+                    &update_dir,
+                    &project_id,
+                    unlocked,
+                    project_disk.as_deref(),
+                )?;
+            }
+            Ok::<(), studio_runtime_services::vault::VaultError>(())
+        },
+    )
+    .await
+    .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)??;
+    Ok(())
+}
+
+fn sanitize_unlock_reason(reason: &str) -> String {
+    let mut result = String::new();
+    let mut quoted = false;
+    for character in reason.chars() {
+        if character == '"' {
+            if !quoted {
+                result.push_str("one word");
+            }
+            quoted = !quoted;
+        } else if !quoted {
+            result.push(character);
+        }
+        if result.len() >= 300 {
+            break;
+        }
+    }
+    let result = result
+        .trim()
+        .strip_prefix("Error: ")
+        .unwrap_or(result.trim())
+        .to_owned();
+    result.chars().take(300).collect()
 }
 
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "host_secrets",
         routes: Some(routes),
-        dependencies: &[
-            "linux-vm/guest-rpc",
-            "macos-platform/layr-desk",
-        ],
+        dependencies: &["linux-vm/guest-rpc"],
     }
 }
 
@@ -953,6 +1302,26 @@ mod tests {
         (owner, client)
     }
 
+    fn vault_project(state: &std::path::Path) {
+        let project = state.join("linux-vm/layr-projects/p1");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("project.json"),
+            br#"{"projectId":"p1","source":"/tmp/Project One"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("vault.json"),
+            br#"{"configured":true,"prefix":"project-one"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("vault-site.json"),
+            br#"{"site":"https://desk.example/"}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn progress_buffer_stays_bounded_and_discards_until_the_next_newline() {
         let mut pending = String::new();
@@ -1039,6 +1408,130 @@ mod tests {
                 "profiles":[{"name":"fixture"}]
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vault_unlock_passes_words_only_on_stdin_and_records_success() {
+        let state = tempfile::tempdir().unwrap();
+        vault_project(state.path());
+        let host_command = fake_host_command(
+            state.path(),
+            "[ \"$1\" = unlock ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] || exit 91\n[ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --paper-file ] && [ \"$7\" = - ] || exit 92\n[ \"$(cat)\" = 'fixture paper words' ] || exit 93",
+        );
+        let app = app(state.path(), None, Some(host_command));
+        let response = app
+            .oneshot(authorized_request_at(
+                "/api/vault/unlock",
+                json!({"projectId":"p1","words":"fixture paper words"}),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"unlocked":true})
+        );
+        assert!(
+            !body
+                .windows(b"fixture paper words".len())
+                .any(|window| window == b"fixture paper words")
+        );
+        let mac: Value = serde_json::from_slice(
+            &std::fs::read(
+                state
+                    .path()
+                    .join("linux-vm/layr-projects/p1/vault-mac.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mac, json!({"unlocked":true}));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vault_pull_runs_fake_layr_desk_and_replays_the_same_job() {
+        let state = tempfile::tempdir().unwrap();
+        vault_project(state.path());
+        let host_command = fake_host_command(
+            state.path(),
+            "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
+        );
+        let owner = VaultJobOwner::start();
+        let client = owner.client();
+        let mut state_http = HttpState::new(
+            "test-token".to_owned(),
+            "test-workspace".to_owned(),
+            None,
+            state.path().to_string_lossy().into_owned(),
+            TEST_HTTP_PORT,
+            None,
+            None,
+            None,
+        );
+        state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
+        state_http.vault_host_command = Some(host_command);
+        state_http.vault_job_client = Some(client.clone());
+        let app = crate::router::router(state_http).expect("runtime HTTP router starts");
+        let request = json!({"projectId":"p1","requestId":"pull-fixture","to":state.path().to_string_lossy()});
+        let response = app
+            .oneshot(authorized_request_at("/api/vault/pull", request.clone()))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let initial: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(initial["state"], "running");
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(job) = find_job(&client, VaultJobKind::Pull, "pull-fixture")
+                    .await
+                    .unwrap()
+                    && job["state"] != "running"
+                {
+                    break job;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake pull job completes");
+        assert_eq!(result["state"], "done");
+        assert_eq!(result["seq"], 7);
+        let replay_app = crate::router::router({
+            let mut state_http = HttpState::new(
+                "test-token".to_owned(),
+                "test-workspace".to_owned(),
+                None,
+                state.path().to_string_lossy().into_owned(),
+                TEST_HTTP_PORT,
+                None,
+                None,
+                None,
+            );
+            state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
+            state_http.vault_job_client = Some(client.clone());
+            state_http
+        })
+        .expect("replay router starts");
+        let replay = replay_app
+            .oneshot(authorized_request_at("/api/vault/pull", request))
+            .await
+            .unwrap();
+        let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&replay_body).unwrap(),
+            result
+        );
+        owner.shutdown().await.unwrap();
     }
 
     #[tokio::test]

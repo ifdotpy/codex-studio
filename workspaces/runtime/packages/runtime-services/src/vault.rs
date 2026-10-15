@@ -13,6 +13,7 @@ const DEFAULT_VAULT_REGION: &str = "eu-central-1";
 pub const DESK_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub const VAULT_LOGIN_TIMEOUT: Duration = Duration::from_secs(900);
 pub const VAULT_SETUP_TIMEOUT: Duration = Duration::from_secs(3600);
+pub const VAULT_PULL_TIMEOUT: Duration = Duration::from_secs(3600);
 const DESK_OUTPUT_LIMIT: usize = 32 * 1024;
 
 /// Resolve the Linux VM data directory used by Python's `codex_linux_vm.Client.state_dir`.
@@ -50,6 +51,10 @@ pub enum VaultError {
     InvalidProfile,
     #[error("Name an AWS profile and a region")]
     InvalidProfileOrRegion,
+    #[error("The pull folder must be an existing folder")]
+    InvalidPullFolder,
+    #[error("No free folder name for the pull")]
+    NoPullTarget,
 }
 
 #[derive(Debug)]
@@ -85,6 +90,26 @@ impl VaultHostCommand {
         require_python_tool(crate::python_tool::resolve_python_tool())
     }
 
+    /// Resolve the same command selected by the Desk runner without starting it.
+    pub fn desk_program(&self) -> Result<PathBuf, VaultError> {
+        if let Some(program) = &self.desk_program_override {
+            return Ok(program.clone());
+        }
+        let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        resolve_desk_program(&environment)
+    }
+
+    pub fn is_bundled_desk(&self) -> Result<bool, VaultError> {
+        let selected = self.desk_program()?;
+        let Some(bundled) = bundled_desk_program() else {
+            return Ok(false);
+        };
+        Ok(
+            selected.canonicalize().unwrap_or(selected)
+                == bundled.canonicalize().unwrap_or(bundled),
+        )
+    }
+
     pub fn writer(&self, source: &str, python: &Path) -> String {
         writer_command(python, &self.server_source.join("codex_vault.py"), source)
     }
@@ -101,6 +126,30 @@ impl VaultHostCommand {
         let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
         run_desk_with_environment_and_program(
             args,
+            &[],
+            timeout,
+            &environment,
+            self.desk_program_override.as_deref(),
+            on_output,
+        )
+        .await
+    }
+
+    /// Pass paper words only to layr-desk's standard input. They are not included in output.
+    pub async fn run_desk_with_input<F>(
+        &self,
+        args: &[String],
+        input: &[u8],
+        timeout: Duration,
+        on_output: &mut F,
+    ) -> Result<DeskResult, VaultError>
+    where
+        F: FnMut(bool, &str) + Send,
+    {
+        let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        run_desk_with_environment_and_program(
+            args,
+            input,
             timeout,
             &environment,
             self.desk_program_override.as_deref(),
@@ -124,7 +173,7 @@ where
     F: FnMut(bool, &str) + Send,
 {
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    run_desk_with_environment_and_program(args, timeout, &environment, None, on_output).await
+    run_desk_with_environment_and_program(args, &[], timeout, &environment, None, on_output).await
 }
 
 #[cfg(test)]
@@ -137,11 +186,12 @@ async fn run_desk_with_environment<F>(
 where
     F: FnMut(bool, &str) + Send,
 {
-    run_desk_with_environment_and_program(args, timeout, environment, None, on_output).await
+    run_desk_with_environment_and_program(args, &[], timeout, environment, None, on_output).await
 }
 
 async fn run_desk_with_environment_and_program<F>(
     args: &[String],
+    input: &[u8],
     timeout: Duration,
     environment: &BTreeMap<OsString, OsString>,
     program_override: Option<&Path>,
@@ -170,7 +220,7 @@ where
     .await
     .map_err(|_| VaultError::DeskFailed)?;
     child
-        .write(Vec::new(), true)
+        .write(input.to_vec(), true)
         .await
         .map_err(|_| VaultError::DeskFailed)?;
     let mut stdout = String::new();
@@ -314,6 +364,48 @@ pub fn view(state_dir: &Path, project_id: &str) -> Result<Option<Value>, VaultEr
         result.insert("disk".to_owned(), Value::String(disk.to_owned()));
     }
     Ok(Some(Value::Object(result)))
+}
+
+/// Record that the local Desk key store accepted the project's paper words.
+pub fn mark_unlocked(state_dir: &Path, project_id: &str) -> Result<(), VaultError> {
+    store_mac_state(state_dir, project_id, true, None)
+}
+
+/// Persist the Mac's current unlock and disk facts for one vault.
+pub fn store_mac_state(
+    state_dir: &Path,
+    project_id: &str,
+    unlocked: bool,
+    disk: Option<&str>,
+) -> Result<(), VaultError> {
+    let folder = project_folder(state_dir, project_id)?;
+    let mut record = Map::new();
+    record.insert("unlocked".to_owned(), Value::Bool(unlocked));
+    if let Some(disk) = disk {
+        record.insert("disk".to_owned(), Value::String(disk.to_owned()));
+    }
+    write_json(&folder.join("vault-mac.json"), &Value::Object(record))
+}
+
+/// Pick the Python-compatible timestamped sibling folder for a pull job.
+pub fn pull_target(parent: &Path, prefix: &str) -> Result<PathBuf, VaultError> {
+    if !parent.is_absolute() || !parent.is_dir() {
+        return Err(VaultError::InvalidPullFolder);
+    }
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M").to_string();
+    (1..100)
+        .map(|number| {
+            parent.join(format!(
+                "{prefix} {stamp}{}",
+                if number == 1 {
+                    String::new()
+                } else {
+                    format!(" {number}")
+                }
+            ))
+        })
+        .find(|path| std::fs::symlink_metadata(path).is_err())
+        .ok_or(VaultError::NoPullTarget)
 }
 
 fn unreadable_view(project_id: &str) -> Value {
@@ -585,8 +677,9 @@ fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        VaultError, require_python_tool, run_desk_with_environment, setup_facts, store_site,
-        suggested_prefix, valid_prefix, valid_profile, valid_region, view, writer_command,
+        VaultError, require_python_tool, resolve_desk_program, run_desk_with_environment,
+        setup_facts, store_site, suggested_prefix, valid_prefix, valid_profile, valid_region, view,
+        writer_command,
     };
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
@@ -828,6 +921,22 @@ mod tests {
                 .expect_err("missing Python is refused")
                 .to_string(),
             "requires python interpreter for layr-desk"
+        );
+    }
+
+    #[test]
+    fn missing_layr_desk_uses_the_python_named_runtime_error() {
+        let root = tempfile::tempdir().unwrap();
+        let environment = BTreeMap::from([
+            (OsString::from("PATH"), OsString::from("")),
+            (OsString::from("HOME"), root.path().as_os_str().to_owned()),
+        ]);
+
+        assert_eq!(
+            resolve_desk_program(&environment)
+                .expect_err("missing Desk tool is refused")
+                .to_string(),
+            "The layr-desk command is not installed (cargo install --path crates/layr-desk)"
         );
     }
 }

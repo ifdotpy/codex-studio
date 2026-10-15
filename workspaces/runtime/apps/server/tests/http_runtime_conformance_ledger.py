@@ -566,18 +566,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "assert_no_write": True,
         }],
     },
-    ("POST", "/api/limits/reset"): {
-        "primary": {
-            "body": {
-                "account_key": "default", "account_id": "fixture-account",
-                "credit_id": "ledger-probe-credit", "request_id": "88888888-8888-4888-8888-888888888888",
-            },
-            "expected": "501",
-            "expected_error": "Not implemented: requires account-driver/reset-credit-redemption",
-            "assert_no_write": True,
-            "reason": "redemption is never performed or simulated in tests",
-        },
-    },
     ("POST", "/api/multi-server"): {
         "primary": {
             "body": {"action": "settings", "autoPair": False, "requestId": "ledger-probe-settings"},

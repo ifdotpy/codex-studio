@@ -64,7 +64,6 @@ OPEN_TASKS = {
 # dependencies that stay explicit first-cutover refusals.
 EXACT_OWNERS: dict[str, list[str]] = {
     "account-driver/unavailable": ["P01", "P02", "P18"],
-    "account-driver/reset-credit-redemption": ["R3"],
     "account-worker/agent-interrupt": ["P10"],
     "account-worker/deleted-settlement": ["P10"],
     "account-worker/native-action": ["P11"],
@@ -89,7 +88,6 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "cross-server/native-review": ["P11"],
     # The wave 7 plan explicitly excludes the macOS vault adapter; the
     # registered route keeps that platform dependency visible in the census.
-    "macos-platform/layr-desk": ["NEW macOS layr-desk adapter (out of scope)"],
     "cross-server/remote-events": ["R1"],
     "cross-server-driver/local-identity": ["P19", "R1"],
     "cross-server-driver/project-binding": ["P19"],
@@ -198,10 +196,8 @@ EXACT_OWNERS: dict[str, list[str]] = {
 
 UNREGISTERED_BY_PATH: dict[str, list[str]] = {
     "/api/vault/aws-login": ["NEW vault/runtime-service (out of scope)"],
-    "/api/vault/pull": ["NEW vault/runtime-service (out of scope)"],
     "/api/vault/setup": ["NEW vault/runtime-service (out of scope)"],
     "/api/vault/setup/facts": ["NEW vault/runtime-service (out of scope)"],
-    "/api/vault/unlock": ["NEW vault/runtime-service (out of scope)"],
     "/api/project-secrets/list": ["NEW project-secrets/runtime-service (out of scope)"],
     "/api/project-secrets/remove": ["NEW project-secrets/runtime-service (out of scope)"],
     "/api/project-secrets/set": ["NEW project-secrets/runtime-service (out of scope)"],
@@ -220,7 +216,6 @@ UNREGISTERED_BY_PATH: dict[str, list[str]] = {
     "/api/context-repair": ["P11"],
     "/api/native-command": ["P11"],
     "/api/sync/notify": ["P14"],
-    "/api/limits/reset": ["R3"],
     "/api/voice/approve": ["R2"],
     "/api/voice/audio": ["R2"],
     "/api/voice/end": ["R2"],

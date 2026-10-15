@@ -9,6 +9,7 @@ from pathlib import Path
 import socket
 import socketserver
 import sys
+import tempfile
 import threading
 import unittest
 
@@ -17,7 +18,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
 class GuestHandler(socketserver.StreamRequestHandler):
@@ -44,6 +45,28 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
+        cls.fake_tools = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        cls.fake_desk = Path(cls.fake_tools.name) / "layr-desk"
+        cls.fake_desk.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  unlock) [ \"$(cat)\" = 'fixture words' ] || exit 31 ;;\n"
+            "  service) printf '%s\\n' '{\"installed\":false}' ;;\n"
+            "  status) printf '%s\\n' '{\"projects\":[{\"name\":\"project-one\",\"unlocked\":true}]}' ;;\n"
+            "  pull) printf '%s\\n' '{\"seq\":7,\"files\":2,\"bytes\":1024}' ;;\n"
+            "  *) exit 32 ;;\n"
+            "esac\n"
+        )
+        cls.fake_desk.chmod(0o700)
+        previous_desk = os.environ.get("STUDIO_LAYR_DESK_BIN")
+        os.environ["STUDIO_LAYR_DESK_BIN"] = str(cls.fake_desk)
+        def restore_desk_environment() -> None:
+            if previous_desk is None:
+                os.environ.pop("STUDIO_LAYR_DESK_BIN", None)
+            else:
+                os.environ["STUDIO_LAYR_DESK_BIN"] = previous_desk
+        cls.addClassCleanup(restore_desk_environment)
+        cls.addClassCleanup(cls.fake_tools.cleanup)
         cls.backend = start_contract_backend(cls)
         # Rust backends use the harness's short external VM path to stay below
         # sockaddr_un limits; Python keeps its VM socket under the runtime state.
@@ -96,26 +119,31 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(self.guest.requests[1]["id"], "secrets-set:secret-set-1")
         self.assertEqual(self.guest.requests[2]["id"], "secrets-remove:secret-remove-1")
 
-    def test_mac_vault_operations_fail_without_mutating_backend(self):
-        before = no_write_snapshot(self.backend.state)
+    def test_mac_vault_operations_use_the_fake_layr_desk(self):
+        vm_state = self.backend.vm_state if self.rust_backend else self.backend.state / "linux-vm"
+        project = vm_state / "layr-projects/project-1"
+        project.mkdir(parents=True)
+        (project / "project.json").write_text(json.dumps({"projectId":"project-1","source":"/tmp/Project One"}))
+        (project / "vault.json").write_text(json.dumps({"configured":True,"prefix":"project-one"}))
+        (project / "vault-site.json").write_text(json.dumps({"site":"https://desk.example/"}))
+        pull_parent = self.backend.state / "pull-parent"
+        pull_parent.mkdir()
         unlock = self.request("/api/vault/unlock", {"projectId": "project-1", "words": "fixture words"})
         self.assertNotIn(b"fixture words", unlock.body)
-        if self.rust_backend:
-            self.assertEqual(unlock.status, 501, unlock.body[:1000])
-            self.assertIn(b"macos-platform/layr-desk", unlock.body)
-        else:
-            self.assertEqual(unlock.status, 400, unlock.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(unlock.status, 200, unlock.body[:1000])
+        self.assertEqual(unlock.json(), {"unlocked": True})
 
-        pull = self.request("/api/vault/pull", {
-            "projectId": "project-1", "requestId": "pull-1", "to": None,
-        })
-        if self.rust_backend:
-            self.assertEqual(pull.status, 501, pull.body[:1000])
-            self.assertIn(b"macos-platform/layr-desk", pull.body)
-        else:
-            self.assertEqual(pull.status, 400, pull.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        body = {"projectId": "project-1", "requestId": "pull-1", "to": str(pull_parent)}
+        first = self.request("/api/vault/pull", body)
+        self.assertEqual(first.status, 200, first.body[:1000])
+        self.assertEqual(first.json()["state"], "running")
+        result = self.backend.wait_until(
+            lambda: (response.json() if (response := self.request("/api/vault/pull", body)).status == 200
+                     and response.json().get("state") != "running" else None),
+            "fake vault pull completion",
+        )
+        self.assertEqual(result["state"], "done")
+        self.assertEqual((result["seq"], result["files"], result["bytes"]), (7, 2, 1024))
 
 
 if __name__ == "__main__":
