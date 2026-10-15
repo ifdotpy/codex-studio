@@ -1359,29 +1359,6 @@ mod tests {
         .unwrap();
     }
 
-    struct SetupRecipientFixture(std::path::PathBuf);
-
-    impl SetupRecipientFixture {
-        fn create(prefix: &str) -> Self {
-            let settings = super::settings_dir("unused");
-            let directory = settings.join(prefix);
-            std::fs::create_dir_all(&directory).unwrap();
-            let recipient = directory.join("recipient.txt");
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(recipient)
-                .unwrap();
-            Self(directory)
-        }
-    }
-
-    impl Drop for SetupRecipientFixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn progress_buffer_stays_bounded_and_discards_until_the_next_newline() {
         let mut pending = String::new();
@@ -1473,9 +1450,38 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn valid_vault_setup_request_completes_over_http_with_fake_desk() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("routes::host_secrets::tests::vault_setup_http_positive_child")
+            .arg("--ignored")
+            .arg("--nocapture")
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "private-HOME setup child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "run by the parent test with a private HOME"]
+    async fn vault_setup_http_positive_child() {
         let state = tempfile::tempdir().unwrap();
         let prefix = test_request_id("fixture");
-        let _recipient = SetupRecipientFixture::create(&prefix);
+        let settings = super::settings_dir("unused");
+        let directory = settings.join(&prefix);
+        std::fs::create_dir_all(&directory).unwrap();
+        let recipient = directory.join("recipient.txt");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(recipient)
+            .unwrap();
         let source = state.path().join("source");
         std::fs::create_dir_all(&source).unwrap();
         let project = state.path().join("linux-vm/layr-projects/p1");
