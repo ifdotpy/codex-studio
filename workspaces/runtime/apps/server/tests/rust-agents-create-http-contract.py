@@ -1014,9 +1014,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
         )
 
-    def test_smart_title_requires_a_provider_session_without_writing(self):
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("the Python reference backend implements live title generation")
+    def test_smart_title_returns_pending_then_settles_failure_without_rename(self):
+        # The Rust model catalog is cached per server process. Earlier tests can
+        # populate it, which would turn this no-catalog fixture into a provider
+        # request whose outcome is intentionally held unknown.
+        self.backend.stop()
+        self.backend.start()
         before = rename_state(self.backend.state, self.agent_id, "smart-title-id")
         response = self.backend.request(
             "POST",
@@ -1024,10 +1027,37 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 503, response.body[:1000])
-        self.assertEqual(
-            rename_state(self.backend.state, self.agent_id, "smart-title-id"), before
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertEqual(response.json()["request_id"], "smart-title-id")
+        deadline = time.monotonic() + 5
+        after = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        while time.monotonic() < deadline:
+            if after["receipt"] is not None:
+                result = json.loads(after["receipt"][1])
+                if result.get("status") == "failed" or result.get("state") in {"invalid", "not_sent"}:
+                    break
+            time.sleep(0.01)
+            after = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        self.assertIsNotNone(after["receipt"])
+        result = json.loads(after["receipt"][1])
+        self.assertIn(result.get("status", result.get("state")), {"failed", "invalid", "not_sent"})
+        # Python admits the receipt before scheduling `_finish`, then records a
+        # failure without renaming if generation cannot start: codex_rename.py:128-146,195-207.
+        self.assertEqual(after["agent"], before["agent"])
+        self.assertEqual(after["projection"], before["projection"])
+        replay = self.backend.request(
+            "POST",
+            "/api/rename",
+            body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=self.headers(),
         )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["request_id"], "smart-title-id")
+        self.assertEqual(replay.json()["status"], "failed")
+        replayed = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        self.assertEqual(replayed["agent"], before["agent"])
+        self.assertEqual(replayed["projection"], before["projection"])
 
     def post(self, path, body, status=200):
         response = self.backend.request("POST", path, body=body, headers=self.headers())

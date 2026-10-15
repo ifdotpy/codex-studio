@@ -4,6 +4,7 @@ mod prepared_python;
 use futures_util::FutureExt;
 use rusqlite::Connection;
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::{
     path::Path,
     process::Command,
@@ -14,7 +15,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 use studio_runtime_services::title_generation::{
-    TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, generate,
+    TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
+    generate, generate_admitted, settle_catalog_failure,
 };
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
@@ -234,6 +236,231 @@ fn persisted_snapshot(store: &RuntimeStore) -> Value {
     json!({"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events,"projection":projection,"receipts":receipts})
 }
 
+#[test]
+fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
+    let (_root, store) = fixture();
+    let before = persisted_snapshot(&store);
+    let (pending, start) =
+        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("admit title");
+    assert!(start);
+    assert_eq!(pending["status"], "pending");
+
+    settle_catalog_failure(&store, "title-agent", "catalog-unavailable")
+        .expect("settle unavailable catalog");
+    let connection = store.read().expect("read settled title");
+    let result: String = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='catalog-unavailable'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("durable failure receipt");
+    let result: Value = serde_json::from_str(&result).expect("failure receipt JSON");
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["request_id"], "catalog-unavailable");
+
+    let after = persisted_snapshot(&store);
+    assert_eq!(after["agent"], before["agent"]);
+    assert_eq!(after["events"], before["events"]);
+    assert_eq!(after["projection"], before["projection"]);
+    let (replayed, retry) =
+        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("replay");
+    assert!(!retry);
+    assert_eq!(replayed["status"], "failed");
+    assert_eq!(persisted_snapshot(&store), after);
+}
+
+#[tokio::test]
+async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recovery() {
+    let (_root, store) = fixture();
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER title_apply_fail BEFORE UPDATE ON runtime_agents
+                 BEGIN SELECT RAISE(ABORT,'title apply failpoint'); END",
+            )?;
+            Ok(())
+        })
+        .expect("install deterministic final-apply failure");
+    let provider = FixedPort::new(vec![TitleReceipt {
+        request_id: "written-before-catalog-failure".into(),
+        agent_id: "title-agent".into(),
+        epoch: 1,
+        account_key: "default".into(),
+        outcome: WriteOutcome::Written,
+        title: Some("Durable generated title".into()),
+    }]);
+    assert!(
+        generate(
+            &store,
+            &provider,
+            "title-agent",
+            &catalog(),
+            "written-before-catalog-failure",
+            deadline()
+        )
+        .await
+        .is_err(),
+        "the final title-application transaction fails"
+    );
+
+    let written_effect: Value = {
+        let connection = store.read().expect("read durable provider effect");
+        let raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("written effect receipt");
+        serde_json::from_str(&raw).expect("effect JSON")
+    };
+    assert_eq!(written_effect["state"], "written");
+    assert_eq!(written_effect["title"], "Durable generated title");
+    assert!(written_effect["fingerprint"].as_str().is_some());
+
+    settle_catalog_failure(&store, "title-agent", "written-before-catalog-failure")
+        .expect("settle catalog failure without losing written result");
+    let (public_result, effect_after_settlement) = {
+        let connection = store.read().expect("read title receipts after settlement");
+        let public_raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id='written-before-catalog-failure'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("public receipt");
+        let effect_raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("written effect receipt");
+        (
+            serde_json::from_str::<Value>(&public_raw).expect("public JSON"),
+            serde_json::from_str::<Value>(&effect_raw).expect("effect JSON"),
+        )
+    };
+    assert_eq!(public_result["status"], "pending");
+    assert_eq!(effect_after_settlement, written_effect);
+
+    store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER title_apply_fail")?;
+            Ok(())
+        })
+        .expect("remove deterministic failure");
+    let (retry_receipt, should_finish) =
+        admit_python_request(&store, "title-agent", "written-before-catalog-failure")
+            .expect("same-identity HTTP retry admission");
+    assert!(
+        should_finish,
+        "written effects must schedule application recovery"
+    );
+    assert_eq!(retry_receipt["status"], "pending");
+    let no_provider = FixedPort::new(Vec::new());
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &no_provider,
+            "title-agent",
+            &catalog(),
+            "written-before-catalog-failure",
+            deadline()
+        )
+        .await
+        .expect("recover durable written title"),
+        TitleResult::Applied {
+            title: "Durable generated title".into()
+        }
+    );
+    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_call() {
+    let (_root, store) = fixture();
+    let port = FixedPort::new(vec![TitleReceipt {
+        request_id: "admitted-replay".into(),
+        agent_id: "title-agent".into(),
+        epoch: 1,
+        account_key: "default".into(),
+        outcome: WriteOutcome::Written,
+        title: Some("Generated once".into()),
+    }]);
+    let (pending, start) =
+        admit_python_request(&store, "title-agent", "admitted-replay").expect("durable admission");
+    assert!(start);
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "admitted-replay",
+            deadline()
+        )
+        .await
+        .expect("provider result"),
+        TitleResult::Applied {
+            title: "Generated once".into()
+        }
+    );
+    let (replayed, retry) = admit_python_request(&store, "title-agent", "admitted-replay")
+        .expect("poll completed title receipt");
+    assert!(!retry);
+    assert_eq!(replayed["id"], "title-agent");
+    assert_eq!(replayed["request_id"], "admitted-replay");
+    assert_eq!(replayed["status"], "applied");
+    assert_eq!(replayed["name"], "Generated once");
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_resent() {
+    let (_root, store) = fixture();
+    let python_signature = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
+        br#"{"chat": "title-agent", "name": null, "operation": "rename"}"#,
+    ));
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    "legacy-pending",
+                    python_signature,
+                    json!({"id":"title-agent","request_id":"legacy-pending","status":"pending"})
+                        .to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("Python-shaped pending receipt");
+    let port = FixedPort::new(Vec::new());
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "legacy-pending",
+            deadline()
+        )
+        .await
+        .expect("pending receipt with unknown execution state stays held"),
+        TitleResult::HeldUnknown,
+    );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    let (replayed, start) = admit_python_request(&store, "title-agent", "legacy-pending")
+        .expect("replay Python pending receipt");
+    assert!(!start);
+    assert_eq!(replayed["status"], "pending");
+    assert_eq!(replayed["request_id"], "legacy-pending");
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+}
+
 fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);
@@ -349,8 +576,27 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
         let (python_root, python_store) = fixture();
         drop(python_store);
         let python = python_persisted_snapshot(python_root.path(), scenario);
-        assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(2));
         assert_eq!(python["receipts"].as_array().map(Vec::len), Some(1));
+        let public_receipt = rust["receipts"]
+            .as_array()
+            .expect("Rust receipts")
+            .iter()
+            .find(|row| row[0] == "persisted-title")
+            .expect("Python-shaped public title receipt");
+        let python_receipt = python["receipts"]
+            .as_array()
+            .expect("Python receipts")
+            .first()
+            .expect("Python title receipt");
+        assert_eq!(public_receipt[0], python_receipt[0]);
+        assert_eq!(public_receipt[1], python_receipt[1]);
+        assert_eq!(
+            serde_json::from_str::<Value>(public_receipt[2].as_str().expect("Rust receipt JSON"))
+                .expect("Rust receipt value"),
+            serde_json::from_str::<Value>(python_receipt[2].as_str().expect("Python receipt JSON"))
+                .expect("Python receipt value")
+        );
         let mut rust_without_receipts = rust.clone();
         let mut python_without_receipts = python.clone();
         rust_without_receipts
@@ -757,7 +1003,12 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
                 .is_err(),
                 "{table} {timing}"
             );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+            let expected_calls = if table == "runtime_operation_receipts" {
+                0
+            } else {
+                1
+            };
+            assert_eq!(port.calls.load(Ordering::SeqCst), expected_calls);
             let (record, projection) = agent_and_projection(&store);
             assert_eq!(
                 serde_json::from_str::<Value>(&record).expect("agent")["name"],
@@ -776,7 +1027,7 @@ async fn durable_written_title_replays_after_failed_final_commit_without_provide
         (
             "runtime_operation_receipts",
             "UPDATE",
-            " WHEN json_extract(NEW.result,'$.state')='applied'",
+            " WHEN NEW.id LIKE 'title-generation:%' AND json_extract(NEW.result,'$.state')='applied'",
         ),
     ] {
         for timing in ["BEFORE", "AFTER"] {

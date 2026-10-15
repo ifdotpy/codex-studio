@@ -1008,6 +1008,139 @@ async fn conversation(
     })
     .await
 }
+async fn finish_title_request(
+    store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+    provider: Option<
+        std::sync::Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>,
+    >,
+    driver: Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+    event_wake: std::sync::Arc<tokio::sync::Notify>,
+    agent_id: String,
+    request_id: String,
+) {
+    async fn settle_failure(
+        store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+        agent_id: String,
+        request_id: String,
+    ) {
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agents_create/rename-settle",
+            move || {
+                studio_runtime_services::title_generation::settle_catalog_failure(
+                    &store,
+                    &agent_id,
+                    &request_id,
+                )
+            },
+        )
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("Could not settle unavailable title catalog: {error}"),
+            Err(error) => eprintln!("Could not run title receipt settlement: {error}"),
+        }
+    }
+    let Some(provider) = provider else {
+        settle_failure(store, agent_id, request_id).await;
+        return;
+    };
+    if let Some(driver) = driver {
+        let account_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agents_create/rename-accounts",
+            move || driver.snapshot().map(|snapshot| snapshot.accounts),
+        )
+        .await;
+        match account_snapshot {
+            Ok(Ok(accounts)) => catalog.retain_accounts(&accounts),
+            _ => {
+                settle_failure(store, agent_id, request_id).await;
+                return;
+            }
+        }
+    }
+    let read_store = store.clone();
+    let read_agent = agent_id.clone();
+    let account_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/rename-agent",
+        move || {
+            let connection = read_store.read().map_err(|_| ApiError::internal())?;
+            let agent =
+                studio_runtime_store::WorkspaceViewsRepository::agent(&connection, &read_agent)
+                    .map_err(|_| ApiError::internal())?
+                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))?;
+            let record = agent.value();
+            Ok::<_, ApiError>((
+                record
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_owned(),
+                record
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex")
+                    .to_owned(),
+            ))
+        },
+    )
+    .await;
+    let (account, provider_name) = match account_snapshot {
+        Ok(Ok(snapshot)) => snapshot,
+        _ => {
+            settle_failure(store, agent_id, request_id).await;
+            return;
+        }
+    };
+    let Some((home, catalog_provider)) = catalog.account_profile(&account) else {
+        settle_failure(store, agent_id, request_id).await;
+        return;
+    };
+    if catalog_provider != provider_name {
+        settle_failure(store, agent_id, request_id).await;
+        return;
+    }
+    let models = match catalog
+        .model_list_port()
+        .list(
+            &account,
+            &provider_name,
+            serde_json::json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
+        )
+        .await
+    {
+        Ok(models) => models,
+        Err(_) => {
+            match catalog.read(&account, &home, &provider_name, false).await {
+                studio_runtime_services::model_catalog::CatalogRead::Ready(_)
+                | studio_runtime_services::model_catalog::CatalogRead::Pending
+                | studio_runtime_services::model_catalog::CatalogRead::Unavailable => {}
+            }
+            settle_failure(store, agent_id, request_id).await;
+            return;
+        }
+    };
+    match studio_runtime_services::title_generation::generate_admitted(
+        &store,
+        provider.as_ref(),
+        &agent_id,
+        &models,
+        &request_id,
+        std::time::SystemTime::now() + studio_runtime_services::title_generation::REQUEST_TIMEOUT,
+    )
+    .await
+    {
+        Ok(studio_runtime_services::title_generation::TitleResult::Applied { .. }) => {
+            event_wake.notify_one();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("Title generation did not complete: {error}");
+            settle_failure(store, agent_id, request_id).await;
+        }
+    }
+}
+
 async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,
@@ -1020,128 +1153,54 @@ async fn rename(
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let provider = state.title_request.clone().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Title provider session is unavailable",
-            )
-        })?;
-        let driver = state.account_driver.clone();
-        let catalog = state.model_catalog.clone();
-        if let Some(driver) = driver {
-            let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/agents_create/rename",
-                move || driver.snapshot().map(|snapshot| snapshot.accounts),
-            )
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(|_| ApiError::internal())?;
-            catalog.retain_accounts(&accounts);
-        }
         let agent_id = body.id.clone();
-        let account_catalog = catalog.clone();
-        let account_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        let request_store = store.clone();
+        let request_agent = agent_id.clone();
+        let request_identity = request_id.clone();
+        let (receipt, should_finish) = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/agents_create/rename",
             move || {
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                let agent =
-                    studio_runtime_store::WorkspaceViewsRepository::agent(&connection, &agent_id)
-                        .map_err(|_| ApiError::internal())?
-                        .ok_or_else(|| {
-                            ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
-                        })?;
-                let record = agent.value();
-                let account = record
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default");
-                let provider = record
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex");
-                let Some((home, catalog_provider)) = account_catalog.account_profile(account)
-                else {
-                    return Err(ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Model catalog is unavailable for this account",
-                    ));
-                };
-                if catalog_provider != provider {
-                    return Err(ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Provider account changed; reload the conversation",
-                    ));
-                }
-                Ok((account.to_owned(), provider.to_owned(), home))
+                studio_runtime_services::title_generation::admit_python_request(
+                    &request_store,
+                    &request_agent,
+                    &request_identity,
+                )
             },
         )
         .await
-        .map_err(|_| ApiError::internal())??;
-        let (account, provider_name, home) = account_snapshot;
-        let models = match catalog
-            .model_list_port()
-            .list(
-                &account,
-                &provider_name,
-                serde_json::json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
-            )
-            .await
-        {
-            Ok(models) => models,
-            Err(_) => {
-                // Starting the refresh is bounded and coalesced by the catalog owner.
-                let _ = catalog.read(&account, &home, &provider_name, false).await;
-                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "Model catalog is pending or unavailable"));
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| match error {
+            studio_runtime_services::title_generation::TitleError::AgentNotFound => {
+                ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
             }
-        };
-        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-        let result = studio_runtime_services::title_generation::generate(
-            store,
-            provider.as_ref(),
-            &body.id,
-            &models,
-            &request_id,
-            std::time::SystemTime::now()
-                + studio_runtime_services::title_generation::REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|error| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
-        let (title, status, error) = match result {
-            studio_runtime_services::title_generation::TitleResult::Applied { title } => {
-                state.event_wake.notify_one();
-                (Some(title), "applied", None)
+            studio_runtime_services::title_generation::TitleError::DeletedAgent => {
+                ApiError::new(StatusCode::BAD_REQUEST, "This conversation was deleted")
             }
-            studio_runtime_services::title_generation::TitleResult::HeldUnknown => {
-                (None, "pending", None)
+            error @ studio_runtime_services::title_generation::TitleError::Conflict => {
+                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
             }
-            studio_runtime_services::title_generation::TitleResult::RetryableNotSent => (
-                None,
-                "failed",
-                Some("The title request could not start. Try /rename again."),
-            ),
-            studio_runtime_services::title_generation::TitleResult::Discarded
-            | studio_runtime_services::title_generation::TitleResult::Skipped => (
-                None,
-                "failed",
-                Some("The title could not be generated. Try /rename again."),
-            ),
-        };
-        let response = serde_json::json!({
-            "id": body.id,
-            "name": title,
-            "request_id": request_id,
-            "status": status,
-            "error": error,
-        });
-        let mut response = Json(super::generated_json::<generated::RenameResponse>(
-            response,
-        )?)
-        .into_response();
-        if status != "applied" {
-            response
-                .extensions_mut()
-                .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+            _ => ApiError::internal(),
+        })?;
+        if should_finish {
+            let store = store.clone();
+            let provider = state.title_request.clone();
+            let driver = state.account_driver.clone();
+            let catalog = state.model_catalog.clone();
+            let event_wake = state.event_wake.clone();
+            let agent_id = agent_id.clone();
+            let request_id = request_id.clone();
+            drop(tokio::spawn(async move {
+                finish_title_request(
+                    store, provider, driver, catalog, event_wake, agent_id, request_id,
+                )
+                .await;
+            }));
         }
+        let mut response =
+            Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
+        response
+            .extensions_mut()
+            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
         return Ok(response);
     }
     studio_runtime_process::blocking_pool::spawn_blocking(
