@@ -287,7 +287,7 @@ impl Worker {
                     && self
                         .managed_callback_cursors
                         .iter()
-                        .any(|callback_cursor| *callback_cursor < pending.result_cursor)
+                        .any(|(_, callback_cursor)| *callback_cursor < pending.result_cursor)
             })
             .map(|pending| pending.result_cursor)
             .collect();

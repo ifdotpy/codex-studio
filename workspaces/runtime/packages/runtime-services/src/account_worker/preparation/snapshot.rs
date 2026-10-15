@@ -4,7 +4,43 @@ use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_p
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
+use std::{future::Future, pin::Pin};
+use studio_runtime_process::ProviderLaunchSpec;
 use studio_runtime_store::{AgentRecord, Transaction};
+
+/// Actor-specific inputs needed to launch a provider inside a Linux VM.
+/// Credentials are deliberately absent: the resolver reads and copies them
+/// through its private guest boundary and never returns or logs their values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmProviderLaunchRequest {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub account_key: String,
+    pub provider: String,
+    pub cwd: String,
+    pub guest_home: String,
+}
+
+/// Provider launch resolved for one actor. `launch.environment` is the guest
+/// environment only; callers must not merge in the host process environment.
+pub struct VmProviderLaunch {
+    pub provider: String,
+    pub profile: String,
+    pub launch: ProviderLaunchSpec,
+    /// Host-refreshed login payload sent only through the retained guest session.
+    /// It is transient and must never be persisted or logged.
+    pub bootstrap: Option<Value>,
+}
+
+pub type VmProviderLaunchFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<VmProviderLaunch, WorkerError>> + Send + 'a>>;
+
+/// Host-owned VM launch resolver. It selects the provider/profile and durably
+/// copies the minimal provider credential material into the guest before the
+/// caller starts the provider process.
+pub trait VmProviderLaunchResolver: Send + Sync {
+    fn resolve(&self, request: VmProviderLaunchRequest) -> VmProviderLaunchFuture<'_>;
+}
 
 #[derive(Clone)]
 pub struct PreparationResources {
@@ -25,6 +61,8 @@ pub struct PreparationResources {
     pub account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
     /// Fakeable guest RPC for VM workspace preparation in the turn-start path.
     pub guest_rpc: Option<Arc<dyn crate::linux_vm_guest::GuestRpc>>,
+    /// Host-owned per-actor VM provider launch and credential-copy boundary.
+    pub vm_provider_launch: Option<Arc<dyn VmProviderLaunchResolver>>,
 }
 impl PreparationResources {
     pub fn bundled(
@@ -98,6 +136,7 @@ impl PreparationResources {
             account_driver: None,
             account_session: None,
             guest_rpc: None,
+            vm_provider_launch: None,
         })
     }
 

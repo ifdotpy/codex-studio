@@ -1568,6 +1568,7 @@ mod retained_executor_tests {
             account_driver: None,
             account_session: Some(session.clone()),
             guest_rpc: None,
+            vm_provider_launch: None,
         };
 
         let result = before_start(

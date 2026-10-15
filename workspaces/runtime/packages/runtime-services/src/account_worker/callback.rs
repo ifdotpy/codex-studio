@@ -20,6 +20,7 @@ pub(super) fn managed_response(
     store: &RuntimeStore,
     account: &str,
     generation: u64,
+    emitting_actor: Option<&str>,
     frame: &Frame,
     now: f64,
     wake: std::sync::Arc<Notify>,
@@ -54,7 +55,7 @@ pub(super) fn managed_response(
             "Managed tool callback has no turn identity",
         ));
     };
-    let body = match callback_context(store, account, generation, thread, turn) {
+    let body = match callback_context(store, account, generation, emitting_actor, thread, turn) {
         Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
             store,
             &context,
@@ -96,6 +97,7 @@ pub(super) async fn wait_for_managed_catalog(
     store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
+    emitting_actor: Option<&str>,
     frame: &Frame,
     runtime: Option<&crate::provider_callbacks::ManagedToolRuntime>,
 ) -> Result<(), &'static str> {
@@ -133,11 +135,21 @@ pub(super) async fn wait_for_managed_catalog(
     };
     let context_store = Arc::clone(store);
     let account = account.to_owned();
+    let emitting_actor = emitting_actor.map(str::to_owned);
     let thread = thread.to_owned();
     let turn = turn.to_owned();
     let Some(context) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_callback_context",
-        move || callback_context(&context_store, &account, generation, &thread, &turn),
+        move || {
+            callback_context(
+                &context_store,
+                &account,
+                generation,
+                emitting_actor.as_deref(),
+                &thread,
+                &turn,
+            )
+        },
     )
     .await
     .map_err(|_| "Managed tool callback context is unavailable")?
@@ -158,12 +170,14 @@ WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1
   AND json_extract(record,'$.turnId')=?4
   AND json_extract(record,'$.status')='running'
   AND json_extract(record,'$.autoWake')=1
+  AND (?5 IS NULL OR id=?5)
 LIMIT 2";
 
 fn callback_context(
     store: &RuntimeStore,
     account: &str,
     generation: u64,
+    emitting_actor: Option<&str>,
     thread: &str,
     turn: &str,
 ) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
@@ -174,7 +188,7 @@ fn callback_context(
     let mut statement = connection.prepare_cached(CALLBACK_CONTEXT_QUERY)?;
     let candidates = statement
         .query_map(
-            rusqlite::params![account, generation_value, thread, turn],
+            rusqlite::params![account, generation_value, thread, turn, emitting_actor],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -302,7 +316,7 @@ mod tests {
             })
             .expect("callback agents write");
         assert!(
-            callback_context(&store, "account-a", 7, "thread-a", "turn-a")
+            callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
                 .expect("callback lookup")
                 .is_none(),
             "LIMIT 2 must preserve ambiguous-context rejection"
@@ -313,17 +327,17 @@ mod tests {
                 Ok(())
             })
             .expect("remove ambiguous agent");
-        let context = callback_context(&store, "account-a", 7, "thread-a", "turn-a")
+        let context = callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
             .expect("callback lookup")
             .expect("one matching context");
         assert_eq!(context.agent, "agent-a");
         assert!(
-            callback_context(&store, "account-b", 7, "thread-a", "turn-a")
+            callback_context(&store, "account-b", 7, None, "thread-a", "turn-a")
                 .expect("account-scoped lookup")
                 .is_none()
         );
         assert!(
-            callback_context(&store, "account-a", 8, "thread-a", "turn-a")
+            callback_context(&store, "account-a", 8, None, "thread-a", "turn-a")
                 .expect("generation-scoped lookup")
                 .is_none()
         );

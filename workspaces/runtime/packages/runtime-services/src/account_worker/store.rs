@@ -820,9 +820,11 @@ fn uncertain(
 pub(super) fn journal_batch(
     store: &RuntimeStore,
     account: &str,
+    journal_scope: &str,
     streams: &NotificationStreamBuffer,
     entries: Vec<JournalEntry>,
     claude_account_pin: &Value,
+    expected_vm_actor: Option<(&str, i64)>,
 ) -> Result<
     Option<(
         NotificationStreamBuffer,
@@ -868,6 +870,8 @@ pub(super) fn journal_batch(
             match journal_one(
                 tx,
                 account,
+                journal_scope,
+                expected_vm_actor,
                 &publication,
                 &next,
                 &entry,
@@ -896,6 +900,8 @@ pub(super) fn journal_batch(
 fn journal_one(
     tx: &rusqlite::Transaction<'_>,
     account: &str,
+    journal_scope: &str,
+    expected_vm_actor: Option<(&str, i64)>,
     publication: &crate::notification_dispatch::PublicationContext,
     streams: &NotificationStreamBuffer,
     entry: &JournalEntry,
@@ -916,7 +922,12 @@ fn journal_one(
         JournalPayload::Other { kind, payload } => json!({"kind":kind,"payload":payload}),
     };
     let digest = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
-    if entry.cursor.0 <= checkpoint(tx, account, entry.generation.0)? {
+    if let Some((actor_id, expected_epoch)) = expected_vm_actor
+        && !crate::linux_vm_provider::vm_actor_matches(tx, actor_id, expected_epoch, account, None)?
+    {
+        return Err(WorkerError::StaleVmActor);
+    }
+    if entry.cursor.0 <= checkpoint(tx, journal_scope, entry.generation.0)? {
         return Ok(Some((streams.clone(), None, false)));
     }
     if let Some(old) = receipt(tx, &operation, "settled")? {
@@ -953,12 +964,16 @@ fn journal_one(
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
             {
-                crate::monitor_event_queue::enqueue_output_in_transaction(
+                crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
                     tx,
                     process_id,
-                    account,
-                    entry.generation.0,
-                    entry.cursor.0,
+                    crate::monitor_event_queue::JournalEventScope {
+                        account,
+                        cursor_scope: journal_scope,
+                        generation: entry.generation.0,
+                        cursor: entry.cursor.0,
+                        expected_agent: expected_vm_actor.map(|(actor, _)| actor),
+                    },
                     params,
                 )?;
             }
@@ -976,6 +991,9 @@ fn journal_one(
                 thread,
                 turn,
             )?;
+            let attempt = attempt.filter(|(identity, _)| {
+                expected_vm_actor.is_none_or(|(actor_id, _)| identity.agent_id == actor_id)
+            });
             let attempt = match attempt {
                 Some(attempt) => Some(attempt),
                 None if method == "turn/completed" => {
@@ -1007,7 +1025,7 @@ fn journal_one(
                             .ok_or_else(|| invalid(&identity.agent_id))?;
                             let frame = json!({"method":method,"params":params});
                             let delivery = ProviderDeliveryIdentity {
-                                provider_handle: ProviderHandle::for_account(account)
+                                provider_handle: ProviderHandle::for_account(journal_scope)
                                     .as_str()
                                     .into(),
                                 generation: entry.generation.0,
@@ -1093,7 +1111,7 @@ fn journal_one(
                             .ok_or_else(|| invalid(&identity.agent_id))?;
                             let frame = json!({"method":method,"params":params});
                             let delivery = ProviderDeliveryIdentity {
-                                provider_handle: ProviderHandle::for_account(account)
+                                provider_handle: ProviderHandle::for_account(journal_scope)
                                     .as_str()
                                     .into(),
                                 generation: entry.generation.0,
@@ -1127,7 +1145,7 @@ fn journal_one(
                             &publication,
                             streams,
                             &ProviderDeliveryIdentity {
-                                provider_handle: ProviderHandle::for_account(account)
+                                provider_handle: ProviderHandle::for_account(journal_scope)
                                     .as_str()
                                     .into(),
                                 generation: entry.generation.0,
@@ -1174,7 +1192,7 @@ fn journal_one(
         "settled",
         json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
     )?;
-    compact(tx, account, entry.generation.0)?;
+    compact(tx, journal_scope, entry.generation.0)?;
     Ok(Some((next, effect, true)))
 }
 pub(super) fn save_recovery(
@@ -1276,21 +1294,62 @@ pub(super) fn was_submitted(store: &RuntimeStore, operation: &str) -> Result<boo
     store.transaction_with(|tx| Ok(receipt(tx, operation, "submitted")?.is_some()))
 }
 
+/// A persisted login bootstrap is a host-authenticated external effect. A
+/// submitted row with no completion is uncertain and must never be resent.
+pub(super) fn vm_bootstrap_admission(
+    store: &RuntimeStore,
+    operation: &str,
+    signature: &str,
+) -> Result<bool, WorkerError> {
+    store.transaction_with(|tx| {
+        if let Some(saved) = receipt(tx, operation, "complete")? {
+            if saved["signature"] != signature {
+                return Err(invalid(operation));
+            }
+            return Ok(true);
+        }
+        if let Some(saved) = receipt(tx, operation, "submitted")? {
+            if saved["signature"] != signature {
+                return Err(invalid(operation));
+            }
+            return Err(WorkerError::CallbackUnknown);
+        }
+        save(tx, operation, "submitted", json!({"signature":signature}))?;
+        Ok(false)
+    })
+}
+
+pub(super) fn vm_bootstrap_settled(
+    store: &RuntimeStore,
+    operation: &str,
+    signature: &str,
+) -> Result<(), WorkerError> {
+    store.transaction_with(|tx| {
+        let Some(saved) = receipt(tx, operation, "submitted")? else {
+            return Err(invalid(operation));
+        };
+        if saved["signature"] != signature {
+            return Err(invalid(operation));
+        }
+        save(tx, operation, "complete", json!({"signature":signature}))
+    })
+}
+
 // Written callback responses can be acknowledged on replay. A Submitted marker
 // without Written is uncertainty, never permission to answer a second time.
 pub(super) fn callback_admission(
     store: &RuntimeStore,
     operation: &str,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
     cursor: u64,
 ) -> Result<bool, WorkerError> {
     store.transaction_with(|tx| {
-        if cursor <= checkpoint(tx, account, generation)? {
+        if cursor <= checkpoint(tx, journal_scope, generation)? {
             return Ok(true);
         }
         if receipt(tx, operation, "written")? == Some(json!(true)) {
-            settle_callback_in_transaction(tx, account, generation, cursor)?;
+            settle_callback_in_transaction(tx, journal_scope, generation, cursor)?;
             return Ok(true);
         }
         if receipt(tx, operation, "submitted")?.is_some() {
@@ -1418,40 +1477,42 @@ pub(super) fn replace(
 }
 pub(super) fn checkpoint(
     tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
 ) -> Result<u64, WorkerError> {
     Ok(
-        receipt(tx, &format!("cursor:{account}:{generation}"), "ack")?
+        receipt(tx, &format!("cursor:{journal_scope}:{generation}"), "ack")?
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
     )
 }
 pub(super) fn journal_committed(
     tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
     cursor: u64,
 ) -> Result<bool, WorkerError> {
-    let operation = format!("journal:{account}:{generation}:{cursor}");
+    let operation = format!("journal:{journal_scope}:{generation}:{cursor}");
     Ok(receipt(tx, &operation, "settled")?.is_some_and(|value| value["committed"] == true))
 }
 fn compact(
     tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
 ) -> Result<(), WorkerError> {
-    let prefix = format!("account-worker:journal:{account}:{generation}:");
+    let prefix = format!("account-worker:journal:{journal_scope}:{generation}:");
     let mut stmt = tx.prepare("SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.cursor') LIMIT 65")?;
     let rows = stmt
         .query_map(params![prefix, format!("{prefix}~")], |r| {
             r.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut cursor = checkpoint(tx, account, generation)?;
+    let mut cursor = checkpoint(tx, journal_scope, generation)?;
     for raw in rows {
-        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;
-        let next = row["cursor"].as_u64().ok_or_else(|| invalid(account))?;
+        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(journal_scope))?;
+        let next = row["cursor"]
+            .as_u64()
+            .ok_or_else(|| invalid(journal_scope))?;
         // A missing earlier row may still be deferred before its dispatch.
         if row["ready"] != true {
             break;
@@ -1460,7 +1521,7 @@ fn compact(
         tx.execute(
             "DELETE FROM runtime_operation_receipts WHERE id=?1",
             [receipt_id(
-                &format!("journal:{account}:{generation}:{cursor}"),
+                &format!("journal:{journal_scope}:{generation}:{cursor}"),
                 "settled",
             )],
         )?;
@@ -1468,12 +1529,12 @@ fn compact(
             tx.execute(
                 "DELETE FROM runtime_operation_receipts WHERE id=?1",
                 [receipt_id(
-                    &format!("callback:{account}:{generation}:{cursor}"),
+                    &format!("callback:{journal_scope}:{generation}:{cursor}"),
                     phase,
                 )],
             )?;
         }
-        let identity = json!({"providerHandle":ProviderHandle::for_account(account).as_str(),"generation":generation,"cursor":cursor});
+        let identity = json!({"providerHandle":ProviderHandle::for_account(journal_scope).as_str(),"generation":generation,"cursor":cursor});
         let signature = studio_runtime_store::sha256_hex(identity.to_string().as_bytes());
         tx.execute(
             "DELETE FROM runtime_operation_receipts WHERE id=?1",
@@ -1482,31 +1543,33 @@ fn compact(
     }
     replace(
         tx,
-        &format!("cursor:{account}:{generation}"),
+        &format!("cursor:{journal_scope}:{generation}"),
         "ack",
         json!(cursor),
     )
 }
 pub(super) fn callback_settled(
     store: &RuntimeStore,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
     cursor: u64,
 ) -> Result<(), WorkerError> {
-    store.transaction_with(|tx| settle_callback_in_transaction(tx, account, generation, cursor))
+    store.transaction_with(|tx| {
+        settle_callback_in_transaction(tx, journal_scope, generation, cursor)
+    })
 }
 fn settle_callback_in_transaction(
     tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
+    journal_scope: &str,
     generation: u64,
     cursor: u64,
 ) -> Result<(), WorkerError> {
-    let operation = format!("journal:{account}:{generation}:{cursor}");
+    let operation = format!("journal:{journal_scope}:{generation}:{cursor}");
     if let Some(mut row) = receipt(tx, &operation, "settled")? {
         row["ready"] = json!(true);
         replace(tx, &operation, "settled", row)?;
     }
-    compact(tx, account, generation)
+    compact(tx, journal_scope, generation)
 }
 
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold

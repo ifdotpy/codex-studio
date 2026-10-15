@@ -68,6 +68,8 @@ pub enum WorkerError {
     Notification(#[from] crate::notification_dispatch::NotificationDispatchError),
     #[error("{0}")]
     PreparationRefused(String),
+    #[error("VM actor identity changed while journaling")]
+    StaleVmActor,
     #[error("{0}")]
     PreparationPending(String),
     #[error("provider cleanup is not confirmed: {0}")]
@@ -493,6 +495,7 @@ pub async fn start_account_worker_with_publication_sink(
         })
         .await?;
     let events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
+    let (vm_event_tx, vm_events) = mpsc::channel(COMMAND_CAPACITY);
     let (commands, inbox) = mpsc::channel(COMMAND_CAPACITY);
     let stop = Shutdown::default();
     let scope = crate::recovery_history::ConnectionScope {
@@ -519,6 +522,11 @@ pub async fn start_account_worker_with_publication_sink(
         control: session.control.clone(),
         session,
         events,
+        vm_events,
+        vm_event_tx,
+        vm_sessions: BTreeMap::new(),
+        vm_event_forwarders: Vec::new(),
+        vm_request_waiters: BTreeMap::new(),
         stop: stop.subscribe(),
         inbox,
         commands: commands.clone(),
@@ -609,7 +617,7 @@ impl Pending {
 #[derive(serde::Serialize, serde::Deserialize)]
 enum Effect {
     #[serde(skip)]
-    Callback(studio_runtime_process::EventCursor, Frame),
+    Callback(studio_runtime_process::EventCursor, Frame, Option<String>),
     Submit(TurnIntent),
     Interrupt {
         agent: String,
@@ -633,6 +641,11 @@ struct Worker {
     control: SessionControl,
     session: SessionHandle,
     events: mpsc::Receiver<SessionEvent>,
+    vm_events: mpsc::Receiver<(String, SessionEvent)>,
+    vm_event_tx: mpsc::Sender<(String, SessionEvent)>,
+    vm_sessions: BTreeMap<String, ActorProviderSession>,
+    vm_event_forwarders: Vec<JoinHandle<()>>,
+    vm_request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
     stop: watch::Receiver<bool>,
     inbox: mpsc::Receiver<AccountCommand>,
     commands: mpsc::Sender<AccountCommand>,
@@ -642,18 +655,29 @@ struct Worker {
     pending: BTreeMap<RequestId, Pending>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
-    deferred: VecDeque<JournalEntry>,
+    deferred: VecDeque<(JournalEntry, Option<String>, Option<i64>)>,
     effects: VecDeque<Effect>,
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
     publication_retry_at: Option<tokio::time::Instant>,
     closing: bool,
-    callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
-    managed_callback_cursors: BTreeSet<u64>,
+    callbacks: BTreeMap<String, (studio_runtime_process::EventCursor, Option<String>)>,
+    managed_callback_cursors: BTreeSet<(Option<String>, u64)>,
     restart_recovery_started: bool,
     restart_recovery: Option<JoinHandle<()>>,
     connection_recovery: tokio::task::JoinSet<()>,
     connection_recovery_active: bool,
-    managed_callbacks: JoinSet<(studio_runtime_process::EventCursor, Option<Frame>)>,
+    managed_callbacks: JoinSet<(
+        studio_runtime_process::EventCursor,
+        Option<String>,
+        Option<Frame>,
+    )>,
+}
+
+struct ActorProviderSession {
+    session: SessionHandle,
+    epoch: i64,
+    control: SessionControl,
+    bootstrap: Option<Value>,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
@@ -668,9 +692,41 @@ impl Worker {
         while self.connection_recovery.join_next().await.is_some() {}
         self.control.cancel();
         let exit = self.session.completion().await;
+        for session in self.vm_sessions.values() {
+            session.control.cancel();
+        }
+        let mut vm_cleanup_error = None;
+        for (agent, session) in &mut self.vm_sessions {
+            match tokio::time::timeout(SHUTDOWN_GRACE, session.session.completion()).await {
+                Ok(exit) => {
+                    if let Some(error) = exit.adapter.and_then(|adapter| adapter.cleanup_error) {
+                        vm_cleanup_error.get_or_insert_with(|| {
+                            WorkerError::CleanupUnconfirmed(format!("VM actor {agent}: {error}"))
+                        });
+                    }
+                    if let Err(error) = exit.result {
+                        vm_cleanup_error.get_or_insert_with(|| {
+                            WorkerError::CleanupUnconfirmed(format!("VM actor {agent}: {error}"))
+                        });
+                    }
+                }
+                Err(_) => {
+                    vm_cleanup_error.get_or_insert_with(|| {
+                        WorkerError::CleanupUnconfirmed(format!(
+                            "VM actor {agent}: shutdown timed out"
+                        ))
+                    });
+                }
+            }
+        }
+        for forwarder in self.vm_event_forwarders.drain(..) {
+            forwarder.abort();
+            let _joined = forwarder.await;
+        }
         // Completion has an independent lane. Drain bounded delivered and retained
         // evidence before persisting disconnect; abandoned cursors are never ACKed.
         let cleanup = self.finish(exit).await;
+        let cleanup = cleanup.and_then(|()| vm_cleanup_error.map_or(Ok(()), Err));
         match cleanup.and(result) {
             Err(WorkerError::Session(SessionTaskError::Closed)) if *self.stop.borrow() => Ok(()),
             result => result,
@@ -711,7 +767,9 @@ impl Worker {
             {
                 let durable = store::effect_key(&self.account, &effect);
                 match effect {
-                    Effect::Callback(cursor, frame) => self.answer_callback(cursor, frame).await?,
+                    Effect::Callback(cursor, frame, actor) => {
+                        self.answer_callback(cursor, frame, actor).await?
+                    }
                     Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
                     Effect::Interrupt {
                         agent,
@@ -812,15 +870,19 @@ impl Worker {
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
+                vm_event = self.vm_events.recv() => match vm_event {
+                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await?,
+                    None => return Ok(()),
+                },
                 _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
                     self.connection_recovery_active = false;
                 },
                 callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => {
-                    let (cursor, response) = callback
+                    let (cursor, actor, response) = callback
                         .ok_or(WorkerError::TaskFailed)?
                         .map_err(|_| WorkerError::TaskFailed)?;
                     if let Some(response) = response {
-                        self.push(Effect::Callback(cursor, response))?;
+                        self.push(Effect::Callback(cursor, response, actor))?;
                     }
                 },
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
@@ -906,6 +968,10 @@ impl Worker {
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 result = &mut future => return result.map_err(Into::into),
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
+                vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
+                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await?,
+                    None => { self.closing=true; self.control.cancel(); }
+                },
             }
         }
     }
@@ -929,6 +995,11 @@ impl Worker {
                 result = &mut future => return result,
                 event = self.events.recv(), if !self.closing => match event {
                     Some(event) => self.event(event).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
+                    None => { self.closing=true; self.control.cancel(); }
+                },
+                vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
+                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await
+                        .map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
@@ -1258,7 +1329,22 @@ impl Worker {
             method: method.as_str().into(),
             operation: operation.clone(),
         };
-        let control = self.control.clone();
+        let actor_session = if matches!(
+            method,
+            Method::TurnStart | Method::TurnInterrupt | Method::ThreadResume
+        ) {
+            self.ensure_vm_session(&context.intent).await?
+        } else {
+            None
+        };
+        let control = actor_session
+            .as_deref()
+            .and_then(|agent| {
+                self.vm_sessions
+                    .get(agent)
+                    .map(|session| session.control.clone())
+            })
+            .unwrap_or_else(|| self.control.clone());
         let prepared = self
             .drive(control.prepare(RequestSpec {
                 id: id.clone(),
@@ -1338,6 +1424,227 @@ impl Worker {
         }
         Ok(())
     }
+
+    /// Open a VM provider session for the durable actor at the turn boundary.
+    /// The launch resolver is host-owned because it reads the account profile,
+    /// guest provider configuration, and the minimal credential copy.
+    async fn ensure_vm_session(
+        &mut self,
+        intent: &TurnIntent,
+    ) -> Result<Option<String>, WorkerError> {
+        let agent_id = intent.agent_id.clone();
+        let lookup_id = agent_id.clone();
+        let intent_cwd = intent.cwd.clone();
+        let account_key = intent.account_key.clone();
+        let provider = intent.provider.clone();
+        let launch_request = self
+            .db("vm_launch_request", move |store| {
+                let connection = store.read()?;
+                let Some(record) =
+                    AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
+                else {
+                    return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
+                };
+                if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                    return Ok(None);
+                }
+                let cwd = record
+                    .extra
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .or(intent_cwd.as_deref())
+                    .filter(|value| value.starts_with('/'))
+                    .ok_or_else(|| WorkerError::PreparationRefused("vm-agent/cwd".into()))?;
+                let guest_home = record
+                    .extra
+                    .get("layrHome")
+                    .and_then(Value::as_str)
+                    .filter(|value| value.starts_with('/'))
+                    .unwrap_or("/home/studio");
+                Ok(Some(preparation::VmProviderLaunchRequest {
+                    agent_id: record.id.0,
+                    epoch: record.epoch,
+                    account_key,
+                    provider,
+                    cwd: cwd.to_owned(),
+                    guest_home: guest_home.to_owned(),
+                }))
+            })
+            .await?;
+        let Some(request) = launch_request else {
+            return Ok(None);
+        };
+        if let Some(session) = self.vm_sessions.get(&request.agent_id) {
+            if session.session.status.borrow().initialization == InitializationStatus::Ready {
+                let bootstrap = session.bootstrap.clone();
+                if let Some(payload) = bootstrap {
+                    self.bootstrap_vm_provider(&request.agent_id, request.epoch, payload)
+                        .await?;
+                    if let Some(session) = self.vm_sessions.get_mut(&request.agent_id) {
+                        session.bootstrap = None;
+                    }
+                }
+                return Ok(Some(request.agent_id));
+            }
+        } else {
+            let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
+                WorkerError::PreparationPending("provider-session/vm-launch-resolver".into())
+            })?;
+            let guest = self.resources.guest_rpc.clone().ok_or_else(|| {
+                WorkerError::PreparationPending("provider-session/vm-guest-unavailable".into())
+            })?;
+            let resolved = resolver.resolve(request.clone()).await?;
+            let factory = Arc::new(crate::linux_vm_provider::GuestProviderTaskFactory::new(
+                Arc::clone(&self.bridge.store),
+                guest,
+                request.agent_id.clone(),
+                request.epoch,
+                resolved.provider.clone(),
+                resolved.profile.clone(),
+            ));
+            let generation = self.generation;
+            let clock = studio_runtime_process::provider_seam::SessionClock::default();
+            let mut session = SessionHandle::open(
+                factory,
+                ProviderHandle::for_account(&request.agent_id),
+                OpenOptions {
+                    clock: clock.clone(),
+                    launch: resolved.launch,
+                    expected_generation: Some(generation),
+                },
+                SessionTaskConfig {
+                    initialize_params: json!({"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}),
+                    generation,
+                    claude: resolved.provider == "claude",
+                    timeout_ms: self.timeout_ms,
+                    initialize_operation: OperationId(format!(
+                        "vm:{}:initialize:{}:{}",
+                        request.agent_id, request.epoch, generation.0
+                    )),
+                    request_id_prefix: None,
+                    recovered: vec![],
+                },
+            )
+            .await?;
+            let control = session.control.clone();
+            let mut events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
+            let actor = request.agent_id.clone();
+            let sender = self.vm_event_tx.clone();
+            let forwarder = tokio::spawn(async move {
+                while let Some(event) = events.recv().await {
+                    if sender.send((actor.clone(), event)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            self.vm_event_forwarders.push(forwarder);
+            self.vm_sessions.insert(
+                request.agent_id.clone(),
+                ActorProviderSession {
+                    session,
+                    epoch: request.epoch,
+                    control,
+                    bootstrap: resolved.bootstrap,
+                },
+            );
+        }
+        let mut status = self
+            .vm_sessions
+            .get(&request.agent_id)
+            .ok_or(WorkerError::Closed)?
+            .session
+            .status
+            .clone();
+        while status.borrow().initialization != InitializationStatus::Ready {
+            tokio::select! {
+                _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
+                changed = status.changed() => changed.map_err(|_| WorkerError::Closed)?,
+                event = self.vm_events.recv() => match event {
+                    Some((actor, event)) => self.event_from(event, Some(&actor)).await?,
+                    None => return Err(WorkerError::Closed),
+                },
+            }
+        }
+        let bootstrap = self
+            .vm_sessions
+            .get(&request.agent_id)
+            .and_then(|session| session.bootstrap.clone());
+        if let Some(payload) = bootstrap {
+            self.bootstrap_vm_provider(&request.agent_id, request.epoch, payload)
+                .await?;
+            if let Some(session) = self.vm_sessions.get_mut(&request.agent_id) {
+                session.bootstrap = None;
+            }
+        }
+        Ok(Some(request.agent_id))
+    }
+    async fn bootstrap_vm_provider(
+        &mut self,
+        agent_id: &str,
+        epoch: i64,
+        payload: Value,
+    ) -> Result<(), WorkerError> {
+        let signature = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
+        let operation = format!("vm-auth-bootstrap:{agent_id}:{epoch}:{}", &signature[..24]);
+        let admission_operation = operation.clone();
+        let admission_signature = signature.clone();
+        if self
+            .db("vm_auth_bootstrap_admission", move |store| {
+                store::vm_bootstrap_admission(store, &admission_operation, &admission_signature)
+            })
+            .await?
+        {
+            return Ok(());
+        }
+        let control = self.control_for_actor(Some(agent_id));
+        let request_id = RequestId::String(operation.clone());
+        let prepared = control
+            .prepare(RequestSpec {
+                id: request_id,
+                operation_id: OperationId(operation.clone()),
+                method: Method::AccountLoginStart,
+                params: payload,
+                thread_id: None,
+                lightweight: false,
+                timeout_ms: self.timeout_ms,
+            })
+            .await?;
+        let (reply, mut response) = tokio::sync::oneshot::channel();
+        self.vm_request_waiters.insert(operation.clone(), reply);
+        if let Err(error) = self.drive(control.submit(prepared)).await {
+            self.vm_request_waiters.remove(&operation);
+            return Err(error);
+        }
+        let outcome = loop {
+            tokio::select! {
+                _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
+                response = &mut response => break response.map_err(|_| WorkerError::CallbackUnknown)?,
+                event = self.vm_events.recv() => match event {
+                    Some((actor, event)) => self.event_from(event, Some(&actor)).await?,
+                    None => return Err(WorkerError::Closed),
+                },
+                event = self.events.recv() => self.event(event.ok_or(WorkerError::Closed)?).await?,
+            }
+        };
+        match outcome {
+            RequestOutcome::Reply {
+                body: ResponseBody::Result(_),
+                ..
+            } => {
+                let settled_operation = operation.clone();
+                let settled_signature = signature.clone();
+                self.db("vm_auth_bootstrap_settled", move |store| {
+                    store::vm_bootstrap_settled(store, &settled_operation, &settled_signature)
+                })
+                .await
+            }
+            RequestOutcome::Reply {
+                body: ResponseBody::Error(_),
+                ..
+            }
+            | RequestOutcome::Unknown => Err(WorkerError::CallbackUnknown),
+        }
+    }
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let effect = self
@@ -1415,18 +1722,51 @@ impl Worker {
                         break;
                     }
                 }
-                self.journal_batch(entries).await?;
+                self.journal_batch(entries, None, None).await?;
                 self.complete_retained().await?;
             } else {
-                self.event_one(event).await?;
+                self.event_one(event, None).await?;
             }
         }
         Ok(())
     }
 
-    async fn event_one(&mut self, event: SessionEvent) -> Result<(), WorkerError> {
+    async fn event_from(
+        &mut self,
+        event: SessionEvent,
+        actor_id: Option<&str>,
+    ) -> Result<(), WorkerError> {
+        let actor_id = actor_id.ok_or(WorkerError::Closed)?;
+        let actor_epoch = self.vm_sessions.get(actor_id).map(|session| session.epoch);
+        let actor_epoch = actor_epoch.ok_or(WorkerError::Closed)?;
+        match self
+            .event_one(event, Some(actor_id.to_owned()), Some(actor_epoch))
+            .await
+        {
+            Err(WorkerError::StaleVmActor) => {
+                if let Some(session) = self.vm_sessions.remove(actor_id) {
+                    session.control.cancel();
+                }
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
+    async fn event_one(
+        &mut self,
+        event: SessionEvent,
+        actor_id: Option<String>,
+        actor_epoch: Option<i64>,
+    ) -> Result<(), WorkerError> {
         let reclassify = !event.outcomes.is_empty();
         for outcome in event.outcomes {
+            if let SessionOutcome::Resolved { ticket, outcome } = &outcome {
+                let operation = store::id_string(&ticket.id);
+                if let Some(waiter) = self.vm_request_waiters.remove(&operation) {
+                    let _sent = waiter.send(outcome.clone());
+                }
+            }
             if let SessionOutcome::Write {
                 operation_id,
                 ticket: None,
@@ -1451,7 +1791,7 @@ impl Worker {
                 outcome,
                 ..
             } = &outcome
-                && let Some(cursor) = self.callbacks.remove(&operation_id.0)
+                && let Some((cursor, callback_actor)) = self.callbacks.remove(&operation_id.0)
             {
                 let operation = operation_id.0.clone();
                 let written = *outcome == WriteOutcome::Written;
@@ -1464,15 +1804,18 @@ impl Worker {
                 if !written {
                     return Err(WorkerError::CallbackUnknown);
                 }
-                let account = self.account.clone();
+                let journal_scope = self.journal_scope(callback_actor.as_deref());
                 let generation = self.generation.0;
                 self.db("callback_settled", move |store| {
-                    store::callback_settled(store, &account, generation, cursor.0)
+                    store::callback_settled(store, &journal_scope, generation, cursor.0)
                 })
                 .await?;
-                self.managed_callback_cursors.remove(&cursor.0);
+                self.managed_callback_cursors
+                    .remove(&(callback_actor.clone(), cursor.0));
                 if !self.closing {
-                    self.control.settled(cursor).await?;
+                    self.control_for_actor(callback_actor.as_deref())
+                        .settled(cursor)
+                        .await?;
                 }
                 continue;
             }
@@ -1519,34 +1862,68 @@ impl Worker {
             }
         }
         if let Some(entry) = event.journal {
-            self.journal(entry).await?;
+            self.journal(entry, actor_id.as_deref(), actor_epoch).await?;
         }
         if reclassify {
             for _ in 0..self.deferred.len() {
-                if let Some(entry) = self.deferred.pop_front() {
-                    self.journal(entry).await?;
+                if let Some((entry, deferred_actor, deferred_epoch)) = self.deferred.pop_front() {
+                    self.journal(entry, deferred_actor.as_deref(), deferred_epoch).await?;
                 }
             }
         }
         self.complete_retained().await?;
         Ok(())
     }
-    async fn journal(&mut self, entry: JournalEntry) -> Result<(), WorkerError> {
-        self.journal_batch(vec![entry]).await
+    fn control_for_actor(&self, actor_id: Option<&str>) -> SessionControl {
+        actor_id
+            .and_then(|actor| self.vm_sessions.get(actor))
+            .map(|session| session.control.clone())
+            .unwrap_or_else(|| self.control.clone())
     }
-    async fn journal_batch(&mut self, entries: Vec<JournalEntry>) -> Result<(), WorkerError> {
+    fn control_status(&self, actor_id: Option<&str>) -> InitializationStatus {
+        actor_id
+            .and_then(|actor| self.vm_sessions.get(actor))
+            .map(|session| session.session.status.borrow().initialization)
+            .unwrap_or_else(|| self.session.status.borrow().initialization)
+    }
+    fn journal_scope(&self, actor_id: Option<&str>) -> String {
+        actor_id.map_or_else(|| self.account.clone(), str::to_owned)
+    }
+    async fn journal(
+        &mut self,
+        entry: JournalEntry,
+        actor_id: Option<&str>,
+        actor_epoch: Option<i64>,
+    ) -> Result<(), WorkerError> {
+        self.journal_batch(vec![entry], actor_id, actor_epoch).await
+    }
+    async fn journal_batch(
+        &mut self,
+        entries: Vec<JournalEntry>,
+        actor_id: Option<&str>,
+        actor_epoch: Option<i64>,
+    ) -> Result<(), WorkerError> {
         #[cfg(test)]
         self.bridge
             .faults
             .journal_transactions
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let account = self.account.clone();
+        let journal_scope = self.journal_scope(actor_id);
         let streams = std::mem::take(&mut self.streams);
         let claude_account_pin = self.resources.claude_account_pin.clone();
+        let expected_vm_actor = actor_id.zip(actor_epoch).map(|(actor, epoch)| (actor.to_owned(), epoch));
         let (previous, committed) = self
             .db("journal", move |store| {
-                let result =
-                    store::journal_batch(store, &account, &streams, entries, &claude_account_pin);
+                let result = store::journal_batch(
+                    store,
+                    &account,
+                    &journal_scope,
+                    &streams,
+                    entries,
+                    &claude_account_pin,
+                    expected_vm_actor.as_deref().map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                );
                 Ok((streams, result))
             })
             .await?;
@@ -1557,7 +1934,9 @@ impl Worker {
         if self.deferred.len().saturating_add(deferred.len()) > MAX_UNSETTLED {
             return Err(WorkerError::Capacity);
         }
-        self.deferred.extend(deferred);
+        self.deferred.extend(deferred.into_iter().map(|entry| {
+            (entry, actor_id.map(str::to_owned), actor_epoch)
+        }));
         #[cfg(test)]
         self.bridge
             .faults
@@ -1619,6 +1998,7 @@ impl Worker {
         {
             let account = self.account.clone();
             let generation = self.generation.0;
+            let actor = actor_id.map(str::to_owned);
             let now = entry.received_at_ms as f64 / 1000.0;
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
@@ -1628,22 +2008,25 @@ impl Worker {
             }
             let store = Arc::clone(&self.bridge.store);
             let managed_tool_runtime = self.bridge.managed_tool_runtime();
-            self.managed_callback_cursors.insert(cursor.0);
+            self.managed_callback_cursors
+                .insert((actor.clone(), cursor.0));
             self.managed_callbacks.spawn(async move {
                 if let Err(dependency) = callback::wait_for_managed_catalog(
                     &store,
                     &account,
                     generation,
+                    actor.as_deref(),
                     &frame,
                     managed_tool_runtime.as_deref(),
                 )
                 .await
                 {
                     let Frame::Request(request) = &frame else {
-                        return (cursor, None);
+                        return (cursor, actor, None);
                     };
                     return (
                         cursor,
+                        actor,
                         Some(callback::tool_call_failure(request, dependency)),
                     );
                 }
@@ -1654,6 +2037,7 @@ impl Worker {
                             &store,
                             &account,
                             generation,
+                            actor.as_deref(),
                             &frame,
                             now,
                             wake,
@@ -1665,58 +2049,75 @@ impl Worker {
                 .await
                 .ok()
                 .flatten();
-                (cursor, response)
+                (cursor, actor, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
-            self.push(Effect::Callback(cursor, response))?;
+            self.push(Effect::Callback(
+                cursor,
+                response,
+                actor_id.map(str::to_owned),
+            ))?;
         } else if !self.closing {
-            let control = self.control.clone();
+            let control = self.control_for_actor(actor_id);
             if control.settled(cursor).await.is_err() {
                 self.closing = true;
-                self.control.cancel();
+                control.cancel();
             }
         }
         Ok(())
+    }
+    fn journal_scope(&self, actor_id: Option<&str>) -> String {
+        actor_id.map_or_else(
+            || self.account.clone(),
+            |actor| format!("{}:vm:{actor}", self.account),
+        )
     }
     async fn answer_callback(
         &mut self,
         cursor: studio_runtime_process::EventCursor,
         frame: Frame,
+        actor_id: Option<String>,
     ) -> Result<(), WorkerError> {
-        while self.session.status.borrow().initialization != InitializationStatus::Ready {
+        while self.control_status(actor_id.as_deref()) != InitializationStatus::Ready {
             tokio::select! { biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; return Ok(()); },
-                changed = self.session.status.changed() => { changed.map_err(|_| WorkerError::Closed)?; },
-                event = self.events.recv() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },
+                event = self.events.recv(), if actor_id.is_none() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },
+                event = self.vm_events.recv(), if actor_id.is_some() => {
+                    match event { Some((actor, event)) => self.event_from(event, Some(&actor)).await?, None => return Err(WorkerError::Closed) }
+                },
             }
         }
+        let control = self.control_for_actor(actor_id.as_deref());
         let operation = format!(
-            "callback:{}:{}:{}",
-            self.account, self.generation.0, cursor.0
+            "callback:{}:{}:{}:{}",
+            self.account,
+            actor_id.as_deref().unwrap_or("host"),
+            self.generation.0,
+            cursor.0
         );
         let prepared = self
-            .control
+            .control_for_actor(actor_id.as_deref())
             .prepare_frame(OperationId(operation.clone()), &frame)?;
         let key = operation.clone();
-        let account = self.account.clone();
+        let journal_scope = self.journal_scope(actor_id.as_deref());
         let generation = self.generation.0;
         let admission = self
             .db("callback_admission", move |store| {
-                store::callback_admission(store, &key, &account, generation, cursor.0)
+                store::callback_admission(store, &key, &journal_scope, generation, cursor.0)
             })
             .await?;
         if admission {
-            self.control.settled(cursor).await?;
-            self.managed_callback_cursors.remove(&cursor.0);
+            control.settled(cursor).await?;
+            self.managed_callback_cursors
+                .remove(&(actor_id.clone(), cursor.0));
             return Ok(());
         }
         if self.callbacks.len() >= MAX_PENDING_RESPONSES {
             return Err(WorkerError::Capacity);
         }
-        self.callbacks.insert(operation.clone(), cursor);
-        let control = self.control.clone();
+        self.callbacks.insert(operation.clone(), (cursor, actor_id));
         if let Err(error) = self.drive(control.submit_frame(prepared)).await {
             if definite_rejection(&error) {
                 self.callbacks.remove(&operation);
@@ -1804,10 +2205,10 @@ impl Worker {
         let completed = tokio::time::timeout_at(deadline, async {
             while let Some(callback) = self.managed_callbacks.join_next().await {
                 match callback {
-                    Ok((cursor, Some(response))) => {
-                        self.push(Effect::Callback(cursor, response))?;
+                    Ok((cursor, actor, Some(response))) => {
+                        self.push(Effect::Callback(cursor, response, actor))?;
                     }
-                    Ok((_, None)) => {}
+                    Ok((_, _, None)) => {}
                     Err(error) => {
                         eprintln!(
                             "managed account callback task failed during shutdown; account={} generation={} cursors={:?}: {error}",
@@ -1833,8 +2234,8 @@ impl Worker {
         let mut remaining = VecDeque::new();
         while let Some(effect) = self.effects.pop_front() {
             match effect {
-                Effect::Callback(cursor, response) => {
-                    self.answer_callback(cursor, response).await?;
+                Effect::Callback(cursor, response, actor) => {
+                    self.answer_callback(cursor, response, actor).await?;
                 }
                 effect => remaining.push_back(effect),
             }

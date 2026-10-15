@@ -36,6 +36,20 @@ pub fn enqueue_output_in_transaction(
     cursor: u64,
     params: &Value,
 ) -> Result<bool, NotificationDispatchError> {
+    enqueue_output_with_scope_in_transaction(
+        tx, process_id, account, account, generation, cursor, params,
+    )
+}
+
+pub fn enqueue_output_with_scope_in_transaction(
+    tx: &Transaction<'_>,
+    process_id: &str,
+    account: &str,
+    cursor_scope: &str,
+    generation: u64,
+    cursor: u64,
+    params: &Value,
+) -> Result<bool, NotificationDispatchError> {
     let Some((record, _)) = Table::<MonitorRecord>::new(tx).get_with_raw(&process_id.to_owned())?
     else {
         return Ok(false);
@@ -62,7 +76,7 @@ pub fn enqueue_output_in_transaction(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let key = format!("{account}:{generation}:{cursor}");
+    let key = format!("{cursor_scope}:{generation}:{cursor}");
     if let Some(existing) = queue.iter().find(|item| item["cursor"] == key) {
         if existing["deltaBase64"] == encoded {
             return Ok(true);

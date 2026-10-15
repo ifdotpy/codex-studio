@@ -2288,6 +2288,7 @@ name = "studio-runtime-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "data-encoding",
  "futures-util",
  "getrandom 0.3.4",

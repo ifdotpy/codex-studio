@@ -9,7 +9,10 @@ pub(super) use pipeline::{
 };
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
-pub use snapshot::PreparationResources;
+pub use snapshot::{
+    PreparationResources, VmProviderLaunch, VmProviderLaunchFuture, VmProviderLaunchRequest,
+    VmProviderLaunchResolver,
+};
 
 fn refusal(reason: String) -> WorkerError {
     WorkerError::PreparationRefused(reason)

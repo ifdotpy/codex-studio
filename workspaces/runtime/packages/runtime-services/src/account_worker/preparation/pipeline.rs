@@ -430,6 +430,7 @@ fn workspace_with_vm_action(
                 error => refusal(error.to_string()),
             })?;
         }
+<<<<<<< HEAD
         if allow_vm_native_action {
             let current = {
                 let read = store.read()?;
@@ -442,22 +443,35 @@ fn workspace_with_vm_action(
                 ));
             }
             let host_project = current
+=======
+        let ready = AgentRepository::get(&store.read()?, &AgentId::from(intent.agent_id.as_str()))?
+            .ok_or_else(|| invalid(&intent.agent_id))?;
+        if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
+            return Err(WorkerError::PreparationPending(
+                "workspace-readiness/vm-not-ready".into(),
+            ));
+        }
+        // Native actions operate on the host project; guest turn execution uses
+        // the guest's cwd. Keep the project binding frozen from creation time.
+        let cwd = if allow_vm_native_action {
+            ready
+>>>>>>> dccbc12c (Add VM guest provider turn transport)
                 .extra
                 .get("hostProjectPath")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?;
-            return Ok(crate::workspace_ready::ReadyToken::new(
-                &current.value(),
-                PathBuf::from(host_project),
-            ));
-        }
-        // Python prepares a VM before provider connection, but ordinary turn
-        // startup remains pending until the guest-backed turn launcher is selected.
-        return Err(WorkerError::PreparationPending(
-            vm_turn_launcher_refusal(allow_vm_native_action)
-                .expect("native VM actions returned the ready guest token above")
-                .into(),
+                .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?
+        } else {
+            ready
+                .extra
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|value| value.starts_with('/'))
+                .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
+        };
+        return Ok(crate::workspace_ready::ReadyToken::new(
+            &ready.value(),
+            PathBuf::from(cwd),
         ));
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
@@ -503,23 +517,6 @@ fn workspace_with_vm_action(
     }
 }
 
-fn vm_turn_launcher_refusal(allow_vm_native_action: bool) -> Option<&'static str> {
-    (!allow_vm_native_action).then_some("provider-session/vm-turn-launcher")
-}
-
-#[cfg(test)]
-mod vm_turn_launcher_gate_tests {
-    use super::vm_turn_launcher_refusal;
-
-    #[test]
-    fn the_turn_launcher_gate_does_not_block_native_action_preparation() {
-        assert_eq!(
-            vm_turn_launcher_refusal(false),
-            Some("provider-session/vm-turn-launcher")
-        );
-        assert_eq!(vm_turn_launcher_refusal(true), None);
-    }
-}
 pub(crate) fn prepare(
     store: &RuntimeStore,
     resources: &PreparationResources,

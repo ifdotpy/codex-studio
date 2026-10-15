@@ -2974,7 +2974,7 @@ impl crate::linux_vm_guest::GuestRpc for TurnStartGuest {
 }
 
 #[test]
-fn cold_vm_lead_prepares_with_fake_guest_but_does_not_submit_to_host_launcher() {
+fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token() {
     let directory = tempfile::tempdir().unwrap();
     let store = RuntimeStore::open(Some(directory.path())).unwrap();
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3014,12 +3014,7 @@ fn cold_vm_lead_prepares_with_fake_guest_but_does_not_submit_to_host_launcher() 
         radio_authorized: false,
     };
 
-    let workspace = preparation::workspace(&store, &resources, &intent);
-    assert!(matches!(
-        workspace,
-        Err(WorkerError::PreparationPending(reason))
-            if reason == "provider-session/vm-turn-launcher"
-    ));
+    let _workspace = preparation::workspace(&store, &resources, &intent).unwrap();
 
     let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from(agent_id))
         .unwrap()
@@ -3035,15 +3030,11 @@ fn cold_vm_lead_prepares_with_fake_guest_but_does_not_submit_to_host_launcher() 
         guest.calls.lock().unwrap().as_slice(),
         ["project.ensure", "line.bind", "health", "agent.context"]
     );
-    assert!(matches!(
-        preparation::workspace(&store, &resources, &intent),
-        Err(WorkerError::PreparationPending(reason))
-            if reason == "provider-session/vm-turn-launcher"
-    ));
+    let _repeated = preparation::workspace(&store, &resources, &intent).unwrap();
     assert_eq!(
         guest.calls.lock().unwrap().len(),
         4,
-        "ready VM turns remain queued without retrying guest setup"
+        "ready VM turns reuse completed guest workspace preparation"
     );
 }
 
