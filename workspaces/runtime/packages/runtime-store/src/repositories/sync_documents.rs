@@ -549,7 +549,7 @@ pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
              (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, i64>(0),
         )?;
     let next = high_water
         .checked_add(1)
