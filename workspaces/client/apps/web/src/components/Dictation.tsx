@@ -9,19 +9,8 @@ import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Download, Mic, Square, Trash2 } from "lucide-react";
 import { captureAudio } from "../dictation/capture";
-import {
-  deleteRecording,
-  listRecordings,
-  recordingAudio,
-  saveChunk,
-  saveRecording,
-  updateRecording,
-  beginTranscription,
-  trashRecording,
-  restoreRecording,
-  deletedRecordings,
-  type Recording,
-} from "../dictation/storage";
+import type { Recording } from "../dictation/storage";
+import { useServerRecordings } from "../servers/ServerServicesContext";
 import "./Dictation.css";
 import { BrowserDictation } from "./BrowserDictation";
 // Older recordings store plain text. New structured diagnostics retain JSON
@@ -58,6 +47,18 @@ function NativeDictation({
   onInsert: (text: string) => void;
   disabled?: boolean;
 }) {
+  const {
+    deleteRecording,
+    listRecordings,
+    recordingAudio,
+    saveChunk,
+    saveRecording,
+    updateRecording,
+    beginTranscription,
+    trashRecording,
+    restoreRecording,
+    deletedRecordings,
+  } = useServerRecordings();
   const desktop = dictationBridge();
   const [open, setOpen] = useState(false),
     [rows, setRows] = useState<Recording[]>([]),
@@ -482,6 +483,7 @@ function RecordingItem({
   onInsert: (text: string) => void;
   onReview: (text: string) => void;
 }) {
+  const { recordingAudio } = useServerRecordings();
   const [url, setUrl] = useState("");
   const audioBytes = useRef<ArrayBuffer | null>(null);
   const [downloadError, setDownloadError] = useState("");

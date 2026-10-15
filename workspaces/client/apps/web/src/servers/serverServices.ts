@@ -1,4 +1,8 @@
 import {
+  createRecordingStorage,
+  DICTATION_DATABASE_NAME,
+} from "../dictation/storage";
+import {
   createLocalDraftStorage,
   LOCAL_DRAFT_DATABASE_NAME,
 } from "../sync/localDraft";
@@ -141,6 +145,9 @@ export function createServerServices(server: StudioServer) {
   return {
     owner: transport.owner,
     chatCreations: createChatCreationStore(storage),
+    recordings: createRecordingStorage(
+      storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
+    ),
     localDrafts: createLocalDraftStorage(
       storage,
       storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),

@@ -1,3 +1,4 @@
+import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
 import { serverStorageEventKey } from "./storage";
 import * as defaultChatCreations from "../chatCreation";
@@ -86,3 +87,6 @@ export const useServerLocalDrafts = () =>
 
 export const useServerStorageEventKey = () =>
   useServerServices()?.storageEventKey ?? serverStorageEventKey;
+
+export const useServerRecordings = () =>
+  useServerServices()?.recordings ?? defaultRecordings;
