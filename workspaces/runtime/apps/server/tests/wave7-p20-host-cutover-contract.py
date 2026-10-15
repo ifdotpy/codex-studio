@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from typing import Any
 
+from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -368,7 +370,28 @@ def refresh_corpus() -> None:
     print(json.dumps({"census": str(CORPUS), "counts": census["counts"]}, sort_keys=True))
 
 
+def write_operation_manifest(destination: Path) -> None:
+    manifest = ledger.rust_operation_manifest()
+    rows = [manifest[key] for key in sorted(manifest)]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(rows, sort_keys=True) + "\n", encoding="utf-8")
+
+
 class RouteCensusContract(unittest.TestCase):
+    def test_runner_uses_prebuilt_manifest_without_invoking_cargo(self) -> None:
+        rows = [{"method": "GET", "path": "/api/test", "status": "implemented"}]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "manifest.json"
+            manifest_path.write_text(json.dumps(rows), encoding="utf-8")
+            with (
+                patch.dict(os.environ, {P20_OPERATION_MANIFEST_ENV: str(manifest_path)}),
+                patch.object(ledger.subprocess, "run", side_effect=AssertionError("Cargo must not run")),
+            ):
+                self.assertEqual(
+                    ledger.rust_operation_manifest(),
+                    {("GET", "/api/test"): rows[0]},
+                )
+
     def test_manifest_openapi_census_matches_complete_corpus(self) -> None:
         actual = build_census()
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
@@ -603,8 +626,11 @@ class CombinedHostLifecycleContract(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-census", action="store_true")
+    parser.add_argument("--write-operation-manifest", type=Path)
     args, unittest_args = parser.parse_known_args()
     if args.write_census:
         refresh_corpus()
+    elif args.write_operation_manifest is not None:
+        write_operation_manifest(args.write_operation_manifest)
     else:
         unittest.main(argv=[sys.argv[0], *unittest_args], verbosity=2)
