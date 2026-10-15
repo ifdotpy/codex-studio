@@ -573,6 +573,19 @@ mod tests {
             output.extend(bytes);
         }
         assert_eq!(output, "terminal-output-Ж🙂".as_bytes());
+        // The Exit callback runs before read_session removes the map entry. Wait on
+        // its completion signal, which is sent after removal, instead of racing it.
+        let reader_done = {
+            let mut sessions = adapter.sessions.lock().expect("session map");
+            sessions
+                .get_mut("printf-session")
+                .and_then(|live| live.reader_done.take())
+        };
+        if let Some(reader_done) = reader_done {
+            reader_done
+                .recv_timeout(Duration::from_secs(2))
+                .expect("PTY reader completes session cleanup");
+        }
         assert!(adapter.sessions.lock().expect("session map").is_empty());
         adapter
             .send_request(
