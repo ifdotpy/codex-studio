@@ -35,6 +35,18 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         held_review = ({
             "status": "running",
             "inFlight": True,
+            # Rust repairs orphaned preparation state asynchronously. A held
+            # submitted review must retain its provider thread identity so
+            # recovery does not mutate autoWake during these HTTP snapshots.
+            "threadId": "p03-held-review-thread",
+            "startAttempt": {
+                "id": "p03-held-review-attempt",
+                "epoch": 0,
+                "threadId": "p03-held-review-thread",
+                "events": [],
+                "action": "review",
+                "submitted": True,
+            },
         } if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None)
         cls.agent = _fixture.seed_agent(cls.backend, held_review)
         cls.foreign = _fixture.seed_agent(cls.backend)
@@ -50,13 +62,13 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         finally:
             runtime.close()
         cls.backend.start()
-        response = cls.backend.request("POST", "/api/messages", body={
-            "id": "06060606-0606-0606-0606-060606060606", "room": cls.agent, "text": "Hold provider preparation",
-        }, headers={"Origin": cls.backend.origin or "", "X-Canvas-Token": cls.backend.session["token"],
-                    "X-Studio-API-Schema": cls.backend.schema_hash})
-        if response.status != 200:
-            raise AssertionError(response.body)
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            response = cls.backend.request("POST", "/api/messages", body={
+                "id": "06060606-0606-0606-0606-060606060606", "room": cls.agent, "text": "Hold provider preparation",
+            }, headers={"Origin": cls.backend.origin or "", "X-Canvas-Token": cls.backend.session["token"],
+                        "X-Studio-API-Schema": cls.backend.schema_hash})
+            if response.status != 200:
+                raise AssertionError(response.body)
             cls.backend.wait_until(cls.backend.provider_gate_started, "provider preparation gate")
 
     @classmethod
