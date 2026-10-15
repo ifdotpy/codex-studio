@@ -1,31 +1,29 @@
-//! Shared USTAR entry serialization and gzip framing.
+//! Shared streaming tar archive construction with gzip framing.
 
-use std::{
-    io::{self, Read, Write},
-    path::Path,
-};
+use std::io::{self, Read, Write};
 
 use flate2::{Compression, write::GzEncoder};
+use tar::{Builder, EntryType, Header, HeaderMode};
 
 pub struct TarGzipWriter<W: Write> {
-    gzip: GzEncoder<W>,
-    pax_sequence: u64,
+    tar: Builder<GzEncoder<W>>,
 }
 
 impl<W: Write> TarGzipWriter<W> {
     pub fn new(output: W) -> Self {
-        Self {
-            gzip: GzEncoder::new(output, Compression::default()),
-            pax_sequence: 0,
-        }
+        let mut tar = Builder::new(GzEncoder::new(output, Compression::default()));
+        tar.mode(HeaderMode::Deterministic);
+        Self { tar }
     }
 
     pub fn append_directory(&mut self, path: &str, mode: u32) -> io::Result<()> {
-        self.append_header(path, mode, 0, b'5', "")
+        let mut header = header(EntryType::Directory, mode, 0);
+        self.tar.append_data(&mut header, path, io::empty())
     }
 
     pub fn append_symlink(&mut self, path: &str, mode: u32, target: &str) -> io::Result<()> {
-        self.append_header(path, mode, 0, b'2', target)
+        let mut header = header(EntryType::Symlink, mode, 0);
+        self.tar.append_link(&mut header, path, target)
     }
 
     pub fn append_file(
@@ -35,8 +33,15 @@ impl<W: Write> TarGzipWriter<W> {
         size: u64,
         input: &mut impl Read,
     ) -> io::Result<()> {
-        self.append_header(path, mode, size, b'0', "")?;
-        let copied = io::copy(&mut input.take(size), &mut self.gzip)?;
+        let mut header = header(EntryType::Regular, mode, size);
+        let copied = {
+            let mut limited = CountReader {
+                inner: input.take(size),
+                read: 0,
+            };
+            self.tar.append_data(&mut header, path, &mut limited)?;
+            limited.read
+        };
         if copied != size {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -50,174 +55,115 @@ impl<W: Write> TarGzipWriter<W> {
                 "file grew while creating the archive",
             ));
         }
-        let padding = ((512 - size % 512) % 512) as usize;
-        if padding != 0 {
-            self.gzip.write_all(&[0; 512][..padding])?;
-        }
         Ok(())
     }
 
-    fn append_header(
-        &mut self,
-        path: &str,
-        mode: u32,
-        size: u64,
-        kind: u8,
-        link: &str,
-    ) -> io::Result<()> {
-        let path = Path::new(path);
-        let whole = path.to_string_lossy();
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let parent = path.parent().and_then(Path::to_str).unwrap_or("");
-        let path_fits = file_name.len() <= 100 && parent.len() <= 155;
-        let size_fits = size <= MAX_USTAR_SIZE;
-        let mut pax = String::new();
-        if !path_fits {
-            append_pax_record(&mut pax, "path", &whole);
-        }
-        if link.len() > 100 {
-            append_pax_record(&mut pax, "linkpath", link);
-        }
-        if !size_fits {
-            append_pax_record(&mut pax, "size", &size.to_string());
-        }
-        if !pax.is_empty() {
-            self.pax_sequence = self.pax_sequence.checked_add(1).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "PAX header sequence overflow")
-            })?;
-            let pax_name = format!("PaxHeaders/{}", self.pax_sequence);
-            self.write_ustar_header(&pax_name, 0o644, pax.len() as u64, b'x', "")?;
-            self.gzip.write_all(pax.as_bytes())?;
-            let padding = (512 - pax.len() % 512) % 512;
-            if padding != 0 {
-                self.gzip.write_all(&[0; 512][..padding])?;
-            }
-        }
-        let fallback = if path_fits {
-            whole.as_ref()
-        } else {
-            "PaxEntry"
-        };
-        let fallback_link = if link.len() > 100 { "PaxLink" } else { link };
-        self.write_ustar_header(
-            fallback,
-            mode,
-            if size_fits { size } else { 0 },
-            kind,
-            fallback_link,
-        )
-    }
-
-    fn write_ustar_header(
-        &mut self,
-        path: &str,
-        mode: u32,
-        size: u64,
-        kind: u8,
-        link: &str,
-    ) -> io::Result<()> {
-        let path = Path::new(path);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let parent = path.parent().and_then(Path::to_str).unwrap_or("");
-        if file_name.len() > 100 || parent.len() > 155 || link.len() > 100 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid USTAR fallback path",
-            ));
-        }
-
-        let mut header = [0u8; 512];
-        put_octal(&mut header[100..108], mode as u64)?;
-        put_octal(&mut header[108..116], 0)?;
-        put_octal(&mut header[116..124], 0)?;
-        put_octal(&mut header[124..136], size)?;
-        put_octal(&mut header[136..148], 0)?;
-        header[148..156].fill(b' ');
-        header[156] = kind;
-        header[..file_name.len()].copy_from_slice(file_name.as_bytes());
-        header[157..157 + link.len()].copy_from_slice(link.as_bytes());
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[263..265].copy_from_slice(b"00");
-        header[345..345 + parent.len()].copy_from_slice(parent.as_bytes());
-        let checksum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
-        put_octal(&mut header[148..156], checksum)?;
-        self.gzip.write_all(&header)
-    }
-
     pub fn finish(mut self) -> io::Result<W> {
-        self.gzip.write_all(&[0; 1024])?;
-        self.gzip.finish()
+        self.tar.finish()?;
+        self.tar.into_inner()?.finish()
     }
 }
 
-fn append_pax_record(output: &mut String, key: &str, value: &str) {
-    let body = format!("{key}={value}\n");
-    let mut length = body.len() + 2;
-    loop {
-        let next = body.len() + length.to_string().len() + 1;
-        if next == length {
-            break;
-        }
-        length = next;
-    }
-    output.push_str(&format!("{length} {body}"));
+fn header(kind: EntryType, mode: u32, size: u64) -> Header {
+    let mut header = Header::new_gnu();
+    header.set_entry_type(kind);
+    header.set_mode(mode);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_size(size);
+    header.set_mtime(0);
+    header.set_cksum();
+    header
 }
 
-const MAX_USTAR_SIZE: u64 = 0o77777777777;
+struct CountReader<R> {
+    inner: R,
+    read: u64,
+}
 
-fn put_octal(output: &mut [u8], value: u64) -> io::Result<()> {
-    let width = output.len().saturating_sub(1);
-    if width == 0 || width >= 22 || value >= 8u64.pow(width as u32) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "value does not fit in a USTAR octal field",
-        ));
+impl<R: Read> Read for CountReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(output)?;
+        self.read = self.read.saturating_add(read as u64);
+        Ok(read)
     }
-    let text = format!("{value:0width$o}\0", width = output.len() - 1);
-    if text.len() != output.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "value does not fit in a USTAR octal field",
-        ));
-    }
-    output.copy_from_slice(text.as_bytes());
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::TarGzipWriter;
     use flate2::read::GzDecoder;
-    use std::io::{Cursor, Read};
+    use std::{
+        io::{Cursor, Read},
+        process::Command,
+    };
+    use tar::Archive;
+
+    fn python_tar_entries(archive_path: &std::path::Path) -> serde_json::Value {
+        let output = Command::new("python3")
+            .args([
+                "-c",
+                "import json,sys,tarfile; a=tarfile.open(sys.argv[1], 'r:gz'); print(json.dumps([[m.name,m.mode,m.issym(),m.linkname] for m in a.getmembers()]))",
+            ])
+            .arg(archive_path)
+            .output()
+            .expect("Python stdlib tarfile is available for guest compatibility checks");
+        assert!(
+            output.status.success(),
+            "Python tarfile rejected archive: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("Python emitted archive metadata")
+    }
 
     #[test]
-    fn long_paths_and_links_use_pax_extended_headers() {
+    fn long_unicode_paths_and_symlink_targets_round_trip_with_modes() {
         let mut output = Vec::new();
         let mut writer = TarGzipWriter::new(&mut output);
-        let path = format!("{}/file.txt", "component".repeat(18));
-        let link = format!("/{}", "target".repeat(24));
+        let path = format!("目录/{}/café.txt", "component".repeat(18));
+        let link = format!("../{}", "target".repeat(24));
         writer
-            .append_symlink(&path, 0o777, &link)
-            .expect("PAX symlink");
+            .append_symlink(&format!("{path}.link"), 0o777, &link)
+            .expect("long symlink");
+        writer
+            .append_file(&path, 0o751, 4, &mut Cursor::new(b"data"))
+            .expect("long unicode file");
         writer.finish().expect("finish archive");
 
-        let mut tar = Vec::new();
-        GzDecoder::new(output.as_slice())
-            .read_to_end(&mut tar)
-            .expect("decompress archive");
-        assert_eq!(tar[156], b'x');
-        let size = u64::from_str_radix(
-            std::str::from_utf8(&tar[124..136])
+        let mut archive = Archive::new(GzDecoder::new(output.as_slice()));
+        let mut entries = archive.entries().expect("entries");
+        let symlink = entries.next().expect("symlink entry").expect("valid entry");
+        assert!(symlink.header().entry_type().is_symlink());
+        assert_eq!(
+            symlink.path().unwrap().to_string_lossy(),
+            format!("{path}.link")
+        );
+        assert_eq!(
+            symlink
+                .link_name()
                 .unwrap()
-                .trim_matches(char::from(0))
-                .trim(),
-            8,
-        )
-        .unwrap() as usize;
-        let pax = std::str::from_utf8(&tar[512..512 + size]).unwrap();
-        assert!(pax.contains(&format!("path={path}\n")));
-        assert!(pax.contains(&format!("linkpath={link}\n")));
-        assert_eq!(tar[512 + ((size + 511) / 512) * 512 + 156], b'2');
+                .expect("symlink target")
+                .to_string_lossy(),
+            link
+        );
+        let file = entries.next().expect("file entry").expect("valid entry");
+        assert_eq!(file.path().unwrap().to_string_lossy(), path);
+        assert_eq!(file.header().mode().unwrap(), 0o751);
+        let mut content = String::new();
+        file.take(16).read_to_string(&mut content).unwrap();
+        assert_eq!(content, "data");
+        drop(entries);
+        drop(archive);
+
+        let directory = tempfile::tempdir().expect("fixture operation succeeds");
+        let archive_path = directory.path().join("guest.tar.gz");
+        std::fs::write(&archive_path, output).expect("write guest archive fixture");
+        let entries = python_tar_entries(&archive_path);
+        assert_eq!(entries[0][0], format!("{path}.link"));
+        assert!(entries[0][2].as_bool().expect("symlink metadata"));
+        assert_eq!(entries[0][3], link);
+        assert_eq!(entries[1][0], path);
+        assert_eq!(entries[1][1], 0o751);
     }
 
     #[test]
@@ -237,35 +183,5 @@ mod tests {
                 .append_file("grown", 0o644, 3, &mut Cursor::new(b"four"))
                 .is_err()
         );
-    }
-
-    #[test]
-    fn large_file_sizes_use_pax_without_overflowing_ustar() {
-        let mut output = Vec::new();
-        let mut writer = TarGzipWriter::new(&mut output);
-        let size = 8 * 1024 * 1024 * 1024;
-        writer
-            .append_header("large.bin", 0o644, size, b'0', "")
-            .expect("PAX size header");
-        writer.finish().expect("finish archive");
-
-        let mut tar = Vec::new();
-        GzDecoder::new(output.as_slice())
-            .read_to_end(&mut tar)
-            .expect("decompress archive");
-        assert_eq!(tar[156], b'x');
-        let pax_size = u64::from_str_radix(
-            std::str::from_utf8(&tar[124..136])
-                .unwrap()
-                .trim_matches(char::from(0))
-                .trim(),
-            8,
-        )
-        .unwrap() as usize;
-        let pax = std::str::from_utf8(&tar[512..512 + pax_size]).unwrap();
-        assert!(pax.contains("size=8589934592\n"));
-        let file_offset = 512 + pax_size.div_ceil(512) * 512;
-        assert_eq!(tar[file_offset + 156], b'0');
-        assert_eq!(&tar[file_offset + 124..file_offset + 136], b"00000000000\0");
     }
 }

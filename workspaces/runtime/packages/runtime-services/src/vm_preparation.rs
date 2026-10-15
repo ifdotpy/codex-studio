@@ -1339,7 +1339,6 @@ mod tests {
     use super::*;
     use crate::linux_vm_guest::GuestError;
     use flate2::read::GzDecoder;
-    use std::io::Read;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1363,35 +1362,71 @@ mod tests {
     }
 
     fn archive_paths(path: &Path) -> Vec<String> {
-        let mut decoded = Vec::new();
-        GzDecoder::new(File::open(path).unwrap())
-            .read_to_end(&mut decoded)
-            .unwrap();
-        let mut paths = Vec::new();
-        let mut offset = 0;
-        while offset + 512 <= decoded.len() {
-            let header = &decoded[offset..offset + 512];
-            if header.iter().all(|byte| *byte == 0) {
-                break;
+        tar::Archive::new(GzDecoder::new(
+            File::open(path).expect("open project archive"),
+        ))
+            .entries()
+            .expect("archive entries")
+            .map(|entry| {
+                entry
+                    .expect("valid archive entry")
+                    .path()
+                    .expect("valid archive path")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vm_project_archive_preserves_long_unicode_names_symlinks_and_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let directory_name = format!("目录-{}", "component".repeat(18));
+        let directory = root.path().join(&directory_name);
+        fs::create_dir(&directory).expect("create project directory");
+        let file_name = "café.txt";
+        let file_path = directory.join(file_name);
+        fs::write(&file_path, b"payload").expect("write project file");
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o751))
+            .expect("set project file permissions");
+        let link_name = format!("{}.link", "link".repeat(30));
+        symlink(file_name, directory.join(&link_name)).expect("create project symlink");
+
+        let archive = vm_project_archive(root.path()).expect("archive project");
+        let mut tar_archive = tar::Archive::new(GzDecoder::new(
+            File::open(archive.file.path()).expect("open project archive"),
+        ));
+        let mut entries = tar_archive.entries().expect("archive entries");
+        let mut found_file = false;
+        let mut found_link = false;
+        for entry in &mut entries {
+            let entry = entry.expect("valid archive entry");
+            let path = entry
+                .path()
+                .expect("valid archive path")
+                .to_string_lossy()
+                .into_owned();
+            if path == format!("{directory_name}/{file_name}") {
+                found_file = true;
+                assert_eq!(entry.header().mode().expect("file mode"), 0o751);
+            } else if path == format!("{directory_name}/{link_name}") {
+                found_link = true;
+                assert!(entry.header().entry_type().is_symlink());
+                assert_eq!(
+                    entry
+                        .link_name()
+                        .expect("symlink target field")
+                        .expect("symlink target")
+                        .to_string_lossy(),
+                    file_name
+                );
             }
-            let field = |bytes: &[u8]| {
-                let end = bytes
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .unwrap_or(bytes.len());
-                String::from_utf8_lossy(&bytes[..end]).into_owned()
-            };
-            let name = field(&header[..100]);
-            let prefix = field(&header[345..500]);
-            paths.push(if prefix.is_empty() {
-                name
-            } else {
-                format!("{prefix}/{name}")
-            });
-            let size = usize::from_str_radix(&field(&header[124..136]).trim(), 8).unwrap();
-            offset += 512 + size.div_ceil(512) * 512;
         }
-        paths
+        assert!(found_file);
+        assert!(found_link);
     }
 
     #[test]
@@ -1660,7 +1695,7 @@ mod tests {
             prepare_lead(&store, &guest, "vm-lead", "attempt-1", "turn:attempt-1", 1),
             Err(NativeError::Unknown)
         ));
-        assert_eq!(*guest.calls.lock().unwrap(), first_calls);
+        assert_eq!(*guest.calls.lock().expect("read guest calls"), first_calls);
     }
 
     #[test]

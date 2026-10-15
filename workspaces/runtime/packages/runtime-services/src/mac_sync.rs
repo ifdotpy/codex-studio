@@ -612,25 +612,11 @@ fn make_archive(
     mode: u32,
     original: &Path,
 ) -> Result<(), MacSyncError> {
-    let file_name = Path::new(rel)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or(MacSyncError::Invalid)?;
-    let parent = Path::new(rel)
-        .parent()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    if file_name.len() > 100 || parent.len() > 155 {
-        return Err(MacSyncError::Invalid);
-    }
     let raw = File::create(path).map_err(MacSyncError::Io)?;
     let mut gzip = TarGzipWriter::new(raw);
     if kind == "link" {
         let target = fs::read_link(original).map_err(MacSyncError::Io)?;
         let target = target.to_string_lossy();
-        if target.len() > 100 {
-            return Err(MacSyncError::Invalid);
-        }
         gzip.append_symlink(rel, 0o777, &target)
             .map_err(MacSyncError::Io)?;
     } else {
@@ -954,5 +940,67 @@ mod tests {
             configure(state.path(), "absent", None, false),
             Err(MacSyncError::NoProject)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mac_sync_archive_accepts_long_unicode_names_symlink_targets_and_modes() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().expect("fixture operation succeeds");
+        let source = directory.path().join("source.link");
+        let target = format!("../{}", "target".repeat(24));
+        symlink(&target, &source).expect("fixture operation succeeds");
+        let relative = format!("目录/{}/café.link", "component".repeat(18));
+        let archive_path = directory.path().join("link.tar.gz");
+        make_archive(&archive_path, &relative, "link", &[], 0o777, &source)
+            .expect("long link archive is serialized");
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+            File::open(&archive_path).expect("fixture operation succeeds"),
+        ));
+        let entry = archive
+            .entries()
+            .expect("archive entries")
+            .next()
+            .expect("symlink entry")
+            .expect("valid symlink entry");
+        assert_eq!(
+            entry
+                .path()
+                .expect("symlink archive path")
+                .to_string_lossy(),
+            relative
+        );
+        assert!(entry.header().entry_type().is_symlink());
+        assert_eq!(
+            entry
+                .link_name()
+                .expect("symlink target field")
+                .expect("symlink target")
+                .to_string_lossy(),
+            target
+        );
+
+        let file = directory.path().join("file.txt");
+        fs::write(&file, b"payload").expect("fixture operation succeeds");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o751))
+            .expect("fixture operation succeeds");
+        let archive_path = directory.path().join("file.tar.gz");
+        make_archive(&archive_path, &relative, "file", b"payload", 0o751, &file)
+            .expect("long file archive is serialized");
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+            File::open(&archive_path).expect("fixture operation succeeds"),
+        ));
+        let entry = archive
+            .entries()
+            .expect("archive entries")
+            .next()
+            .expect("file entry")
+            .expect("valid file entry");
+        assert_eq!(
+            entry.path().expect("file archive path").to_string_lossy(),
+            relative
+        );
+        assert_eq!(entry.header().mode().expect("file mode"), 0o751);
     }
 }
