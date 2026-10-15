@@ -155,6 +155,9 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         # Async workspace preparation and activity/event bookkeeping only.
         # Request-writable settings, status, identity, and paths remain visible.
         "lastEvent", "activity", "prepareAttempt",
+        # The VM workspace preparation worker publishes guest readiness after
+        # the agent row is created (codex_vm_agents.py:218-229).
+        "layrReady",
         # Reviewer result archive scheduling/retry fields are advanced by the
         # accepted-archive maintenance owner (Rust work_write.rs; Python
         # codex_agent_management.py:772-833), outside HTTP requests.
@@ -199,6 +202,7 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         # Only preparation and activity bookkeeping is otherwise normalized.
         "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
         "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
+        "payload.value.layrReady",
         "payload.value.worktreePreparation",
         "payload.value.worktreeReady",
     }),

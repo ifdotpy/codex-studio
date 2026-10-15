@@ -501,7 +501,11 @@ pub(crate) fn stored_records(
     let rows = rows.collect::<Result<Vec<_>, _>>()?;
     for (id, raw) in &rows {
         let valid = serde_json::from_str::<Value>(raw).is_ok_and(|record| {
-            record.is_object() && record.get("id").and_then(Value::as_str) == Some(id)
+            record.is_object()
+                && record.get("id").and_then(Value::as_str) == Some(id)
+                && studio_runtime_schema::table_schema(table).is_none_or(|schema| {
+                    studio_runtime_schema::validate(schema, &record).unwrap_or(false)
+                })
         });
         if !valid {
             return Err(StoreError::InvalidSyncObject {

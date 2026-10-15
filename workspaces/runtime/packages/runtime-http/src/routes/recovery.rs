@@ -47,11 +47,25 @@ async fn recover(
     let port = state
         .account_session
         .clone()
-        .ok_or_else(ApiError::internal)?;
+        .ok_or_else(|| ApiError::dependency("account-worker/recovery-history"))?;
     let result = tokio::task::spawn_blocking(move || port.recover_connection(&account, &id))
         .await
         .map_err(|_| ApiError::internal())?
-        .map_err(|_| ApiError::internal())?;
+        .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                name,
+            ) => ApiError::dependency(name),
+            studio_runtime_services::account_session_runtime::AccountSessionError::Unknown => {
+                ApiError::new(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "Connection recovery outcome is unknown",
+                )
+            }
+            studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                message,
+            ) => ApiError::new(axum::http::StatusCode::BAD_REQUEST, message),
+            other => ApiError::new(axum::http::StatusCode::BAD_GATEWAY, other.to_string()),
+        })?;
     Ok(Json(result))
 }
-inventory::submit! { crate::routes::manifest::RouteModuleRegistration {name:"recovery",routes:Some(routes),dependencies:&[]} }
+inventory::submit! { crate::routes::manifest::RouteModuleRegistration {name:"recovery",routes:Some(routes),dependencies:&["account-worker/recovery-history"]} }

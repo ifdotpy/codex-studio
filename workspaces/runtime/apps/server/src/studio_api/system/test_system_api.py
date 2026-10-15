@@ -560,6 +560,13 @@ class SystemApiTests(unittest.TestCase):
         }
         db.execute("INSERT INTO runtime_execution_effects VALUES (?,?,?,?,?)",
                    (effect["id"], run["id"], effect["kind"], effect["referenceId"], json.dumps(effect)))
+        approved_effect: dict[str, object] = {
+            "id": "requests:fixture-approved", "runId": "run:fixture", "kind": "requests",
+            "referenceId": "request:fixture", "status": "approved",
+        }
+        db.execute("INSERT INTO runtime_execution_effects VALUES (?,?,?,?,?)",
+                   (approved_effect["id"], run["id"], approved_effect["kind"],
+                    approved_effect["referenceId"], json.dumps(approved_effect)))
         item = {"id": "item:fixture", "turnId": "turn:fixture", "role": "assistant",
                 "text": "fixture final"}
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
@@ -612,6 +619,10 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(settings.status, "acknowledged")
         self.assertEqual(next(node for node in actual_run.nodes if node.kind.value == "managed_worker").status,
                          "waiting")
+        self.assertEqual(
+            next(effect for effect in actual_run.effects if effect.id == "requests:fixture-approved").status,
+            "approved",
+        )
         self.assertEqual(actual_run.resultItemId, "item:fixture")
         self.assertEqual(actual_run.error, native_error)
         self.assertEqual(next(node for node in actual_run.nodes if node.kind.value == "native_child").error,
@@ -665,7 +676,7 @@ class SystemApiTests(unittest.TestCase):
             ExecutionAction("safety")
         with self.assertRaises(ValidationError):
             ExecutionRecovery.model_validate({"stage": "unknown"})
-        for status in ("answered", "expired", "lost"):
+        for status in ("answered", "expired", "lost", "approved"):
             effect = ExecutionEffect.model_validate({
                 "id": "effect:fixture", "runId": "run:fixture", "kind": "requests",
                 "referenceId": "request:fixture", "status": status,

@@ -698,7 +698,9 @@ impl AccountSessionPort for AccountSessionRuntime {
         ))?;
         let expected = session
             .current_scope(account)
-            .ok_or(AccountSessionError::Unknown)?;
+            .ok_or(AccountSessionError::Requires(
+                "account-worker/recovery-history",
+            ))?;
         self.block_on_retained(session.recover_connection(account.to_owned(), agent_id.to_owned()))
             .and_then(|result| {
                 if session.current_scope(account).as_ref() == Some(&expected) {
