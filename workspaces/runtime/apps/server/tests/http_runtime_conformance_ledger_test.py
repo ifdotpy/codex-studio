@@ -637,6 +637,120 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 ).fetchone()[0])
             self.assertEqual(restored_task["status"], "completed")
 
+    def test_sqlite_snapshot_uses_data_version_fast_path_without_scanning_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-snapshot-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value, payload)")
+                connection.executemany(
+                    "INSERT INTO mixed VALUES (?, ?)",
+                    [(None, None), (1, b"blob\x00"), ("1", b""), (1.0, None)],
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with patch.object(
+                    ledger,
+                    "_sqlite_content_digest",
+                    side_effect=AssertionError("unchanged data version must skip row scans"),
+                ):
+                    self.assertTrue(snapshot.unchanged())
+
+    def test_sqlite_snapshot_fallback_compares_schema_and_unordered_mixed_rows(self) -> None:
+        rows = [
+            (None, None), (1, b"blob\x00"), ("1", b""), (1.0, None),
+            (-0.0, b"negative zero"), (0.0, b"positive zero"),
+            (1, b"blob\x00"),
+        ]
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-snapshot-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value, payload)")
+                connection.executemany("INSERT INTO mixed VALUES (?, ?)", rows)
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("DELETE FROM mixed")
+                    connection.executemany("INSERT INTO mixed VALUES (?, ?)", reversed(rows))
+                    connection.commit()
+                self.assertTrue(snapshot.unchanged())
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("UPDATE mixed SET payload=? WHERE rowid=1", (b"changed",))
+                    connection.commit()
+                self.assertFalse(snapshot.unchanged())
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("CREATE INDEX mixed_payload ON mixed(payload)")
+                    connection.commit()
+                self.assertFalse(snapshot.unchanged())
+
+    def test_copy_mode_hides_response_bodies_and_skips_global_writes_and_reset(self) -> None:
+        copied_response = {
+            "stateDir": "/copied/private/state",
+            "entities": [{"id": "private-agent", "record": "private record"}],
+        }
+        self.assertIsNone(ledger.persisted_probe_body({}, copied_response, copy_mode=True))
+        self.assertEqual(ledger.persisted_probe_body({}, copied_response), copied_response)
+        self.assertIsNone(ledger.persisted_probe_body(
+            {"functional_witness": "copy-existing-agent"}, copied_response,
+        ))
+        skipped_observation = [{"expected": None}]
+        self.assertEqual(ledger.copy_probe_disposition(skipped_observation), "unverified")
+
+        with tempfile.TemporaryDirectory(prefix="ledger-copy-skip-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            original = '{"scope":"user","fields":{"theme":"private"}}'
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE sync_preferences(scope TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO sync_preferences VALUES ('user', ?)", (original,),
+                )
+                connection.commit()
+
+            requests = []
+            for method, path in [
+                ("POST", "/api/sync/preferences"),
+                ("POST", "/api/limits/reset"),
+            ]:
+                reason = ledger.copy_mode_probe_exclusion(method, path, copy_mode=True)
+                if reason is None:
+                    requests.append((method, path))
+                    if path == "/api/sync/preferences":
+                        with closing(sqlite3.connect(database)) as connection:
+                            connection.execute(
+                                "UPDATE sync_preferences SET record=? WHERE scope='user'",
+                                ('{"scope":"user","fields":{}}',),
+                            )
+                            connection.commit()
+            self.assertEqual(requests, [])
+            self.assertEqual(
+                ledger.copy_mode_probe_exclusion(
+                    "POST", "/api/sync/preferences", copy_mode=False,
+                ),
+                None,
+            )
+            self.assertIn("global user preference", ledger.copy_mode_probe_exclusion(
+                "POST", "/api/sync/preferences", copy_mode=True,
+            ))
+            self.assertIn("reset credits", ledger.copy_mode_probe_exclusion(
+                "POST", "/api/limits/reset", copy_mode=True,
+            ))
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT record FROM sync_preferences WHERE scope='user'"
+                    ).fetchone()[0],
+                    original,
+                )
+
     def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
         panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
         self.assertEqual(

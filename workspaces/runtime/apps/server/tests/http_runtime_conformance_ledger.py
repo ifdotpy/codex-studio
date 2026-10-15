@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -857,6 +858,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
 }
 
+COPY_MODE_PROBE_EXCLUSIONS = {
+    ("POST", "/api/sync/preferences"):
+        "skipped in marked-copy mode because this route overwrites the global user preference row",
+    ("POST", "/api/limits/reset"):
+        "skipped in marked-copy mode because rehearsal probes must not redeem reset credits",
+}
+
 
 def consumer_suites() -> list[Path]:
     return sorted(
@@ -1637,6 +1645,54 @@ def probe_operations(
                     if operation_manifest
                     else []
                 )
+                copy_exclusion = copy_mode_probe_exclusion(
+                    method,
+                    template,
+                    copy_mode=backend.copy_mode,
+                )
+                if copy_exclusion is not None:
+                    expected_status = (
+                        "not_501" if implementation == "implemented"
+                        else "any" if implementation == "partial"
+                        else 501
+                    )
+                    observations = [{
+                        "case": "primary",
+                        "status": None,
+                        "expected": None,
+                        "expectedMatches": False,
+                        "functionalWitness": False,
+                        "body": None,
+                        "elapsedSeconds": 0.0,
+                        "standard501Envelope": False,
+                        "noWrite": True,
+                        "reason": copy_exclusion,
+                    }]
+                    rows.append({
+                        "method": method,
+                        "path": template,
+                        "status": None,
+                        "implementation": implementation,
+                        "observedStatus": None,
+                        "classification": "unverified",
+                        "covered": bool(successful_assertions.get(f"{method} {template}")),
+                        "expectedStatus": expected_status,
+                        "dependencies": dependencies,
+                        "schemaHeader": None,
+                        "schemaHeaderMatches": None,
+                        "standard501Envelope": None,
+                        "dependencyResponseMatches": None,
+                        "probeCases": observations,
+                        "httpAssertions": sorted(
+                            planned_assertions.get(f"{method} {template}", set())
+                        ),
+                        "observedSuccessfulAssertions": sorted(
+                            successful_assertions.get(f"{method} {template}", set())
+                        ),
+                        **({"copyDisposition": copy_probe_disposition(observations)}
+                           if state_root else {}),
+                    })
+                    continue
                 probe_spec = PROBE_CASES.get((method, template), {})
                 primary_case = probe_spec.get("primary", {})
                 cases = [("primary", primary_case)] + [
@@ -1711,10 +1767,6 @@ def probe_operations(
                     }
                     if method in JSON_METHODS or method == "DELETE":
                         headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
-                    database_before = (
-                        sqlite_snapshot(backend.state / "canvas.sqlite3")
-                        if probe_case.get("assert_no_write") else None
-                    )
                     file_paths = probe_case.get("assert_no_file_write", [])
                     files_before = {
                         relative: (backend.state / relative).read_bytes()
@@ -1722,7 +1774,10 @@ def probe_operations(
                         for relative in file_paths
                     }
                     request_started = time.monotonic()
-                    with probe_fixture_state(backend, identifiers, probe_case):
+                    with probe_fixture_state(backend, identifiers, probe_case), (
+                        sqlite_snapshot(backend.state / "canvas.sqlite3")
+                        if probe_case.get("assert_no_write") else nullcontext(None)
+                    ) as database_before:
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
                             try:
@@ -1748,10 +1803,22 @@ def probe_operations(
                                 headers=headers,
                                 timeout=2.0,
                             )
-                    try:
-                        response_body = json.loads(result.body)
-                    except (ValueError, TypeError):
-                        response_body = None
+                        try:
+                            response_body = json.loads(result.body)
+                        except (ValueError, TypeError):
+                            response_body = None
+                        if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
+                            deadline = time.monotonic() + 5
+                            while time.monotonic() < deadline and not 200 <= result.status < 300:
+                                time.sleep(0.05)
+                                result = backend.request(method, path, headers=headers, timeout=2.0)
+                                try:
+                                    response_body = json.loads(result.body)
+                                except (ValueError, TypeError):
+                                    response_body = None
+                        database_unchanged = (
+                            database_before is None or database_before.unchanged()
+                        )
                     functional_witness = (
                         probe_case.get("functional_witness") == "copy-existing-agent"
                         and response_body == {
@@ -1765,21 +1832,8 @@ def probe_operations(
                         "body": response_body,
                         "expected_error": probe_case.get("expected_error"),
                     }
-                    if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
-                        deadline = time.monotonic() + 5
-                        while time.monotonic() < deadline and not 200 <= result.status < 300:
-                            time.sleep(0.05)
-                            result = backend.request(method, path, headers=headers, timeout=2.0)
-                            try:
-                                response_body = json.loads(result.body)
-                            except (ValueError, TypeError):
-                                response_body = None
-                        probe_event["body"] = response_body
                     standard_501 = result.status != 501 or valid_501_envelope(probe_event, manifest)
-                    no_write = (
-                        database_before is None
-                        or database_before == sqlite_snapshot(backend.state / "canvas.sqlite3")
-                    )
+                    no_write = database_unchanged
                     no_write = no_write and all(
                         ((backend.state / relative).read_bytes()
                          if (backend.state / relative).is_file() else None) == original
@@ -1806,7 +1860,9 @@ def probe_operations(
                         "expected": expected,
                         "expectedMatches": expected_matches,
                         "functionalWitness": functional_witness,
-                        "body": persisted_probe_body(probe_case, response_body),
+                        "body": persisted_probe_body(
+                            probe_case, response_body, copy_mode=backend.copy_mode
+                        ),
                         "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
                         "noWrite": no_write,
@@ -1893,9 +1949,25 @@ def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
     return "unverified"
 
 
-def persisted_probe_body(probe_case: dict[str, Any], response_body: Any) -> Any:
-    """Keep copied-state witness contents out of the portable ledger report."""
-    if probe_case.get("functional_witness") == "copy-existing-agent":
+def copy_mode_probe_exclusion(
+    method: str,
+    template: str,
+    *,
+    copy_mode: bool,
+) -> str | None:
+    if not copy_mode:
+        return None
+    return COPY_MODE_PROBE_EXCLUSIONS.get((method, template))
+
+
+def persisted_probe_body(
+    probe_case: dict[str, Any],
+    response_body: Any,
+    *,
+    copy_mode: bool = False,
+) -> Any:
+    """Keep copied-state contents and paths out of portable ledger reports."""
+    if copy_mode or probe_case.get("functional_witness") == "copy-existing-agent":
         return None
     return response_body
 
@@ -2290,18 +2362,129 @@ def run_suite(
     }
 
 
-def sqlite_snapshot(path: Path) -> tuple[Any, ...]:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-        tables = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        ).fetchall()
-        return tuple(
-            (
-                table[0],
-                tuple(sorted(connection.execute(f'SELECT * FROM "{table[0]}"').fetchall(), key=repr)),
-            )
-            for table in tables
+def sqlite_snapshot(path: Path) -> SqliteSnapshot:
+    """Pin a read-only view and skip table scans when no other connection committed."""
+    return SqliteSnapshot(path)
+
+
+class SqliteSnapshot:
+    """Compare a probe's before/after SQLite contents with bounded Python memory."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.identity = _sqlite_file_identity(path)
+        self.monitor = _open_readonly_sqlite(path)
+        self.baseline = _open_readonly_sqlite(path)
+        self.version_before = self._data_version()
+        self.baseline.execute("BEGIN")
+        _sqlite_schema(self.baseline)
+        self.stable = (
+            self.version_before == self._data_version()
+            and self.identity == _sqlite_file_identity(path)
         )
+
+    def _data_version(self) -> int:
+        return int(self.monitor.execute("PRAGMA data_version").fetchone()[0])
+
+    def unchanged(self) -> bool:
+        """Use SQLite's connection-local commit counter before a streamed comparison."""
+        if not self.stable:
+            return False
+        try:
+            current_identity = _sqlite_file_identity(self.path)
+            version_at_compare = self._data_version()
+        except (OSError, sqlite3.Error):
+            return False
+        if self.identity == current_identity and self.version_before == version_at_compare:
+            return True
+
+        try:
+            current = _open_readonly_sqlite(self.path)
+        except (OSError, sqlite3.Error):
+            return False
+        try:
+            current.execute("BEGIN")
+            equal = _sqlite_content_digest(self.baseline) == _sqlite_content_digest(current)
+            return equal and version_at_compare == self._data_version()
+        finally:
+            current.close()
+
+    def close(self) -> None:
+        self.baseline.close()
+        self.monitor.close()
+
+    def __enter__(self) -> SqliteSnapshot:
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
+
+
+def _open_readonly_sqlite(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    connection.execute("PRAGMA query_only=ON")
+    connection.execute("PRAGMA cache_size=-2048")
+    connection.execute("PRAGMA temp_store=FILE")
+    connection.execute("PRAGMA mmap_size=0")
+    return connection
+
+
+def _sqlite_file_identity(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino
+
+
+def _sqlite_schema(connection: sqlite3.Connection) -> tuple[tuple[Any, ...], ...]:
+    return tuple(connection.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' "
+        "ORDER BY type COLLATE BINARY,name COLLATE BINARY"
+    ))
+
+
+def _sqlite_content_digest(connection: sqlite3.Connection) -> bytes:
+    digest = hashlib.sha256()
+    schema = _sqlite_schema(connection)
+    for entry in schema:
+        _update_sqlite_digest(digest, ("schema", entry))
+    for kind, table, _owner, _sql in schema:
+        if kind != "table":
+            continue
+        quoted_table = _quote_sqlite_identifier(table)
+        order_clause = _sqlite_table_order(connection, table)
+        _update_sqlite_digest(digest, ("table", table))
+        row_count = 0
+        rows = connection.execute(f"SELECT * FROM {quoted_table}{order_clause}")
+        for row in rows:
+            _update_sqlite_digest(digest, row)
+            row_count += 1
+        _update_sqlite_digest(digest, ("end-table", table, row_count))
+    return digest.digest()
+
+
+def _update_sqlite_digest(digest: Any, value: Any) -> None:
+    encoded = repr(value).encode("utf-8", "surrogatepass")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
+def _quote_sqlite_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _sqlite_table_order(connection: sqlite3.Connection, table: str) -> str:
+    quoted_table = _quote_sqlite_identifier(table)
+    columns = connection.execute(f"SELECT * FROM {quoted_table} LIMIT 0").description or ()
+    order = ",".join(
+        item
+        for column in (item[0] for item in columns)
+        for item in (
+            f"typeof({_quote_sqlite_identifier(column)}) COLLATE BINARY",
+            f"{_quote_sqlite_identifier(column)} COLLATE BINARY",
+            f"printf('%+.17g',{_quote_sqlite_identifier(column)}) COLLATE BINARY",
+        )
+    )
+    return f" ORDER BY {order}" if order else ""
 
 
 def valid_501_envelope(event: dict[str, Any], manifest: dict[tuple[str, str], dict[str, Any]]) -> bool:
