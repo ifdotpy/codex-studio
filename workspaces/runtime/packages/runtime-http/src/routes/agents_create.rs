@@ -555,27 +555,19 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 6] = [
-        Dependency::new("account-driver/unavailable"),
+    // Account-readiness refusal is kept as a runtime condition, not a missing
+    // implementation: Python raises the same ValueError for cross-account
+    // children in codex_runtime.py:4928-4930.
+    const LEAD_DEPENDENCIES: [Dependency; 3] = [
         Dependency::new("cross-server-driver/local-identity"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 5] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
+    const AGENT_DEPENDENCIES: [Dependency; 2] = [
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
-    ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 3] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
     ];
     RouteGroup::new(vec![
         post(
@@ -586,7 +578,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
-            OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
+            OperationStatus::Implemented,
             conversation,
         ),
         post(
@@ -635,6 +627,166 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
     Ok(result)
 }
 
+async fn preflight_lead_replay<
+    T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static,
+>(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<Option<Json<T>>, ApiError> {
+    let state = state.clone();
+    let replay = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/replay",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::replay_lead_request(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    match replay {
+        Some(value) => Ok(Some(Json(super::generated_json::<T>(value)?))),
+        None => Ok(None),
+    }
+}
+
+async fn lead_catalog_account(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<String, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::creation_account_key(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn prepare_agent_admission(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<agents_create::AgentAdmission, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/admission",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::prepare_agent_admission(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn conversation_catalog_account(
+    state: &HttpState,
+    id: String,
+    expected_account: Option<String>,
+    cwd: Option<String>,
+) -> Result<String, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/conversation-account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::conversation_account_key(
+                &context,
+                &id,
+                expected_account.as_deref(),
+                cwd.as_deref(),
+            )
+            .map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn conversation_worker_catalog_account(
+    state: &HttpState,
+    id: String,
+    expected_account: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/worker-account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::conversation_worker_account_key(
+                &context,
+                &id,
+                expected_account.as_deref(),
+            )
+            .map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
 async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
@@ -646,25 +798,74 @@ async fn create_lead_with_model(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    let needs_catalog = body.model.as_ref().is_some_and(Option::is_some)
+        || body.effort.is_some()
+        || body.fast_mode.is_some()
+        || body.daybreak_enabled.is_some()
+        || body.worker_defaults.is_some()
+        || body.review_defaults.is_some();
+    let requested_model = body.model.as_ref().and_then(Option::as_deref);
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
+        catalog: body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
             || body.project_server_id.flatten().is_some()
             || body.project_folder.flatten().is_some(),
-        id: body.id.flatten(),
-        cwd: body.cwd,
-        account: body.account_key,
+        id: body.id.clone().flatten(),
+        cwd: body.cwd.clone(),
+        account: body.account_key.clone(),
         workspace: body.workspace_mode.map(|value| value.to_string()),
         yolo: body.yolo_mode,
-        previous: body.previous.flatten(),
+        previous: body.previous.clone().flatten(),
         reuse_empty: body.reuse_empty,
         ..Creation::default()
     };
+    // Python `new_lead` checks the durable request alias before resolving the
+    // project/account or reading a catalog (`codex_runtime.py:5099-5120`).
+    if needs_catalog
+        && let Some(replay) =
+            preflight_lead_replay::<generated::AgentResponse>(&state, request.clone()).await?
+    {
+        return Ok(replay);
+    }
+    // Python resolves project binding/account after replay and before catalog
+    // validation (`codex_runtime.py:5120-5130`).
+    let catalog_account = if needs_catalog {
+        Some(lead_catalog_account(&state, request.clone()).await?)
+    } else {
+        None
+    };
+    // Python validates execution only after obtaining the required catalog
+    // (`codex_runtime.py:5124-5131`).
+    wait_for_agent_catalog(
+        &state,
+        None,
+        catalog_account.as_deref(),
+        requested_model,
+        needs_catalog,
+    )
+    .await?;
+    if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
+        let worker_model = defaults.model.as_deref();
+        let worker_account = defaults
+            .account_key
+            .as_ref()
+            .and_then(Option::as_deref)
+            .or(catalog_account.as_deref());
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
+        }
+    }
+    if let Some(Some(review)) = body.review_defaults.as_ref() {
+        if let Some(model) = review.model.as_deref() {
+            wait_for_agent_catalog(&state, None, catalog_account.as_deref(), Some(model), true)
+                .await?;
+        }
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::lead(context, request)
     })
@@ -692,24 +893,12 @@ async fn create_agent_with_import(
         }
         return Err(ApiError::internal());
     }
-    wait_for_agent_catalog(
-        &state,
-        body.parent.as_ref().and_then(Option::as_deref),
-        body.account_key.as_deref(),
-        body.model.as_ref().and_then(Option::as_deref),
-        body.parent.as_ref().is_some_and(Option::is_some)
-            || body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
-    )
-    .await?;
-    let request = Creation {
+    let mut request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some(),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -727,6 +916,27 @@ async fn create_agent_with_import(
         imported_from,
         ..Creation::default()
     };
+    // Python resolves a durable existing-agent replay before profile/account
+    // admission, so an accepted request remains replayable if its catalog has
+    // since gone cold (`codex_runtime.py:4902-4913`).
+    let admission = prepare_agent_admission(&state, request.clone()).await?;
+    if let Some(replay) = admission.replay {
+        return Ok(Json(super::generated_json::<generated::AgentResponse>(
+            replay,
+        )?));
+    }
+    request.catalog = admission.needs_catalog;
+    // Python merges profile model/effort before computing `needs_catalog`; a
+    // role/instructions-only profile does not itself require provider access
+    // (`codex_runtime.py:4859-4888`).
+    wait_for_agent_catalog(
+        &state,
+        request.parent.as_deref(),
+        admission.account.as_deref().or(request.account.as_deref()),
+        admission.model.as_deref(),
+        admission.needs_catalog,
+    )
+    .await?;
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::agent(context, request)
     })
@@ -955,7 +1165,7 @@ async fn conversation(
             ]));
         }
     }
-    let body: generated::ConversationRequest = serde_json::from_value(value)
+    let body: generated::ConversationRequest = serde_json::from_value(value.clone())
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
@@ -963,10 +1173,10 @@ async fn conversation(
         effort_present: body.effort.is_some(),
         fast_mode_present: body.fast_mode.is_some(),
         daybreak_present: body.daybreak_enabled.is_some(),
-        cwd: body.cwd,
+        cwd: body.cwd.clone(),
         yolo_mode: body.yolo_mode,
-        model: body.model.flatten(),
-        effort: body.effort,
+        model: body.model.clone().flatten(),
+        effort: body.effort.clone(),
         fast_mode: body.fast_mode.flatten(),
         daybreak_enabled: body.daybreak_enabled.flatten(),
         next_turn: body.next_turn,
@@ -1003,13 +1213,95 @@ async fn conversation(
             .map(serde_json::to_value)
             .transpose()
             .map_err(|_| ApiError::internal())?,
-        id: body.id,
-        expected_account: body.expected_account_key,
-        excluded: body.excluded_account_keys.map(|mut keys| {
+        id: body.id.clone(),
+        expected_account: body.expected_account_key.clone(),
+        excluded: body.excluded_account_keys.clone().map(|mut keys| {
             keys.sort();
             keys
         }),
     };
+    let needs_conversation_catalog = conversation_needs_catalog(&value);
+    let requested_model = body.model.as_ref().and_then(Option::as_deref);
+    let needs_settings_conversation_account =
+        conversation_settings_need_conversation_account(&value);
+    let catalog_account = if needs_conversation_catalog || needs_settings_conversation_account {
+        // Python first resolves the existing target and its expected account;
+        // worker/review defaults use that conversation context at 5484-5491.
+        let catalog_cwd =
+            catalog_cwd_for_conversation(request.worker_settings, request.cwd.as_deref())
+                .map(str::to_owned);
+        Some(
+            conversation_catalog_account(
+                &state,
+                request.id.clone(),
+                request.expected_account.clone(),
+                catalog_cwd,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    // This updates an existing conversation. Python resolves its stored
+    // account, then validates settings; root worker-selection exclusions only
+    // apply while creating a new child (`codex_runtime.py:4820-4837`,
+    // `5484-5491`). Therefore don't pass a parent selector here.
+    let parent_id = existing_conversation_catalog_parent();
+    // Runtime.update only reads the target catalog for execution changes
+    // outside defaults-only updates (`codex_runtime.py:5481-5483`).
+    wait_for_agent_catalog(
+        &state,
+        parent_id,
+        catalog_account.as_deref(),
+        requested_model,
+        needs_conversation_catalog,
+    )
+    .await?;
+    if let Some(defaults) = value
+        .get("worker_defaults")
+        .filter(|entry| !entry.is_null())
+    {
+        // Python resolves worker_defaults against settings_catalog after the
+        // target account is known (`codex_runtime.py:5484-5486`).
+        let worker_model = defaults.get("model").and_then(Value::as_str);
+        let worker_account = worker_settings_catalog_account(defaults, catalog_account.as_deref());
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(
+                &state,
+                parent_id,
+                worker_account.as_deref(),
+                worker_model,
+                true,
+            )
+            .await?;
+        }
+    }
+    if value.get("review_defaults").is_some() {
+        // Runtime.update calls settings_catalog for review defaults even when
+        // model is null; its account comes from supplied worker_defaults or
+        // the target's stored worker account (`codex_runtime.py:5487-5491`).
+        let stored_worker_account = if value.get("worker_defaults").is_none() {
+            conversation_worker_catalog_account(
+                &state,
+                request.id.clone(),
+                request.expected_account.clone(),
+            )
+            .await?
+        } else {
+            None
+        };
+        let review_account = review_settings_catalog_account(
+            value.get("worker_defaults"),
+            stored_worker_account.as_deref(),
+            catalog_account.as_deref(),
+        );
+        if let Some(account) = review_account.as_deref() {
+            let review_model = value
+                .pointer("/review_defaults/model")
+                .and_then(Value::as_str);
+            wait_for_agent_catalog(&state, parent_id, Some(account), review_model, true).await?;
+        }
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::conversation(context, request)
     })
@@ -1148,6 +1440,174 @@ async fn finish_title_request(
     }
 }
 
+fn conversation_needs_catalog(value: &Value) -> bool {
+    ["model", "effort", "fast_mode", "daybreak_enabled"]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+}
+
+fn conversation_settings_need_conversation_account(value: &Value) -> bool {
+    // Runtime.update calls settings_catalog for every review_defaults payload,
+    // including model:null (`codex_runtime.py:5487-5491`).
+    let has_review_defaults = value.get("review_defaults").is_some();
+    let has_unpinned_worker_defaults = value
+        .get("worker_defaults")
+        .filter(|defaults| !defaults.is_null())
+        .is_some_and(|defaults| {
+            defaults
+                .get("account_key")
+                .is_none_or(|account| account.is_null())
+        });
+    has_review_defaults || has_unpinned_worker_defaults
+}
+
+fn catalog_cwd_for_conversation(
+    worker_settings: bool,
+    requested_cwd: Option<&str>,
+) -> Option<&str> {
+    if worker_settings { None } else { requested_cwd }
+}
+
+fn existing_conversation_catalog_parent() -> Option<&'static str> {
+    None
+}
+
+#[cfg(test)]
+mod creation_catalog_flow_tests {
+    use super::{catalog_cwd_for_conversation, existing_conversation_catalog_parent};
+
+    #[test]
+    fn conversation_catalog_wait_does_not_apply_new_worker_account_exclusions() {
+        // Runtime.update operates on the existing target account. Passing its
+        // id as a worker-selection parent would apply exclusions that Python
+        // only applies to new children (`codex_runtime.py:5484-5491`).
+        assert_eq!(catalog_cwd_for_conversation(true, Some("/ignored")), None);
+        assert_eq!(existing_conversation_catalog_parent(), None);
+    }
+}
+
+fn worker_settings_catalog_account(
+    defaults: &Value,
+    conversation_account: Option<&str>,
+) -> Option<String> {
+    defaults
+        .get("account_key")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| conversation_account.map(str::to_owned))
+}
+
+fn review_settings_catalog_account(
+    request_worker_defaults: Option<&Value>,
+    stored_worker_account: Option<&str>,
+    conversation_account: Option<&str>,
+) -> Option<String> {
+    request_worker_defaults.map_or_else(
+        || {
+            stored_worker_account
+                .map(str::to_owned)
+                .or_else(|| conversation_account.map(str::to_owned))
+        },
+        |defaults| worker_settings_catalog_account(defaults, conversation_account),
+    )
+}
+
+#[cfg(test)]
+mod conversation_catalog_admission_tests {
+    use super::{
+        catalog_cwd_for_conversation, conversation_needs_catalog,
+        conversation_settings_need_conversation_account, review_settings_catalog_account,
+        worker_settings_catalog_account,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn worker_defaults_only_update_does_not_require_conversation_catalog() {
+        assert!(!conversation_needs_catalog(&json!({
+            "worker_defaults": {
+                "account_key": "worker-account",
+                "model": "gpt-6-luna"
+            }
+        })));
+        assert!(!conversation_needs_catalog(&json!({
+            "review_defaults": {"model": "gpt-6-astra"}
+        })));
+        assert!(conversation_needs_catalog(&json!({"model": "gpt-6-astra"})));
+    }
+
+    #[test]
+    fn review_defaults_admission_uses_the_effective_worker_account() {
+        let request = json!({
+            "review_defaults": {"model": "gpt-6-astra", "effort": "medium"}
+        });
+        assert!(conversation_settings_need_conversation_account(&request));
+        assert!(!conversation_needs_catalog(&request));
+        assert_eq!(
+            review_settings_catalog_account(
+                None,
+                Some("worker-account"),
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("worker-account")
+        );
+        assert_eq!(
+            review_settings_catalog_account(
+                Some(&json!({"account_key": null})),
+                None,
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("conversation-account")
+        );
+    }
+
+    #[test]
+    fn unpinned_worker_defaults_admission_uses_the_conversation_account() {
+        for account_key in [None, Some(json!(null))] {
+            let mut defaults = json!({"model": null, "effort": null, "fast_mode": false});
+            if let Some(account_key) = account_key {
+                defaults["account_key"] = account_key;
+            }
+            assert!(conversation_settings_need_conversation_account(&json!({
+                "worker_defaults": defaults
+            })));
+            assert_eq!(
+                worker_settings_catalog_account(&defaults, Some("conversation-account")).as_deref(),
+                Some("conversation-account")
+            );
+        }
+        let request = json!({
+            "worker_defaults": {
+                "account_key": "worker-account",
+                "model": "gpt-6-luna"
+            }
+        });
+        assert!(!conversation_settings_need_conversation_account(&request));
+        assert_eq!(
+            worker_settings_catalog_account(
+                &request["worker_defaults"],
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("worker-account")
+        );
+    }
+
+    #[test]
+    fn worker_settings_catalog_admission_uses_stored_account_when_cwd_is_present() {
+        let requested_cwd = "/different-project";
+        assert_eq!(
+            catalog_cwd_for_conversation(true, Some(requested_cwd)),
+            None
+        );
+        assert_eq!(
+            catalog_cwd_for_conversation(false, Some(requested_cwd)),
+            Some(requested_cwd)
+        );
+    }
+}
+
 async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,
@@ -1272,7 +1732,8 @@ fn operation_error(error: OperationError) -> ApiError {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
     }
     let status = match &error {
-        OperationError::Unavailable("provider-session/model-list")
+        OperationError::Unavailable("account-driver/unavailable")
+        | OperationError::Unavailable("provider-session/model-list")
         | OperationError::Create(MutationError::CapabilityUnavailable(
             "provider-session/model-list" | "worker-driver/settings-catalog",
         )) => StatusCode::BAD_REQUEST,
@@ -1295,6 +1756,9 @@ fn operation_error(error: OperationError) -> ApiError {
         return ApiError::internal();
     }
     let message = match &error {
+        OperationError::Unavailable("account-driver/unavailable") => {
+            "Sign in to the worker account before creating a worker"
+        }
         OperationError::Unavailable("provider-session/model-list")
         | OperationError::Create(MutationError::CapabilityUnavailable(
             "provider-session/model-list",

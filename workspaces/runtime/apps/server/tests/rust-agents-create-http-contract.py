@@ -554,6 +554,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_p10_delete_commits_without_account_worker(self):
         victim = self.draft()
         victim_id = victim["id"]
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            before_sequence = database.execute(
+                "SELECT coalesce(max(seq), 0) FROM sync_entities"
+            ).fetchone()[0]
         response = self.backend.request(
             "POST",
             "/api/conversation/delete",
@@ -563,34 +567,26 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 200, response.body[:1000])
         result = response.json()
         self.assertEqual(result["deleted"], [victim_id])
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(result["_syncEntitiesAfter"], result["_syncEntities"][0]["seq"] - 1)
-            self.assertEqual(
-                result["_syncEntities"][0],
-                {
-                    "_deleted": True,
-                    "id": f"entity:agent:{victim_id}",
-                    "payload": json.dumps(
-                        {"collection": "agent", "id": victim_id, "value": {}},
-                        separators=(",", ":"),
-                    ),
-                    "seq": result["_syncEntities"][0]["seq"],
-                },
-            )
-        else:
-            self.assertEqual(result["_syncEntitiesAfter"], result["_syncEntities"][0]["seq"] - 1)
-            self.assertEqual(
-                result["_syncEntities"][0],
-                {
-                    "_deleted": True,
-                    "id": f"entity:agent:{victim_id}",
-                    "payload": json.dumps(
-                        {"collection": "agent", "id": victim_id, "value": {}},
-                        separators=(",", ":"),
-                    ),
-                    "seq": result["_syncEntities"][0]["seq"],
-                },
-            )
+        self.assertEqual(result["_syncEntitiesAfter"], before_sequence)
+        tombstones = [
+            entity
+            for entity in result["_syncEntities"]
+            if entity["id"] == f"entity:agent:{victim_id}"
+        ]
+        self.assertEqual(len(tombstones), 1)
+        self.assertEqual(
+            tombstones[0],
+            {
+                "_deleted": True,
+                "id": f"entity:agent:{victim_id}",
+                "payload": json.dumps(
+                    {"collection": "agent", "id": victim_id, "value": {}},
+                    separators=(",", ":"),
+                ),
+                "seq": tombstones[0]["seq"],
+            },
+        )
+        self.assertGreater(tombstones[0]["seq"], before_sequence)
         self.assertTrue(self.stored(victim_id)["deletedAt"])
 
     def test_rust_agent_creation_writes_one_pending_event_and_replays(self):
@@ -1081,14 +1077,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), record["id"]))
 
-    def quiesce_fixture_agent(self, agent_id):
+    def quiesce_fixture_agent(self, agent_id, *, status="paused"):
         """Make a test-owned queued turn inert before unrelated refusal checks."""
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
             if row is None:
                 return
             record = json.loads(row[0])
-            record.update(autoWake=False, status="paused", inFlight=False, turnId=None)
+            record.update(autoWake=False, status=status, inFlight=False, turnId=None)
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id))
 
     def rust_only(self):
@@ -1289,9 +1285,115 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = self.snapshot_no_write()
             self.post("/api/leads", body)
             self.assertEqual(self.snapshot_no_write(before=before), before)
+            refused_body = {
+                "id": str(uuid.uuid4()),
+                "cwd": str(self.backend.cwd),
+                "workspaceMode": "worktree",
+            }
+            with self.assertRaisesRegex(
+                ValueError, "Reconnect this account before creating a chat"
+            ):
+                python_draft(self.backend, refused_body)
+            self.backend.start()
+            before = self.snapshot_no_write()
+            response = self.backend.request(
+                "POST", "/api/leads", body=refused_body, headers=self.headers()
+            )
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(
+                response.json().get("error"),
+                "Reconnect this account before creating a chat",
+            )
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.backend.stop()
             path.write_bytes(original)
+            self.backend.start()
+
+    def test_cached_model_and_settings_catalog_paths_create_without_refusal(self):
+        account_key = "default"
+        self.await_model_catalog(account_key)
+
+        model_body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "model": "gpt-6-astra",
+        }
+        model_created = self.post("/api/leads", model_body)
+        self.assertEqual(model_created["model"], "gpt-6-astra")
+        self.assertEqual(self.stored(model_body["id"])["model"], "gpt-6-astra")
+
+        settings_body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "worker_defaults": {
+                "model": "gpt-6-luna",
+                "effort": "high",
+                "fast_mode": False,
+            },
+            "review_defaults": {"model": "gpt-6-astra", "effort": "medium"},
+        }
+        settings_created = self.post("/api/leads", settings_body)
+        self.assertEqual(settings_created["workerDefaults"]["model"], "gpt-6-luna")
+        self.assertEqual(settings_created["reviewDefaults"]["model"], "gpt-6-astra")
+
+        conversation_body = {
+            "id": settings_body["id"],
+            "worker_defaults": {
+                "model": "gpt-6-astra",
+                "effort": "high",
+                "fast_mode": False,
+            },
+            "review_defaults": {"model": "gpt-6-luna", "effort": "medium"},
+        }
+        conversation_created = self.post("/api/conversation", conversation_body)
+        self.assertEqual(
+            conversation_created["workerDefaults"]["model"], "gpt-6-astra"
+        )
+        self.assertEqual(
+            conversation_created["reviewDefaults"]["model"], "gpt-6-luna"
+        )
+
+    def test_lead_replay_precedes_catalog_admission(self):
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/leads", body)
+        # Preserve the empty-lead renderer projection while preventing a queued
+        # scheduler wake; paused status would correctly change `empty` to false.
+        self.quiesce_fixture_agent(body["id"], status="idle")
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/leads", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(
+                    replayed.get(field),
+                    projection.get(field),
+                    f"replayed lead response lost canonical {field} projection",
+                )
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
             self.backend.start()
 
     def test_profiles_are_loaded_validated_and_resolved_from_fresh_catalog(self):
@@ -1318,6 +1420,41 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 before = self.snapshot_no_write()
                 self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
                 self.assertEqual(self.snapshot_no_write(before=before), before)
+
+    def test_agent_replay_precedes_catalog_admission(self):
+        self.rust_only()
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "prompt": "Task",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/agents", body)
+        self.quiesce_fixture_agent(body["id"], status="idle")
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/agents", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(replayed.get(field), projection.get(field))
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
+            self.backend.start()
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -1401,6 +1538,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         ).fetchone())
                     fixture_agent_ids.add(body["id"])
                     self.quiesce_fixture_agent(body["id"])
+                    continue
+                if dependency == "provider-session/model-list":
+                    self.await_model_catalog("default")
+                    result = self.post(path, {**body, **preferences}, 200)
+                    if path == "/api/leads":
+                        self.assertEqual(result["model"], "gpt-6-astra")
+                    else:
+                        self.quiesce_fixture_agent(body["id"])
                     continue
                 if preferences == {"effort": None}:
                     self.post(path, {**body, **preferences}, 200)
