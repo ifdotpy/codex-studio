@@ -53,7 +53,7 @@ async fn changes(
             let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
             let actor_id = agent.as_deref().ok_or_else(invalid_request)?;
             let actor = WorkspaceViewsRepository::agent(&transaction, actor_id)
-                .map_err(|_| invalid_stored("runtime_agents", actor_id))?
+                .map_err(ApiError::stored)?
                 .ok_or_else(invalid_request)?;
             let actor = actor.value().clone();
             if deleted(&actor) {
@@ -121,7 +121,7 @@ fn git_changes(cwd: &str) -> Result<Value, ApiError> {
 fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiError> {
     let prefix = format!("{agent}:turn/diff/updated:");
     let items = TranscriptRepository::items_for_agent_including_restored(connection, agent)
-        .map_err(|_| invalid_stored("runtime_items", agent))?;
+        .map_err(map_transcript_error)?;
     let Some(item) = items.into_iter().find(|item| {
         item.id == format!("{agent}:turn/diff/updated") || item.id.starts_with(&prefix)
     }) else {
@@ -130,8 +130,7 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     if studio_runtime_services::event_write::truthy(item.record.get("afterRestore")) {
         return Ok(empty_reported_changes());
     }
-    let text = TranscriptRepository::full_text(connection, &item)
-        .map_err(|_| invalid_stored("runtime_items", &item.id))?;
+    let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
     if item.record.get("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -171,8 +170,7 @@ fn workspace_view(
     agent_id: Option<&str>,
     view: &str,
 ) -> Result<Value, ApiError> {
-    let stored_agents = WorkspaceViewsRepository::agents(connection)
-        .map_err(|_| invalid_stored("runtime_agents", "unknown"))?;
+    let stored_agents = WorkspaceViewsRepository::agents(connection).map_err(ApiError::stored)?;
     let agents = parse_records(
         validators,
         "AgentRecordResponse",
@@ -215,7 +213,7 @@ fn workspace_view(
                 "agent",
                 &ids,
             )
-            .map_err(|_| invalid_stored("runtime_annotations", "unknown"))?,
+            .map_err(ApiError::stored)?,
         )?;
         return Ok(
             studio_runtime_services::workspace_views::workspace_view_response(
@@ -232,8 +230,7 @@ fn workspace_view(
         validators,
         "WorkItem",
         "runtime_work",
-        WorkspaceViewsRepository::records(connection, "runtime_work")
-            .map_err(|_| invalid_stored("runtime_work", "unknown"))?,
+        WorkspaceViewsRepository::records(connection, "runtime_work").map_err(ApiError::stored)?,
     )?;
     let statuses = work_policy::work_statuses(&all_work);
     let root_view = root.as_deref().unwrap_or("");
@@ -262,7 +259,7 @@ fn workspace_view(
         "RequestRecordResponse",
         "runtime_requests",
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_requests", "agent", &ids)
-            .map_err(|_| invalid_stored("runtime_requests", "unknown"))?,
+            .map_err(ApiError::stored)?,
     )?;
     let complaints = if root.is_some() {
         parse_records(
@@ -275,7 +272,7 @@ fn workspace_view(
                 "leadId",
                 &ids,
             )
-            .map_err(|_| invalid_stored("runtime_complaints", "unknown"))?,
+            .map_err(ApiError::stored)?,
         )?
     } else {
         parse_records(
@@ -283,21 +280,21 @@ fn workspace_view(
             "ComplaintRecordResponse",
             "runtime_complaints",
             WorkspaceViewsRepository::records(connection, "runtime_complaints")
-                .map_err(|_| invalid_stored("runtime_complaints", "unknown"))?,
+                .map_err(ApiError::stored)?,
         )?
     };
     let rules = parse_open_records(
         "runtime_rules",
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
-            .map_err(|_| invalid_stored("runtime_rules", "unknown"))?,
+            .map_err(ApiError::stored)?,
     )?;
     let tasks = project_task_records(
         validators,
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
-            .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?,
+            .map_err(ApiError::stored)?,
     )?;
     let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
-        .map_err(|_| invalid_stored("runtime_monitors", "unknown"))?
+        .map_err(ApiError::stored)?
         .into_iter()
         .map(|row| {
             let id = row.id;
@@ -356,7 +353,7 @@ fn workspace_view(
             "agent",
             &ids,
         )
-        .map_err(|_| invalid_stored("runtime_annotations", "unknown"))?,
+        .map_err(ApiError::stored)?,
     )?;
     let checkpoint_ids = agent_id
         .map(|id| vec![id.to_owned()])
@@ -369,7 +366,7 @@ fn workspace_view(
             "agent",
             &checkpoint_ids,
         )
-        .map_err(|_| invalid_stored("runtime_checkpoints", "unknown"))?,
+        .map_err(ApiError::stored)?,
     )?;
     let agent_records = all_agents
         .into_iter()
@@ -408,7 +405,7 @@ fn workspace_view(
         "PlanView",
         "runtime_plans",
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_plans", "id", &ids)
-            .map_err(|_| invalid_stored("runtime_plans", "unknown"))?,
+            .map_err(ApiError::stored)?,
     )?
     .into_iter()
     .filter(|plan| root.as_ref().is_none_or(|root| plan["rootId"] == *root))
@@ -614,9 +611,15 @@ async fn workspace_tasks(
 }
 
 fn map_store_error(error: StoreError) -> ApiError {
+    ApiError::stored(error)
+}
+
+fn map_transcript_error(error: studio_runtime_store::TranscriptStoreError) -> ApiError {
+    use studio_runtime_store::TranscriptStoreError;
     match error {
-        StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
-        _ => ApiError::internal(),
+        TranscriptStoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
+        TranscriptStoreError::Store(error) => ApiError::stored(error),
+        TranscriptStoreError::Sqlite(_) | TranscriptStoreError::ActiveTurn => ApiError::internal(),
     }
 }
 
@@ -634,6 +637,32 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
 
 fn invalid_cursor(parameter: &str) -> ApiError {
     ApiError::validation(vec![json!("query"), json!(parameter)])
+}
+
+fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
+    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_store_error;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use studio_runtime_store::StoreError;
+
+    #[test]
+    fn workspace_store_mapping_keeps_database_failures_internal() {
+        let malformed = map_store_error(StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: "agent-7".to_owned(),
+        })
+        .into_response();
+        assert_eq!(malformed.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let database_failure =
+            map_store_error(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
+        assert_eq!(database_failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }
 
 inventory::submit! {

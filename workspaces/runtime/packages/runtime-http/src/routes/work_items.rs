@@ -124,7 +124,7 @@ where
         move || {
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-                .map_err(|_| invalid_stored("runtime_agents", &id))?;
+                .map_err(ApiError::stored)?;
             let agent =
                 agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
             if !super::queue_read::is_live(&agent) {

@@ -709,6 +709,9 @@ fn pull_entities(
                     object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
                     object.insert("value".to_owned(), json!({}));
                 }
+                if !validate_entity_envelope(&payload, &row.collection, &row.id, true, validators) {
+                    continue;
+                }
             } else {
                 if let Some(object) = payload.as_object_mut() {
                     object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
@@ -716,6 +719,10 @@ fn pull_entities(
                     continue;
                 }
                 validators.strip_stored_extra_fields(schema, &mut payload);
+                if !validate_entity_envelope(&payload, &row.collection, &row.id, false, validators)
+                {
+                    continue;
+                }
             }
             let Ok(payload) = serde_json::to_string(&payload) else {
                 continue;

@@ -654,6 +654,63 @@ with canvas.connect() as db:
                         (original_sequence, original_preference),
                     )
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_collection_schema_invalid_entity_is_skipped_and_tombstone_is_retained(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        invalid_id = "sync-invalid-agent-root"
+        tombstone_id = "sync-valid-agent-tombstone"
+        with sqlite3.connect(database_path) as database:
+            actor = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,),
+            ).fetchone()[0])
+            actor.update(id=invalid_id, rootId=42)
+            sequence = database.execute(
+                "SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities",
+            ).fetchone()[0]
+            database.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES('agent',?,?,?, ?,0)",
+                (invalid_id, sequence, "test-fixture", json.dumps({
+                    "collection": "agent", "id": invalid_id, "value": actor,
+                })),
+            )
+            database.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES('agent',?,?,?, ?,1)",
+                (tombstone_id, sequence + 1, "test-fixture", json.dumps({
+                    "collection": "agent", "id": tombstone_id, "value": {},
+                })),
+            )
+        before = no_write_snapshot(backend.state)
+        try:
+            response = backend.request(
+                "GET",
+                f"/api/sync/pull?scope=state:entities:v1&after={sequence - 1}&limit=2",
+                headers=self._common_headers(),
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            documents = response.json()["documents"]
+            self.assertNotIn(
+                f"entity:agent:{invalid_id}",
+                {document["id"] for document in documents},
+            )
+            tombstone = next(
+                document for document in documents
+                if document["id"] == f"entity:agent:{tombstone_id}"
+            )
+            self.assertTrue(tombstone["deleted"])
+            self.assertEqual(response.json()["checkpoint"]["seq"], sequence + 1)
+            self.assertEqual(no_write_snapshot(backend.state), before)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "DELETE FROM sync_entities WHERE collection='agent' AND id IN (?,?)",
+                    (invalid_id, tombstone_id),
+                )
+
     def test_fresh_refill_preserves_rows_below_tombstone_floor(self) -> None:
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("fresh tombstone-floor refill is a Rust backend contract")
