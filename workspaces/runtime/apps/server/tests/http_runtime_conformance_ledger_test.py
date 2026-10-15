@@ -513,6 +513,21 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertEqual(malformed_record["positiveOperations"], 1)
 
     def test_router_junit_evidence_is_exact_revision_hash_and_test_bound(self) -> None:
+        expected_operations = {
+            ("POST", "/api/connection-recovery"),
+            ("POST", "/api/servers/orchestration"),
+            ("POST", "/api/mac-sync/config"),
+            ("POST", "/api/mac-sync/resolve"),
+            ("POST", "/api/voice/approve"),
+            ("GET", "/api/multi-server/v1/status"),
+            ("POST", "/api/multi-server/v1/auto-pair"),
+            ("POST", "/api/multi-server/v1/pair"),
+            ("POST", "/api/multi-server/v1/name"),
+            ("POST", "/api/monitor/input"),
+            ("POST", "/api/vault/setup"),
+            ("POST", "/api/vault/setup/facts"),
+        }
+        self.assertEqual(set(ledger.ROUTER_POSITIVE_TESTS), expected_operations)
         recovery_class, recovery_name = ledger.ROUTER_POSITIVE_TESTS[
             ("POST", "/api/connection-recovery")
         ]
@@ -521,16 +536,23 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         ]
         report = (
             '<testsuites><testsuite>'
-            f'<testcase classname="{recovery_class}" name="{recovery_name}" />'
-            f'<testcase classname="{orchestration_class}" name="{orchestration_name}" />'
-            '</testsuite></testsuites>'
+            + "".join(
+                f'<testcase classname="{classname}" name="{name}" />'
+                for classname, name in set(ledger.ROUTER_POSITIVE_TESTS.values())
+            )
+            + '</testsuite></testsuites>'
         ).encode()
         digest = ledger.hashlib.sha256(report).hexdigest()
         metadata = {"revision": "exact-candidate", "junitSha256": digest}
 
         passing = ledger.parse_router_test_evidence(metadata, report, "exact-candidate")
         self.assertEqual(passing["status"], "pass")
-        self.assertEqual([item["status"] for item in passing["assertions"]], ["passed", "passed"])
+        self.assertEqual(
+            len(passing["assertions"]), len(ledger.ROUTER_POSITIVE_TESTS),
+        )
+        self.assertEqual(
+            {item["status"] for item in passing["assertions"]}, {"passed"},
+        )
         with tempfile.TemporaryDirectory(prefix="router-junit-evidence-") as scratch:
             root = Path(scratch)
             (root / "junit.xml").write_bytes(report)
@@ -673,6 +695,66 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "unverified",
             "API success cannot stand in for copied-data validation and rollback",
         )
+
+    def test_unavailable_import_and_guest_ports_require_named_http_success(self) -> None:
+        consumer_assertions = {
+            ("GET", "/api/import"): [
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_list_import_threads_on_both_backends",
+            ],
+            ("POST", "/api/import"): [
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_import_thread_on_both_backends",
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_import_metadata_and_initial_event_commit_atomically",
+            ],
+        }
+        for route in (
+            ("POST", "/api/project-secrets/list"),
+            ("POST", "/api/project-secrets/set"),
+            ("POST", "/api/project-secrets/remove"),
+        ):
+            consumer_assertions[route] = [
+                "workspaces/runtime/apps/server/tests/rust-host-secrets-http-contract.py::"
+                "__main__.HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values",
+            ]
+
+        self.assertEqual(set(consumer_assertions), {
+            ("GET", "/api/import"),
+            ("POST", "/api/import"),
+            ("POST", "/api/project-secrets/list"),
+            ("POST", "/api/project-secrets/set"),
+            ("POST", "/api/project-secrets/remove"),
+        })
+        for route, assertions in consumer_assertions.items():
+            with self.subTest(route=route):
+                probe = ledger.PROBE_CASES[route]["primary"]
+                self.assertFalse(probe.get("dispatch", True))
+                self.assertTrue(probe.get("consumer_only"))
+                self.assertTrue(probe.get("reason"))
+                self.assertNotIn("expected", probe)
+                observation = ledger.unsafe_probe_observation(probe["reason"])
+                operation = {
+                    "method": route[0], "path": route[1],
+                    "implementation": "implemented", "classification": "unverified",
+                    "probeCases": [observation],
+                }
+                without_success = ledger.api_fixture_evidence([operation])
+                self.assertEqual(without_success["status"], "unverified")
+                operation["observedSuccessfulAssertions"] = assertions
+                with_success = ledger.api_fixture_evidence([operation])
+                self.assertEqual(with_success["status"], "pass")
+
+    def test_retired_get_tombstones_are_not_probed(self) -> None:
+        retired_gets = {
+            ("GET", "/api/federation"),
+            ("GET", "/api/federation/v1/message"),
+            ("GET", "/api/federation/v1/pair"),
+            ("GET", "/api/federation/v1/pull"),
+            ("GET", "/api/federation/v1/status"),
+            ("GET", "/api/multi-server/v1/pair"),
+        }
+        self.assertTrue(retired_gets.isdisjoint(ledger.PROBE_CASES))
 
     def test_copy_backend_command_requires_ephemeral_port(self) -> None:
         self.assertEqual(

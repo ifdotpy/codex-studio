@@ -51,6 +51,46 @@ ROUTER_POSITIVE_TESTS: dict[tuple[str, str], tuple[str, str]] = {
         "studio-runtime-http::multi_server_incoming",
         "signed_remote_event_crosses_http_boundary_and_persists_once",
     ),
+    ("POST", "/api/mac-sync/config"): (
+        "studio-runtime-http",
+        "routes::mac_sync::tests::config_http_contract_and_invalid_resolve_refusal_are_quiescent",
+    ),
+    ("POST", "/api/mac-sync/resolve"): (
+        "studio-runtime-http",
+        "routes::mac_sync::tests::resolve_http_uses_a_fake_guest_endpoint_and_writes_vm_choice",
+    ),
+    ("POST", "/api/voice/approve"): (
+        "studio-runtime-http::voice_provider",
+        "voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake",
+    ),
+    ("GET", "/api/multi-server/v1/status"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write",
+    ),
+    ("POST", "/api/multi-server/v1/auto-pair"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write",
+    ),
+    ("POST", "/api/multi-server/v1/pair"): (
+        "studio-runtime-http::multi_server_incoming",
+        "paired_fake_servers_create_and_recover_the_same_invitation",
+    ),
+    ("POST", "/api/multi-server/v1/name"): (
+        "studio-runtime-http::multi_server_incoming",
+        "paired_fake_servers_create_and_recover_the_same_invitation",
+    ),
+    ("POST", "/api/monitor/input"): (
+        "studio-runtime-http::wave7_p15_http",
+        "acknowledged_monitor_input_is_persisted_through_http",
+    ),
+    ("POST", "/api/vault/setup"): (
+        "studio-runtime-http",
+        "routes::host_secrets::tests::valid_vault_setup_request_completes_over_http_with_fake_desk",
+    ),
+    ("POST", "/api/vault/setup/facts"): (
+        "studio-runtime-http",
+        "routes::host_secrets::tests::vault_setup_facts_route_uses_the_host_command_and_cached_project",
+    ),
 }
 
 
@@ -293,36 +333,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "query": {"agent": "$agent"}, "query_omit": ["scope"], "expected": "2xx",
         },
     },
-    ("GET", "/api/federation"): {
-        "primary": {
-            "expected": "404",
-            "reason": "The local federation management route has no GET counterpart.",
-        },
-    },
-    ("GET", "/api/federation/v1/message"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation message delivery is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/pair"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation pairing is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/pull"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation state pull is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/status"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Signed federation status is POST-only.",
-        },
-    },
     ("GET", "/api/models"): {
         "primary": {
             "query": {"account_key": "default"},
@@ -345,12 +355,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "2xx",
         }],
     },
-    ("GET", "/api/multi-server/v1/pair"): {
-        "primary": {
-            "expected": "404",
-            "reason": "The pairing callback accepts POST only.",
-        },
-    },
     ("GET", "/api/checkpoints"): {
         "primary": {"query": {"agent": "$agent"}},
     },
@@ -364,16 +368,16 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/import"): {
         "primary": {
-            "query": {"account_key": "default"},
-            "expected": "503",
-            "assert_no_write": True,
+            "dispatch": False,
+            "consumer_only": True,
+            "reason": "The generic child backend has no import adapter; named successful HTTP coverage is required from portable-history-import-http-contract.py::PortableHistoryImportHTTPContract.test_list_import_threads_on_both_backends.",
         },
     },
     ("POST", "/api/import"): {
         "primary": {
-            "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
-            "expected": "503",
-            "assert_no_write": True,
+            "dispatch": False,
+            "consumer_only": True,
+            "reason": "The generic child backend has no import adapter; named successful HTTP coverage is required from portable-history-import-http-contract.py::PortableHistoryImportHTTPContract.test_import_thread_on_both_backends and test_import_metadata_and_initial_event_commit_atomically.",
         },
     },
     ("GET", "/api/messages"): {
@@ -771,9 +775,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/mac-sync/config"): {"primary": {"body": {"projectId": "ledger-project", "enabled": True}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/mac-sync/resolve"): {"primary": {"body": {"projectId": "ledger-project", "path": "ledger.txt", "choice": "mac"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
-    ("POST", "/api/project-secrets/list"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
-    ("POST", "/api/project-secrets/set"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "value": "fixture-value", "requestId": "ledger-set-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
-    ("POST", "/api/project-secrets/remove"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "requestId": "ledger-remove-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/list"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
+    ("POST", "/api/project-secrets/set"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
+    ("POST", "/api/project-secrets/remove"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
     ("POST", "/api/vault/setup/facts"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/vault/pull"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-pull", "to": "$projectPath"}, "replace_body": True, "expected": "2xx"}},
@@ -2251,7 +2255,7 @@ def api_fixture_evidence(
     operations_result: list[dict[str, Any]],
     router_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Summarize API fixtures and the two named Rust router-only positives."""
+    """Summarize API fixtures and the named Rust router-only positives."""
     statuses: list[str] = []
     positive_operations = 0
     router_positive_operations = 0
