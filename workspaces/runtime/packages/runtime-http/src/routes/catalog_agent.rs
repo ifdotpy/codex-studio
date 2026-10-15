@@ -21,14 +21,6 @@ use crate::routes::manifest::{
     Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post,
 };
 
-const CLAUDE_DISCOVERY_DEPENDENCIES: &[Dependency] =
-    &[Dependency::new("provider-service/claude-discovery")];
-const CAPABILITY_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-service/claude-discovery"),
-    Dependency::new("thread-preparation/tool-catalog"),
-];
-const TOOL_CATALOG_DEPENDENCIES: &[Dependency] =
-    &[Dependency::new("thread-preparation/tool-catalog")];
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const NATIVE_COMMAND_DEPENDENCIES: &[Dependency] =
     &[Dependency::new("turn-path/native-command-input")];
@@ -43,7 +35,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/capabilities",
-            OperationStatus::partial(CAPABILITY_DEPENDENCIES),
+            OperationStatus::Implemented,
             capabilities,
         ),
         post(
@@ -51,11 +43,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(NATIVE_COMMAND_DEPENDENCIES),
             native_command,
         ),
-        get(
-            "/api/skills",
-            OperationStatus::partial(CLAUDE_DISCOVERY_DEPENDENCIES),
-            skills,
-        ),
+        get("/api/skills", OperationStatus::Implemented, skills),
         post(
             "/api/sync/notify",
             OperationStatus::Implemented,
@@ -98,6 +86,57 @@ async fn finder_view(
     )?)
 }
 
+async fn account_provider_exchange(
+    session: Option<
+        std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
+    native_path: Option<String>,
+    app_server_log: Option<studio_runtime_process::operational_log::OperationalLog>,
+    account: AccountContext,
+    requests: Vec<ProviderRequest>,
+    timeout: Duration,
+) -> Result<
+    Vec<Result<Value, studio_runtime_services::catalog_reads::CatalogReadError>>,
+    studio_runtime_services::catalog_reads::CatalogReadError,
+> {
+    use studio_runtime_services::catalog_reads::CatalogReadError;
+    if !account.known || !account.available {
+        return Err(CatalogReadError::ProviderExchangeFailed);
+    }
+    if account.provider == "claude" {
+        let session = session.ok_or(CatalogReadError::ProviderExchangeFailed)?;
+        let account_key = account.key;
+        return studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/catalog_agent",
+            move || {
+                session
+                    .ensure_session(&account_key)
+                    .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+                studio_runtime_services::catalog_reads::account_session_exchange(
+                    session.as_ref(),
+                    &account_key,
+                    requests,
+                    timeout,
+                )
+            },
+        )
+        .await
+        .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+    }
+    if account.provider == "codex" {
+        return studio_runtime_services::catalog_reads::provider_exchange(
+            native_path.as_deref().map(Path::new),
+            &account.home,
+            account.key != "default",
+            requests,
+            timeout,
+            app_server_log,
+        )
+        .await;
+    }
+    Err(CatalogReadError::ProviderExchangeFailed)
+}
+
 async fn skills(
     State(state): State<HttpState>,
     params: QueryParams,
@@ -110,17 +149,16 @@ async fn skills(
         .and_then(Value::as_str)
         .ok_or_else(invalid_stored_agent)?;
     let account = account_context(&state, &agent)?;
-    ensure_codex(&account, "GET", "/api/skills")?;
-    let responses = studio_runtime_services::catalog_reads::provider_exchange(
-        state.native_path.as_deref().map(Path::new),
-        &account.home,
-        account.key != "default",
+    let responses = account_provider_exchange(
+        state.account_session.clone(),
+        state.native_path.clone(),
+        state.app_server_log.clone(),
+        account,
         vec![ProviderRequest {
             method: "skills/list".to_owned(),
             params: json!({"cwds":[cwd],"forceReload":false}),
         }],
         DISCOVERY_TIMEOUT,
-        state.app_server_log.clone(),
     )
     .await;
     let result = match responses {
@@ -147,13 +185,7 @@ async fn capabilities(
     ensure_live_agent(&agent)?;
     let catalog = match state.tool_catalog.as_ref() {
         Some(catalog) => catalog,
-        None => {
-            return Err(dependency_error(
-                "GET",
-                "/api/capabilities",
-                TOOL_CATALOG_DEPENDENCIES,
-            )?);
-        }
+        None => return Err(ApiError::internal()),
     };
     let cwd = agent
         .get("cwd")
@@ -169,7 +201,6 @@ async fn capabilities(
     let managed = studio_runtime_services::catalog_reads::managed_tool_catalog(catalog)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid tool catalog"))?;
     let account = account_context(&state, &agent)?;
-    ensure_codex(&account, "GET", "/api/capabilities")?;
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let observed_agent_id = agent_id.to_owned();
@@ -192,18 +223,18 @@ async fn capabilities(
         .as_secs_f64();
     let mut result = capabilities_base(agent_id, &capability_agent, managed, observed, at);
     let cache = std::sync::Arc::clone(&state.capabilities_cache);
+    let session = state.account_session.clone();
     let native_path = state.native_path.clone();
     let app_server_log = state.app_server_log.clone();
-    let home = account.home;
-    let isolated = account.key != "default";
     let cwd = cwd.to_owned();
     let thread_id = agent.get("threadId").cloned();
     let result = cache
         .get_or_fetch(agent_id, || async move {
-            let responses = studio_runtime_services::catalog_reads::provider_exchange(
-                native_path.as_deref().map(Path::new),
-                &home,
-                isolated,
+            let responses = account_provider_exchange(
+                session,
+                native_path,
+                app_server_log,
+                account,
                 vec![
                     ProviderRequest {
                         method: "skills/list".to_owned(),
@@ -215,7 +246,6 @@ async fn capabilities(
                     },
                 ],
                 DISCOVERY_TIMEOUT,
-                app_server_log,
             )
             .await;
             match responses {
@@ -395,10 +425,13 @@ fn ensure_live_agent(agent: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[derive(Clone)]
 struct AccountContext {
     key: String,
     home: String,
     provider: String,
+    known: bool,
+    available: bool,
 }
 
 fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, ApiError> {
@@ -417,41 +450,25 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown Codex account"))?;
-    if matches!(
-        account.get("status").and_then(Value::as_str),
-        Some("changed" | "error")
-    ) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "Account is unavailable",
-        ));
-    }
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(key));
     Ok(AccountContext {
         key: key.to_owned(),
         home: account
-            .get("home")
+            .and_then(|row| row.get("home"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
         provider: account
-            .get("provider")
+            .and_then(|row| row.get("provider"))
             .and_then(Value::as_str)
             .unwrap_or("codex")
             .to_owned(),
+        known: account.is_some(),
+        available: account.is_some_and(|row| {
+            row.get("disconnected") != Some(&Value::Bool(true))
+                && row.get("deleted") != Some(&Value::Bool(true))
+        }),
     })
-}
-
-fn ensure_codex(account: &AccountContext, method: &str, path: &str) -> Result<(), ApiError> {
-    if account.provider != "codex" {
-        return Err(dependency_error(
-            method,
-            path,
-            CLAUDE_DISCOVERY_DEPENDENCIES,
-        )?);
-    }
-    Ok(())
 }
 
 inventory::submit! {
@@ -459,8 +476,6 @@ inventory::submit! {
         name: "catalog_agent",
         routes: Some(routes),
         dependencies: &[
-            "provider-service/claude-discovery",
-            "thread-preparation/tool-catalog",
             "turn-path/native-command-input",
             "vm-agents/finder-view",
         ],

@@ -261,16 +261,13 @@ The Python account mutation points that a later owner must port are `refresh`,
 `start_login`, `login_receipts`, `cancel_login`, `login_completed`, and
 `set_rate_limits`. This read slice implements none of them.
 
-`GET /api/models` serves the Codex catalog through the Tokio session and a
-temporary stdio process-group attachment. The cache returns pending immediately,
-serves stale values during one refresh, and applies a single exchange deadline
-to initialization and pagination. The process adapter stops and reaps the child
-before a refresh result is published. Claude catalogs use the account's retained
-provider session for bounded `model/list` pagination and share the account cache;
-until the account-session adapter is wired, the route names
-`provider-session/model-list` as its remaining dependency. The public
-`ModelListPort` is shared with agent rename. The temporary Codex adapter requires
-Unix; other platforms report the catalog unavailable.
+`GET /api/models` serves both Codex and Claude catalogs through the retained
+account session in the production composition. When no account session is
+attached, Codex has a bounded stdio process adapter; Claude reports the catalog
+unavailable. The cache returns pending while a refresh runs, serves stale values
+during one refresh, and bounds pagination. Durable provider request receipts bind
+session reads to the captured connection. The public `ModelListPort` is shared
+with agent rename.
 
 `model_catalog.rs` owns pagination, validation, cache, and pending/unavailable
 states. The async HTTP handler only runs the account snapshot read on the

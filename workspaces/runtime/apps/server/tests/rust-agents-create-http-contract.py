@@ -1314,10 +1314,8 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     self.post(path, {**body, **preferences}, 200)
                 elif preferences.get("model") == "gpt-6-astra":
                     before = self.snapshot_no_write()
-                    self.assertEqual(
-                        self.post(path, {**body, **preferences}, 501)["error"],
-                        "Not implemented: requires provider-session/model-list",
-                    )
+                    response = self.post(path, {**body, **preferences}, 400)
+                    self.assertNotIn("Not implemented: requires", response["error"])
                     self.assertEqual(self.snapshot_no_write(before=before), before)
                 else:
                     before = self.snapshot_no_write()

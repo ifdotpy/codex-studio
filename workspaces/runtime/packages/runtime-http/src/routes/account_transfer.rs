@@ -17,10 +17,9 @@ const TRANSFER: &[Dependency] = &[
     Dependency::new("account-transfer/destination-settings"),
     Dependency::new("store-bootstrap/account-transfer-schema"),
 ];
-const SELECTION: &[Dependency] = &[
-    Dependency::new("account-driver/unavailable"),
-    Dependency::new("account-transfer/usage-resume-cancellation"),
-];
+const SELECTION: &[Dependency] = &[Dependency::new(
+    "account-transfer/usage-resume-cancellation",
+)];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
@@ -52,7 +51,10 @@ async fn selection(
                 } else if let Some(policy) = &state.account_policy {
                     Ok(policy.accounts())
                 } else {
-                    Err(TransferError::Requires("account-driver/unavailable"))
+                    Err(TransferError::Stored {
+                        object: "account registry",
+                        pointer: "/".into(),
+                    })
                 }
             };
             let value = studio_runtime_services::account_selection::select(
@@ -210,7 +212,7 @@ fn error(error: TransferError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "account_transfer", routes: Some(routes), dependencies: &[
-            "account-driver/unavailable", "account-transfer/usage-resume-cancellation",
+            "account-transfer/usage-resume-cancellation",
             "account-transfer/provider-history-executor", "account-transfer/destination-settings",
             "store-bootstrap/account-transfer-schema",
         ],

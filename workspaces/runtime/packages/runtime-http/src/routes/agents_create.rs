@@ -36,19 +36,28 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         account_key: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>,
-    > {
+    >{
         Box::pin(async move {
-            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             use studio_runtime_services::provider_callbacks::ManagedCreationAccountRead;
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             let identity = DriverManagedAccountRead(self.accounts.as_ref())
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref()) else {
+            let (Some(home), Some(provider)) =
+                (account.home.as_deref(), account.provider.as_deref())
+            else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
-            match self.catalog.service.wait_for_admission_catalog(account_key, home, provider).await {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+            match self
+                .catalog
+                .service
+                .wait_for_admission_catalog(account_key, home, provider)
+                .await
+            {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -546,29 +555,18 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 8] = [
-        Dependency::new("account-driver/unavailable"),
+    const LEAD_DEPENDENCIES: [Dependency; 5] = [
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
-        Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
-        Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 5] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
+    const AGENT_DEPENDENCIES: [Dependency; 2] = [
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
-    ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 3] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
     ];
     RouteGroup::new(vec![
         post(
@@ -579,7 +577,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
-            OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
+            OperationStatus::Implemented,
             conversation,
         ),
         post(
@@ -632,20 +630,13 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    create_lead_with_model(State(state), ApiJson(body), false).await
+    create_lead_with_model(State(state), ApiJson(body)).await
 }
 
 async fn create_lead_with_model(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
-    allow_requested_model: bool,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    if !allow_requested_model && body.model.as_ref().is_some_and(Option::is_some) {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires provider-session/model-list",
-        ));
-    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.effort.as_ref().is_some_and(Option::is_some)
@@ -683,9 +674,7 @@ async fn create_agent_with_import(
     imported_from: Option<String>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
     if state.store.is_none() && state.account_driver.is_none() {
-        return Err(operation_error(OperationError::Unavailable(
-            "account-driver/unavailable",
-        )));
+        return Err(ApiError::internal());
     }
     wait_for_agent_catalog(
         &state,
@@ -919,7 +908,7 @@ pub(super) async fn create_branch_draft(
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
     let body: generated::CreateLeadRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
-    create_lead_with_model(State(state), ApiJson(body), true).await
+    create_lead_with_model(State(state), ApiJson(body)).await
 }
 async fn configure(
     State(state): State<HttpState>,
@@ -1081,15 +1070,18 @@ fn operation_error(error: OperationError) -> ApiError {
     let implemented_but_unavailable = matches!(
         &error,
         OperationError::Create(
-            MutationError::CapabilityUnavailable(
-                "account-driver/unavailable" | "provider-session/title-generation"
-            ) | MutationError::TitleGenerationUnavailable
+            MutationError::CapabilityUnavailable("provider-session/title-generation")
+                | MutationError::TitleGenerationUnavailable
         )
     );
     if implemented_but_unavailable {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
     }
     let status = match &error {
+        OperationError::Unavailable("provider-session/model-list")
+        | OperationError::Create(MutationError::CapabilityUnavailable(
+            "provider-session/model-list" | "worker-driver/settings-catalog",
+        )) => StatusCode::BAD_REQUEST,
         OperationError::Unavailable(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_))
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
@@ -1108,7 +1100,17 @@ fn operation_error(error: OperationError) -> ApiError {
     ) {
         return ApiError::internal();
     }
-    ApiError::new(status, error.to_string())
+    let message = match &error {
+        OperationError::Unavailable("provider-session/model-list")
+        | OperationError::Create(MutationError::CapabilityUnavailable(
+            "provider-session/model-list",
+        )) => "Model catalog is unavailable",
+        OperationError::Create(MutationError::CapabilityUnavailable(
+            "worker-driver/settings-catalog",
+        )) => "Worker model catalog is unavailable",
+        _ => return ApiError::new(status, error.to_string()),
+    };
+    ApiError::new(status, message)
 }
 
 inventory::submit! {
@@ -1116,13 +1118,10 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-            "account-driver/unavailable",
             "cross-server-driver/local-identity",
             "cross-server-driver/project-binding",
-            "provider-session/model-list",
             "provider-session/title-generation",
             "project-driver/folder-selection",
-            "worker-driver/settings-catalog",
             "workspace-state/image-workspace",
             "workspace-state/vm-workspace",
         ],

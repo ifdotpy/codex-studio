@@ -405,6 +405,8 @@ pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool
         }
         // Python codex_diagnostics.py sends an empty object.
         Method::ClaudeDiagnostics => params.is_empty(),
+        // Python codex_runtime.py:9679 reads limits with an empty params object.
+        Method::AccountRateLimitsRead => params.is_empty(),
         // Python codex_runtime.py:3904 requests only this stable monitor identity.
         Method::OperationStatus => {
             only(&["operationId"], &[])
@@ -434,6 +436,26 @@ pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool
         }
         Method::AccountRead => {
             only(&["refreshToken"], &[]) && params.get("refreshToken") == Some(&json!(false))
+        }
+        Method::SkillsList => {
+            only(&["cwds", "forceReload"], &[])
+                && params
+                    .get("cwds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|cwds| {
+                        cwds.len() == 1 && cwds[0].as_str().is_some_and(|cwd| !cwd.is_empty())
+                    })
+                && params.get("forceReload").is_some_and(Value::is_boolean)
+        }
+        Method::McpServerStatusList => {
+            only(&["threadId", "limit"], &[])
+                && params.get("limit") == Some(&json!(100))
+                && params.get("threadId").is_some_and(|thread_id| {
+                    thread_id.is_null()
+                        || thread_id
+                            .as_str()
+                            .is_some_and(|thread_id| !thread_id.is_empty())
+                })
         }
         _ => false,
     }
@@ -636,7 +658,24 @@ mod validation_tests {
             (Method::ModelList, json!({"limit":100})),
             (Method::ModelList, json!({"limit":100,"cursor":"next"})),
             (Method::ModelList, json!({"limit":100,"includeHidden":true})),
+            (
+                Method::SkillsList,
+                json!({"cwds":["/workspace"],"forceReload":false}),
+            ),
+            (
+                Method::SkillsList,
+                json!({"cwds":["/workspace"],"forceReload":true}),
+            ),
+            (
+                Method::McpServerStatusList,
+                json!({"threadId":null,"limit":100}),
+            ),
+            (
+                Method::McpServerStatusList,
+                json!({"threadId":"thread-1","limit":100}),
+            ),
             (Method::ClaudeDiagnostics, json!({})),
+            (Method::AccountRateLimitsRead, json!({})),
             (
                 Method::OperationStatus,
                 json!({"operationId":"monitor:fixture"}),
@@ -670,6 +709,14 @@ mod validation_tests {
         assert!(!valid_actorless_read_shape(
             Method::ThreadTurnsList,
             &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"})
+        ));
+        assert!(!valid_actorless_read_shape(
+            Method::SkillsList,
+            &json!({"cwds":["/workspace"],"forceReload":false,"extra":true})
+        ));
+        assert!(!valid_actorless_read_shape(
+            Method::McpServerStatusList,
+            &json!({"threadId":"thread-1","limit":50})
         ));
     }
 

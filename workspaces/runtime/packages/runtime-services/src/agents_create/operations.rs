@@ -1572,14 +1572,14 @@ fn account_identity(
     account_key: &str,
 ) -> Result<AccountIdentity, OperationError> {
     let Some(driver) = &context.driver else {
-        return Err(OperationError::Unavailable("account-driver/unavailable"));
+        return Err(OperationError::Internal);
     };
     if driver.get(account_key).map_err(|error| match error {
         AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
         _ => OperationError::Internal,
     })? == AccountStatus::Unavailable
     {
-        return Err(OperationError::Unavailable("account-driver/unavailable"));
+        return Err(OperationError::Invalid("Account is unavailable"));
     }
     let snapshot = driver.snapshot().map_err(|_| OperationError::Internal)?;
     let row = snapshot
