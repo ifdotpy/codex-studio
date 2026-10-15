@@ -695,7 +695,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "Fake-provider review and compact consumer tests provide the named successful requests; the generic seeded agent has no completed provider thread."}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
-    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$deleteAgent"}, "expected": "2xx"}},
     # Python checks FederationService.enabled() at the start of route() before
     # reading signed headers (codex_federation.py:527-529); the router maps its
     # PermissionError to 403 (studio_api/federation/router.py:200-201).
@@ -1180,6 +1180,7 @@ def seed_python_probe_state(backend: Any, python: str) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
     prefix = backend.fixture_namespace or "ledger-"
     agent_id = f"{prefix}probe-agent"
+    delete_agent_id = f"{prefix}probe-delete-agent"
     image_agent_id = f"{prefix}probe-image-agent"
     task_id = f"{prefix}probe-task"
     active_command_id = f"{prefix}probe-active-command"
@@ -1221,6 +1222,11 @@ try:
         "isLead": False, "autoWake": False, "workspaceMode": "image",
         "imageWorkspace": True, "executionMode": "vm",
     }}
+    delete_agent = {{
+        **agent, "id": {delete_agent_id!r}, "rootId": {delete_agent_id!r},
+        "name": "HTTP ledger delete probe", "threadId": None, "turnId": None,
+        "autoWake": False,
+    }}
     now = time.time()
     cancel_retry = {{
         "id": "ledger-capacity-cancel", "status": "scheduled", "dueAt": now + 600,
@@ -1239,6 +1245,7 @@ try:
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "agents", image_agent, sync_rooms=False)
+        runtime.put(db, "agents", delete_agent, sync_rooms=False)
         runtime.put(db, "tool_requests", {{
             "id": "ledger-tool-receipt", "agent": {agent_id!r},
             "tool": "orchestration_peers", "stage": "completed", "outcome": "applied",
@@ -1421,6 +1428,7 @@ finally:
     terminal_id = terminal_identifiers["terminal"]
     return {
         "agent": agent_id,
+        "deleteAgent": delete_agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
         "activeCommand": active_command_id,

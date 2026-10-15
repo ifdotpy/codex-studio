@@ -705,7 +705,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         documented = set(ledger.operations())
         self.assertLessEqual(set(ledger.PROBE_CASES), documented)
         fixture_keys = {
-            "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
+            "agent", "deleteAgent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
@@ -746,6 +746,9 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
+
+        delete_probe = ledger.PROBE_CASES[("POST", "/api/conversation/delete")]["primary"]
+        self.assertEqual(delete_probe["body"]["id"], "$deleteAgent")
 
     def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
         self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
