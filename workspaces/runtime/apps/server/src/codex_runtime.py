@@ -44,6 +44,7 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
@@ -5604,11 +5605,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         assets = assets or []
         if (
             not isinstance(text, str)
-            or len(text) > 32000
+            or len(text) > MAX_MANAGED_MESSAGE_CODEPOINTS
             or (not text.strip() and not assets)
         ):
             raise ValueError(
-                "Message must have text or attachments, at most 32000 characters"
+                f"Message must have text or attachments, at most {MAX_MANAGED_MESSAGE_CODEPOINTS} characters"
             )
         if delivery not in {"queue", "steer", "after_tool", "after_turn"}:
             raise ValueError("Choose queue, steer, after_tool or after_turn")

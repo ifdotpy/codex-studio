@@ -9,6 +9,7 @@ from typing_extensions import NotRequired, Required, TypedDict, TypeAliasType
 
 from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictStr, create_model, model_validator
 
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
 from codex_records import (
     AgentRecord as AgentRecordContract,
     AmbiguousToolRequestResult,
@@ -235,6 +236,7 @@ class MessageBody(ContractModel):
 
 
 class ManagedMessageBody(MessageBody):
+    text: StrictStr = Field(max_length=MAX_MANAGED_MESSAGE_CODEPOINTS)
     delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
     assets: list[StrictStr] = Field(default_factory=list)
 

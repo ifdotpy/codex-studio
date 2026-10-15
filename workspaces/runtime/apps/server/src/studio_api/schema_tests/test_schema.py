@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from typing import Literal, cast
 
 from codex_layout import REPOSITORY_ROOT
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
 from codex_multi_server_protocol import ACCESS_PROTOCOL_VERSION
 from codex_agent_modes import (
     DEFAULT_MAX_TEAM_AGENTS,
@@ -34,6 +35,7 @@ from studio_api.models import (
     UInt64,
 )
 from studio_api.work.models import (
+    ManagedMessageBody,
     PersistedToolRequest,
     _record_response_model,
 )
@@ -208,6 +210,26 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_managed_message_limit_owner_matches_runtime_and_schema(self) -> None:
+        schema = ManagedMessageBody.model_json_schema()
+        self.assertEqual(
+            schema["properties"]["text"]["maxLength"],
+            MAX_MANAGED_MESSAGE_CODEPOINTS,
+        )
+        accepted = "🙂" * MAX_MANAGED_MESSAGE_CODEPOINTS
+        body = ManagedMessageBody(
+            id="06060606-0606-0606-0606-060606060606",
+            room="message-room",
+            text=accepted,
+        )
+        self.assertEqual(len(body.text), MAX_MANAGED_MESSAGE_CODEPOINTS)
+        with self.assertRaises(ValidationError):
+            ManagedMessageBody(
+                id="06060606-0606-0606-0606-060606060607",
+                room="message-room",
+                text=accepted + "🙂",
+            )
+
     def test_multi_server_access_protocol_has_one_generated_owner(self) -> None:
         from studio_api.multi_server.models import AccessProtocolVersion
 

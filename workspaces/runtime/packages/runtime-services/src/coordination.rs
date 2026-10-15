@@ -9,11 +9,8 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-/// Maximum accepted user-message text length, measured in Unicode characters.
-pub const MAX_MESSAGE_CHARACTERS: usize = 32_000;
-
 pub fn message_text_within_limit(text: &str) -> bool {
-    text.chars().count() <= MAX_MESSAGE_CHARACTERS
+    text.chars().count() <= studio_runtime_schema::shared_values::MAX_MANAGED_MESSAGE_CODEPOINTS
 }
 
 #[derive(Debug, Error)]
