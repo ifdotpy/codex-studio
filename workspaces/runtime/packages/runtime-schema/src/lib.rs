@@ -419,18 +419,26 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
     })
 }
 
-/// Return the first validation error's JSON pointer and keyword, if any.
-pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
+/// Return validation errors as JSON pointers and keywords.
+pub fn validation_errors(schema: &str, value: &Value) -> SchemaResult<Vec<(String, String)>> {
     let validator = compiled_schemas()?
         .validators
         .get(schema)
         .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
-    Ok(validator.iter_errors(value).next().map(|error| {
-        (
-            error.instance_path().to_string(),
-            error.kind().keyword().to_owned(),
-        )
-    }))
+    Ok(validator
+        .iter_errors(value)
+        .map(|error| {
+            (
+                error.instance_path().to_string(),
+                error.kind().keyword().to_owned(),
+            )
+        })
+        .collect())
+}
+
+/// Return the first validation error's JSON pointer and keyword, if any.
+pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
+    Ok(validation_errors(schema, value)?.into_iter().next())
 }
 
 fn compiled_schemas() -> SchemaResult<&'static CompiledSchemas> {

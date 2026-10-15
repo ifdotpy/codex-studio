@@ -294,21 +294,35 @@ fn read_history_checkpoint(
         if valid {
             return Ok(Some(value));
         }
-        let (pointer, reason) = if value.get("id").and_then(Value::as_str) != Some(key) {
-            ("/id".to_owned(), "row_id_mismatch".to_owned())
+        let (diagnostic, invalid_pointers) = if value.get("id").and_then(Value::as_str) != Some(key)
+        {
+            (
+                analytics_field_diagnostic(key, "/id", "row_id_mismatch", &value),
+                vec!["/id".to_owned()],
+            )
         } else {
-            studio_runtime_schema::first_error("AnalyticsHistory", &value)
-                .map_err(studio_runtime_store::StoreError::SchemaValidation)?
-                .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()))
+            let errors = studio_runtime_schema::validation_errors("AnalyticsHistory", &value)
+                .map_err(studio_runtime_store::StoreError::SchemaValidation)?;
+            let details = errors
+                .iter()
+                .map(|(pointer, reason)| analytics_field_diagnostic(key, pointer, reason, &value))
+                .collect::<Vec<_>>();
+            let pointers = errors
+                .into_iter()
+                .map(|(pointer, _)| pointer)
+                .collect::<Vec<_>>();
+            let diagnostic = if details.is_empty() {
+                format!("analytics_history/{key}: schema_invalid")
+            } else {
+                details.join("; ")
+            };
+            (diagnostic, pointers)
         };
-        let field = value.pointer(&pointer);
-        let (kind, length) = analytics_value_shape(field);
-        let diagnostic = format!(
-            "analytics_history/{key} at {pointer}: {reason}; value type {kind}, length {length}"
-        );
         let replacement = if let Some(mut retained) = value.as_object().cloned().map(Value::Object)
         {
-            remove_json_pointer(&mut retained, &pointer);
+            for pointer in &invalid_pointers {
+                remove_json_pointer(&mut retained, pointer);
+            }
             retained["status"] = json!("invalidRecord");
             retained["error"] = json!(diagnostic);
             retained["invalidRecordDiagnostic"] = json!(diagnostic);
@@ -377,6 +391,11 @@ fn analytics_value_shape(value: Option<&Value>) -> (&'static str, String) {
         Some(Value::Null) => ("null", "not applicable".to_owned()),
         None => ("missing", "not applicable".to_owned()),
     }
+}
+
+fn analytics_field_diagnostic(key: &str, pointer: &str, reason: &str, value: &Value) -> String {
+    let (kind, length) = analytics_value_shape(value.pointer(pointer));
+    format!("analytics_history/{key} at {pointer}: {reason}; value type {kind}, length {length}")
 }
 
 fn initial_history_checkpoint(key: &str, agent: &Value, diagnostic: &str) -> Value {
@@ -969,7 +988,7 @@ mod invalid_record_tests {
             "filesystemIdentity": [12, 34],
             "anchor": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "validated": true,
-            "offset": 4096,
+            "offset": "private offset",
             "importedRecords": 32,
             "malformedLines": 0,
             "context": {"threadId": "bad-thread", "window": "private value"}
@@ -1004,17 +1023,13 @@ mod invalid_record_tests {
             .expect("recorded diagnostic");
         assert!(diagnostic.contains("analytics_history/bad:default:bad-thread"));
         assert!(diagnostic.contains("/context/window"));
+        assert!(diagnostic.contains("/offset"));
         assert!(diagnostic.contains("anyOf"));
         assert!(diagnostic.contains("value type string"));
         assert!(!diagnostic.contains("private value"));
-        assert_eq!(recovered["offset"], 4096);
-        assert_eq!(recovered["importedRecords"], 32);
-        assert_eq!(recovered["filesystemIdentity"], json!([12, 34]));
-        assert_eq!(recovered["path"], "/profile/rollout.jsonl");
-        assert_eq!(
-            recovered["anchor"],
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
+        assert!(!diagnostic.contains("private offset"));
+        assert_eq!(recovered["offset"], 0);
+        assert_eq!(recovered["importedRecords"], 0);
         assert!(recovered["context"].get("window").is_none());
         assert_eq!(recovered["status"], "invalidRecord");
         let good_agent = json!({"id":"good","accountKey":"default","threadId":"good-thread"});

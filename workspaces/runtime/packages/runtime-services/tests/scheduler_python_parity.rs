@@ -323,7 +323,7 @@ fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbor() {
         .expect("claim submitted attempt")
         .expect("pending input");
     assert!(
-        mark_submitted_for_provider(&store, &intent, "good-request", 1)
+        mark_submitted_for_provider(&store, &intent, "good-request", 1, "connection-1")
             .expect("persist submitted attempt")
     );
 

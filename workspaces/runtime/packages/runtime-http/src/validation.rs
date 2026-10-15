@@ -447,14 +447,47 @@ fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)>
                 unexpected.clone(),
             )]
         }
+        ValidationErrorKind::AnyOf { context } => context
+            .iter()
+            .map(extra_only_branch)
+            .filter(|(other_errors, _)| *other_errors == 0)
+            .min_by_key(|(_, fields)| fields.len())
+            .map_or_else(Vec::new, |(_, fields)| fields),
+        ValidationErrorKind::OneOfNotValid { context } => {
+            let mut branches = context
+                .iter()
+                .map(extra_only_branch)
+                .filter(|(other_errors, _)| *other_errors == 0);
+            let selected = branches.next();
+            if branches.next().is_none() {
+                selected.map_or_else(Vec::new, |(_, fields)| fields)
+            } else {
+                Vec::new()
+            }
+        }
+        ValidationErrorKind::OneOfMultipleValid { .. } => Vec::new(),
+        _ => Vec::new(),
+    }
+}
+
+fn extra_only_branch(branch: &[ValidationError<'_>]) -> (usize, Vec<(String, Vec<String>)>) {
+    (
+        branch.iter().map(non_extra_error_count).sum(),
+        branch.iter().flat_map(extra_field_errors).collect(),
+    )
+}
+
+fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
+    match error.kind() {
+        ValidationErrorKind::AdditionalProperties { .. } => 0,
         ValidationErrorKind::AnyOf { context }
         | ValidationErrorKind::OneOfNotValid { context }
         | ValidationErrorKind::OneOfMultipleValid { context } => context
             .iter()
-            .flatten()
-            .flat_map(extra_field_errors)
-            .collect(),
-        _ => Vec::new(),
+            .map(|branch| branch.iter().map(non_extra_error_count).sum::<usize>())
+            .min()
+            .unwrap_or(1),
+        _ => 1,
     }
 }
 
@@ -2042,6 +2075,41 @@ mod tests {
             .validated_stored("CheckpointSummary", checkpoint)
             .expect("valid extension record retains its integer");
         assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
+    }
+
+    #[test]
+    fn stored_extra_stripping_keeps_the_matching_native_notice_union_branch() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let mut workspace = json!({
+            "nativeNotices": [{
+                "id": "notice-1",
+                "accountKey": "default",
+                "connectionId": "connection-1",
+                "message": "provider notice",
+                "details": {"code": "temporary"},
+                "at": 1.0,
+                "legacyExtension": true
+            }],
+            "unknownWorkspaceField": true
+        });
+
+        registry.strip_stored_extra_fields("WorkspaceEntityDto", &mut workspace);
+
+        assert!(registry.validate_stored("WorkspaceEntityDto", &workspace));
+        assert_eq!(
+            workspace["nativeNotices"][0]["connectionId"],
+            "connection-1"
+        );
+        assert_eq!(
+            workspace["nativeNotices"][0]["details"]["code"],
+            "temporary"
+        );
+        assert!(
+            workspace["nativeNotices"][0]
+                .get("legacyExtension")
+                .is_none()
+        );
+        assert!(workspace.get("unknownWorkspaceField").is_none());
     }
 
     #[test]

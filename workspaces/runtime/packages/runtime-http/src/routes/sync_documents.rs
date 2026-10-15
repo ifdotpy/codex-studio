@@ -764,9 +764,7 @@ fn pull_entities(
     let response = crate::generated::SyncPullResponse {
         sync_entities: None,
         sync_entities_after: None,
-        checkpoint: crate::generated::SyncCheckpoint {
-            seq: checkpoint,
-        },
+        checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
         documents,
         floor: None,
         generation,

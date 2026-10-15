@@ -95,15 +95,7 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
                     }
                     // Keep a valid, privacy-safe sync projection for the held
                     // row while preserving the malformed source for repair.
-                    json!({
-                        "id": row_id,
-                        "rootId": row_id,
-                        "epoch": parsed.get("epoch").and_then(Value::as_i64).unwrap_or_default(),
-                        "status": "failed",
-                        "error": message,
-                        "nativeFailureHold": true,
-                        "autoWake": false
-                    })
+                    crate::sync_views::invalid_agent_view(&row_id, &parsed, message)
                 }
             };
             let context = crate::sync_entity_context::agent_view_context(tx,&agent,server_id.as_deref())?;
@@ -121,16 +113,19 @@ pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError>
         .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
         .map(|(value, _)| value);
     Ok(lifecycle_transaction(store, |transaction| {
+        let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
             Err(StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" => {
                 eprintln!("scheduler startup skipped malformed reservation row id={id}");
+                recovery_complete = false;
                 0
             }
             Err(StoreError::InvalidSyncObjectField { scope, id, .. })
                 if scope == "runtime_agents" =>
             {
                 eprintln!("scheduler startup skipped invalid-field reservation row id={id}");
+                recovery_complete = false;
                 0
             }
             Err(error) => return Err(error),
@@ -139,17 +134,25 @@ pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError>
             Ok(recovered) => recovered,
             Err(StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" => {
                 eprintln!("scheduler startup skipped malformed submitted row id={id}");
+                recovery_complete = false;
                 0
             }
             Err(StoreError::InvalidSyncObjectField { scope, id, .. })
                 if scope == "runtime_agents" =>
             {
                 eprintln!("scheduler startup skipped invalid-field submitted row id={id}");
+                recovery_complete = false;
                 0
             }
             Err(error) => return Err(error),
         };
-        clear_startup_agent_state(transaction, account_registry.as_ref())?;
+        if recovery_complete {
+            clear_startup_agent_state(transaction, account_registry.as_ref())?;
+        } else {
+            eprintln!(
+                "scheduler startup retained agent claims because recovery scan was incomplete"
+            );
+        }
         Ok(unsubmitted + submitted)
     })?)
 }
@@ -803,6 +806,22 @@ mod invalid_record_recovery_tests {
             })
             .expect("seed malformed reserved row");
 
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('healthy',?1)",
+                    [json!({
+                        "id":"healthy", "rootId":"healthy", "epoch":1,
+                        "status":"running", "autoWake":true, "inFlight":true,
+                        "startAttempt":{"id":"live-attempt","submitted":true,
+                            "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"}
+                    })
+                    .to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("seed healthy neighboring agent");
+
         let recovered = recover_on_startup(&store).expect("startup tolerates invalid field");
 
         assert_eq!(recovered, 0);
@@ -818,5 +837,16 @@ mod invalid_record_recovery_tests {
         assert_eq!(preserved["rootId"], 17);
         assert_eq!(preserved["inFlight"], true);
         assert_eq!(preserved["startAttempt"]["submitted"], true);
+
+        let healthy: String = connection
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='healthy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("healthy neighboring agent remains stored");
+        let healthy = serde_json::from_str::<Value>(&healthy).unwrap();
+        assert_eq!(healthy["inFlight"], true);
+        assert_eq!(healthy["startAttempt"]["id"], "live-attempt");
     }
 }

@@ -257,6 +257,25 @@ pub struct AgentViewContext {
     pub latest_work_result_file: Option<String>,
 }
 
+/// Minimal displayable record for an agent whose stored schema failed. Keep
+/// valid hierarchy and lead identity so the renderer does not detach a held
+/// child from its root or render a lead as a worker.
+pub(crate) fn invalid_agent_view(id: &str, record: &Value, diagnostic: &str) -> Value {
+    let mut view = json!({
+        "id": id,
+        "rootId": record.get("rootId").and_then(Value::as_str).unwrap_or(id),
+        "epoch": record.get("epoch").and_then(Value::as_i64).unwrap_or_default(),
+        "status": "failed",
+        "error": diagnostic,
+        "nativeFailureHold": true,
+        "autoWake": false
+    });
+    if let Some(is_lead) = record.get("isLead").filter(|value| value.is_boolean()) {
+        view["isLead"] = is_lead.clone();
+    }
+    view
+}
+
 /// Build the managed renderer view from a record and explicit runtime context.
 pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<Value> {
     let id = record.get("id").and_then(Value::as_str)?;
@@ -626,7 +645,22 @@ pub fn project_entity_view(
 
 #[cfg(test)]
 mod projection_plan_tests {
-    use super::{openapi_document, schema_projection_properties};
+    use super::{invalid_agent_view, openapi_document, schema_projection_properties};
+    use serde_json::json;
+
+    #[test]
+    fn invalid_agent_view_preserves_valid_root_and_lead_identity() {
+        let record = json!({"id":"child","rootId":"lead","epoch":4,"isLead":true});
+        let view = invalid_agent_view("child", &record, "invalid field /prompt");
+        assert_eq!(view["rootId"], "lead");
+        assert_eq!(view["isLead"], true);
+        assert_eq!(view["status"], "failed");
+
+        let malformed_root = json!({"id":"child","rootId":17,"epoch":4,"isLead":false});
+        let fallback = invalid_agent_view("child", &malformed_root, "invalid field /rootId");
+        assert_eq!(fallback["rootId"], "child");
+        assert_eq!(fallback["isLead"], false);
+    }
 
     #[test]
     fn schema_projection_plan_reuses_openapi_property_nodes() {

@@ -436,6 +436,8 @@ pub(super) fn claim(
 pub(super) fn hold_invalid_agent_record(
     store: &RuntimeStore,
     agent_id: &str,
+    expected_pointer: &str,
+    expected_reason: &str,
     diagnostic: &str,
 ) -> Result<(), WorkerError> {
     let server_id = store.local_server_id()?;
@@ -450,6 +452,20 @@ pub(super) fn hold_invalid_agent_record(
         let Some(raw) = raw else {
             return Ok(());
         };
+        match AgentRepository::get(tx, &AgentId::from(agent_id)) {
+            Ok(_) => return Ok(()),
+            Err(StoreError::InvalidSyncObjectField {
+                scope,
+                id,
+                pointer,
+                reason,
+            }) if scope == "runtime_agents"
+                && id == agent_id
+                && pointer == expected_pointer
+                && reason == expected_reason => {}
+            Err(StoreError::InvalidSyncObjectField { .. }) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
         let parsed: Value =
             serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
                 scope: "runtime_agents".into(),
@@ -471,15 +487,7 @@ pub(super) fn hold_invalid_agent_record(
 
         // Publish a minimal safe agent view so the renderer can show that this
         // row is held while the malformed persisted bytes remain untouched.
-        let public = json!({
-            "id": agent_id,
-            "rootId": agent_id,
-            "epoch": parsed.get("epoch").and_then(Value::as_i64).unwrap_or_default(),
-            "status": "failed",
-            "error": diagnostic,
-            "nativeFailureHold": true,
-            "autoWake": false
-        });
+        let public = crate::sync_views::invalid_agent_view(agent_id, &parsed, diagnostic);
         let context =
             crate::sync_entity_context::agent_view_context(tx, &public, server_id.as_deref())?;
         let projection =

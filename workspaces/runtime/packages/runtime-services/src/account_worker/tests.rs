@@ -837,6 +837,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         "status": "queued",
                         "accountKey": "default",
                         "autoWake": true,
+                        "isLead": true,
                         "threadId": "invalid-neighbor-thread"
                     });
                     AgentRepository::put(
@@ -933,6 +934,8 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     let projected: Value = serde_json::from_str(&projected).expect("held agent projection JSON");
     assert_eq!(projected["value"]["status"], "failed");
     assert_eq!(projected["value"]["autoWake"], false);
+    assert_eq!(projected["value"]["rootId"], bad_id);
+    assert_eq!(projected["value"]["isLead"], true);
     assert!(
         projected["value"]["error"]
             .as_str()
@@ -1004,6 +1007,74 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         .await
         .expect("account worker remains healthy");
 }
+
+#[test]
+fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
+                [json!({
+                    "id":"racy", "rootId":17, "epoch":1,
+                    "status":"idle", "isLead":true
+                })
+                .to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("seed malformed row");
+
+    let observed = {
+        let reader = store.read().expect("read connection opens");
+        AgentRepository::get(&reader, &AgentId::from("racy"))
+            .expect_err("malformed root id is rejected")
+    };
+    let (pointer, reason) = match observed {
+        StoreError::InvalidSyncObjectField {
+            scope,
+            id,
+            pointer,
+            reason,
+        } if scope == "runtime_agents" && id == "racy" => (pointer, reason),
+        error => panic!("unexpected malformed-agent error: {error}"),
+    };
+
+    store
+        .transaction(|tx| {
+            AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(json!({
+                    "id":"racy", "rootId":"racy", "epoch":1,
+                    "status":"idle", "isLead":true
+                }))?,
+            )?;
+            Ok(())
+        })
+        .expect("repair the row before the hold transaction");
+
+    store::hold_invalid_agent_record(&store, "racy", &pointer, &reason, "stale diagnostic")
+        .expect("stale hold is safely ignored");
+
+    let reader = store.read().expect("read connection opens");
+    let receipt: bool = reader
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
+            [format!(
+                "{}racy",
+                studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+            )],
+            |row| row.get(0),
+        )
+        .expect("hold receipt query succeeds");
+    assert!(!receipt, "a repaired row must not receive a stale hold");
+    assert!(
+        AgentRepository::get(&reader, &AgentId::from("racy"))
+            .expect("repaired record remains readable")
+            .is_some()
+    );
+}
 async fn scenario_interrupt_before_start_reply_uses_observed_turn_and_revokes_epoch() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1034,14 +1105,27 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
         .run({
             let agent_id = agent_id.clone();
             move |store| {
-                store.transaction(|tx| {
+                let (pointer, reason) = store.transaction(|tx| {
                     tx.execute(
                         "UPDATE runtime_agents SET record=json_set(record,'$.rootId',json('23')) WHERE id=?1",
                         [&agent_id],
                     )?;
-                    Ok(())
+                    let invalid = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))
+                        .expect_err("corrupt root id is rejected");
+                    match invalid {
+                        StoreError::InvalidSyncObjectField {
+                            pointer, reason, ..
+                        } => Ok((pointer, reason)),
+                        error => Err(error),
+                    }
                 })?;
-                store::hold_invalid_agent_record(store, &agent_id, "runtime_agents/rootId invalid")?;
+                store::hold_invalid_agent_record(
+                    store,
+                    &agent_id,
+                    &pointer,
+                    &reason,
+                    "runtime_agents/rootId invalid",
+                )?;
                 store.transaction(|tx| {
                     let context = json!({
                         "intent": {

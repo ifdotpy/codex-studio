@@ -440,13 +440,21 @@ pub async fn start_account_worker_with_publication_sink(
         {
             Ok(recovered) => break recovered,
             Err(error) if invalid_agent_record_error(&error) => {
-                let invalid_id = invalid_agent_record_id(&error)
-                    .expect("guard matches InvalidSyncObjectField")
-                    .to_owned();
+                let (invalid_id, pointer, reason) = invalid_agent_record_details(&error)
+                    .expect("guard matches InvalidSyncObjectField");
+                let invalid_id = invalid_id.to_owned();
+                let pointer = pointer.to_owned();
+                let reason = reason.to_owned();
                 let diagnostic = error.to_string();
                 bridge
                     .worker_run("hold_invalid_agent", move |store| {
-                        store::hold_invalid_agent_record(store, &invalid_id, &diagnostic)
+                        store::hold_invalid_agent_record(
+                            store,
+                            &invalid_id,
+                            &pointer,
+                            &reason,
+                            &diagnostic,
+                        )
                     })
                     .await?;
             }
@@ -1056,13 +1064,21 @@ impl Worker {
             {
                 Ok(candidate) => break candidate,
                 Err(error) if invalid_agent_record_error(&error) => {
-                    let invalid_id = invalid_agent_record_id(&error)
-                        .expect("guard matches InvalidSyncObjectField")
-                        .to_owned();
+                    let (invalid_id, pointer, reason) = invalid_agent_record_details(&error)
+                        .expect("guard matches InvalidSyncObjectField");
+                    let invalid_id = invalid_id.to_owned();
+                    let pointer = pointer.to_owned();
+                    let reason = reason.to_owned();
                     let was_requested_agent = invalid_id == agent;
                     let diagnostic = error.to_string();
                     self.db("hold_invalid_agent", move |store| {
-                        store::hold_invalid_agent_record(store, &invalid_id, &diagnostic)
+                        store::hold_invalid_agent_record(
+                            store,
+                            &invalid_id,
+                            &pointer,
+                            &reason,
+                            &diagnostic,
+                        )
                     })
                     .await?;
                     if was_requested_agent {
@@ -1881,18 +1897,24 @@ impl Worker {
 }
 
 fn invalid_agent_record_error(error: &WorkerError) -> bool {
-    invalid_agent_record_id(error).is_some()
+    invalid_agent_record_details(error).is_some()
 }
-fn invalid_agent_record_id(error: &WorkerError) -> Option<&str> {
+fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str)> {
     let invalid = match error {
-        WorkerError::Store(StoreError::InvalidSyncObjectField { scope, id, .. })
-            if scope == "runtime_agents" =>
-        {
-            Some(id.as_str())
-        }
+        WorkerError::Store(StoreError::InvalidSyncObjectField {
+            scope,
+            id,
+            pointer,
+            reason,
+        }) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
         WorkerError::Scheduler(scheduler::SchedulerError::Store(
-            StoreError::InvalidSyncObjectField { scope, id, .. },
-        )) if scope == "runtime_agents" => Some(id.as_str()),
+            StoreError::InvalidSyncObjectField {
+                scope,
+                id,
+                pointer,
+                reason,
+            },
+        )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
         _ => None,
     };
     invalid
