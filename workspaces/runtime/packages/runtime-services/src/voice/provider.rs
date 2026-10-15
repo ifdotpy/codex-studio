@@ -2830,6 +2830,7 @@ mod tests {
         let mut extra = std::collections::BTreeMap::new();
         extra.insert("accountKey".into(), json!("default"));
         extra.insert("threadId".into(), json!("voice-thread"));
+        extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
             id: AgentId::from("voice-agent"),
             root_id: AgentId::from("voice-agent"),
