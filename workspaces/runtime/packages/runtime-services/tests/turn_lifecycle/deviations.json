@@ -6,7 +6,6 @@
     "fields": [
       "/runtime_agents/*/record/startAttempt/connectionGeneration",
       "/runtime_agents/*/record/startAttempt/requestTicket",
-      "/runtime_event_meta/*/record/contextManifest",
       "/runtime_execution_attempts/*/record/claimResult",
       "/runtime_execution_attempts/*/record/connectionGeneration",
       "/runtime_execution_attempts/*/record/inputIdentity",
