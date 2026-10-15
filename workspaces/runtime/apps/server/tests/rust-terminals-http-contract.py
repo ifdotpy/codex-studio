@@ -386,19 +386,30 @@ class TerminalsHTTPContract(unittest.TestCase):
             return response.status == 200 and marker in response.json()["text"]
 
         self.backend.wait_until(marker_visible, "input reached terminal output")
-        before = self.backend.request(
-            "GET", f"/api/terminals/output?id={input_id}&offset=0", headers=self.headers(),
-        ).json()["text"]
         self.restart_backend()
+        before_replay = self.backend.request(
+            "GET", f"/api/terminals/output?id={input_id}&offset=0", headers=self.headers(),
+        )
+        self.assertEqual(before_replay.status, 200, before_replay.body[:1000])
+        self.assertEqual(
+            before_replay.json()["status"],
+            "exited",
+            "restart must finish the terminal process before receipt replay is compared",
+        )
         replayed_input = self.backend.request(
             "POST", "/api/terminals/input", body=input_body, headers=self.headers(),
         )
         self.assertEqual(replayed_input.status, 200, replayed_input.body[:1000])
         self.assertEqual(replayed_input.json(), {"ok": True, "delivery": "sent"})
-        after = self.backend.request(
+        after_replay = self.backend.request(
             "GET", f"/api/terminals/output?id={input_id}&offset=0", headers=self.headers(),
-        ).json()["text"]
-        self.assertEqual(after.count(marker), before.count(marker))
+        )
+        self.assertEqual(after_replay.status, 200, after_replay.body[:1000])
+        self.assertEqual(
+            after_replay.json(),
+            before_replay.json(),
+            "a replayed receipt must not submit input to the frozen terminal again",
+        )
 
         close_id, _ = self.create_live_terminal("restart-close-terminal")
         close_body = {"id": close_id}
