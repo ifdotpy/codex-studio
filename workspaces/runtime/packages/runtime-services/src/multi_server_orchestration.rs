@@ -1532,18 +1532,6 @@ pub fn decide_delivery(
     action: &str,
     now: i64,
 ) -> Result<DeliveryDecision, AccessError> {
-    decide_delivery_with_durable_effect(snapshot, signature, server, outgoing, action, false, now)
-}
-
-fn decide_delivery_with_durable_effect(
-    snapshot: Option<&DeliverySnapshot>,
-    signature: &str,
-    server: Option<&str>,
-    outgoing: bool,
-    action: &str,
-    durable_effect_proven: bool,
-    now: i64,
-) -> Result<DeliveryDecision, AccessError> {
     let Some(snapshot) = snapshot else {
         return Ok(DeliveryDecision::Execute);
     };
@@ -1566,9 +1554,7 @@ fn decide_delivery_with_durable_effect(
     // leave the receipt unknown instead of executing the input again.
     if !outgoing
         && (snapshot.state == "waiting"
-            || (peer_replay_safe(action)
-                && (action != "input" || durable_effect_proven)
-                && snapshot.state == "running"))
+            || (peer_replay_safe(action) && action != "input" && snapshot.state == "running"))
     {
         return Ok(DeliveryDecision::Execute);
     }
@@ -1731,41 +1717,53 @@ impl OrchestrationDriver {
             ));
         }
         let signature = envelope.incoming_signature(principal)?;
-        let (decision, replaying_claim, recovered_anchor_receipt) = self.store.transaction_with(|tx| {
+        let (decision, replaying_claim) = self.store.transaction_with(|tx| {
             if !is_local {
                 require_paired(tx, principal)?;
             }
             if retired(tx, &envelope.key, "in", &signature, None)? {
-                return Ok((
-                    DeliveryDecision::Return(ExchangeOutcome::Unknown),
-                    false,
-                    None,
-                ));
+                return Ok((DeliveryDecision::Return(ExchangeOutcome::Unknown), false));
             }
             let saved = inbox(tx, &envelope.key, now)?;
             let replaying_claim = saved.is_some();
-            let recovered_anchor_receipt = if saved
-                .as_ref()
-                .is_some_and(|snapshot| {
-                    snapshot.state == "running"
-                        && snapshot.signature == signature
-                        && snapshot.server.is_none()
-                })
-            {
-                durable_anchor_input_receipt(tx, principal, &envelope)?
-            } else {
-                None
-            };
-            let decision = decide_delivery_with_durable_effect(
+            let decision = decide_delivery(
                 saved.as_ref(),
                 &signature,
                 None,
                 false,
                 &envelope.action,
-                recovered_anchor_receipt.is_some(),
                 now,
             )?;
-            if matches!(decision,DeliveryDecision::Execute) {
+            if matches!(decision, DeliveryDecision::Return(ExchangeOutcome::Unknown))
+                && saved.as_ref().is_some_and(|snapshot| {
+                    snapshot.state == "running"
+                        && snapshot.signature == signature
+                        && snapshot.server.is_none()
+                })
+                && let Some(receipt) = durable_anchor_input_receipt(tx, principal, &envelope)?
+            {
+                let result = ExchangeOutcome::Applied(receipt);
+                let stored_result = result.to_value(&envelope.key).to_string();
+                if stored_result.len() > MAX_RESPONSE_BYTES {
+                    return Ok((
+                        DeliveryDecision::Return(ExchangeOutcome::Unknown),
+                        replaying_claim,
+                    ));
+                }
+                let updated = tx.execute(
+                    "UPDATE runtime_server_inbox SET state='complete',result=?1,completed_at=?2 WHERE id=?3 AND signature=?4 AND state='running' AND principal=?5",
+                    params![stored_result, now, envelope.key, signature, principal],
+                )?;
+                if updated != 1 {
+                    return Err(refused(
+                        409,
+                        "stale_receipt",
+                        "The delivery receipt does not match its claim",
+                    ));
+                }
+                return Ok((DeliveryDecision::Return(result), replaying_claim));
+            }
+            if matches!(decision, DeliveryDecision::Execute) {
                 if saved.is_some() {
                     tx.execute(
                         "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')",
@@ -1778,22 +1776,9 @@ impl OrchestrationDriver {
                     )?;
                 }
             }
-            Ok::<_, AccessError>((decision, replaying_claim, recovered_anchor_receipt))
+            Ok::<_, AccessError>((decision, replaying_claim))
         })?;
         if let DeliveryDecision::Return(result) = decision {
-            return Ok(result);
-        }
-        if let Some(receipt) = recovered_anchor_receipt {
-            let result = ExchangeOutcome::Applied(receipt);
-            self.finish(
-                "inbox",
-                &envelope.key,
-                &envelope.action,
-                &signature,
-                None,
-                &result,
-                now,
-            )?;
             return Ok(result);
         }
         let mut result = match self.effects.execute(principal, &envelope.value()) {
@@ -2014,7 +1999,7 @@ fn retired(
 mod tests {
     use super::{
         DeliveryDecision, DeliverySnapshot, ExchangeOutcome, HttpsPairedTransport, decide_delivery,
-        decide_delivery_with_durable_effect, peer_retry_delay,
+        peer_retry_delay,
     };
     use rusqlite::params;
     use std::sync::{Arc, mpsc};
@@ -2103,18 +2088,6 @@ mod tests {
         assert!(matches!(
             decide_delivery(Some(&running), "same-content", None, false, "input", 200),
             Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
-        ));
-        assert!(matches!(
-            decide_delivery_with_durable_effect(
-                Some(&running),
-                "same-content",
-                None,
-                false,
-                "input",
-                true,
-                200
-            ),
-            Ok(DeliveryDecision::Execute)
         ));
     }
 

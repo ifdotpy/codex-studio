@@ -388,6 +388,19 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .expect("durable home user event");
     assert_eq!(event_count, 1);
     assert_eq!(event_status, "pending");
+    let (inbox_state, inbox_result): (String, String) = connection
+        .query_row(
+            "SELECT state,result FROM runtime_server_inbox WHERE id=?1",
+            [remote_event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("recovered inbox receipt");
+    assert_eq!(inbox_state, "complete");
+    let inbox_result: serde_json::Value =
+        serde_json::from_str(&inbox_result).expect("completed inbox result");
+    assert_eq!(inbox_result["requestId"], remote_event_id);
+    assert_eq!(inbox_result["outcome"], "applied");
+    assert_eq!(inbox_result["value"], first_receipt.clone());
     drop(connection);
 
     let mut uncertain_envelope = envelope.clone();
