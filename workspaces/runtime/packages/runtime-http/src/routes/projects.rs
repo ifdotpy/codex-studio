@@ -1094,6 +1094,7 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "cross-server-driver/project-location-write",
+            "cross-server-driver/peer-team-transport",
             "provider-session/model-list",
         ],
     }
