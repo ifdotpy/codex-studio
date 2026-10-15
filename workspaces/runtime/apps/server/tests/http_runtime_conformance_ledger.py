@@ -185,10 +185,6 @@ PYTHON_BASELINE_ONLY_SUITES = frozenset({
 # re-keyed to that operation.
 UNDECLARED_PROVIDER_TURN_SERVICE = "turn-driver/provider-turn"
 UNDECLARED_PROVIDER_TURN_TESTS: dict[str, dict[str, str]] = {
-    "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py": {
-        "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
-        "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
-    },
     "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
         "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": "Recovering the tool request requires a provider turn; no operation declares this dependency yet.",
     },
@@ -259,8 +255,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                     "expected": "2xx"},
     },
     ("POST", "/api/connection-recovery"): {
-        "primary": {"body": {"id": "$agent"}, "expected": "501",
-                    "expected_error": "Not implemented: requires account-worker/recovery-history", "assert_no_write": True},
+        "primary": {"body": {"id": "$agent"}, "expected": None, "unverified": True,
+                    "reason": "The HTTP process fixture cannot inject the retained account-session recovery port; route success is covered by its Rust router test."},
     },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
@@ -290,8 +286,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "query_omit": ["scope"],
             "fixture_mutations": {"agent_execution_mode": "vm"},
             "restore": ["agent_record"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires workspace-state/image-execution",
+            "expected": None,
+            "unverified": True,
+            "reason": "Image-workspace change inspection has no process-backed positive fixture.",
         }],
     },
     ("GET", "/api/federation"): {
@@ -357,9 +354,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/diagnostics"): {
         "primary": {
-            "expected": "501",
-            "expected_error": "Not implemented: requires runtime-process/studio-loaded-threads, runtime-process/supervisor-status",
-            "assert_no_write": True,
+            "expected": "2xx",
         },
     },
     ("GET", "/api/directories"): {
@@ -395,18 +390,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "501",
-                    "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
-                    "reason": "The Python cache lacks the merged registry provider signature and no pricing artifact is seeded.",
-                    "assert_no_write": True},
+        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "2xx"},
         "additional": [{
             "name": "stale cost cache requires refresh",
             "query": {"agent": "$analyticsAgent"},
-            "fixture_mutations": {"stale_session_cost_cache": True},
-            "restore": ["session_cost_cache"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
-            "assert_no_write": True,
+            "fixture_mutations": {"stale_session_cost_cache": True, "seed_pricing_catalog": True},
+            "restore": ["session_cost_cache", "pricing_file"],
+            "expected": "2xx",
         }],
     },
     ("GET", "/api/sync/stream"): {
@@ -432,8 +422,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/accounts/claude/login"): {
         "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
-    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
-    ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
+    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "2xx"}},
+    ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "403", "expected_error": "Status requires a signed paired-server request", "reason": "Status reads require a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
     ("GET", "/api/project-locations"): {
         "primary": {"query": {"project": "ledger-missing-project", "server": "local"}, "expected": "400"},
     },
@@ -454,7 +444,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{
             "name": "execution-backed workspace refusal",
             "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": "501",
+            "expected": None,
+            "unverified": True,
+            "reason": "The marked VM workspace lacks a process-backed image execution fixture.",
         }],
     },
     ("GET", "/api/file-info"): {
@@ -465,7 +457,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{
             "name": "execution-backed workspace refusal",
             "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": "501",
+            "expected": None,
+            "unverified": True,
+            "reason": "The marked VM workspace lacks a process-backed image execution fixture.",
         }],
     },
     ("POST", "/api/monitor/cancel"): {
@@ -496,7 +490,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/limits"): {
         "primary": {"query": {"account_key": "default", "cached": "1"}, "expected": "2xx"},
-        "additional": [{"name": "live provider limits", "query": {"account_key": "disconnected"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/account-rate-limits"}],
+        "additional": [{"name": "disconnected account limits snapshot", "query": {"account_key": "$disconnectedAccount"}, "expected": "2xx"}],
     },
     ("GET", "/api/task"): {
         "primary": {"query": {"id": "$task"}},
@@ -575,10 +569,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
         "additional": [{
             "name": "signed invite dependency",
-            "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
+            "body": {"action": "create_invite", "requestId": "ledger-probe-invite", "label": "Ledger probe"},
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires multi-server-runtime/orchestration, multi-server-runtime/pairing, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery",
+            "expected": "400",
+            "expected_error": "Configure Tailscale Serve HTTPS before pairing",
+            "reason": "The disposable backend has no Tailscale Serve HTTPS origin for invitation creation.",
             "assert_no_write": True,
         }],
     },
@@ -617,8 +612,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "name": "cross-server project registration dependency",
             "body": {"action": "register", "path": "$projectPath", "name": "Remote project", "server": "remote"},
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires cross-server-driver/project-registration",
+            "expected": "403",
+            "expected_error": "The server is not paired or is revoked",
+            "reason": "Remote project registration is refused because the referenced server is not paired.",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/questions/defer"): {
@@ -703,12 +700,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
-        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, turn-driver/capacity-retry", "assert_no_write": True}],
+        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "2xx"}],
     },
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "409", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {"account_key": "ledger-missing-claude-account"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
-    ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
+    ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": None, "unverified": True, "reason": "The deterministic fake-provider action fixture exercises successful review and compact requests; the generic seeded probe has no completed provider thread."}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     # Python checks FederationService.enabled() at the start of route() before
@@ -718,12 +715,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "403", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "403", "assert_no_write": True}},
     ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "403", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "403", "expected_error": "Auto pairing requires a signed paired-server request", "reason": "Auto-pair requires a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "403", "expected_error": "Renaming requires a signed paired-server request", "reason": "Remote name updates require a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "403", "expected_error": "Pairing requires a signed paired-server request", "reason": "Pairing requires a signed request and peer invitation fixture not present in the child backend.", "assert_no_write": True}},
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "2xx"}},
     ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "2xx"}},
-    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": None, "unverified": True, "reason": "Orchestration requires a signed event from a paired server; the child backend has no peer-signing fixture."}},
     ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$liveTerminal"}, "expected": "2xx"}},
     ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
@@ -748,7 +745,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
-        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/usage-resume", "assert_no_write": True}],
+        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "2xx"}],
     },
     ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
@@ -757,14 +754,14 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\r\n"}, "expected": "2xx"}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
-        "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires worker-driver/workspace-preparation", "assert_no_write": True}],
+        "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": None, "unverified": True, "reason": "Worker assignment requires workspace-preparation, which the child backend fixture does not provide."}],
     },
     ("POST", "/api/assets"): {
         "primary": {"body": {"agent": "$agent", "name": "ledger.txt", "base64": "bGVkZ2Vy"}, "expected": "2xx"},
     },
     ("POST", "/api/checkpoint"): {
-        "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"}],
+        "primary": {"name": "native workspace checkpoint", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"},
+        "additional": [{"name": "image execution checkpoint", "body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": None, "unverified": True, "reason": "The marked VM workspace has no process-backed image execution fixture."}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
@@ -786,7 +783,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
-        "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/model-list", "assert_no_write": True}],
+        "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": None, "unverified": True, "reason": "Selecting an explicit provider model needs a seeded provider model catalog, not present in the child backend fixture."}],
     },
     ("POST", "/api/voice/approval_speech"): {
         "primary": {"body": {"agent": "$agent", "request_id": "$approvalRequest"}, "replace_body": True, "expected": "2xx"},
@@ -1324,7 +1321,7 @@ finally:
         "voiceActiveSession": f"{prefix}probe-voice-active",
         "approvalRequest": f"{prefix}probe-monitor-approval",
         "schemaHash": backend.schema_hash,
-        "analyticsAgent": f"{prefix}analytics-contract-agent",
+        "analyticsAgent": analytics_probe_agent_identifier(backend),
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
@@ -1332,9 +1329,16 @@ finally:
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
         "claudeAccount": f"{prefix}claude-ledger",
+        "disconnectedAccount": f"{prefix}disconnected",
         "toolReceipt": f"{prefix}tool-receipt",
         "toolCancel": f"{prefix}tool-cancel",
     }
+
+
+def analytics_probe_agent_identifier(backend: Any) -> str:
+    """Return the analytics seed ID, isolated from copied user data."""
+    prefix = backend.fixture_namespace if backend.copy_mode else ""
+    return f"{prefix}analytics-contract-agent"
 
 
 def valid_probe(
@@ -1435,6 +1439,8 @@ def probe_fixture_state(
         raise ValueError("identity file probe mutations must declare identity_file restoration")
     if ("stale_session_cost_cache" in mutations) != ("session_cost_cache" in restore):
         raise ValueError("session cost cache mutations must declare cache restoration")
+    if ("seed_pricing_catalog" in mutations) != ("pricing_file" in restore):
+        raise ValueError("pricing catalog mutations must declare pricing-file restoration")
     if ("clear_workspace_monitors" in mutations) != ("workspace_monitors" in restore):
         raise ValueError("workspace monitor mutations must declare restoration")
     if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
@@ -1445,6 +1451,7 @@ def probe_fixture_state(
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
+    pricing_file: tuple[Path, bytes | None, int | None, bool] | None = None
     workspace_monitors: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
     active_command_record: tuple[str, str] | None = None
@@ -1499,6 +1506,25 @@ def probe_fixture_state(
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1
             path.write_text(json.dumps(cache), encoding="utf-8")
+        if mutations.get("seed_pricing_catalog"):
+            path = backend.state / "model-pricing" / "models-dev-v1.json"
+            directory_existed = path.parent.is_dir()
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise RuntimeError("model-pricing fixture path is not a regular file")
+            pricing_file = (
+                path,
+                path.read_bytes() if path.is_file() else None,
+                path.stat().st_mode & 0o777 if path.is_file() else None,
+                directory_existed,
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "version": 1,
+                "catalog": {"providers": {
+                    "openai": {"models": {"gpt-test": {"cost": {"input": 1, "output": 1}}}},
+                    "anthropic": {"models": {"claude-sonnet-5-5": {"cost": {"input": 1, "output": 1}}}},
+                }},
+            }), encoding="utf-8")
         if mutations.get("clear_workspace_monitors") or mutations.get("activate_rule_check"):
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                 if mutations.get("clear_workspace_monitors"):
@@ -1552,6 +1578,19 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
+                if pricing_file is not None:
+                    path, content, mode, directory_existed = pricing_file
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(content)
+                        assert mode is not None
+                        path.chmod(mode)
+                    if not directory_existed:
+                        try:
+                            path.parent.rmdir()
+                        except OSError:
+                            pass
                 if (
                     workspace_monitors is not None
                     or rule_monitor is not None
@@ -1843,6 +1882,7 @@ def probe_operations(
                         result.status,
                         standard_501=standard_501,
                         response_body=response_body,
+                        expected_error=probe_case.get("expected_error"),
                     )
                     if probe_case.get("functional_witness"):
                         expected_matches = expected_matches and functional_witness
@@ -1944,8 +1984,11 @@ def probe_status_matches(
     *,
     standard_501: bool,
     response_body: Any,
+    expected_error: str | None = None,
 ) -> bool:
     """Match only an explicit status contract; never infer success from the census."""
+    if expected_error is not None and response_body != {"error": expected_error}:
+        return False
     if expected == "501":
         return status == 501 and standard_501
     if expected == "404":

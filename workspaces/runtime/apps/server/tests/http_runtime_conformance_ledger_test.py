@@ -424,6 +424,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
+            "disconnectedAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
             "liveTerminal", "copyWitnessAgent",
@@ -443,15 +444,17 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
                     expected = probe_case.get("expected", "2xx")
-                    self.assertTrue(
-                        expected in {"2xx", "400", "403", "404", "409"}
-                        or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
-                    )
+                    if probe_case.get("unverified"):
+                        self.assertIsNone(expected)
+                        self.assertTrue(probe_case.get("reason"))
+                    else:
+                        self.assertTrue(
+                            expected in {"2xx", "400", "403", "404", "409"}
+                            or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
+                        )
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
-                    if probe_case.get("unverified"):
-                        self.assertIsNone(probe_case.get("expected"))
 
     def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
         self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
@@ -478,9 +481,20 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     self.assertEqual(len(refusals), 1)
                     self.assertEqual(refusals[0]["expected"], "400")
                     self.assertIn("schema rejects attachment objects", refusals[0]["reason"])
+                elif operation == ("GET", "/api/changes"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertTrue(refusals[0]["unverified"])
+                    self.assertIn("Image", refusals[0]["reason"])
+                elif operation == ("POST", "/api/multi-server"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertIn("Tailscale Serve", refusals[0]["reason"])
                 else:
-                    self.assertTrue(all(case["expected"] == "501" for case in refusals))
-                    self.assertTrue(all(case.get("expected_error") for case in refusals))
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "403")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertIn("not paired", refusals[0]["reason"])
 
     def test_implemented_route_expectations_follow_the_current_manifest(self) -> None:
         operation = ("POST", "/api/ledger-test")
@@ -534,6 +548,29 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertFalse(ledger.probe_status_matches(
             "not_501", 200, standard_501=True, response_body={},
         ))
+
+    def test_named_refusal_rejects_wrong_body_even_when_status_matches(self) -> None:
+        expected_error = "The server is not paired or is revoked"
+        self.assertFalse(ledger.probe_status_matches(
+            "403", 403, standard_501=False,
+            response_body={"error": "different 403 reason"},
+            expected_error=expected_error,
+        ))
+        cases = [("unpaired remote project", {
+            "expected": "403", "expected_error": expected_error,
+        })]
+        observations = [{
+            "status": 403,
+            "expectedMatches": ledger.probe_status_matches(
+                "403", 403, standard_501=False,
+                response_body={"error": "different 403 reason"},
+                expected_error=expected_error,
+            ),
+        }]
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
 
     def test_message_attachment_probe_is_an_explicit_schema_rejection(self) -> None:
         probe = ledger.PROBE_CASES[("POST", "/api/messages")]["additional"][0]
@@ -682,6 +719,105 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     "SELECT record FROM runtime_tasks WHERE id='active-command'",
                 ).fetchone()[0])
             self.assertEqual(restored_task["status"], "completed")
+
+    def test_session_cost_fixture_restores_cache_and_temporary_pricing_catalog(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-pricing-restore-") as scratch:
+            state = Path(scratch)
+            cache_dir = state / "session-costs"
+            cache_dir.mkdir()
+            cache = cache_dir / "cost-analytics-agent.json"
+            original_cache = json.dumps({"source": {"usage": {"generation": 1}}})
+            cache.write_text(original_cache)
+            case = {
+                "fixture_mutations": {
+                    "stale_session_cost_cache": True,
+                    "seed_pricing_catalog": True,
+                },
+                "restore": ["session_cost_cache", "pricing_file"],
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(
+                    SimpleNamespace(state=state),
+                    {"analyticsAgent": "analytics-agent"},
+                    case,
+                ):
+                    self.assertEqual(
+                        json.loads(cache.read_text())["source"]["usage"]["generation"],
+                        2,
+                    )
+                    pricing = state / "model-pricing" / "models-dev-v1.json"
+                    self.assertEqual(json.loads(pricing.read_text())["version"], 1)
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(cache.read_text(), original_cache)
+            self.assertFalse((state / "model-pricing").exists())
+
+    def test_action_route_keeps_fake_provider_http_cases_in_ledger_coverage(self) -> None:
+        suite = "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py"
+        self.assertNotIn(
+            "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS.get(suite, {}),
+        )
+        self.assertNotIn(
+            "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS.get(suite, {}),
+        )
+        primary = ledger.PROBE_CASES[("POST", "/api/action")]["primary"]
+        self.assertTrue(primary["unverified"])
+        self.assertIn("completed provider thread", primary["reason"])
+
+    def test_analytics_seeder_namespaces_ids_in_synthetic_copy_mode(self) -> None:
+        suite = LEDGER.parent / "rust-analytics-http-contract.py"
+        analytics_spec = importlib.util.spec_from_file_location("ledger_copy_analytics_seed", suite)
+        self.assertIsNotNone(analytics_spec)
+        assert analytics_spec is not None and analytics_spec.loader is not None
+        analytics_module = importlib.util.module_from_spec(analytics_spec)
+        analytics_spec.loader.exec_module(analytics_module)
+
+        with tempfile.TemporaryDirectory(prefix="ledger-copy-analytics-") as scratch:
+            root = Path(scratch)
+            state = root / "state"
+            cwd = root / "project"
+            home = root / "home"
+            codex_home = root / "codex"
+            for directory in (state, cwd, home, codex_home):
+                directory.mkdir()
+            namespace = "copyprobe-ledger-test-"
+            environment = {
+                "HOME": str(home),
+                "CODEX_HOME": str(codex_home),
+                "CODEX_AGENTS_STATE_DIR": str(state),
+                "CODEX_CANVAS_CWD": str(cwd),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+                "XDG_STATE_HOME": str(root / "xdg-state"),
+            }
+            backend = SimpleNamespace(
+                copy_mode=True,
+                fixture_namespace=namespace,
+                cwd=cwd,
+                _environment=lambda: environment,
+            )
+            analytics_module.seed_analytics(backend)
+
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as connection:
+                agent_ids = {
+                    row[0] for row in connection.execute("SELECT id FROM runtime_agents")
+                }
+            with closing(sqlite3.connect(state / "analytics.sqlite3")) as connection:
+                usage_agents = {
+                    row[0] for row in connection.execute("SELECT DISTINCT agent FROM analytics_usage")
+                }
+            self.assertIn(f"{namespace}analytics-contract-agent", agent_ids)
+            self.assertIn(f"{namespace}analytics-contract-teammate", agent_ids)
+            self.assertEqual(usage_agents, {
+                f"{namespace}analytics-contract-agent",
+                f"{namespace}analytics-population",
+            })
+            self.assertNotIn("analytics-contract-agent", agent_ids)
+            self.assertNotIn("analytics-contract-agent", usage_agents)
 
     def test_sqlite_snapshot_uses_data_version_fast_path_without_scanning_rows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ledger-sqlite-snapshot-") as scratch:
@@ -832,16 +968,16 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
 
     def test_partial_operations_with_multiple_request_shapes_check_both_results(self) -> None:
         expected_cases = {
-            ("GET", "/api/file"): ["2xx", "501"],
-            ("GET", "/api/file-info"): ["2xx", "501"],
+            ("GET", "/api/file"): ["2xx", None],
+            ("GET", "/api/file-info"): ["2xx", None],
             ("GET", "/api/sync/pull"): ["2xx", "2xx"],
             ("POST", "/api/sync/drafts"): ["2xx", "400"],
             ("POST", "/api/rules"): ["2xx", "2xx"],
-            ("POST", "/api/agents"): ["2xx", "501"],
-            ("POST", "/api/leads"): ["2xx", "501"],
+            ("POST", "/api/agents"): ["2xx", None],
+            ("POST", "/api/leads"): ["2xx", None],
             ("POST", "/api/configure"): ["2xx", "400"],
             ("POST", "/api/conversation"): ["2xx", "400"],
-            ("POST", "/api/checkpoint"): ["501", "2xx"],
+            ("POST", "/api/checkpoint"): ["2xx", None],
             ("POST", "/api/checkpoint/preview"): ["2xx"],
             ("POST", "/api/voice/end"): ["2xx", "2xx"],
             ("POST", "/api/voice/speech"): ["2xx", "400"],
