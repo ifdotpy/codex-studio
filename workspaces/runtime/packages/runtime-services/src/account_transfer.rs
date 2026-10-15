@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+use crate::account_session_runtime::RequestCertainty;
 use studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
@@ -588,7 +589,7 @@ impl Snapshot {
         operation: &str,
         receipt: Value,
         result: Option<Value>,
-        certainty: &str,
+        certainty: RequestCertainty,
     ) -> Result<Decision, TransferError> {
         let member = &self.operation["members"][agent];
         let intent = member
@@ -606,13 +607,12 @@ impl Snapshot {
             return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
         }
         if self.phase(agent)? != Phase::Reading
-            || !matches!(certainty, "written" | "not_sent" | "unknown")
+            || receipt["certainty"] != certainty.as_str()
             || receipt["operation"] != operation
             || receipt["scope"] != intent["scope"]
-            || receipt["certainty"] != certainty
-            || (certainty == "not_sent" && !receipt["ticket"].is_null())
-            || (certainty != "not_sent" && receipt["ticket"].is_null())
-            || (certainty == "written" && result.is_none())
+            || (certainty == RequestCertainty::Written && receipt["ticket"].is_null())
+            || (certainty == RequestCertainty::Written && result.is_none())
+            || (certainty != RequestCertainty::Written && result.is_some())
         {
             return Err(TransferError::Refused(
                 "Provider read receipt does not match its intent",
@@ -620,9 +620,9 @@ impl Snapshot {
         }
         let mut op = self.operation.clone();
         op["members"][agent]["providerReadReceipts"][operation] = json!({
-            "receipt":receipt,"result":result,"certainty":certainty
+            "receipt":receipt,"result":result,"certainty":certainty.as_str()
         });
-        if certainty == "unknown" {
+        if certainty == RequestCertainty::Unknown {
             op["members"][agent]["phase"] = json!("unknown");
             op["members"][agent]["error"] =
                 json!("Provider read outcome is unknown; no request was repeated");
@@ -675,7 +675,7 @@ impl Snapshot {
         operation: &str,
         receipt: Value,
         written_result: Option<Value>,
-        certainty: &str,
+        certainty: RequestCertainty,
     ) -> Result<Decision, TransferError> {
         let member = &self.operation["members"][agent];
         let exact_replay = member["providerIntent"]["operation"] == operation
@@ -690,12 +690,11 @@ impl Snapshot {
                 self.phase(agent)?,
                 Phase::Submitted | Phase::LazySubmitted | Phase::Unknown
             )
-            || !matches!(certainty, "written" | "not_sent" | "unknown")
+            || receipt["certainty"] != certainty.as_str()
             || receipt["operation"] != operation
             || receipt["scope"] != member["providerIntent"]["scope"]
-            || receipt["certainty"] != certainty
-            || (certainty == "not_sent" && !receipt["ticket"].is_null())
-            || (certainty != "not_sent" && receipt["ticket"].is_null())
+            || (certainty == RequestCertainty::Written && receipt["ticket"].is_null())
+            || (certainty != RequestCertainty::Written && written_result.is_some())
         {
             return Err(TransferError::Refused(
                 "The provider receipt does not match this transfer intent",
@@ -712,7 +711,7 @@ impl Snapshot {
             current["providerReceipts"] = json!([receipt]);
         }
         match certainty {
-            "written"
+            RequestCertainty::Written
                 if written_result
                     .as_ref()
                     .and_then(|v| v.pointer("/thread/id"))
@@ -723,7 +722,7 @@ impl Snapshot {
                 current["result"] = written_result.unwrap_or(Value::Null);
                 current["error"] = Value::Null;
             }
-            "not_sent" => {
+            RequestCertainty::NotSent => {
                 current["phase"] = json!(if flag(current, "lazy") {
                     "lazy"
                 } else {
@@ -1445,7 +1444,7 @@ mod provider_receipt_tests {
                 "transfer:agent:thread-start",
                 receipt.clone(),
                 result.clone(),
-                "written",
+                RequestCertainty::Written,
             )
             .expect("test fixture operation succeeds");
         let recorded = after(recorded);
@@ -1460,7 +1459,7 @@ mod provider_receipt_tests {
                 "transfer:agent:thread-start",
                 receipt,
                 result,
-                "written",
+                RequestCertainty::Written,
             )
             .expect("test fixture operation succeeds");
         assert!(!replay.changed);
@@ -1492,7 +1491,7 @@ mod provider_receipt_tests {
         let ready = after(submitted.provider_receipt(
             "agent", "transfer:agent:thread-start",
             json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
-            Some(json!({"thread":{"id":"target-thread"}})), "written",
+            Some(json!({"thread":{"id":"target-thread"}})), RequestCertainty::Written,
         ).expect("test fixture operation succeeds"));
         let adopted = after(
             ready
@@ -1523,7 +1522,7 @@ mod provider_receipt_tests {
     #[test]
     fn not_sent_releases_retry_with_same_operation_and_unknown_stays_held() {
         let first = after(intent(&snapshot()));
-        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"not_sent", "ticket":null});
+        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"not_sent", "ticket":{"generation":7,"id":10,"method":"thread/start"}});
         let released = after(
             first
                 .provider_receipt(
@@ -1531,7 +1530,7 @@ mod provider_receipt_tests {
                     "transfer:agent:thread-start",
                     receipt,
                     None,
-                    "not_sent",
+                    RequestCertainty::NotSent,
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -1541,11 +1540,15 @@ mod provider_receipt_tests {
             retry.operation["members"]["agent"]["providerIntent"]["operation"],
             "transfer:agent:thread-start"
         );
+        assert_eq!(
+            retry.operation["members"]["agent"]["providerReceipts"][0]["ticket"]["id"],
+            10
+        );
 
         let unknown = after(retry.provider_receipt(
             "agent", "transfer:agent:thread-start",
-            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"unknown", "ticket":{"id":10}}),
-            None, "unknown",
+            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"unknown", "ticket":null}),
+            None, RequestCertainty::Unknown,
         ).expect("test fixture operation succeeds"));
         assert_eq!(unknown.operation["members"]["agent"]["phase"], "unknown");
         assert!(
@@ -1590,7 +1593,7 @@ mod provider_receipt_tests {
                     op_id,
                     receipt.clone(),
                     Some(response.clone()),
-                    "written",
+                    RequestCertainty::Written,
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -1622,10 +1625,16 @@ mod provider_receipt_tests {
         );
         let read_op = "account-transfer:transfer:agent:thread-read";
         let not_sent_receipt = json!({"operation":read_op,"scope":{"account":"source","connection":"source-conn","generation":2},
-            "certainty":"not_sent","ticket":null});
+            "certainty":"not_sent","ticket":{"generation":2,"id":10,"method":"thread/read"}});
         let released = after(
             not_sent
-                .provider_read_receipt("agent", read_op, not_sent_receipt, None, "not_sent")
+                .provider_read_receipt(
+                    "agent",
+                    read_op,
+                    not_sent_receipt,
+                    None,
+                    RequestCertainty::NotSent,
+                )
                 .expect("test fixture operation succeeds"),
         );
         assert!(
@@ -1633,17 +1642,29 @@ mod provider_receipt_tests {
                 .expect("test fixture operation succeeds")
                 .changed
         );
-        assert!(
-            !released
-                .provider_read_intent(
-                    "agent",
-                    read_op,
-                    "source",
-                    json!({"account":"source","connection":"source-conn","generation":2}),
-                    "thread/read",
-                    json!({"threadId":"source-thread","includeTurns":false}),
-                )
-                .is_err()
+        let retry = released
+            .provider_read_intent(
+                "agent",
+                read_op,
+                "source",
+                json!({"account":"source","connection":"source-conn","generation":2}),
+                "thread/read",
+                json!({"threadId":"source-thread","includeTurns":false}),
+            )
+            .expect("NotSent allows one retry under the saved operation identity");
+        assert!(!retry.changed);
+        assert_eq!(
+            retry.operation["members"]["agent"]["providerReadIntents"][read_op]["operation"],
+            read_op
+        );
+        assert_eq!(
+            released.operation["members"]["agent"]["providerReadReceipts"][read_op]["receipt"]["certainty"],
+            "not_sent"
+        );
+        assert_eq!(
+            released.operation["members"]["agent"]["providerReadReceipts"][read_op]["receipt"]["ticket"]
+                ["id"],
+            10
         );
 
         let unknown = after(
@@ -1660,10 +1681,16 @@ mod provider_receipt_tests {
         );
         let unknown_op = "account-transfer:transfer:agent:turns:0";
         let unknown_receipt = json!({"operation":unknown_op,"scope":{"account":"source","connection":"source-conn","generation":2},
-            "certainty":"unknown","ticket":{"generation":2,"id":5,"method":"thread/turns/list"}});
+            "certainty":"unknown","ticket":null});
         let held = after(
             unknown
-                .provider_read_receipt("agent", unknown_op, unknown_receipt, None, "unknown")
+                .provider_read_receipt(
+                    "agent",
+                    unknown_op,
+                    unknown_receipt,
+                    None,
+                    RequestCertainty::Unknown,
+                )
                 .expect("test fixture operation succeeds"),
         );
         assert_eq!(held.operation["members"]["agent"]["phase"], "unknown");
@@ -1718,7 +1745,7 @@ mod provider_receipt_tests {
                     operation,
                     receipt,
                     Some(json!({"kind":"reply","value":response})),
-                    "written",
+                    RequestCertainty::Written,
                 )
                 .expect("test fixture operation succeeds"),
         );

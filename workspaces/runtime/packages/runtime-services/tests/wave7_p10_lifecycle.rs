@@ -100,6 +100,289 @@ fn seed(store: &RuntimeStore, records: Records) {
         Ok(())
     }).expect("Python rows seed");
 }
+
+#[tokio::test]
+async fn composed_stop_dispatches_active_voice_session_after_commit() {
+    use studio_runtime_services::voice_runtime::{
+        Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
+        VoiceRequestReceipt, VoiceWriteCertainty,
+    };
+
+    struct RecordingVoice {
+        calls: std::sync::atomic::AtomicUsize,
+        called: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+    impl VoiceRequestPort for RecordingVoice {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: i64,
+        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
+            self.signal_dispatch();
+            Box::pin(async { Err(VoiceWriteCertainty::NotSent) })
+        }
+
+        fn request<'a>(
+            &'a self,
+            _: VoiceConnectionScope,
+            _: String,
+            _: Method,
+            _: Value,
+            _: std::time::Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            self.signal_dispatch();
+            Box::pin(async {
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                }
+            })
+        }
+
+        fn reply<'a>(
+            &'a self,
+            _: VoiceConnectionScope,
+            _: String,
+            _: VoiceReply,
+            _: std::time::Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async {
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                }
+            })
+        }
+    }
+    impl RecordingVoice {
+        fn signal_dispatch(&self) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(called) = self.called.lock().expect("voice signal lock").take() {
+                let _ = called.send(());
+            }
+        }
+    }
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "running-False")
+        .expect("Python stop case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.threadId','voice-thread','$.accountKey','voice-account') WHERE id='lead'",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('stop-active-voice','lead',1,'voice-thread','voice-account','6','ready')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("voice row seed");
+    let (called_tx, called_rx) = tokio::sync::oneshot::channel();
+    let voice = Arc::new(RecordingVoice {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        called: Mutex::new(Some(called_tx)),
+    });
+    let voice_port: Arc<dyn VoiceRequestPort> = voice.clone();
+    let ports = ProductionLifecyclePorts::new(
+        Arc::clone(&store),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        Some(voice_port),
+    );
+    ports
+        .execute(
+            &Action::Stop {
+                target: "lead".to_owned(),
+                descendants: false,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            case["now"].as_f64().expect("stop timestamp"),
+        )
+        .expect("stop commits and dispatches voice cleanup");
+    tokio::time::timeout(std::time::Duration::from_secs(10), called_rx)
+        .await
+        .expect("voice cleanup dispatches after stop commit")
+        .expect("voice provider sends its dispatch signal");
+    assert!(
+        voice.calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "active voice stop is dispatched after the lifecycle commit"
+    );
+    let pending_intents = store
+        .read()
+        .expect("read voice stop receipt")
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='lifecycle.voice-stop.v1' \
+             AND json_extract(result,'$.agent')='lead' AND json_extract(result,'$.status')='pending'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count durable voice intents");
+    assert_eq!(pending_intents, 1, "NotSent keeps its durable retry intent");
+}
+
+#[test]
+fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "idle-False")
+        .expect("Python idle stop case");
+    let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    let lead = records
+        .tables
+        .get_mut("runtime_agents")
+        .expect("runtime agent table")
+        .iter_mut()
+        .find(|agent| agent["id"] == "lead")
+        .expect("lead record");
+    lead["usageResume"] = json!({"id":"resume-stop","status":"scheduled","dueAt":200.0});
+    lead["capacityRetry"] = json!({"id":"retry-stop","status":"scheduled","dueAt":200.0});
+
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(&store, records);
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
+                params![
+                    "resume-stop",
+                    "lead",
+                    json!({"id":"resume-stop","status":"scheduled","dueAt":200.0}).to_string()
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_capacity_retries(id,agent,record) VALUES(?1,?2,?3)",
+                params![
+                    "retry-stop",
+                    "lead",
+                    json!({"id":"retry-stop","status":"scheduled","dueAt":200.0}).to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("continuation rows");
+    let ports = ProductionLifecyclePorts::new(
+        Arc::clone(&store),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    );
+
+    ports
+        .execute(
+            &Action::Stop {
+                target: "lead".to_owned(),
+                descendants: false,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            case["now"].as_f64().expect("stop timestamp"),
+        )
+        .expect("stop commits and cancels continuations");
+
+    let db = store.read().expect("read cancelled continuations");
+    let usage: String = db
+        .query_row(
+            "SELECT record FROM runtime_usage_resumes WHERE id='resume-stop'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("usage row");
+    let capacity: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry-stop'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("capacity row");
+    assert_eq!(
+        serde_json::from_str::<Value>(&usage).expect("usage JSON")["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&capacity).expect("capacity JSON")["status"],
+        "finished"
+    );
+}
+
+#[test]
+fn production_delete_releases_deleted_worker_work_item() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("Python delete case");
+    let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    records.tables.insert(
+        "runtime_work".to_owned(),
+        vec![json!({
+            "id":"deleted-worker-task", "rootId":"lead", "owner":"worker",
+            "status":"ready", "title":"Return task", "description":"",
+            "created":1.0, "updated":1.0, "version":1, "dependencies":[],
+            "results":[], "decisions":[], "createdBy":"lead"
+        })],
+    );
+
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(&store, records);
+    let ports = ProductionLifecyclePorts::new(
+        Arc::clone(&store),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    );
+
+    ports
+        .execute(
+            &Action::Delete {
+                target: "lead".to_owned(),
+            },
+            case["now"].as_f64().expect("delete timestamp"),
+        )
+        .expect("delete commits and releases worker work");
+
+    let db = store.read().expect("read released work");
+    let raw: String = db
+        .query_row(
+            "SELECT record FROM runtime_work WHERE id='deleted-worker-task'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("work row");
+    let work: Value = serde_json::from_str(&raw).expect("work JSON");
+    assert!(work["owner"].is_null());
+    assert_eq!(work["status"], "ready");
+    assert_eq!(work["version"], 2);
+}
+
 fn state(store: &RuntimeStore) -> Value {
     let db = store.read().expect("reader");
     let records = agent_management::read(&db).expect("records");

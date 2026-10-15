@@ -247,6 +247,7 @@ impl HostRuntime {
             store,
             launcher,
             state.event_wake_handle(),
+            state.continuation_wake_handle(),
             monitor_dispatch_wake,
             session_broker,
             Some(Arc::clone(&preparation_resources)),
@@ -288,6 +289,7 @@ impl HostRuntime {
             store,
             launcher,
             wake,
+            Arc::new(tokio::sync::Notify::new()),
             monitor_dispatch_wake,
             AccountSessionBroker::new(),
             None,
@@ -301,6 +303,7 @@ impl HostRuntime {
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
+        continuation_wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
         preparation_resources: Option<Arc<PreparationResources>>,
@@ -319,7 +322,7 @@ impl HostRuntime {
         )
         .await?;
         let shutdown = Shutdown::default();
-        let task = tokio::spawn(registry.run(wake, shutdown.clone()));
+        let task = tokio::spawn(registry.run(wake, continuation_wake, shutdown.clone()));
         Ok(Self {
             shutdown,
             task,

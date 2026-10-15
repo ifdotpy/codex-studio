@@ -230,9 +230,11 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'));
+            CREATE TABLE IF NOT EXISTS runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_limit_reset_attempts (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_limit_reset_requests (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_server_outbox (
                     id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
                     state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,

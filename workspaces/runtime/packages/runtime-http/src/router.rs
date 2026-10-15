@@ -138,6 +138,7 @@ pub struct HttpState {
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
+    pub(crate) continuation_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
 
@@ -278,6 +279,7 @@ impl HttpState {
             sync_changes: Arc::clone(&sync_changes),
             token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
+            continuation_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
     }
@@ -504,10 +506,49 @@ impl HttpState {
         Arc::clone(&self.event_wake)
     }
 
+    /// Share the continuation scheduler wake with owners that persist durable
+    /// work before the HTTP state has finished being assembled.
+    pub fn with_continuation_wake_handle(mut self, wake: Arc<Notify>) -> Self {
+        self.continuation_wake = wake;
+        self
+    }
+
+    pub fn continuation_wake_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.continuation_wake)
+    }
+
     pub fn orchestration_driver_handle(
         &self,
     ) -> Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>> {
         self.orchestration_driver.clone()
+    }
+
+    pub fn with_lifecycle_ports(
+        mut self,
+        lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>,
+    ) -> Self {
+        if let Some(store) = self.store.as_ref() {
+            let driver = Arc::new(
+                studio_runtime_services::multi_server_transport::OrchestrationDriver::new(
+                    Arc::clone(store),
+                    Arc::new(
+                        studio_runtime_services::multi_server_transport::HttpsPairedTransport::new(
+                            Arc::clone(store),
+                        ),
+                    ),
+                    Arc::new(
+                        studio_runtime_services::multi_server_transport::RuntimeOrchestrationEffects::with_lifecycle_ports(
+                            Arc::clone(store),
+                            lifecycle_ports,
+                        ),
+                    ),
+                ),
+            );
+            self.browser_forwarder =
+                Some(crate::routes::browser::new_forwarder(Arc::clone(&driver)));
+            self.orchestration_driver = Some(driver);
+        }
+        self
     }
 
     pub fn model_catalog_handle(

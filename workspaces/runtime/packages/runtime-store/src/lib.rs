@@ -93,7 +93,9 @@ pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
-pub use repositories::usage::{UsageRepositoryError, cancel_capacity_retry, disable_usage_resume};
+pub use repositories::usage::{
+    UsageRepositoryError, cancel_capacity_retry, cancel_usage_resume, disable_usage_resume,
+};
 pub use repositories::voice::{VoiceDelivery, VoiceRecord, VoiceRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};

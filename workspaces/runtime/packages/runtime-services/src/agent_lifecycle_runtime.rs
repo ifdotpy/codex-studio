@@ -14,6 +14,8 @@ pub enum LifecycleEffectKind {
     NotifyParent,
     ReleaseWork,
     FinalizeDeleted,
+    VoiceStop,
+    RemoteStop,
 }
 impl LifecycleEffectKind {
     pub fn dependency(self) -> &'static str {
@@ -24,6 +26,8 @@ impl LifecycleEffectKind {
             Self::NotifyParent => "event-driver/child-stop-notification",
             Self::ReleaseWork => "work-driver/deletion-release",
             Self::FinalizeDeleted => "account-worker/deleted-settlement",
+            Self::VoiceStop => "voice-driver/agent-stop",
+            Self::RemoteStop => "cross-server/agent-management",
         }
     }
 }
@@ -126,17 +130,23 @@ pub fn execute(
     now: f64,
     ports: &dyn LifecyclePorts,
 ) -> Result<Value, ManagementError> {
-    let reader = store.read()?;
-    let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
-    let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
-    // The lifecycle transaction and committed-effect wake happen after these
-    // immutable inputs have been captured; do not retain a pooled reader across
-    // that work, which may perform its own store reads.
-    drop(reader);
-    let result = store.transaction_with_error(|tx| {
-        execute_in_transaction(tx, action, now, ports, &rooms, &vault_snapshot)
-    })?;
+    execute_with_prepared_hook(store, action, now, ports, || {})
+}
+
+fn execute_with_prepared_hook(
+    store: &RuntimeStore,
+    action: &Action,
+    now: f64,
+    ports: &dyn LifecyclePorts,
+    on_attempt_boundary: impl FnMut(),
+) -> Result<Value, ManagementError> {
+    let result = crate::agent_management_store::execute_prepared(
+        store,
+        action,
+        now,
+        Some(ports),
+        on_attempt_boundary,
+    )?;
     // A lost wake cannot roll back the committed intent. Restart drains the same
     // effect; report an internal failure, never a no-write capability refusal.
     ports.committed().map_err(|_| {
@@ -145,6 +155,124 @@ pub fn execute(
         )
     })?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod preparation_retry_tests {
+    use super::*;
+    use crate::agent_lifecycle_runtime::LifecycleEffect;
+    use crate::agent_management::ManagementError;
+    use serde_json::json;
+    use std::cell::Cell;
+    use studio_runtime_store::{RuntimeStore, agent_management};
+
+    struct NoopPorts;
+    impl LifecyclePorts for NoopPorts {
+        fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+            Ok(())
+        }
+
+        fn committed(&self) -> Result<(), ManagementError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retries_when_agent_changes_during_filesystem_preparation() {
+        let root = tempfile::tempdir().expect("state dir");
+        let store = RuntimeStore::open(Some(root.path())).expect("store opens");
+        store
+            .transaction(|tx| {
+                agent_management::write(
+                    tx,
+                    "runtime_agents",
+                    &json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true}),
+                )?;
+                Ok(())
+            })
+            .expect("agent seed");
+
+        let preparations = Cell::new(0);
+        let result = execute_with_prepared_hook(
+            &store,
+            &Action::Stop {
+                target: "lead".to_owned(),
+                descendants: true,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            1_800_000_000.0,
+            &NoopPorts,
+            || {
+                if preparations.replace(preparations.get() + 1) == 0 {
+                    store
+                        .transaction(|tx| {
+                            tx.execute(
+                                "UPDATE runtime_agents SET record=json_set(record,'$.name','completed') WHERE id='lead'",
+                                [],
+                            )?;
+                            Ok(())
+                        })
+                        .expect("completion interleaves with preparation");
+                }
+            },
+        )
+        .expect("stop retries with current lifecycle inputs");
+
+        assert_eq!(preparations.get(), 2, "one stale snapshot is retried once");
+        assert_eq!(result["stopped"], json!(["lead"]));
+    }
+
+    #[test]
+    fn final_writer_admitted_attempt_succeeds_after_two_snapshot_conflicts() {
+        let root = tempfile::tempdir().expect("state dir");
+        let store = RuntimeStore::open(Some(root.path())).expect("store opens");
+        store
+            .transaction(|tx| {
+                agent_management::write(
+                    tx,
+                    "runtime_agents",
+                    &json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true}),
+                )?;
+                Ok(())
+            })
+            .expect("agent seed");
+
+        let preparations = Cell::new(0);
+        let result = execute_with_prepared_hook(
+            &store,
+            &Action::Stop {
+                target: "lead".to_owned(),
+                descendants: true,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            1_800_000_000.0,
+            &NoopPorts,
+            || {
+                let attempt = preparations.replace(preparations.get() + 1);
+                store
+                    .transaction(|tx| {
+                        tx.execute(
+                            "UPDATE runtime_agents SET record=json_set(record,'$.name',?1) WHERE id='lead'",
+                            [format!("change-{attempt}")],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("concurrent update interleaves with preparation");
+            },
+        )
+        .expect("last attempt captures under writer admission and stops current state");
+
+        assert_eq!(preparations.get(), 3, "bound is three total attempts");
+        assert_eq!(result["stopped"], json!(["lead"]));
+        let reader = store.read().expect("reader");
+        let agent = agent_management::read(&reader).expect("records")["runtime_agents"][0].clone();
+        assert_eq!(agent["status"], "paused");
+        assert_eq!(agent["epoch"], 1);
+    }
 }
 
 /// Actor-bound managed interrupt. Authorization against the sender epoch and

@@ -505,6 +505,7 @@ pub(super) fn thread_snapshot(
     connection: &str,
     state_root: &Path,
     progress_directory: Option<String>,
+    account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
     let root_id = record["rootId"]
@@ -529,9 +530,17 @@ pub(super) fn thread_snapshot(
         thread::Role::Implementer
     });
     let progress_directory = lead.then_some(progress_directory).flatten();
+    let owned_transfer = account_transfer_owner
+        .map(|transfer_id| {
+            crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
+                .map_err(|error| refusal(format!("account-transfer/{error}")))
+        })
+        .transpose()?
+        .unwrap_or(false);
     let admission = if record
         .get("accountTransferId")
         .is_some_and(|v| !v.is_null())
+        && !owned_transfer
     {
         Some(thread::HoldReason::AccountTransfer)
     } else if context_repair_blocked(record) {

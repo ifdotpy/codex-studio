@@ -253,6 +253,7 @@ pub struct RuntimeOrchestrationEffects {
     browser_callback: Arc<dyn BrowserCallbackEffect>,
     default_account: String,
     known_accounts: Vec<Value>,
+    lifecycle_ports: Option<Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
 }
 
 impl RuntimeOrchestrationEffects {
@@ -265,6 +266,23 @@ impl RuntimeOrchestrationEffects {
             browser_callback,
             default_account: "default".to_owned(),
             known_accounts: Vec::new(),
+            lifecycle_ports: None,
+        }
+    }
+
+    pub fn with_lifecycle_ports(
+        store: Arc<RuntimeStore>,
+        lifecycle_ports: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+    ) -> Self {
+        let browser_callback = Arc::new(crate::browser::BrowserCallbackReceiver::new(Arc::clone(
+            &store,
+        )));
+        Self {
+            default_account: "default".to_owned(),
+            known_accounts: Vec::new(),
+            store,
+            browser_callback,
+            lifecycle_ports: Some(lifecycle_ports),
         }
     }
 
@@ -277,6 +295,7 @@ impl RuntimeOrchestrationEffects {
             browser_callback,
             default_account: "default".to_owned(),
             known_accounts: Vec::new(),
+            lifecycle_ports: None,
         }
     }
 
@@ -291,7 +310,70 @@ impl RuntimeOrchestrationEffects {
             browser_callback,
             default_account,
             known_accounts,
+            lifecycle_ports: None,
         }
+    }
+
+    fn stop_worker(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let Some(ports) = self.lifecycle_ports.as_ref() else {
+            return Err(refused(
+                501,
+                "orchestration_effect",
+                "The remote stop lifecycle is unavailable",
+            ));
+        };
+        let payload = &envelope["payload"];
+        let request_id = text(envelope, "requestId");
+        let link = text(payload, "link");
+        let worker = text(payload, "worker");
+        let control_epoch = payload
+            .get("controlEpoch")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| refused(400, "invalid_request", "Invalid remote stop request"))?;
+        let reason = payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Stopped by the parent")
+            .to_owned();
+        if request_id.is_empty() || link.is_empty() || worker.is_empty() {
+            return Err(refused(
+                400,
+                "invalid_request",
+                "Invalid remote stop request",
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+            .as_secs_f64();
+        let action = crate::agent_management::Action::RemoteStop {
+            principal: principal.to_owned(),
+            link: link.to_owned(),
+            target: worker.to_owned(),
+            request_id: request_id.to_owned(),
+            control_epoch,
+            reason,
+        };
+        crate::agent_lifecycle_runtime::execute(&self.store, &action, now, ports.as_ref())
+            .map(ExchangeOutcome::Applied)
+            .map_err(|error| match error {
+                crate::agent_management::ManagementError::Unavailable(name) => {
+                    refused(501, "orchestration_dependency", name)
+                }
+                crate::agent_management::ManagementError::Invalid(message) => {
+                    refused(409, "stop_refused", message)
+                }
+                crate::agent_management::ManagementError::Stored { .. }
+                | crate::agent_management::ManagementError::Store(_) => refused(
+                    503,
+                    "stop_unavailable",
+                    "The remote stop could not be committed",
+                ),
+            })
     }
 
     fn project_location(
@@ -847,7 +929,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 | "remove_location"
                 | "location_info"
                 | "location_matches"
-        )
+        ) || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
     fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError> {
@@ -857,6 +939,9 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 .browser_callback
                 .receive(envelope)
                 .map(ExchangeOutcome::Applied);
+        }
+        if action == "stop" {
+            return self.stop_worker(principal, envelope);
         }
         if action == "folders" {
             let path = envelope["payload"].get("cwd").and_then(Value::as_str);
@@ -1197,7 +1282,7 @@ pub enum DeliveryDecision {
 fn peer_replay_safe(action: &str) -> bool {
     matches!(
         action,
-        "event" | "message" | "move_send" | "location_info" | "location_matches"
+        "event" | "message" | "move_send" | "location_info" | "location_matches" | "stop"
     )
 }
 

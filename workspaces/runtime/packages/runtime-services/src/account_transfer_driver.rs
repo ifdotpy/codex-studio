@@ -38,6 +38,23 @@ pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {
     Snapshot::read(&raw, agents)
 }
 
+/// A transfer may bypass only its own native-start admission marker, and only
+/// while its exact member is durably in the Reading phase.
+pub fn owns_reading_member(
+    tx: &Transaction<'_>,
+    transfer_id: &str,
+    member_id: &str,
+) -> Result<bool, TransferError> {
+    let snapshot = load(tx, transfer_id)?;
+    let operation = snapshot.operation();
+    if operation["status"] != "pending" || operation["members"][member_id]["phase"] != "reading" {
+        return Ok(false);
+    }
+    let agent = snapshot.agent(member_id)?;
+    Ok(agent["accountTransferId"] == transfer_id
+        && agent["lazyAccountTransfer"]["id"] == transfer_id)
+}
+
 fn snapshot_agents(
     snapshot: &Snapshot,
 ) -> Result<std::collections::BTreeMap<String, Value>, TransferError> {
@@ -426,11 +443,51 @@ fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Val
         .as_str()
         .ok_or(TransferError::Refused("Invalid transfer identity"))?;
     Repository::put(tx, id, &raw)?;
-    for (id, value) in &decision.agents {
+    for (id, value) in &mut decision.agents {
         let prior = Repository::agent(tx, id)?
             .map(|raw| serde_json::from_str::<Value>(&raw))
             .transpose()
             .map_err(studio_runtime_store::StoreError::from)?;
+        if let Some(prior) = &prior
+            && prior
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != value
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+            && let Some(resume) = prior.get("usageResume")
+            && matches!(
+                resume.get("status").and_then(Value::as_str),
+                Some("scheduled" | "started")
+            )
+        {
+            let resume_id =
+                resume
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or(TransferError::Refused(
+                        "Invalid account transfer resume identity",
+                    ))?;
+            let cancelled = studio_runtime_store::cancel_usage_resume(
+                tx,
+                id,
+                resume_id,
+                "The chat moved to another account.",
+                now,
+            )
+            .map_err(|error| match error {
+                studio_runtime_store::UsageRepositoryError::Store(error) => {
+                    TransferError::Store(error)
+                }
+                _ => TransferError::Stored {
+                    object: "usage resume",
+                    pointer: "/".into(),
+                },
+            })?;
+            value["usageResume"] = cancelled;
+        }
         if prior.as_ref() == Some(value) {
             continue;
         }
@@ -473,7 +530,7 @@ pub trait TransferTransport {
 pub struct TransferDispatch {
     pub receipt: Value,
     pub result: Option<Value>,
-    pub certainty: &'static str,
+    pub certainty: crate::account_session_runtime::RequestCertainty,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
@@ -495,7 +552,7 @@ pub fn send_once(
         .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
     reserve(store, ticket, method, params.clone(), scope_value, now)?;
     let dispatch = transport.send(ticket, &scope, method, &params);
-    let known = dispatch.certainty == "written"
+    let known = dispatch.certainty == crate::account_session_runtime::RequestCertainty::Written
         && dispatch
             .result
             .as_ref()
@@ -611,7 +668,7 @@ pub(crate) struct ProviderReadReceipt<'a> {
     pub operation: &'a str,
     pub receipt: Value,
     pub result: Option<Value>,
-    pub certainty: &'a str,
+    pub certainty: crate::account_session_runtime::RequestCertainty,
 }
 
 pub(crate) fn provider_read_receipt(
@@ -644,7 +701,7 @@ pub struct ProviderReceipt<'a> {
     pub provider_operation: &'a str,
     pub receipt: Value,
     pub result: Option<Value>,
-    pub certainty: &'a str,
+    pub certainty: crate::account_session_runtime::RequestCertainty,
 }
 
 pub fn provider_receipt(
@@ -867,6 +924,63 @@ mod request_tests {
         let replay = request(&store, id, "lead", "target", "team", "codex", 11.0)
             .expect("test fixture operation succeeds");
         assert_eq!(replay, first);
+    }
+
+    #[test]
+    fn request_cancels_pending_usage_resume_in_the_transfer_transaction() {
+        let (_root, store) = store_with_agents();
+        let resume = json!({"id":"resume","status":"scheduled","accountKey":"source",
+            "threadId":"source-thread","epoch":1,"turnId":"turn","cause":"rate_limit",
+            "failedAt":1.0,"dueAt":200.0,"plannedAt":null,"resetAt":null,"reason":null,
+            "taskClaims":[]});
+        store
+            .transaction_with_error(|tx| {
+                let mut lead =
+                    AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead exists");
+                lead.extra.insert("usageResume".into(), resume.clone());
+                lead.extra.insert("usageResumeEnabled".into(), json!(true));
+                AgentRepository::put(tx, &lead)?;
+                tx.execute(
+                    "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
+                    ("resume", "lead", resume.to_string()),
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("fixture writes atomically");
+
+        request(
+            &store,
+            "5a300f72-4ea6-4d30-8a0e-9b2c13c42279",
+            "lead",
+            "target",
+            "team",
+            "codex",
+            10.0,
+        )
+        .expect("transfer request succeeds");
+
+        let db = store.read().expect("database is readable");
+        let agent = AgentRepository::get(&db, &AgentId::from("lead"))
+            .expect("lead read succeeds")
+            .expect("lead exists")
+            .value();
+        assert_eq!(agent["usageResume"]["status"], "cancelled");
+        assert_eq!(
+            agent["usageResume"]["reason"],
+            "The chat moved to another account."
+        );
+        assert_eq!(agent["usageResumeEnabled"], true);
+        let saved: String = db
+            .query_row(
+                "SELECT record FROM runtime_usage_resumes WHERE id='resume'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("resume row is readable");
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).expect("saved resume is valid JSON")["status"],
+            "cancelled"
+        );
     }
 
     #[test]

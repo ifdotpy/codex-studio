@@ -12,8 +12,10 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 3] = [
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("capacity-retry/store"),
+    Dependency::new("cross-server/remote-events"),
+    Dependency::new("federation-driver/rooms"),
     Dependency::new("payload-store/uploads"),
     Dependency::new("workspace-policy/message-admission"),
 ];
@@ -406,6 +408,8 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "capacity-retry/store",
+            "cross-server/remote-events",
+            "federation-driver/rooms",
             "event-driver/message-send",
             "payload-store/uploads",
             "workspace-policy/message-admission",

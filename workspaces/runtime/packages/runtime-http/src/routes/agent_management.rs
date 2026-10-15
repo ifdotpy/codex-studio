@@ -28,15 +28,16 @@ const LIFECYCLE: &[Dependency] = &[
     Dependency::new("work-driver/deletion-release"),
     Dependency::new("workspace-state/agent-lifecycle"),
 ];
+const NATIVE: &[Dependency] = &[Dependency::new("cross-server/native-review")];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post("/api/action", OperationStatus::Implemented, native_action),
         post(
             "/api/conversation/delete",
-            OperationStatus::partial(LIFECYCLE),
+            OperationStatus::Implemented,
             delete,
         ),
-        post("/api/stop", OperationStatus::partial(LIFECYCLE), stop),
+        post("/api/stop", OperationStatus::Implemented, stop),
     ])
 }
 
@@ -817,17 +818,25 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
                 }
                 None => agent_management_store::execute(store, &action, now),
             }
-            .map_err(|error| match error {
-                ManagementError::Unavailable(_) => {
-                    ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+            .map_err(|error| {
+                // Keep lifecycle 500s diagnosable in the server log. The HTTP
+                // response intentionally stays generic for internal failures.
+                eprintln!("agent lifecycle operation failed: {error:?}");
+                match error {
+                    ManagementError::Unavailable(_) => {
+                        ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+                    }
+                    ManagementError::Invalid(_) => {
+                        ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+                    }
+                    ManagementError::Stored { .. } => {
+                        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                    }
+                    ManagementError::Store(error) => {
+                        eprintln!("agent lifecycle store operation failed: {error}");
+                        ApiError::internal()
+                    }
                 }
-                ManagementError::Invalid(_) => {
-                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-                }
-                ManagementError::Stored { .. } => {
-                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                }
-                ManagementError::Store(_) => ApiError::internal(),
             })?;
             super::generated_json::<T>(result).map(Json)
         },
@@ -843,7 +852,7 @@ inventory::submit! {
             "agent-management/snapshot-limit", "cross-server/agent-management",
             "event-driver/child-stop-notification", "monitor-driver/agent-stop",
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
-            "workspace-state/agent-lifecycle",
+            "workspace-state/agent-lifecycle", "cross-server/native-review",
         ],
     }
 }

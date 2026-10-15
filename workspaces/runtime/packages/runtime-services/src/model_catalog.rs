@@ -605,6 +605,26 @@ impl ModelCatalogService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_test_admission_catalog(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+        value: Value,
+    ) {
+        self.0.cache.lock().expect("catalog cache").insert(
+            (account_key.to_owned(), home.to_owned(), provider.to_owned()),
+            CacheEntry {
+                generation: 1,
+                value: Some(value),
+                expires_at: Some(Instant::now() + Duration::from_secs(30)),
+                error: false,
+                pending: false,
+            },
+        );
+    }
+
     pub fn model_list_port(&self) -> Arc<dyn ModelListPort> {
         Arc::new(self.clone())
     }

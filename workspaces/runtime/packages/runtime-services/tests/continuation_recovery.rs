@@ -151,7 +151,7 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
     }
 }
 #[test]
-fn changed_task_worker_hold_refuses_without_any_write() {
+fn changed_task_cancels_resume_and_notifies_parent_atomically() {
     let template = template();
     let root = clone_template(template.path());
     let store = RuntimeStore::open(Some(root.path())).expect("store");
@@ -163,7 +163,6 @@ fn changed_task_worker_hold_refuses_without_any_write() {
         tx.execute("INSERT INTO runtime_agents VALUES('parent',?1)",[parent.to_string()])?;
         let work=json!({"id":"new","rootId":"parent","owner":"a","status":"running"});tx.execute("INSERT INTO runtime_work VALUES('new',?1)",[work.to_string()])?;Ok(())
     }).expect("changed ownership fixture");
-    let before = read(&store);
     let result = continuation_driver::drive(
         &store,
         "a",
@@ -172,13 +171,19 @@ fn changed_task_worker_hold_refuses_without_any_write() {
         1000.0,
         |s| usage_resume::tick(s, &observation(), 1000.0),
     );
-    assert!(matches!(
-        result,
-        Err(ContinuationError::Unavailable(
-            "event-driver/permanent-worker-hold"
-        ))
-    ));
-    assert_eq!(read(&store), before);
+    assert!(result.is_ok(), "{result:?}");
+    let after = read(&store);
+    assert_eq!(after["record"]["status"], "cancelled");
+    assert_eq!(after["agent"]["usageResume"]["status"], "cancelled");
+    let db = store.read().expect("reader");
+    let parent_event: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE id='hold:resume:task-changed' AND kind='child_result'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("parent hold notification");
+    assert_eq!(parent_event, 1);
 }
 
 #[test]
@@ -491,4 +496,45 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
         )));
         assert_eq!(capacity_state(&store)["record"]["status"], "cancelled");
     }
+}
+
+#[test]
+fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() {
+    let template = template_kind("capacity");
+    let store = RuntimeStore::open(Some(template.path())).expect("Python state opens");
+    store
+        .transaction_with(|tx| {
+            let mut agent: Value = tx
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='a'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|raw| serde_json::from_str(&raw).expect("agent JSON"))?;
+            agent["excludedAccountKeys"] = json!(["default"]);
+            studio_runtime_store::ContinuationRepository::put_agent(tx, &agent)?;
+            let stage = studio_runtime_services::continuation_runtime::stage_capacity_retry(
+                tx, "a", "retry", 1000.0, true,
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
+            assert!(!stage.effects().iter().any(|effect| matches!(
+                effect,
+                studio_runtime_services::continuation::Effect::CapacityStart { .. }
+            )));
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("atomic exclusion settlement");
+    let state = capacity_state(&store);
+    assert_eq!(state["record"]["status"], "cancelled");
+    assert_eq!(state["record"]["dueAt"], Value::Null);
+    assert_eq!(
+        state["record"]["reason"],
+        "Account default is disabled for this chat"
+    );
+    assert_eq!(state["agent"]["status"], "failed");
+    assert_eq!(state["agent"]["inFlight"], false);
+    assert_eq!(
+        state["agent"]["error"],
+        "Account default is disabled for this chat"
+    );
 }

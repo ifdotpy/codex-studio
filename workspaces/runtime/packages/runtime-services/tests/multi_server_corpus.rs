@@ -507,6 +507,254 @@ fn remote_worker_call_refuses_stopped_parent_without_writes() {
 }
 
 #[test]
+fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_control_epoch() {
+    use std::sync::Arc;
+    use studio_runtime_services::{
+        agent_lifecycle_runtime::{LifecycleEffect, LifecyclePorts},
+        agent_management::ManagementError,
+        multi_server_orchestration::{
+            ExchangeOutcome, OrchestrationEffects, RuntimeOrchestrationEffects,
+        },
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, Transaction};
+
+    struct Lifecycle;
+    impl LifecyclePorts for Lifecycle {
+        fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+            Ok(())
+        }
+        fn committed(&self) -> Result<(), ManagementError> {
+            Ok(())
+        }
+    }
+
+    let (_root, store) = store();
+    let mut parent = AgentRecord {
+        id: AgentId::from("remote-parent"),
+        root_id: AgentId::from("remote-parent"),
+        epoch: 2,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    parent.extra.insert("autoWake".into(), json!(true));
+    parent.extra.insert("cwd".into(), json!("/fixture"));
+    let mut worker = AgentRecord {
+        id: AgentId::from("remote-worker"),
+        root_id: AgentId::from("remote-parent"),
+        epoch: 4,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    worker.extra.insert("autoWake".into(), json!(true));
+    worker.extra.insert("movedTo".into(), json!("server-two"));
+    worker
+        .extra
+        .insert("parentId".into(), json!("remote-parent"));
+    worker.extra.insert("cwd".into(), json!("/fixture"));
+    worker.extra.insert(
+        "remoteWorker".into(),
+        json!({"server":"home-server","link":"remote-link"}),
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_server_links(id,record) VALUES('remote-link',?1)",
+                [
+                    json!({"side":"remote","home":"home-server","workers":["remote-worker"]})
+                        .to_string(),
+                ],
+            )?;
+            AgentRepository::put(tx, &parent)?;
+            AgentRepository::put(tx, &worker)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("remote parent link and worker");
+    let lifecycle: Arc<dyn LifecyclePorts> = Arc::new(Lifecycle);
+    let effects = RuntimeOrchestrationEffects::with_lifecycle_ports(store.clone(), lifecycle);
+    let envelope = json!({
+        "requestId":"remote-stop-request-1",
+        "action":"stop",
+        "payload":{"link":"remote-link","worker":"remote-worker","reason":"Stopped by the parent","controlEpoch":9}
+    });
+
+    let first = effects
+        .execute("home-server", &envelope)
+        .expect("remote stop");
+    assert_eq!(
+        first,
+        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
+    );
+    let replay = effects
+        .execute("home-server", &envelope)
+        .expect("same request replay");
+    assert_eq!(
+        replay,
+        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
+    );
+    let reader = store.read().expect("read replayed worker");
+    let current = AgentRepository::get(&reader, &AgentId::from("remote-worker"))
+        .expect("worker row")
+        .expect("worker");
+    assert_eq!(current.epoch, 5, "replay does not stop twice");
+    assert_eq!(
+        current.extra.get("remoteStopRequest"),
+        Some(&json!("remote-stop-request-1"))
+    );
+    drop(reader);
+
+    store
+        .transaction(|tx| {
+            let mut current =
+                AgentRepository::get(tx, &AgentId::from("remote-worker"))?.expect("worker");
+            current
+                .extra
+                .insert("remoteStopRequest".into(), json!("newer"));
+            current.extra.insert("remoteControlEpoch".into(), json!(10));
+            AgentRepository::put(tx, &current)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("newer remote control epoch");
+    let stale = json!({
+        "requestId":"remote-stop-request-2",
+        "action":"stop",
+        "payload":{"link":"remote-link","worker":"remote-worker","reason":"old stop","controlEpoch":9}
+    });
+    assert!(effects.execute("home-server", &stale).is_err());
+}
+
+#[test]
+fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+    use studio_runtime_services::{
+        account_session_runtime::AccountSessionPort,
+        agent_management::Action,
+        lifecycle_effects::ProductionLifecyclePorts,
+        multi_server_auth::{AccessError, refused},
+        multi_server_orchestration::{
+            OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+        },
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+    use tokio::sync::Notify;
+
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    struct Peer {
+        calls: Mutex<Vec<Value>>,
+        attempts: AtomicUsize,
+    }
+    impl PairedTransport for Peer {
+        fn exchange(
+            &self,
+            server: &str,
+            envelope: &Value,
+            _: Duration,
+        ) -> Result<Value, AccessError> {
+            assert_eq!(server, "peer-server");
+            self.calls.lock().unwrap().push(envelope.clone());
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(refused(503, "exchange_unknown", "reply was lost"));
+            }
+            Ok(json!({
+                "requestId": envelope["requestId"],
+                "outcome": "applied",
+                "value": {"stopped": [envelope["payload"]["worker"]]},
+            }))
+        }
+    }
+
+    let (_root, store) = store();
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_server_outbox", [])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("isolate the stop outbox");
+    let mut proxy = AgentRecord {
+        id: AgentId::from("remote-stop-proxy"),
+        root_id: AgentId::from("remote-stop-proxy"),
+        epoch: 6,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    proxy.extra.insert("autoWake".into(), json!(true));
+    proxy.extra.insert("cwd".into(), json!("/fixture"));
+    proxy.extra.insert(
+        "remoteWorker".into(),
+        json!({"server":"peer-server","link":"remote-stop-link"}),
+    );
+    store
+        .transaction(|tx| {
+            AgentRepository::put(tx, &proxy)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("remote proxy");
+
+    let peer = Arc::new(Peer {
+        calls: Mutex::new(Vec::new()),
+        attempts: AtomicUsize::new(0),
+    });
+    let ports = ProductionLifecyclePorts::new(
+        Arc::clone(&store),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    )
+    .with_remote_transport(Arc::clone(&peer) as _);
+    assert_eq!(
+        ports
+            .execute(
+                &Action::Stop {
+                    target: "remote-stop-proxy".to_owned(),
+                    descendants: false,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
+                },
+                100.0,
+            )
+            .expect("local stop commits with durable remote intent"),
+        json!({"stopped":["remote-stop-proxy"]})
+    );
+    let first = peer.calls.lock().unwrap()[0].clone();
+    assert_eq!(first["action"], "stop");
+    assert_eq!(first["payload"]["worker"], "remote-stop-proxy");
+    let request_id = first["requestId"]
+        .as_str()
+        .expect("stable request id")
+        .to_owned();
+    let retry_at: f64 = store
+        .read()
+        .expect("read queued stop")
+        .query_row(
+            "SELECT next_at FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .expect("lost receipt leaves durable queued intent");
+
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::clone(&peer) as _,
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
+    );
+    assert_eq!(
+        driver
+            .pump_due(retry_at.ceil() as i64)
+            .expect("replay due intent"),
+        1
+    );
+    let calls = peer.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1], first, "retry reuses exact signed stop content");
+}
+
+#[test]
 fn child_result_requires_link_membership_and_updates_proxy() {
     use std::sync::Arc;
     use studio_runtime_services::multi_server_orchestration::{

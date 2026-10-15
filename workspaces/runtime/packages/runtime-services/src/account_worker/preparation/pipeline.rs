@@ -138,12 +138,15 @@ fn preconditions_for_purpose(
     prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
+    let capacity_retry = record["startAttempt"]["action"] == "capacity"
+        && record["startAttempt"]["capacityRetryId"] == record["capacityRetry"]["id"]
+        && intent.attempt_id.starts_with("capacity:");
     if record["epoch"] != intent.epoch
         || (!allow_paused_start
             && (record["startAttempt"]["id"] != intent.attempt_id
                 || record["startAttempt"]["submitted"] != false
                 || record["autoWake"] != true))
-        || record["nativeFailureHold"] == true
+        || (record["nativeFailureHold"] == true && !capacity_retry)
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
     {
@@ -565,8 +568,9 @@ pub(crate) fn prepare_native_action(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
-    let mut snapshot =
-        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, false)?;
+    let mut snapshot = prepare_native_snapshot(
+        store, resources, agent_id, attempt_id, generation, false, None,
+    )?;
     let program = daybreak_program(resources, &snapshot)?;
     let settings = native_turn_params(
         &mut snapshot,
@@ -596,8 +600,48 @@ pub(crate) fn prepare_native_thread(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeThread, WorkerError> {
-    let mut snapshot =
-        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, true)?;
+    prepare_native_thread_for_transfer_owner(
+        store, resources, agent_id, attempt_id, generation, None,
+    )
+}
+
+/// Prepare a fresh destination thread only for the active durable transfer
+/// that owns this member. The owner is rechecked in the snapshot transaction.
+pub(crate) fn prepare_account_transfer_native_thread(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    transfer_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<super::PreparedNativeThread, WorkerError> {
+    prepare_native_thread_for_transfer_owner(
+        store,
+        resources,
+        agent_id,
+        attempt_id,
+        generation,
+        Some(transfer_id),
+    )
+}
+
+fn prepare_native_thread_for_transfer_owner(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+    transfer_owner: Option<&str>,
+) -> Result<super::PreparedNativeThread, WorkerError> {
+    let mut snapshot = prepare_native_snapshot(
+        store,
+        resources,
+        agent_id,
+        attempt_id,
+        generation,
+        true,
+        transfer_owner,
+    )?;
     if snapshot.actor.native_teleport_tool.is_none() && snapshot.actor.thread_id.is_some() {
         snapshot.actor.native_teleport_tool = Some(thread::SessionTool::Move);
     }
@@ -661,6 +705,7 @@ pub(crate) fn prepare_monitor_command(
             connection,
             store.root(),
             filesystem.progress_directory.clone(),
+            None,
         )?;
         let thread_id = snapshot
             .actor
@@ -851,6 +896,7 @@ fn prepare_native_snapshot(
     attempt_id: &str,
     generation: u64,
     allow_paused_start: bool,
+    account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let record = AgentRepository::get(&*store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid("agent"))?
@@ -928,6 +974,7 @@ fn prepare_native_snapshot(
             &generation.to_string(),
             store.root(),
             filesystem.progress_directory.clone(),
+            account_transfer_owner,
         )
     })
 }
@@ -980,6 +1027,7 @@ pub(crate) fn prepare_safety_retry(
             connection_id,
             store.root(),
             filesystem.progress_directory.clone(),
+            None,
         )
     })?;
     // Python's safety retry explicitly starts at low effort, retaining the
@@ -1102,6 +1150,7 @@ pub(crate) fn prepare_ready(
                 &generation.to_string(),
                 store.root(),
                 filesystem.progress_directory.clone(),
+                None,
             )?;
             let (turn_snapshot, events) =
                 submission_snapshot(tx, resources, &frozen, intent, store.root())?;
@@ -1329,6 +1378,7 @@ pub(crate) fn commit(
         &guard.thread.account.connection_id,
         &guard.state_root,
         guard.filesystem.progress_directory.clone(),
+        None,
     )?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));

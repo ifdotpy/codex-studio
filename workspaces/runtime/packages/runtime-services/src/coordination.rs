@@ -658,11 +658,7 @@ fn capacity_reset(
                 )?;
             }
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
-            None => {
-                return Err(CoordinationError::RequiresDependency(
-                    "capacity-retry/store",
-                ));
-            }
+            None => return Err(invalid_stored("runtime_capacity_retries", &id)),
         }
         if agent
             .extra

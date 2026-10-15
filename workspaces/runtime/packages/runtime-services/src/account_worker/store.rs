@@ -727,6 +727,7 @@ pub(super) fn journal_batch(
     account: &str,
     streams: &NotificationStreamBuffer,
     entries: Vec<JournalEntry>,
+    claude_account_pin: &Value,
 ) -> Result<
     Option<(
         NotificationStreamBuffer,
@@ -739,6 +740,29 @@ pub(super) fn journal_batch(
         return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
     }
     let publication = crate::notification_dispatch::PublicationContext::load(store)?;
+    let limits_observation = if entries.iter().any(|entry| {
+        matches!(
+            &entry.payload,
+            JournalPayload::Frame(Frame::Notification(frame))
+                if frame.method.as_str() == "turn/completed"
+        )
+    }) {
+        let reader = store.read()?;
+        let limits = studio_runtime_store::account_state::limits_snapshots(&reader)?
+            .snapshots
+            .into_iter()
+            .find(|(key, _)| key == account)
+            .map(|(_, limits)| limits)
+            .unwrap_or_else(
+                || json!({"accountKey":account,"at":null,"error":null,"data":null,"stale":true}),
+            );
+        Some(
+            crate::usage_resume::LimitsObservation::from_record(limits, None)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     scheduler::lifecycle_transaction_with(store, |tx| {
         let mut next = streams.clone();
         let mut committed = Vec::with_capacity(entries.len());
@@ -746,7 +770,15 @@ pub(super) fn journal_batch(
         let mut persist_snapshot = false;
         let mut entries = entries.into_iter();
         while let Some(entry) = entries.next() {
-            match journal_one(tx, account, &publication, &next, &entry)? {
+            match journal_one(
+                tx,
+                account,
+                &publication,
+                &next,
+                &entry,
+                claude_account_pin,
+                limits_observation.as_ref(),
+            )? {
                 Some((updated, effect, changed)) => {
                     next = updated;
                     persist_snapshot |= changed;
@@ -772,6 +804,8 @@ fn journal_one(
     publication: &crate::notification_dispatch::PublicationContext,
     streams: &NotificationStreamBuffer,
     entry: &JournalEntry,
+    claude_account_pin: &Value,
+    limits_observation: Option<&crate::usage_resume::LimitsObservation>,
 ) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
     let operation = format!(
         "journal:{account}:{}:{}",
@@ -922,6 +956,41 @@ fn journal_one(
                             NotificationDispatchRepository::agent_record(tx, &identity.agent_id)?
                                 .ok_or_else(|| invalid(&identity.agent_id))?;
                         if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                            let claude_auth = if agent_before["provider"] == "claude"
+                                && claude_account_pin.is_object()
+                            {
+                                let pin =
+                                    crate::continuation_runtime::ClaudeAccountPin::from_value(
+                                        claude_account_pin.clone(),
+                                    )
+                                    .map_err(|error| {
+                                        StoreError::SchemaMismatch(error.to_string())
+                                    })?;
+                                let settings =
+                                    crate::continuation_runtime::PreparationSettings::from_agent(
+                                        &agent_before,
+                                    )
+                                    .map_err(|error| {
+                                        StoreError::SchemaMismatch(error.to_string())
+                                    })?;
+                                Some(crate::continuation_runtime::ClaudeAuthObservation::checked(
+                                    pin, settings,
+                                ))
+                            } else {
+                                None
+                            };
+                            crate::continuation_runtime::stage(
+                                tx,
+                                crate::continuation_runtime::Completion::TerminalTurn {
+                                    agent_id: &identity.agent_id,
+                                    turn: &params["turn"],
+                                    known: true,
+                                    now: now(),
+                                    limits: limits_observation,
+                                    claude_auth: claude_auth.as_ref(),
+                                },
+                            )
+                            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
                             let agent_after = NotificationDispatchRepository::agent_record(
                                 tx,
                                 &identity.agent_id,

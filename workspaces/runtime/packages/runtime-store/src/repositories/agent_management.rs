@@ -7,8 +7,6 @@ use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-const ROW_LIMIT: usize = 10_000;
-const RECORD_LIMIT: usize = 1_048_576;
 const RECORD_TABLES: &[&str] = &[
     "runtime_agents",
     "runtime_monitors",
@@ -29,18 +27,13 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         if !exists {
             continue;
         }
-        let mut statement = connection.prepare_cached(&format!(
-            "SELECT id,record FROM {table} ORDER BY rowid LIMIT {}",
-            ROW_LIMIT + 1
-        ))?;
+        let mut statement =
+            connection.prepare_cached(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
         let mut records = Vec::new();
         for row in
             statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         {
             let (id, raw) = row?;
-            if raw.len() > RECORD_LIMIT {
-                return Err(StoreError::InvalidStoredObject { table, id });
-            }
             let record: Value =
                 serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredObject {
                     table,
@@ -54,8 +47,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         tables.insert((*table).to_owned(), records);
     }
     let mut statement = connection.prepare_cached(&format!(
-        "SELECT id,agent,status,epoch FROM runtime_events ORDER BY rowid LIMIT {}",
-        ROW_LIMIT + 1
+        "SELECT id,agent,status,epoch FROM runtime_events ORDER BY rowid"
     ))?;
     let events = statement.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"epoch":r.get::<_,i64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
     tables.insert("runtime_events".to_owned(), events);
@@ -80,10 +72,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         } else {
             "id,agent"
         };
-        let mut statement = connection.prepare_cached(&format!(
-            "SELECT {columns} FROM {table} LIMIT {}",
-            ROW_LIMIT + 1
-        ))?;
+        let mut statement = connection.prepare_cached(&format!("SELECT {columns} FROM {table}"))?;
         let rows = statement
             .query_map([], |r| {
                 let mut row = json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?});
@@ -139,5 +128,37 @@ inventory::submit! {
     super::SchemaRegistration {
         repository: "agent_management",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read;
+    use rusqlite::Connection;
+
+    #[test]
+    fn snapshot_reads_all_rows_above_the_former_cap() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,epoch INTEGER);",
+            )
+            .expect("runtime events table");
+        let transaction = connection.unchecked_transaction().expect("transaction");
+        {
+            let mut insert = transaction
+                .prepare("INSERT INTO runtime_events VALUES(?1,'agent','pending',0)")
+                .expect("insert statement");
+            for index in 0..10_001 {
+                insert
+                    .execute([format!("event-{index}")])
+                    .expect("insert event");
+            }
+        }
+        transaction.commit().expect("commit events");
+
+        let snapshot = read(&connection).expect("complete snapshot");
+
+        assert_eq!(snapshot["runtime_events"].len(), 10_001);
     }
 }

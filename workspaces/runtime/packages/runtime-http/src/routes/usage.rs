@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_services::usage::{self, UsageError};
-use studio_runtime_store::{UsageRepositoryError, cancel_capacity_retry, disable_usage_resume};
+use studio_runtime_store::{UsageRepositoryError, disable_usage_resume};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -24,6 +24,7 @@ const USAGE_RESUME_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("store-bootstrap/usage-resume-schema"),
     Dependency::new("turn-driver/usage-resume"),
 ];
+const COSTS_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/local-scanner")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -35,12 +36,12 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/capacity-retry",
-            OperationStatus::partial(&CAPACITY_DEPENDENCIES),
+            OperationStatus::Implemented,
             capacity_retry,
         ),
         post(
             "/api/usage-resume",
-            OperationStatus::partial(&USAGE_RESUME_DEPENDENCIES),
+            OperationStatus::Implemented,
             usage_resume,
         ),
     ])
@@ -151,11 +152,60 @@ async fn capacity_retry(
     ApiJson(body): ApiJson<crate::generated::CapacityRetryRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if body.action == crate::generated::RetryAction::Retry {
-        return Err(dependency_error(
-            "POST",
-            "/api/capacity-retry",
-            &CAPACITY_DEPENDENCIES,
-        ));
+        let agent_id = body.id;
+        let retry_id = body.retry_id;
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let now = current_time()?;
+        let retry_for_read = retry_id.clone();
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/usage",
+            move || {
+                store.transaction_with(
+                    |tx| -> Result<_, studio_runtime_services::continuation::ContinuationError> {
+                        let staged =
+                            studio_runtime_services::continuation_runtime::stage_capacity_retry(
+                                tx, &agent_id, &retry_id, now, false,
+                            )?;
+                        let raw: String = tx
+                        .query_row(
+                            "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
+                            rusqlite::params![retry_for_read, agent_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                        let value: Value = serde_json::from_str(&raw).map_err(|_| {
+                            studio_runtime_services::continuation::ContinuationError::Invalid(
+                                "/capacity/record".to_owned(),
+                            )
+                        })?;
+                        let response = serde_json::from_value::<crate::generated::RetryResponse>(
+                            value,
+                        )
+                        .map_err(|_| {
+                            studio_runtime_services::continuation::ContinuationError::Invalid(
+                                "/capacity/response".to_owned(),
+                            )
+                        })?;
+                        Ok::<_, studio_runtime_services::continuation::ContinuationError>((
+                            serde_json::to_value(response).map_err(|_| {
+                                studio_runtime_services::continuation::ContinuationError::Invalid(
+                                    "/capacity/response".to_owned(),
+                                )
+                            })?,
+                            staged.changed(),
+                        ))
+                    },
+                )
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(continuation_error)?;
+        if result.1 {
+            state.continuation_wake.notify_one();
+            state.event_wake.notify_one();
+        }
+        return Ok(Json(result.0));
     }
     let agent_id = body.id;
     let retry_id = body.retry_id;
@@ -164,25 +214,29 @@ async fn capacity_retry(
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage",
         move || {
-            store.transaction_with(|transaction| -> Result<Value, UsageRepositoryError> {
-                let value = cancel_capacity_retry(transaction, &agent_id, &retry_id, now)?;
-                let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
-                    .map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                        table: "runtime_capacity_retries",
-                        id: retry_id.clone(),
-                    })?;
-                serde_json::to_value(response).map_err(|_| {
-                    UsageRepositoryError::InvalidStoredObject {
-                        table: "runtime_capacity_retries",
-                        id: retry_id.clone(),
-                    }
-                })
+            let value = store.transaction_with(|tx| {
+                studio_runtime_services::continuation_runtime::stage_capacity_cancel(
+                    tx, &agent_id, &retry_id, now,
+                )
+            })?;
+            let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
+                .map_err(|_| {
+                    studio_runtime_services::continuation::ContinuationError::Invalid(
+                        "/capacity/response".to_owned(),
+                    )
+                })?;
+            serde_json::to_value(response).map_err(|_| {
+                studio_runtime_services::continuation::ContinuationError::Invalid(
+                    "/capacity/response".to_owned(),
+                )
             })
         },
     )
     .await
     .map_err(|_| ApiError::internal())?
-    .map_err(|error| usage_error(error, "/api/capacity-retry"))?;
+    .map_err(continuation_error)?;
+    state.continuation_wake.notify_one();
+    state.event_wake.notify_one();
     Ok(Json(result))
 }
 
@@ -190,17 +244,44 @@ async fn usage_resume(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::UsageResumeRequest>,
 ) -> Result<Json<Option<Value>>, ApiError> {
-    if body.enabled {
-        return Err(dependency_error(
-            "POST",
-            "/api/usage-resume",
-            &USAGE_RESUME_DEPENDENCIES,
-        ));
-    }
     let agent_id = body.id;
     let resume_id = body.resume_id;
+    let enabled = body.enabled;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
+    if enabled {
+        let agent = agent_id.clone();
+        let record = resume_id.clone();
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/usage",
+            move || {
+                studio_runtime_services::continuation_driver::drive(
+                    &store,
+                    &agent,
+                    studio_runtime_store::ContinuationTable::Usage,
+                    Some(&record),
+                    now,
+                    |snapshot| {
+                        studio_runtime_services::usage_resume::set_enabled(snapshot, true, now)
+                    },
+                )
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(continuation_error)?;
+        let value = result.record;
+        state.continuation_wake.notify_one();
+        state.event_wake.notify_one();
+        let Some(value) = value else {
+            return Ok(Json(None));
+        };
+        let response = serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
+            .map_err(|_| ApiError::internal())?;
+        return Ok(Json(Some(
+            serde_json::to_value(response).map_err(|_| ApiError::internal())?,
+        )));
+    }
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage",
         move || {
@@ -229,6 +310,8 @@ async fn usage_resume(
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| usage_error(error, "/api/usage-resume"))?;
+    state.continuation_wake.notify_one();
+    state.event_wake.notify_one();
     Ok(Json(result))
 }
 
@@ -243,19 +326,28 @@ fn cost_error(error: UsageError) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
 }
 
+fn continuation_error(error: studio_runtime_services::continuation::ContinuationError) -> ApiError {
+    match error {
+        studio_runtime_services::continuation::ContinuationError::Invalid(_) => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
+        studio_runtime_services::continuation::ContinuationError::Unavailable(_) => {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+        studio_runtime_services::continuation::ContinuationError::Store(error) => {
+            eprintln!("usage continuation store operation failed: {error}");
+            ApiError::internal()
+        }
+        studio_runtime_services::continuation::ContinuationError::WakeFailures(_) => {
+            ApiError::internal()
+        }
+    }
+}
+
 fn usage_error(error: UsageRepositoryError, path: &'static str) -> ApiError {
     match error {
-        UsageRepositoryError::MissingFamily => {
-            let dependencies: &[Dependency] = if path == "/api/capacity-retry" {
-                &CAPACITY_DEPENDENCIES
-            } else {
-                &USAGE_RESUME_DEPENDENCIES
-            };
-            dependency_error("POST", path, dependencies)
-        }
-        UsageRepositoryError::EventDriverRequired => {
-            dependency_error("POST", path, &CAPACITY_DEPENDENCIES)
-        }
+        UsageRepositoryError::MissingFamily => ApiError::internal(),
+        UsageRepositoryError::EventDriverRequired => ApiError::internal(),
         UsageRepositoryError::UnknownAgent => ApiError::new(StatusCode::NOT_FOUND, "Unknown agent"),
         UsageRepositoryError::UnknownContinuation => {
             let message = if path == "/api/capacity-retry" {
@@ -299,6 +391,7 @@ inventory::submit! {
             "store-bootstrap/usage-resume-schema",
             "turn-driver/capacity-retry",
             "turn-driver/usage-resume",
+            "costs/local-scanner",
         ],
     }
 }

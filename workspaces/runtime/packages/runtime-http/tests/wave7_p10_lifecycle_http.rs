@@ -200,3 +200,79 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     let agent: Value = serde_json::from_str(&raw).expect("final agent");
     assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
 }
+
+#[tokio::test]
+async fn production_delete_route_interrupts_and_settles_active_turn() {
+    let root = fixtures::tempdir();
+    let _ = fixtures::corpus(root.path());
+    let store = Arc::new(fixtures::store(root.path(), "lifecycle-delete-http"));
+    store
+        .transaction(|tx| {
+            let agent = AgentRecord::from_value(json!({
+                "id":"agent", "rootId":"agent", "epoch":4,
+                "status":"running", "isLead":true, "name":"Lead",
+                "cwd":"/fixture", "autoWake":true, "inFlight":true,
+                "turnId":"active-turn", "threadId":"fixture-thread",
+                "accountKey":"fixture-account", "connectionId":"fixture-connection",
+                "connectionGeneration":7,
+                "startAttempt":{
+                    "id":"attempt", "action":"turn", "submitted":true,
+                    "epoch":4, "events":["input-event"],
+                    "turnId":"active-turn", "threadId":"fixture-thread",
+                    "accountKey":"fixture-account", "connectionId":"fixture-connection",
+                    "connectionGeneration":7
+                }
+            }))?;
+            AgentRepository::put(tx, &agent)?;
+            ExecutionHistoryRepository::record(tx, &agent)
+        })
+        .expect("seed active agent");
+    let broker = Arc::new(InterruptBroker {
+        store: store.clone(),
+        scope: ConnectionScope {
+            account: "fixture-account".into(),
+            connection: "fixture-connection".into(),
+            generation: 7,
+        },
+        calls: Mutex::new(Vec::new()),
+    });
+    let ports: Arc<dyn LifecyclePorts> = Arc::new(ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        broker.clone(),
+        None,
+    ));
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        None,
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let app = router(state).expect("router").layer(Extension(ports));
+
+    let (status, response) = call(&app, "/api/conversation/delete", json!({"id":"agent"})).await;
+
+    let calls = broker.calls.lock().expect("calls lock");
+    let reader = store.read().expect("diagnostic store read");
+    let raw: String = reader
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='agent'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tombstoned agent row");
+    let agent: Value = serde_json::from_str(&raw).expect("agent record");
+    assert_eq!(status, 200, "response={response}; agent={raw}");
+    assert_eq!(response["deleted"], json!(["agent"]));
+    assert_eq!(calls.len(), 1);
+    assert!(agent["deletedAt"].is_number() || agent["deletedAt"] == true);
+    assert_eq!(agent["status"], "paused");
+    assert_eq!(agent["inFlight"], false);
+    assert!(agent["turnId"].is_null());
+    assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
+}

@@ -47,6 +47,7 @@ pub enum Action<'a> {
     Reset(&'a str),
     Cancel,
     Wait(&'a str),
+    Excluded(&'a str),
     Error {
         attempt: &'a Value,
         reason: &'a str,
@@ -198,6 +199,20 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 &mut r,
                 json!({"status":"scheduled","dueAt":now+(WAIT_STEP*waits as f64).min(WAIT_MAX),"waits":waits,"reason":reason}),
             );
+        }
+        Action::Excluded(reason) => {
+            if text(&r, "status") != "scheduled" || present(&r, "acceptedTurnId") {
+                return Ok(Decision::default());
+            }
+            patch(
+                &mut r,
+                json!({"status":"cancelled","dueAt":null,"reason":reason}),
+            );
+            patch(
+                &mut agent,
+                json!({"status":"failed","inFlight":false,"error":reason}),
+            );
+            hold = Some("account-excluded");
         }
         Action::Error {
             attempt: receipt,

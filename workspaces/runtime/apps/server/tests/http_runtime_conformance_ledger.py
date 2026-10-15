@@ -121,8 +121,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/agents/account-transfer"): {
         "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
                              "request_id": "60606060-6060-4060-8060-606060606060"}, "replace_body": True,
-                    "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
-                    "assert_no_write": True},
+                    "expected": "2xx"},
     },
     ("POST", "/api/connection-recovery"): {
         "primary": {"body": {"id": "$agent"}, "expected": "501",
@@ -582,12 +581,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
-        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, store-bootstrap/capacity-retry-schema, turn-driver/capacity-retry", "assert_no_write": True}],
+        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, turn-driver/capacity-retry", "assert_no_write": True}],
     },
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
-    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
+    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     # Python checks FederationService.enabled() at the start of route() before
     # reading signed headers (codex_federation.py:527-529); the router maps its
@@ -626,7 +625,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
-        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
+        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/usage-resume", "assert_no_write": True}],
     },
     ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},

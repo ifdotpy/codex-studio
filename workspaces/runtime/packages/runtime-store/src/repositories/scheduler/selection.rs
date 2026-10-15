@@ -20,7 +20,11 @@ impl SchedulerRepository {
   AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
   AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0
   AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id
-     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending')) pending,
+     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending'))
+ OR (json_extract(a.record,'$.startAttempt.action')='capacity'
+     AND json_extract(a.record,'$.startAttempt.submitted')=0
+     AND json_extract(a.record,'$.capacityRetry.id')=json_extract(a.record,'$.startAttempt.capacityRetryId')
+     AND json_extract(a.record,'$.status')='starting') pending,
  ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
    AND json_extract(a.record,'$.startAttempt.submitted')=1
    AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL

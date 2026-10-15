@@ -394,6 +394,22 @@ fn malformed_stored_lifecycle_identity_is_located() {
 }
 
 #[test]
+fn management_snapshot_does_not_impose_a_python_absent_row_cap() {
+    // Python codex_runtime.py:2956-2973 traverses the full descendant set and
+    // has no row-count or per-record byte cap for these management snapshots.
+    let records = Records {
+        tables: std::collections::BTreeMap::from([(
+            "runtime_events".to_owned(),
+            (0..10_001)
+                .map(|index| json!({"id":format!("event-{index}"),"agent":"agent","status":"pending","epoch":0}))
+                .collect(),
+        )]),
+    };
+
+    assert!(ManagementSnapshot::from_records(records).is_ok());
+}
+
+#[test]
 fn managed_interrupt_requires_current_sender_and_descendant_scope() {
     let records: Records =
         serde_json::from_value(corpus()[0]["records"].clone()).expect("lifecycle rows");

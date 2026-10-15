@@ -11,7 +11,7 @@ pub use crate::multi_server_auth::{
 };
 pub use crate::multi_server_orchestration::{
     ExchangeOutcome, HttpsPairedTransport, OrchestrationDriver, OrchestrationEffects,
-    PairedTransport,
+    PairedTransport, RuntimeOrchestrationEffects, enqueue_in_transaction,
 };
 pub use crate::multi_server_pairing::{MultiServerBoundary, OwnerLookup};
 pub use crate::remote_transport::{

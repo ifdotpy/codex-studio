@@ -40,6 +40,9 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 transfers.save(db,operation)
             ports.put(db,'agents',dict(id='empty',rootId='empty',epoch=0,status='idle',name='Empty',isLead=True,autoWake=False,accountKey='default',cwd=str(cls.backend.cwd),model='gpt-6-astra',projectFolder='old',projectFolderRevision=2))
             ports.put(db,'agents',dict(id='selection-fail',rootId='selection-fail',epoch=0,status='idle',name='Selection failure',isLead=True,autoWake=False,accountKey='default',cwd=str(cls.backend.cwd),model='gpt-6-astra'))
+            resume=dict(id='selection-resume',status='scheduled',dueAt=5000.0,threadId='selection-thread',turnId='selection-turn',accountKey='source',epoch=0,cause='usage_limit',failedAt=100.0,authAttempt=0,authRefreshMarker=None,plannedAt=5000.0,resetAt=5000.0,reason=None)
+            ports.put(db,'agents',dict(id='selection-resume',rootId='selection-resume',epoch=0,status='idle',name='Resume selection',isLead=True,autoWake=False,accountKey='source',cwd=str(cls.backend.cwd),model='gpt-6-astra',usageResume=resume))
+            db.execute('INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?,?,?)',('selection-resume','selection-resume',json.dumps(resume)))
         cls.backend.start()
 
     def headers(self):
@@ -89,6 +92,16 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         result=self.post(dict(id='replay',account_key='default'),'/api/agents/account')
         self.assertEqual(result.status,200,result.body)
         self.assertEqual(self.stored('replay'),before)
+    def test_account_selection_cancels_scheduled_resume_in_the_same_write(self):
+        result=self.post(dict(id='selection-resume',account_key='default'),'/api/agents/account')
+        self.assertEqual(result.status,200,result.body)
+        self.assertEqual(result.json()['accountKey'],'default')
+        self.assertEqual(result.json()['usageResume']['status'],'cancelled')
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            record=json.loads(db.execute('SELECT record FROM runtime_usage_resumes WHERE id=?',('selection-resume',)).fetchone()[0])
+            agent=json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?',('selection-resume',)).fetchone()[0])
+        self.assertEqual(record['status'],'cancelled')
+        self.assertEqual(agent['usageResume']['status'],'cancelled')
     def test_empty_chat_selection_changes_folder_once(self):
         body=dict(id='empty',account_key='default',cwd=str(self.selected_cwd))
         for _ in range(2):

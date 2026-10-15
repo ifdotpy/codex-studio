@@ -8,21 +8,15 @@ use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, Transaction, agent_management as repository,
 };
 
+/// Maximum complete lifecycle preparation attempts before returning a conflict.
+/// Unit: attempts (including the first capture).
+const MAX_PREPARED_INPUT_ATTEMPTS: usize = 3;
+
 /// HTTP stop/delete and the tool dispatcher's archive/restore share this entry.
 /// Preconditions, decision, writes and renderer changes commit together. No
 /// caller can replay an unknown external effect because none is submitted here.
 pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value, ManagementError> {
-    let reader = store.read()?;
-    let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let projects = ProjectsRepository::list(&reader)?;
-    let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
-    // The filesystem preparation and transactional decision happen after this
-    // immutable snapshot is complete. Release the pooled reader before the
-    // archive path performs its post-commit readback below.
-    drop(reader);
-    let mut result = store.transaction_with_error(|transaction| {
-        execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
-    })?;
+    let mut result = execute_prepared(store, action, now, None, || {})?;
     if matches!(action, Action::Delete { .. } | Action::Archive { .. }) {
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
             studio_runtime_store::StoreError::RecordContract(
@@ -45,6 +39,85 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
         }
     }
     Ok(result)
+}
+
+pub(crate) fn execute_prepared(
+    store: &RuntimeStore,
+    action: &Action,
+    now: f64,
+    ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+    mut on_attempt_boundary: impl FnMut(),
+) -> Result<Value, ManagementError> {
+    for attempt_index in 0..MAX_PREPARED_INPUT_ATTEMPTS {
+        // The last bounded attempt captures its read-only inputs after writer
+        // admission, then commits against that same transaction. This mirrors
+        // Python's Runtime.lock serialization and makes ordinary concurrent
+        // record writers unable to invalidate the final snapshot.
+        if attempt_index + 1 == MAX_PREPARED_INPUT_ATTEMPTS {
+            // The test seam can place a concurrent writer immediately before
+            // admission; after admission, both capture and commit are atomic
+            // with respect to this store's other writers.
+            on_attempt_boundary();
+            let outcome = store.transaction_with_error(|transaction| {
+                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                let projects = ProjectsRepository::list(transaction)?;
+                let vault_snapshot =
+                    crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
+                match ports {
+                    Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
+                        transaction,
+                        action,
+                        now,
+                        ports,
+                        &rooms,
+                        &vault_snapshot,
+                    ),
+                    None => {
+                        execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
+                    }
+                }
+            });
+            return match outcome {
+                Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
+                    "agent management inputs changed after filesystem preparation",
+                ))) => Err(ManagementError::Invalid(
+                    "Agent state kept changing while preparing stop; reload and retry",
+                )),
+                result => result,
+            };
+        }
+
+        let reader = store.read()?;
+        let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+        let projects = ProjectsRepository::list(&reader)?;
+        let vault_snapshot =
+            crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
+        drop(reader);
+        on_attempt_boundary();
+
+        let attempt = store.transaction_with_error(|transaction| match ports {
+            Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
+                transaction,
+                action,
+                now,
+                ports,
+                &rooms,
+                &vault_snapshot,
+            ),
+            None => execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot),
+        });
+        match attempt {
+            Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
+                "agent management inputs changed after filesystem preparation",
+            ))) => {
+                // Repeat only the read-only store/filesystem capture. The
+                // rejected transaction detected the changed snapshot before
+                // any writes or lifecycle effects were staged.
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final prepared-input attempt returns from its writer transaction")
 }
 
 /// Archive a worker after its accepted result has been merged and verified on
@@ -110,6 +183,39 @@ fn execute_decision(
             "agent management inputs changed after filesystem preparation",
         )
         .into());
+    }
+    if let Action::RemoteStop {
+        principal,
+        link,
+        target,
+        ..
+    } = action
+    {
+        let raw: Option<String> = transaction
+            .query_row(
+                "SELECT record FROM runtime_server_links WHERE id=?1",
+                [link],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let link_record: Value = raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or(ManagementError::Invalid(
+                "The remote-parent link is unavailable",
+            ))?;
+        if link_record.get("side").and_then(Value::as_str) != Some("remote")
+            || link_record.get("home").and_then(Value::as_str) != Some(principal)
+            || !link_record
+                .get("workers")
+                .and_then(Value::as_array)
+                .is_some_and(|workers| workers.iter().any(|worker| worker.as_str() == Some(target)))
+        {
+            return Err(ManagementError::Invalid(
+                "The remote-parent link is invalid",
+            ));
+        }
     }
     let records = Records {
         tables: repository::read(transaction)?,

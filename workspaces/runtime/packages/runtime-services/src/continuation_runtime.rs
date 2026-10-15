@@ -4,17 +4,15 @@
 use crate::{
     capacity_retry::{self, Action as CapacityAction, Failure as CapacityFailure},
     claude_auth_wait,
-    continuation::{ContinuationError, Decision, Effect, Result, Snapshot, account, text},
+    continuation::{
+        ContinuationError, Decision, Effect, Result, Snapshot, account, flag, present, text,
+    },
     continuation_driver,
     usage_resume::{self, Cause as UsageCause, FailureObservation, LimitsObservation},
 };
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
-use std::time::Duration;
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transaction};
-use tokio::sync::watch;
-
-const TICK_SECONDS: u64 = 15;
 
 /// The exact settings copied by Python's `preparation_settings` helper.
 #[derive(Clone, Debug, PartialEq)]
@@ -163,30 +161,6 @@ pub enum Completion<'a> {
     },
 }
 
-/// One bounded scheduler batch. The host supplies its clock and the adapters that
-/// read account limits/authentication outside the SQLite writer.
-pub trait TickRuntime: Send + Sync + 'static {
-    fn now(&self) -> f64;
-    fn tick_batch(&self, now: f64) -> Result<()>;
-}
-
-/// Timer seam used by the application runtime. A batch implementation must cap
-/// its row count; durable due rows are rediscovered after restart or missed wakes.
-pub async fn start(runtime: impl TickRuntime, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-    let mut interval = tokio::time::interval(Duration::from_secs(TICK_SECONDS));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = interval.tick() => runtime.tick_batch(runtime.now())?,
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Staged {
     agent_id: String,
@@ -220,6 +194,310 @@ impl Staged {
 pub trait WakePort: Send + Sync {
     fn wake_account(&self, agent_id: &str, epoch: i64) -> Result<()>;
     fn wake_events(&self, agent_id: &str, epoch: i64) -> Result<()>;
+}
+
+struct RuntimeCapacityAdmission;
+
+impl continuation_driver::CapacityAdmission for RuntimeCapacityAdmission {
+    fn check(&mut self, tx: &Transaction<'_>, snapshot: &Snapshot, _: &Value) -> Result<()> {
+        let agent = &snapshot.agent;
+        let agent_id = text(agent, "id");
+        let root_id = text(agent, "rootId");
+        let root = if agent_id == root_id {
+            agent
+        } else {
+            snapshot
+                .ancestors
+                .iter()
+                .find(|ancestor| text(ancestor, "id") == root_id)
+                .ok_or_else(|| ContinuationError::Invalid("/agent/rootId".into()))?
+        };
+        if present(agent, "deletedAt")
+            || !flag(agent, "autoWake")
+            || flag(agent, "inFlight")
+            || present(agent, "turnId")
+            || !matches!(text(agent, "status"), "failed" | "queued")
+            || !snapshot
+                .record
+                .as_ref()
+                .is_some_and(|record| snapshot.claims_valid(record))
+        {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-state-changed",
+            ));
+        }
+        if root
+            .get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(account(agent))))
+        {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-account-excluded",
+            ));
+        }
+        if agent_id != root_id && !snapshot.parents_running(false) {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-parent-not-running",
+            ));
+        }
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_requests \
+                 WHERE json_extract(record,'$.agent')=?1 \
+                 AND json_extract(record,'$.status') IN ('pending','answering','uncertain'))",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if pending {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-request-pending",
+            ));
+        }
+        let token_budget = root.get("tokenBudget").and_then(Value::as_u64);
+        if let Some(token_budget) = token_budget {
+            let used: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(CAST(COALESCE(json_extract(record,'$.tokensUsed'),0) AS INTEGER)),0) \
+                     FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 OR id=?1",
+                    [root_id],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            if used >= token_budget.min(i64::MAX as u64) as i64 {
+                return Err(ContinuationError::Unavailable(
+                    "turn-driver/capacity-token-budget",
+                ));
+            }
+        }
+        let active_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND \
+                 json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval') \
+                 AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(studio_runtime_schema::agent_limits_generated::DEFAULT_GLOBAL_CONCURRENCY)
+            .max(studio_runtime_schema::agent_limits_generated::MIN_GLOBAL_CONCURRENCY);
+        if active_count >= global_limit {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-global-slots",
+            ));
+        }
+        if agent_id != root_id {
+            let team_active: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM runtime_agents WHERE id<>?1 AND id<>?2 \
+                     AND json_extract(record,'$.rootId')=?2 \
+                     AND json_extract(record,'$.status') IN ('starting','running','waiting','paused','approval') \
+                     AND COALESCE(json_extract(record,'$.remoteWorker'),0)=0",
+                    rusqlite::params![agent_id, root_id],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let team_limit = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
+            if team_active >= team_limit {
+                return Err(ContinuationError::Unavailable(
+                    "turn-driver/capacity-team-slots",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Claim an explicit or automatic retry only after its durable identity and
+/// scheduler admission gates pass in the same transaction as the attempt write.
+pub fn stage_capacity_retry(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    retry_id: &str,
+    now: f64,
+    automatic: bool,
+) -> Result<Staged> {
+    let mut snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
+    if let Some(pending) = snapshot
+        .agent
+        .get("pendingSettings")
+        .filter(|value| value.is_object())
+        .cloned()
+    {
+        if snapshot
+            .agent
+            .get("pendingSettingsAccountKey")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| account(&snapshot.agent))
+            != account(&snapshot.agent)
+        {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-pending-settings-account-changed",
+            ));
+        }
+        for (key, value) in pending
+            .as_object()
+            .ok_or_else(|| ContinuationError::Invalid("/agent/pendingSettings".into()))?
+        {
+            snapshot.agent[key] = value.clone();
+        }
+        let agent = snapshot
+            .agent
+            .as_object_mut()
+            .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?;
+        agent.remove("pendingSettings");
+        agent.remove("pendingSettingsAccountKey");
+    }
+    let settings = PreparationSettings::from_agent(&snapshot.agent)?.value();
+    if let Some(record) = snapshot.record.as_mut() {
+        if snapshot.agent.get("pendingSettings").is_none() {
+            record["settings"] = settings.clone();
+        }
+    }
+    let exclusion = capacity_exclusion_reason(&snapshot);
+    let decision = match exclusion {
+        Some(reason) if automatic => {
+            capacity_retry::transition(&snapshot, CapacityAction::Excluded(&reason), now)?
+        }
+        Some(_) => {
+            return Err(ContinuationError::Unavailable(
+                "turn-driver/capacity-account-excluded",
+            ));
+        }
+        None => capacity_retry::transition(
+            &snapshot,
+            CapacityAction::Claim {
+                settings: &settings,
+                automatic,
+            },
+            now,
+        )?,
+    };
+    let mut fault = continuation_driver::NoFault;
+    let mut admission = RuntimeCapacityAdmission;
+    let mut hooks = continuation_driver::DriverHooks {
+        fault: &mut fault,
+        capacity_admission: &mut admission,
+    };
+    let changed = decision
+        .agent
+        .as_ref()
+        .is_some_and(|agent| agent != &snapshot.agent)
+        || decision
+            .record
+            .as_ref()
+            .is_some_and(|record| snapshot.record.as_ref() != Some(record));
+    let mut staged = empty_stage(tx, agent_id)?;
+    if changed {
+        let applied = continuation_driver::apply_in_transaction_with_hooks(
+            tx,
+            &snapshot,
+            ContinuationTable::Capacity,
+            &decision,
+            now,
+            &mut hooks,
+        );
+        match applied {
+            Err(ContinuationError::Unavailable(reason)) => {
+                let deferred =
+                    capacity_retry::transition(&snapshot, CapacityAction::Wait(reason), now)?;
+                let mut staged = empty_stage(tx, agent_id)?;
+                collect_apply(
+                    tx,
+                    &mut staged,
+                    ContinuationTable::Capacity,
+                    &snapshot,
+                    deferred,
+                    now,
+                )?;
+                return Ok(staged);
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+        staged.changed = true;
+        add_account_wake(
+            &mut staged,
+            agent_id,
+            snapshot.agent["epoch"].as_i64().unwrap_or(-1),
+        );
+        staged.effects.extend(decision.effects);
+    }
+    Ok(staged)
+}
+
+/// Cancel a capacity retry and return its committed projection in one writer
+/// transaction so a replay cannot observe a later concurrent mutation.
+pub fn stage_capacity_cancel(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    retry_id: &str,
+    now: f64,
+) -> Result<Value> {
+    let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
+    let decision = capacity_retry::transition(&snapshot, CapacityAction::Cancel, now)?;
+    let value = decision
+        .record
+        .clone()
+        .or_else(|| snapshot.record.clone())
+        .ok_or_else(|| ContinuationError::Invalid("/capacity/record".into()))?;
+    continuation_driver::apply_in_transaction(
+        tx,
+        &snapshot,
+        ContinuationTable::Capacity,
+        &decision,
+        now,
+    )?;
+    Ok(value)
+}
+
+fn capacity_exclusion_reason(snapshot: &Snapshot) -> Option<String> {
+    let agent = &snapshot.agent;
+    let root_id = text(agent, "rootId");
+    let root = if text(agent, "id") == root_id {
+        agent
+    } else {
+        snapshot
+            .ancestors
+            .iter()
+            .find(|ancestor| text(ancestor, "id") == root_id)?
+    };
+    let account_key = account(agent);
+    root.get("excludedAccountKeys")
+        .and_then(Value::as_array)
+        .filter(|keys| keys.iter().any(|key| key.as_str() == Some(account_key)))
+        .map(|_| format!("Account {account_key} is disabled for this chat"))
+}
+
+/// Persist acceptance of the exact capacity attempt in the same transaction as
+/// the provider's positive turn/start receipt.
+pub fn stage_capacity_accepted(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    retry_id: &str,
+    attempt: &Value,
+    turn_id: &str,
+    now: f64,
+) -> Result<Staged> {
+    let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
+    let decision = capacity_retry::transition(
+        &snapshot,
+        CapacityAction::Accepted { attempt, turn_id },
+        now,
+    )?;
+    let mut staged = empty_stage(tx, agent_id)?;
+    collect_apply(
+        tx,
+        &mut staged,
+        ContinuationTable::Capacity,
+        &snapshot,
+        decision,
+        now,
+    )?;
+    Ok(staged)
 }
 
 /// Stage all durable continuation state in the transaction that settles the
@@ -535,7 +813,15 @@ pub fn stage_tick(
                     .and_then(Value::as_f64)
                     .is_some_and(|due| due <= now)
         }) {
-            staged.changed = true;
+            let capacity_stage = stage_capacity_retry(tx, agent_id, &id, now, true)?;
+            staged.changed |= capacity_stage.changed;
+            staged.event_wake |= capacity_stage.event_wake;
+            staged.effects.extend(capacity_stage.effects);
+            for wake in capacity_stage.account_wakes {
+                if !staged.account_wakes.contains(&wake) {
+                    staged.account_wakes.push(wake);
+                }
+            }
         }
     }
     let Some(id) = child_id(tx, agent_id, "usageResume")? else {
@@ -564,6 +850,72 @@ pub fn stage_tick(
         now,
     )?;
     Ok(staged)
+}
+
+/// Reconcile scheduled usage waits when fresh account telemetry is persisted.
+/// This mirrors Python's `usage_resume_limits_changed`: non-usage/auth waits
+/// are ignored by the policy after the indexed account scan.
+pub fn stage_limits_changed_for_account(
+    tx: &Transaction<'_>,
+    account_key: &str,
+    raw_limits: &Value,
+    now: f64,
+) -> Result<bool> {
+    if raw_limits
+        .get("error")
+        .is_some_and(|value| value.as_str().is_some_and(|text| !text.is_empty()))
+        || raw_limits
+            .get("data")
+            .and_then(Value::as_object)
+            .is_none_or(|data| data.is_empty())
+    {
+        return Ok(false);
+    }
+    let mut observation = raw_limits.clone();
+    observation["accountKey"] = json!(account_key);
+    let limits = LimitsObservation::from_record(observation, None)?;
+    let rows = tx
+        .prepare_cached(
+            "SELECT id,agent FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_extract(record,'$.accountKey')=?1 ORDER BY id",
+        )
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?
+        .query_map([account_key], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?;
+    let Some((first_id, first_agent)) = rows.first().cloned() else {
+        return Ok(false);
+    };
+    let first = load(tx, &first_agent, ContinuationTable::Usage, Some(&first_id))?;
+    let mut staged = Staged {
+        agent_id: first_agent.clone(),
+        epoch: first.agent["epoch"]
+            .as_i64()
+            .ok_or_else(|| ContinuationError::Invalid("/agent/epoch".into()))?,
+        changed: false,
+        event_wake: false,
+        effects: Vec::new(),
+        account_wakes: Vec::new(),
+    };
+    for (id, agent_id) in rows {
+        let snapshot = if id == first_id && agent_id == first_agent {
+            first.clone()
+        } else {
+            load(tx, &agent_id, ContinuationTable::Usage, Some(&id))?
+        };
+        let decision = usage_resume::limits_changed(&snapshot, &limits, now)?;
+        collect_apply(
+            tx,
+            &mut staged,
+            ContinuationTable::Usage,
+            &snapshot,
+            decision,
+            now,
+        )?;
+    }
+    Ok(staged.changed)
 }
 
 fn auth_wait_ids_after(

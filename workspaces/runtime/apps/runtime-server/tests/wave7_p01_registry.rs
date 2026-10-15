@@ -877,7 +877,11 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
     .await
     .unwrap();
     let stop = Shutdown::default();
-    let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
+    let task = tokio::spawn(registry.run(
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        stop.clone(),
+    ));
 
     let (first, second) = tokio::time::timeout(TEST_HANG_GUARD, async {
         tokio::join!(
@@ -1247,7 +1251,7 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
     wake.notify_one();
-    let task = tokio::spawn(registry.run(wake, stop.clone()));
+    let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
     assert_eq!(
         tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
@@ -1302,7 +1306,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     .await
     .unwrap();
     let stop = Shutdown::default();
-    let task = tokio::spawn(registry.run(wake, stop.clone()));
+    let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
     let body = json!({"room":fixture.agents[0]["id"],"id":"b2ba3b37-4ef4-467d-b215-155c09c088e6","text":"committed through HTTP"});
     for _ in 0..2 {
         let request = Request::builder()
@@ -1514,7 +1518,7 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     .unwrap();
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
-    let task = tokio::spawn(registry.run(wake.clone(), stop.clone()));
+    let task = tokio::spawn(registry.run(wake.clone(), Arc::new(Notify::new()), stop.clone()));
     let first = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("initial provider write hang guard")
@@ -1684,7 +1688,11 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     .await
     .unwrap();
     let stop = Shutdown::default();
-    let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
+    let task = tokio::spawn(registry.run(
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        stop.clone(),
+    ));
     let (_, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .unwrap_or_else(|_| {

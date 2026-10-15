@@ -465,7 +465,11 @@ class CombinedHostLifecycleContract(unittest.TestCase):
                 f"{label} named an unlisted dependency: {refused}",
             )
             return refused
-        self.assertEqual(response.status, expected, f"{label}: {response.body[:2000]!r}")
+        self.assertEqual(
+            response.status,
+            expected,
+            f"{label}: {response.body[:2000]!r}; backend stderr: {self.backend.stderr}",
+        )
         return None
 
     def seed_answerable_question(self, agent_id: str) -> str:

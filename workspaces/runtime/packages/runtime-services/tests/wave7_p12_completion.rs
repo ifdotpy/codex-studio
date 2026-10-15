@@ -357,6 +357,34 @@ fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
 }
 
 #[test]
+fn persisted_account_limits_retime_waits_and_report_scheduler_wake() {
+    let template = template();
+    let root = clone_template(template.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let value = json!({
+        "accountKey":"default",
+        "at":1000.0,
+        "data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":1300.0}}},
+        "error":null
+    });
+    let changed = store
+        .transaction_with(|tx| {
+            continuation_runtime::stage_limits_changed_for_account(tx, "default", &value, 1000.0)
+        })
+        .expect("stage fresh limits");
+    assert!(
+        changed,
+        "the persisted wait must wake the due-time scheduler"
+    );
+    let resume = all_usage_rows(&store)
+        .into_iter()
+        .find(|row| row["id"] == "resume")
+        .expect("Python fixture resume");
+    assert_eq!(resume["dueAt"], 1305.0);
+    assert_eq!(resume["plannedAt"], 1300.0);
+}
+
+#[test]
 fn ineligible_terminal_failure_does_not_require_limits() {
     let template = template();
     let root = clone_template(template.path());

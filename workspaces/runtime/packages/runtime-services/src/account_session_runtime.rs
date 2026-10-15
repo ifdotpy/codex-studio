@@ -16,6 +16,7 @@ use serde_json::Value;
 use studio_runtime_providers::Method;
 use studio_runtime_providers::RequestTicket;
 use thiserror::Error;
+use tokio::sync::Notify;
 
 #[derive(Debug, Error)]
 pub enum AccountSessionError {
@@ -294,6 +295,15 @@ pub enum RequestCertainty {
     NotSent,
     Unknown,
 }
+impl RequestCertainty {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Written => "written",
+            Self::NotSent => "not_sent",
+            Self::Unknown => "unknown",
+        }
+    }
+}
 pub struct SessionReceipt {
     pub scope: ConnectionScope,
     pub operation: String,
@@ -416,6 +426,7 @@ pub struct AccountSessionRuntime {
     store: Option<Arc<studio_runtime_store::RuntimeStore>>,
     refreshed_limits: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Value>>>,
     pending_limit_refreshes: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    continuation_wake: Option<Arc<Notify>>,
 }
 
 fn persist_limits(
@@ -423,12 +434,14 @@ fn persist_limits(
     refreshed_limits: &std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
     account: &str,
     value: &Value,
+    continuation_wake: Option<&Notify>,
 ) -> Result<(), AccountSessionError> {
     use rusqlite::OptionalExtension;
     use studio_runtime_store::SyncDocumentsRepository;
     let mut refreshed = refreshed_limits
         .lock()
         .map_err(|_| AccountSessionError::Persistence)?;
+    let now = timestamp()?;
     let result = store.transaction(|transaction| {
         let raw = transaction
             .query_row(
@@ -461,10 +474,22 @@ fn persist_limits(
             .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
                 scope: "workspace".into(),
                 id: "current".into(),
-            })
+            })?;
+        crate::continuation_runtime::stage_limits_changed_for_account(
+            transaction,
+            account,
+            value,
+            now,
+        )
+        .map_err(|error| {
+            studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+        })
     });
-    result.map_err(|_| AccountSessionError::Persistence)?;
+    let changed = result.map_err(|_| AccountSessionError::Persistence)?;
     refreshed.insert(account.to_owned(), value.clone());
+    if changed && let Some(wake) = continuation_wake {
+        wake.notify_one();
+    }
     Ok(())
 }
 
@@ -498,6 +523,7 @@ impl AccountSessionRuntime {
             pending_limit_refreshes: Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeSet::new(),
             )),
+            continuation_wake: None,
         }
     }
     pub fn with_limits(mut self, policy: Arc<crate::account_policy::AccountPolicyState>) -> Self {
@@ -508,12 +534,22 @@ impl AccountSessionRuntime {
         self.store = Some(store);
         self
     }
+    pub fn with_continuation_wake(mut self, wake: Arc<Notify>) -> Self {
+        self.continuation_wake = Some(wake);
+        self
+    }
     fn persist_limits(&self, account: &str, value: &Value) -> Result<(), AccountSessionError> {
         let store = self
             .store
             .as_ref()
             .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))?;
-        persist_limits(store, &self.refreshed_limits, account, value)
+        persist_limits(
+            store,
+            &self.refreshed_limits,
+            account,
+            value,
+            self.continuation_wake.as_deref(),
+        )
     }
     fn exchange(
         &self,
@@ -1445,7 +1481,7 @@ mod persistence_tests {
         let cache = Mutex::new(BTreeMap::new());
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
 
-        persist_limits(&store, &cache, "default", &value).unwrap();
+        persist_limits(&store, &cache, "default", &value, None).unwrap();
 
         let entity = stored_workspace(&store);
         assert_eq!(entity["value"]["rateLimits"], value);
@@ -1478,7 +1514,7 @@ mod persistence_tests {
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
 
         assert!(matches!(
-            persist_limits(&store, &cache, "default", &value),
+            persist_limits(&store, &cache, "default", &value, None),
             Err(AccountSessionError::Persistence)
         ));
 

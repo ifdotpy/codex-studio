@@ -13,8 +13,6 @@ use thiserror::Error;
 use crate::agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind};
 use crate::event_write::{python_strip, truthy};
 
-const MAX_ROWS: usize = 10_000;
-const MAX_RECORD_BYTES: usize = 1_048_576;
 const MAX_SAFE_EPOCH: i64 = MAX_SAFE_INTEGER;
 const BRIEF_FIELDS: &[&str] = &[
     "id",
@@ -62,6 +60,14 @@ pub enum Action {
         sender: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sender_epoch: Option<i64>,
+    },
+    RemoteStop {
+        principal: String,
+        link: String,
+        target: String,
+        request_id: String,
+        control_epoch: i64,
+        reason: String,
     },
     Delete {
         target: String,
@@ -146,17 +152,9 @@ struct Work {
     record: Value,
 }
 
-#[derive(Deserialize)]
-struct VoiceSession {
-    agent: String,
-    state: Option<String>,
-    ended: Option<f64>,
-}
-
 pub struct ManagementSnapshot {
     agents: Vec<Agent>,
     work: Vec<Work>,
-    voice_sessions: Vec<VoiceSession>,
     tables: BTreeMap<String, Vec<Value>>,
 }
 
@@ -196,13 +194,7 @@ impl ManagementSnapshot {
     pub fn from_records(records: Records) -> Result<Self, ManagementError> {
         let mut agents = Vec::new();
         let mut work = Vec::new();
-        let mut voice_sessions = Vec::new();
         for (table, rows) in &records.tables {
-            if rows.len() > MAX_ROWS {
-                return Err(ManagementError::Unavailable(
-                    "agent-management/snapshot-limit",
-                ));
-            }
             let mut ids = BTreeSet::new();
             for row in rows {
                 let id = row.get("id").and_then(Value::as_str).unwrap_or("<missing>");
@@ -210,21 +202,13 @@ impl ManagementSnapshot {
                     table: table.clone(),
                     id: id.to_owned(),
                 };
-                if !row.is_object()
-                    || id == "<missing>"
-                    || !ids.insert(id)
-                    || row.to_string().len() > MAX_RECORD_BYTES
-                {
+                if !row.is_object() || id == "<missing>" || !ids.insert(id) {
                     return Err(invalid());
                 }
                 if let Some(schema) = studio_runtime_schema::table_schema(table)
                     && !studio_runtime_schema::validate(schema, row).map_err(|_| invalid())?
                 {
                     return Err(invalid());
-                }
-                if table == "voice_sessions" {
-                    voice_sessions
-                        .push(serde_json::from_value(row.clone()).map_err(|_| invalid())?);
                 }
                 if table == "runtime_work" {
                     work.push(Work {
@@ -243,7 +227,6 @@ impl ManagementSnapshot {
         Ok(Self {
             agents,
             work,
-            voice_sessions,
             tables: records.tables,
         })
     }
@@ -372,6 +355,13 @@ impl ManagementSnapshot {
         }
         Ok(())
     }
+    fn has_active_voice_session(&self, agent: &Agent) -> bool {
+        self.rows("voice_sessions").iter().any(|session| {
+            session.get("agent").and_then(Value::as_str) == Some(agent.id())
+                && session.get("state").is_some_and(|state| !state.is_null())
+                && session.get("ended").is_none_or(Value::is_null)
+        })
+    }
     fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
         self.stop_effects(agent, &mut Vec::new(), false, false)
     }
@@ -421,14 +411,6 @@ impl ManagementSnapshot {
         {
             stage(LifecycleEffectKind::Interrupt)?;
         }
-        if ["remoteWorker", "remoteAnchor", "remoteOrigin"]
-            .iter()
-            .any(|key| agent.flag(key))
-        {
-            return Err(ManagementError::Unavailable(
-                "cross-server/agent-management",
-            ));
-        }
         if (agent.flag("capacityRetry") && !capacity_retry_is_local)
             || agent
                 .record
@@ -446,11 +428,8 @@ impl ManagementSnapshot {
         {
             stage(LifecycleEffectKind::CancelMonitors)?;
         }
-        if self.voice_sessions.iter().any(|session| {
-            session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
-        }) && (!deleting || !live)
-        {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
+        if !deleting && self.has_active_voice_session(agent) {
+            stage(LifecycleEffectKind::VoiceStop)?;
         }
         Ok(())
     }
@@ -668,9 +647,50 @@ fn decide_inner(
                 reason.as_deref(),
                 now,
                 live,
+                None,
             )
         }
-        Action::Delete { target } => stop(snapshot, target, true, true, None, now, live),
+        Action::RemoteStop {
+            principal,
+            link,
+            target,
+            request_id,
+            control_epoch,
+            reason,
+        } => {
+            let agent = snapshot.agent(target)?;
+            let expected = json!({"server":principal,"link":link});
+            if agent.record.get("remoteWorker") != Some(&expected) || !agent.flag("movedTo") {
+                return Err(ManagementError::Invalid("The remote worker route changed"));
+            }
+            if agent
+                .record
+                .get("remoteStopRequest")
+                .and_then(Value::as_str)
+                == Some(request_id)
+            {
+                return Ok(Decision::result(json!({"stopped":[target]})));
+            }
+            if agent
+                .record
+                .get("remoteControlEpoch")
+                .and_then(Value::as_i64)
+                .is_some_and(|current| current > *control_epoch)
+            {
+                return Err(ManagementError::Invalid("The remote stop was superseded"));
+            }
+            stop(
+                snapshot,
+                target,
+                true,
+                false,
+                Some(reason),
+                now,
+                live,
+                Some((request_id, *control_epoch)),
+            )
+        }
+        Action::Delete { target } => stop(snapshot, target, true, true, None, now, live, None),
         Action::Archive {
             actor,
             epoch,
@@ -712,28 +732,13 @@ fn stop(
     reason: Option<&str>,
     now: f64,
     live: bool,
+    remote_request: Option<(&str, i64)>,
 ) -> Result<Decision, ManagementError> {
     let agents = snapshot.descendants(target, descendants)?;
     let mut required = BTreeMap::new();
     for agent in &agents {
         let mut effects = Vec::new();
         snapshot.stop_effects(agent, &mut effects, live, delete)?;
-        if delete {
-            workspace_dependency(agent)?;
-            // Python only schedules image cleanup for non-removed workspaces
-            // (codex_runtime.py:4983-4985).
-            if agent.flag("imageWorkspace")
-                && agent
-                    .record
-                    .get("imageWorkspacePhase")
-                    .and_then(Value::as_str)
-                    != Some("removed")
-            {
-                return Err(ManagementError::Unavailable(
-                    "workspace-state/agent-lifecycle",
-                ));
-            }
-        }
         if !delete
             && agent.identity.is_lead != Some(true)
             && agent.identity.parent_id.is_some()
@@ -817,6 +822,27 @@ fn stop(
         object.insert("epoch".to_owned(), json!(epoch));
         object.insert("status".to_owned(), json!("paused"));
         object.insert("error".to_owned(), json!(reason.clone()));
+        if let Some((request_id, control_epoch)) = remote_request
+            && agent.id() == target
+        {
+            object.insert("remoteStopRequest".to_owned(), json!(request_id));
+            object.insert("remoteControlEpoch".to_owned(), json!(control_epoch));
+        }
+        if agent.flag("autoWake")
+            && !agent.flag("movedTo")
+            && agent
+                .record
+                .get("remoteWorker")
+                .is_some_and(Value::is_object)
+        {
+            let request_id = remote_stop_request_id(agent.id(), epoch);
+            object.insert("remoteStopRequest".to_owned(), json!(request_id));
+            object.insert("remoteControlEpoch".to_owned(), json!(epoch));
+            required
+                .entry(agent.id())
+                .or_default()
+                .push(LifecycleEffectKind::RemoteStop);
+        }
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
         }
@@ -853,6 +879,16 @@ fn stop(
         }
     }
     Ok(decision)
+}
+
+fn remote_stop_request_id(agent_id: &str, control_epoch: i64) -> String {
+    // Match Python identity(agent_id, "stop", str(control_epoch)) in
+    // codex_multi_server_orchestration.py:60 and :782-784.
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-cross-server:{agent_id}:stop:{control_epoch}").as_bytes(),
+    )
+    .to_string()
 }
 
 fn archive(

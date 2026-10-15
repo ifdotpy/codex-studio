@@ -1,5 +1,5 @@
 //! Existing transfer rows; schema creation remains owned by store bootstrap.
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{JsonRecord, RecordKeyMode, RecordQueryShape, StoreError, StoreResult, Table};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -79,14 +79,11 @@ const TABLES: &[TableRequirement] = &[TableRequirement {
 }];
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[ConditionalTableRequirement {
-        table_exists: "runtime_account_transfers",
-        tables: TABLES,
-    }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: TABLES,
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

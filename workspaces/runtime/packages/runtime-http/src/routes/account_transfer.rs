@@ -1,4 +1,4 @@
-//! Transfer control and receipt replay. Provider-dependent starts refuse before writes.
+//! Durable transfer requests, worker selection, and receipt replay.
 use super::{
     extractors::ApiJson,
     manifest::{Dependency, OperationStatus, RouteGroup, post},
@@ -24,12 +24,12 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/agents/account",
-            OperationStatus::partial(SELECTION),
+            OperationStatus::Implemented,
             selection,
         ),
         post(
             "/api/agents/account-transfer",
-            OperationStatus::partial(TRANSFER),
+            OperationStatus::Implemented,
             transfer,
         ),
     ])
@@ -66,6 +66,7 @@ async fn selection(
             )
             .map_err(error)?;
             state.event_wake.notify_one();
+            state.continuation_wake.notify_one();
             super::generated_json::<generated::AgentResponse>(value).map(Json)
         },
     )
@@ -87,11 +88,7 @@ async fn transfer(
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/account_transfer",
         move || {
-            let store = state.store.as_deref().ok_or_else(|| {
-                error(TransferError::Requires(
-                    "account-transfer/provider-history-executor",
-                ))
-            })?;
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
             let result = if let Some(action) = body.action {
                 let action = match action.as_str() {
                     "cancel" => Action::Cancel,
@@ -131,9 +128,7 @@ async fn transfer(
                 } else if let Some(policy) = &state.account_policy {
                     policy.has_account(target)
                 } else {
-                    return Err(error(TransferError::Requires(
-                        "account-transfer/provider-history-executor",
-                    )));
+                    return Err(error(TransferError::Refused("Unknown account")));
                 };
                 if !registered {
                     return Err(error(TransferError::Refused("Unknown account")));
@@ -173,11 +168,7 @@ async fn transfer(
                         })
                     })
                     .or_else(|| (target == "default").then(|| "codex".to_owned()))
-                    .ok_or_else(|| {
-                        error(TransferError::Requires(
-                            "account-transfer/destination-settings",
-                        ))
-                    })?;
+                    .ok_or_else(|| error(TransferError::Refused("Unknown account provider")))?;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|_| ApiError::internal())?
@@ -194,6 +185,7 @@ async fn transfer(
             }
             .map_err(error)?;
             state.event_wake.notify_one();
+            state.continuation_wake.notify_one();
             super::generated_json::<generated::TransferResponse>(result).map(Json)
         },
     )

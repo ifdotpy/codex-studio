@@ -24,10 +24,11 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, LazyLock, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -38,6 +39,22 @@ use studio_runtime_store::RuntimeStore;
 const READ_DEADLINE: Duration = Duration::from_secs(120);
 const MUTATION_DEADLINE: Duration = Duration::from_secs(60);
 static NATIVE_IMPORT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NATIVE_IMPORT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn native_import_lock(target_home: &Path) -> Result<Arc<Mutex<()>>, TransferError> {
+    let mut locks = NATIVE_IMPORT_LOCKS
+        .lock()
+        .map_err(|_| TransferError::Refused("Native import lock is unavailable"))?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = target_home.to_path_buf();
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    Ok(lock)
+}
 
 fn copy_native_history(
     source_home: &str,
@@ -83,7 +100,12 @@ fn copy_native_history(
             "Source native history is not fully persisted",
         ));
     }
-    let target_root = PathBuf::from(target_home);
+    let target_root = fs::canonicalize(target_home)
+        .map_err(|_| TransferError::Refused("Destination account home is unavailable"))?;
+    let lock = native_import_lock(&target_root)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| TransferError::Refused("Native import lock is unavailable"))?;
     let destination = target_root.join("sessions").join(".studio-imports").join(
         source
             .file_name()
@@ -118,8 +140,28 @@ fn copy_native_history(
             fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
                 .map_err(|_| TransferError::Refused("Could not secure native history copy"))?;
         }
-        fs::rename(&temporary, &destination)
-            .map_err(|_| TransferError::Refused("Could not publish native history copy"))?;
+        match fs::hard_link(&temporary, &destination) {
+            Ok(()) => fs::remove_file(&temporary)
+                .map_err(|_| TransferError::Refused("Could not publish native history copy"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(&temporary)
+                    .map_err(|_| TransferError::Refused("Could not publish native history copy"))?;
+                if fs::read(&destination).map_err(|_| {
+                    TransferError::Refused("Native history destination is unreadable")
+                })? != bytes
+                {
+                    return Err(TransferError::Refused(
+                        "The destination has different native history. No file was overwritten.",
+                    ));
+                }
+            }
+            Err(_) => {
+                let _ignored = fs::remove_file(&temporary);
+                return Err(TransferError::Refused(
+                    "Could not publish native history copy",
+                ));
+            }
+        }
     }
     let manifest_path = target_root.join(".studio-account-imports.json");
     let mut manifest: serde_json::Map<String, Value> = if manifest_path.exists() {
@@ -143,7 +185,11 @@ fn copy_native_history(
             "sourceHome":source_root,
         }),
     );
-    let temporary_manifest = manifest_path.with_extension("tmp");
+    let temporary_manifest = manifest_path.with_extension(format!(
+        "studio-transfer-{}-{}.tmp",
+        std::process::id(),
+        NATIVE_IMPORT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::write(
         &temporary_manifest,
         serde_json::to_vec(&Value::Object(manifest))
@@ -289,11 +335,7 @@ fn session_reply(
                 "The retained provider request failed; inspect its durable intent",
             ),
         })?;
-        let certainty = match receipt.certainty {
-            RequestCertainty::Written => "written",
-            RequestCertainty::NotSent => "not_sent",
-            RequestCertainty::Unknown => "unknown",
-        };
+        let certainty = receipt.certainty;
         let ticket = receipt.ticket.as_ref().map(|ticket| {
             json!({
                 "generation":ticket.generation,
@@ -306,7 +348,7 @@ fn session_reply(
             ProviderResponse::Rejected(value) => json!({"kind":"rejected","value":value}),
         });
         let exact = json!({"operation":receipt.operation,"scope":receipt.scope,
-            "certainty":certainty,"ticket":ticket,
+            "certainty":certainty.as_str(),"ticket":ticket,
             "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}"))});
         driver::provider_read_receipt(
             context.store,
@@ -320,7 +362,7 @@ fn session_reply(
             },
             context.now,
         )?;
-        if receipt.certainty == RequestCertainty::NotSent && attempt == 0 {
+        if certainty == RequestCertainty::NotSent && attempt == 0 {
             last_receipt = Some(receipt);
             continue;
         }
@@ -914,10 +956,11 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
             .session
             .current_scope(target_account)
             .ok_or(TransferError::Requires("provider-session/account-worker"))?;
-        let prepared = crate::account_worker::preparation::prepare_native_thread(
+        let prepared = crate::account_worker::preparation::prepare_account_transfer_native_thread(
             self.store,
             self.preparation,
             agent_id,
+            transfer_id,
             &format!("account-transfer:{transfer_id}:{agent_id}"),
             scope.generation,
         )
@@ -1008,7 +1051,7 @@ impl TransferTransport for AccountTransferExecutor<'_> {
             return TransferDispatch {
                 receipt: json!({"operation":ticket.request,"scope":scope,"certainty":"not_sent","ticket":null}),
                 result: None,
-                certainty: "not_sent",
+                certainty: RequestCertainty::NotSent,
             };
         };
         let request = ProviderRequest {
@@ -1027,17 +1070,12 @@ impl TransferTransport for AccountTransferExecutor<'_> {
         let session_receipt = self.session.provider_request(request);
         match session_receipt {
             Ok(receipt) => {
-                let certainty = match receipt.certainty {
-                    RequestCertainty::Written => "written",
-                    RequestCertainty::NotSent => "not_sent",
-                    RequestCertainty::Unknown => "unknown",
-                };
                 let result = match receipt.result {
                     Some(ProviderResponse::Reply(value)) => Some(value),
                     Some(ProviderResponse::Rejected(value)) => Some(json!({"rejected":value})),
                     None => None,
                 };
-                let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":certainty,
+                let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":receipt.certainty.as_str(),
                     "ticket":receipt.ticket.map(|ticket| json!({
                         "generation": ticket.generation,
                         "id": ticket.id,
@@ -1048,15 +1086,29 @@ impl TransferTransport for AccountTransferExecutor<'_> {
                 TransferDispatch {
                     receipt: exact,
                     result,
+                    certainty: receipt.certainty,
+                }
+            }
+            Err(error) => {
+                let certainty = certainty_after_session_error(error);
+                TransferDispatch {
+                    receipt: json!({"operation":ticket.request,"scope":scope,"certainty":certainty.as_str(),"ticket":null}),
+                    result: None,
                     certainty,
                 }
             }
-            Err(_) => TransferDispatch {
-                receipt: json!({"operation":ticket.request,"scope":scope,"certainty":"not_sent","ticket":null}),
-                result: None,
-                certainty: "not_sent",
-            },
         }
+    }
+}
+
+fn certainty_after_session_error(error: AccountSessionError) -> RequestCertainty {
+    match error {
+        AccountSessionError::Requires(_) | AccountSessionError::Refused(_) => {
+            RequestCertainty::NotSent
+        }
+        AccountSessionError::InvalidResponse(_)
+        | AccountSessionError::Persistence
+        | AccountSessionError::Unknown => RequestCertainty::Unknown,
     }
 }
 
@@ -1142,6 +1194,163 @@ mod destination_settings_tests {
             ))
         ));
     }
+
+    #[test]
+    fn native_history_copy_reuses_the_published_file_after_interruption() {
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        let history = source.join("sessions").join("source-thread.jsonl");
+        fs::create_dir_all(history.parent().expect("session directory"))
+            .expect("test fixture operation succeeds");
+        fs::create_dir_all(&target).expect("test fixture operation succeeds");
+        fs::write(
+            &history,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"source-thread\"}}\n{\"type\":\"turn\"}\n",
+        )
+        .expect("test fixture operation succeeds");
+
+        let first = copy_native_history(
+            source.to_str().expect("source path"),
+            target.to_str().expect("target path"),
+            history.to_str().expect("history path"),
+        )
+        .expect("history copy succeeds");
+        // before_start can be re-entered after process restart. The copy step must
+        // recognize the exact existing bytes and never publish a duplicate.
+        let second = copy_native_history(
+            source.to_str().expect("source path"),
+            target.to_str().expect("target path"),
+            history.to_str().expect("history path"),
+        )
+        .expect("replayed history copy succeeds");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            fs::read(&first).expect("copied history is readable"),
+            fs::read(&history).expect("source history is readable")
+        );
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(target.join(".studio-account-imports.json")).expect("manifest exists"),
+        )
+        .expect("manifest is valid");
+        assert_eq!(manifest.as_object().map(serde_json::Map::len), Some(1));
+        assert_eq!(
+            manifest["sessions/.studio-imports/source-thread.jsonl"]["threadId"],
+            "source-thread"
+        );
+    }
+
+    #[test]
+    fn concurrent_native_history_imports_preserve_both_manifest_entries() {
+        let root = tempfile::tempdir().expect("isolated import fixture");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(source.join("sessions")).expect("source sessions exist");
+        fs::create_dir_all(&target).expect("target account exists");
+        let first = source.join("sessions/first.jsonl");
+        let second = source.join("sessions/second.jsonl");
+        fs::write(
+            &first,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"first-thread\"}}\n{\"type\":\"turn\",\"id\":\"first\"}\n",
+        )
+        .expect("first history is written");
+        fs::write(
+            &second,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"second-thread\"}}\n{\"type\":\"turn\",\"id\":\"second\"}\n",
+        )
+        .expect("second history is written");
+
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let run = |history: PathBuf| {
+            let barrier = Arc::clone(&barrier);
+            let source = source.to_string_lossy().into_owned();
+            let target = target.to_string_lossy().into_owned();
+            std::thread::spawn(move || {
+                barrier.wait();
+                copy_native_history(&source, &target, &history.to_string_lossy())
+            })
+        };
+        let first_copy = run(first.clone());
+        let second_copy = run(second.clone());
+        barrier.wait();
+        first_copy
+            .join()
+            .expect("first import thread joins")
+            .expect("first import succeeds");
+        second_copy
+            .join()
+            .expect("second import thread joins")
+            .expect("second import succeeds");
+
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(target.join(".studio-account-imports.json")).expect("manifest exists"),
+        )
+        .expect("manifest is valid");
+        assert_eq!(manifest.as_object().map(serde_json::Map::len), Some(2));
+        assert_eq!(
+            fs::read(target.join("sessions/.studio-imports/first.jsonl"))
+                .expect("first copy exists"),
+            fs::read(first).expect("first source is readable")
+        );
+        assert_eq!(
+            fs::read(target.join("sessions/.studio-imports/second.jsonl"))
+                .expect("second copy exists"),
+            fs::read(second).expect("second source is readable")
+        );
+    }
+
+    #[test]
+    fn concurrent_conflicting_history_filenames_never_overwrite_the_first_copy() {
+        let root = tempfile::tempdir().expect("isolated import fixture");
+        let first_source = root.path().join("first-source");
+        let second_source = root.path().join("second-source");
+        let target = root.path().join("target");
+        fs::create_dir_all(first_source.join("sessions")).expect("first source exists");
+        fs::create_dir_all(second_source.join("sessions")).expect("second source exists");
+        fs::create_dir_all(&target).expect("target account exists");
+        let first = first_source.join("sessions/shared.jsonl");
+        let second = second_source.join("sessions/shared.jsonl");
+        fs::write(
+            &first,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"first-thread\"}}\n{\"type\":\"turn\",\"id\":\"first\"}\n",
+        )
+        .expect("first history is written");
+        fs::write(
+            &second,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"second-thread\"}}\n{\"type\":\"turn\",\"id\":\"second\"}\n",
+        )
+        .expect("second history is written");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let run = |source: PathBuf, history: PathBuf| {
+            let barrier = Arc::clone(&barrier);
+            let source = source.to_string_lossy().into_owned();
+            let target = target.to_string_lossy().into_owned();
+            std::thread::spawn(move || {
+                barrier.wait();
+                copy_native_history(&source, &target, &history.to_string_lossy())
+            })
+        };
+        let first_copy = run(first_source, first.clone());
+        let second_copy = run(second_source, second.clone());
+        barrier.wait();
+        let results = [
+            first_copy.join().expect("first import thread joins"),
+            second_copy.join().expect("second import thread joins"),
+        ];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let destination = fs::read(target.join("sessions/.studio-imports/shared.jsonl"))
+            .expect("one complete history remains published");
+        assert!(
+            destination == fs::read(first).expect("first source readable")
+                || destination == fs::read(second).expect("second source readable")
+        );
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(target.join(".studio-account-imports.json")).expect("manifest exists"),
+        )
+        .expect("manifest is valid");
+        assert_eq!(manifest.as_object().map(serde_json::Map::len), Some(1));
+    }
 }
 
 #[cfg(test)]
@@ -1155,10 +1364,28 @@ mod retained_executor_tests {
     use studio_runtime_providers::{RequestId, RequestTicket};
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
 
+    #[test]
+    fn only_pre_dispatch_session_errors_prove_not_sent() {
+        assert_eq!(
+            certainty_after_session_error(AccountSessionError::Unknown),
+            RequestCertainty::Unknown
+        );
+        assert_eq!(
+            certainty_after_session_error(AccountSessionError::Persistence),
+            RequestCertainty::Unknown
+        );
+        assert_eq!(
+            certainty_after_session_error(AccountSessionError::Refused("preflight")),
+            RequestCertainty::NotSent
+        );
+    }
+
     struct GuardSession {
         store: Arc<RuntimeStore>,
         transfer_id: String,
         requests: Mutex<Vec<String>>,
+        queue_has_input: bool,
+        native_path: Option<String>,
     }
 
     impl GuardSession {
@@ -1210,7 +1437,21 @@ mod retained_executor_tests {
                 Method::ModelList => json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                     "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]}),
                 Method::ThreadRead => {
-                    json!({"thread":{"id":"source-thread","status":{"type":"idle"}}})
+                    json!({"thread":{"id":"source-thread","status":{"type":"idle"},
+                    "path":self.native_path}})
+                }
+                Method::ThreadTurnsList => json!({"data":[],"nextCursor":null}),
+                Method::ThreadFork => {
+                    let mut receipt = self.receipt(
+                        &request.account,
+                        request.operation,
+                        request.method,
+                        json!({"thread":{"id":"target-thread"}}),
+                    );
+                    receipt.certainty = RequestCertainty::Unknown;
+                    receipt.ticket = None;
+                    receipt.result = None;
+                    return Ok(receipt);
                 }
                 _ => return Err(AccountSessionError::Refused("unexpected provider request")),
             };
@@ -1252,11 +1493,23 @@ mod retained_executor_tests {
                 .lock()
                 .expect("test fixture operation succeeds")
                 .push(request.method.as_str().into());
+            let value = match request.method {
+                Method::ThreadQueueList => {
+                    json!({"data":if self.queue_has_input {json!([{"id":"queued-input"}])} else {json!([])},"nextCursor":null})
+                }
+                Method::ThreadBackgroundTerminalsList => json!({"data":[],"nextCursor":null}),
+                Method::ThreadUnsubscribe => json!({}),
+                _ => {
+                    return Err(AccountSessionError::Refused(
+                        "unexpected source transfer request",
+                    ));
+                }
+            };
             Ok(self.receipt(
                 &request.source_account,
                 request.operation,
                 request.method,
-                json!({"data":[{"id":"queued-input"}],"nextCursor":null}),
+                value,
             ))
         }
     }
@@ -1292,6 +1545,8 @@ mod retained_executor_tests {
             store: store.clone(),
             transfer_id: transfer_id.into(),
             requests: Mutex::new(Vec::new()),
+            queue_has_input: true,
+            native_path: None,
         });
         let catalog = ModelCatalogService::new(None);
         catalog.retain_accounts(&[
@@ -1360,5 +1615,315 @@ mod retained_executor_tests {
             .expect("test fixture operation succeeds")
             .is_some()
         );
+    }
+
+    #[test]
+    fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let fixture = root.path().join("fixture");
+        let state_dir = root.path().join("state");
+        let source_home = fixture.join("source");
+        let target_home = fixture.join("target");
+        let cwd = fixture.join("project");
+        let native_path = source_home.join("sessions/source-thread.jsonl");
+        fs::create_dir_all(native_path.parent().expect("source sessions directory"))
+            .expect("test fixture operation succeeds");
+        fs::create_dir_all(&target_home).expect("test fixture operation succeeds");
+        fs::create_dir_all(&cwd).expect("test fixture operation succeeds");
+        fs::create_dir_all(fixture.join("skills")).expect("test fixture operation succeeds");
+        fs::create_dir_all(fixture.join("server")).expect("test fixture operation succeeds");
+        fs::create_dir_all(&state_dir).expect("test fixture operation succeeds");
+        fs::write(
+            &native_path,
+            b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"source-thread\"}}\n{\"type\":\"turn\"}\n",
+        )
+        .expect("test fixture operation succeeds");
+
+        let store = Arc::new(
+            RuntimeStore::open(Some(&state_dir)).expect("test fixture operation succeeds"),
+        );
+        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+            "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
+            "model":"gpt-6-astra","cwd":cwd,"threadId":"source-thread"}))
+        .expect("test fixture operation succeeds");
+        store
+            .transaction_with_error(|tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("test fixture operation succeeds");
+        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42285";
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            1.0,
+        )
+        .expect("durable transfer request succeeds");
+
+        let catalog = ModelCatalogService::new(None);
+        catalog.retain_accounts(&[
+            json!({"id":"source","home":source_home,"provider":"codex"}),
+            json!({"id":"target","home":target_home,"provider":"codex"}),
+        ]);
+        catalog.seed_test_admission_catalog(
+            "target",
+            target_home.to_str().expect("target home"),
+            "codex",
+            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+                "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
+        );
+        let session = Arc::new(GuardSession {
+            store: store.clone(),
+            transfer_id: transfer_id.into(),
+            requests: Mutex::new(Vec::new()),
+            queue_has_input: false,
+            native_path: Some(native_path.to_string_lossy().into_owned()),
+        });
+        let resources = crate::account_worker::preparation::PreparationResources {
+            instructions: String::new(),
+            progress_template: String::new(),
+            thread_config: Default::default(),
+            tools: vec![],
+            legacy_tools: vec![],
+            skills_root: fixture.join("skills"),
+            role_guidance: [(
+                PathBuf::from("codex-orchestrator/references/legacy-move-role.md"),
+                "Keep the source context available during the transfer.".into(),
+            )]
+            .into(),
+            model_catalog: catalog.clone(),
+            account_home: target_home.to_string_lossy().into_owned(),
+            server_source_root: fixture.join("server"),
+            claude_account_pin: Value::Null,
+            account_driver: None,
+            account_session: Some(session.clone()),
+        };
+        crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
+            .expect("the durable member enters Reading before preparation");
+        let attempt_id = format!("account-transfer:{transfer_id}:lead");
+        let generic = crate::account_worker::preparation::prepare_native_thread(
+            &store,
+            &resources,
+            "lead",
+            &attempt_id,
+            7,
+        )
+        .expect_err("ordinary preparation keeps the transfer admission hold");
+        assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
+        assert!(
+            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                &store,
+                &resources,
+                "lead",
+                "a different transfer id",
+                &attempt_id,
+                7,
+            )
+            .is_err(),
+            "a different owner cannot bypass the transfer hold"
+        );
+        let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
+            &store,
+            &resources,
+            "lead",
+            transfer_id,
+            &attempt_id,
+            7,
+        )
+        .expect("the exact Reading transfer owner may prepare its destination");
+        assert!(owned.params.is_object());
+
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra
+                    .insert("contextRepair".into(), json!({"phase":"preparing"}));
+                AgentRepository::put(tx, &row)
+            })
+            .expect("context repair blocker is installed");
+        let context_repair =
+            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                &store,
+                &resources,
+                "lead",
+                transfer_id,
+                &attempt_id,
+                7,
+            )
+            .expect_err("the transfer owner cannot bypass context repair");
+        assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra.remove("contextRepair");
+                AgentRepository::put(tx, &row)
+            })
+            .expect("context repair blocker is removed");
+
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra
+                    .insert("nativeRelease".into(), json!({"phase":"pending"}));
+                AgentRepository::put(tx, &row)
+            })
+            .expect("native release blocker is installed");
+        let native_release =
+            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                &store,
+                &resources,
+                "lead",
+                transfer_id,
+                &attempt_id,
+                7,
+            )
+            .expect_err("the transfer owner cannot bypass native release");
+        assert_eq!(
+            native_release.to_string(),
+            "thread-preparation/NativeRelease"
+        );
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra.remove("nativeRelease");
+                AgentRepository::put(tx, &row)
+            })
+            .expect("native release blocker is removed");
+        crate::account_transfer_driver::recover(&store, 1.75)
+            .expect("startup recovery returns the member to its retryable phase");
+        let first = before_start(
+            &store,
+            Some(session.clone()),
+            &catalog,
+            &resources,
+            "lead",
+            2.0,
+        )
+        .expect("worker before-start prepares the transfer");
+        let imported = target_home.join("sessions/.studio-imports/source-thread.jsonl");
+        assert!(imported.is_file());
+        #[cfg(unix)]
+        let imported_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&imported)
+                .expect("imported history metadata exists")
+                .ino()
+        };
+        assert_eq!(first["accountKey"], "target");
+        assert_eq!(
+            session
+                .requests
+                .lock()
+                .expect("test fixture operation succeeds")
+                .iter()
+                .filter(|method| method.as_str() == "thread/fork")
+                .count(),
+            1
+        );
+        let saved: String = store
+            .read()
+            .expect("test fixture operation succeeds")
+            .query_row(
+                "SELECT record FROM runtime_account_transfers WHERE id=?1",
+                [transfer_id],
+                |row| row.get(0),
+            )
+            .expect("transfer outcome is durable");
+        let saved: Value = serde_json::from_str(&saved).expect("saved transfer is valid");
+        assert_eq!(saved["members"]["lead"]["phase"], "unknown");
+        assert_eq!(
+            saved["members"]["lead"]["providerReceipts"][0]["certainty"],
+            "unknown"
+        );
+        drop(resources);
+        drop(session);
+        drop(catalog);
+        drop(store);
+
+        let recovered_store = Arc::new(
+            RuntimeStore::open(Some(&state_dir)).expect("store reopens after worker restart"),
+        );
+        let recovered_catalog = ModelCatalogService::new(None);
+        recovered_catalog.retain_accounts(&[
+            json!({"id":"source","home":source_home,"provider":"codex"}),
+            json!({"id":"target","home":target_home,"provider":"codex"}),
+        ]);
+        recovered_catalog.seed_test_admission_catalog(
+            "target",
+            target_home.to_str().expect("target home"),
+            "codex",
+            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+                "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
+        );
+        let recovered_session = Arc::new(GuardSession {
+            store: recovered_store.clone(),
+            transfer_id: transfer_id.into(),
+            requests: Mutex::new(Vec::new()),
+            queue_has_input: false,
+            native_path: Some(native_path.to_string_lossy().into_owned()),
+        });
+        let recovered_resources = crate::account_worker::preparation::PreparationResources {
+            instructions: String::new(),
+            progress_template: String::new(),
+            thread_config: Default::default(),
+            tools: vec![],
+            legacy_tools: vec![],
+            skills_root: fixture.join("skills"),
+            role_guidance: [(
+                PathBuf::from("codex-orchestrator/references/legacy-move-role.md"),
+                "Keep the source context available during the transfer.".into(),
+            )]
+            .into(),
+            model_catalog: recovered_catalog.clone(),
+            account_home: target_home.to_string_lossy().into_owned(),
+            server_source_root: fixture.join("server"),
+            claude_account_pin: Value::Null,
+            account_driver: None,
+            account_session: Some(recovered_session.clone()),
+        };
+        let _ = before_start(
+            &recovered_store,
+            Some(recovered_session.clone()),
+            &recovered_catalog,
+            &recovered_resources,
+            "lead",
+            3.0,
+        );
+        assert_eq!(
+            recovered_session
+                .requests
+                .lock()
+                .expect("test fixture operation succeeds")
+                .iter()
+                .filter(|method| method.as_str() == "thread/fork")
+                .count(),
+            0,
+            "an unknown provider outcome is never sent again after restart"
+        );
+        assert_eq!(
+            fs::read_dir(target_home.join("sessions/.studio-imports"))
+                .expect("history import directory exists")
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read(imported).expect("imported history remains readable"),
+            fs::read(native_path).expect("source history remains readable")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(target_home.join("sessions/.studio-imports/source-thread.jsonl"))
+                    .expect("imported history metadata exists")
+                    .ino(),
+                imported_inode,
+                "the interrupted copy was not replaced after restart"
+            );
+        }
     }
 }

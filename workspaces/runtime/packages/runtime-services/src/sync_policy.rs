@@ -98,7 +98,9 @@ pub struct ProjectVaultSnapshot {
 }
 
 impl ProjectVaultSnapshot {
-    /// Read each project's cached vault record before the caller starts its store transaction.
+    /// Read each project's cached vault record. Lifecycle conflict recovery may
+    /// call this under writer admission so the read-only projection and commit
+    /// share one stable database snapshot.
     pub fn capture(state_dir: &Path, projects: &[(String, Value)]) -> Self {
         let vm_state_dir = crate::vault::linux_vm_state_dir(state_dir);
         let mut snapshot = Self::default();

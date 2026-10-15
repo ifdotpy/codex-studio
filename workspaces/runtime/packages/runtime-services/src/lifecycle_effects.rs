@@ -34,8 +34,14 @@ use crate::{
     agent_management::{Action, ManagementError},
     event_write,
     monitor_lifecycle::MonitorLifecyclePorts,
+    multi_server_transport::{
+        self, HttpsPairedTransport, OrchestrationDriver, PairedTransport,
+        RuntimeOrchestrationEffects,
+    },
     sync_policy, work_write,
 };
+
+const VOICE_STOP_SIGNATURE: &str = "lifecycle.voice-stop.v1";
 
 /// Recovery shares stop/delete's canonical parent notification and failed-work
 /// release owners. These writes run inside RecoveryStore's transaction.
@@ -110,7 +116,9 @@ pub struct ProductionLifecyclePorts {
     monitors: MonitorLifecyclePorts,
     monitor_wake: Arc<Notify>,
     lifecycle_wake: Arc<Notify>,
+    continuation_wake: Option<Arc<Notify>>,
     interrupt_broker: Arc<dyn AccountSessionPort>,
+    remote_transport: Arc<dyn PairedTransport>,
     voice_provider: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
     prepared: Mutex<Vec<InterruptRequest>>,
     voice_dispatching: Arc<Mutex<HashSet<String>>>,
@@ -124,12 +132,16 @@ impl ProductionLifecyclePorts {
         interrupt_broker: Arc<dyn AccountSessionPort>,
         voice_provider: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
     ) -> Self {
+        let remote_transport: Arc<dyn PairedTransport> =
+            Arc::new(HttpsPairedTransport::new(Arc::clone(&store)));
         let ports = Self {
             store,
             monitors: MonitorLifecyclePorts::new(monitor_wake.clone()),
             monitor_wake,
             lifecycle_wake,
+            continuation_wake: None,
             interrupt_broker,
+            remote_transport,
             voice_provider,
             prepared: Mutex::new(Vec::new()),
             voice_dispatching: Arc::new(Mutex::new(HashSet::new())),
@@ -139,28 +151,30 @@ impl ProductionLifecyclePorts {
         ports
     }
 
+    /// Inject a fake paired peer for deterministic remote lifecycle tests.
+    pub fn with_remote_transport(mut self, transport: Arc<dyn PairedTransport>) -> Self {
+        self.remote_transport = transport;
+        self
+    }
+
+    pub fn with_continuation_wake(mut self, wake: Arc<Notify>) -> Self {
+        self.continuation_wake = Some(wake);
+        self
+    }
+
     /// Run the production stop/delete adapter. Effect intents and lifecycle
     /// rows commit together; broker dispatch begins only after that commit.
     pub fn execute(&self, action: &Action, now: f64) -> Result<Value, ManagementError> {
         // Retry startup settlement here and surface storage failures before
         // making a new lifecycle decision.
         self.reconcile_deleted_tombstones()?;
-        let reader = self.store.read()?;
-        let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-        let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
-        let vault_snapshot =
-            crate::sync_policy::ProjectVaultSnapshot::capture(self.store.root(), &projects);
-        drop(reader);
-        let result = self.store.transaction_with_error(|tx| {
-            crate::agent_management_store::execute_with_ports(
-                tx,
-                action,
-                now,
-                &rooms,
-                &vault_snapshot,
-                self,
-            )
-        })?;
+        let result = crate::agent_management_store::execute_prepared(
+            &self.store,
+            action,
+            now,
+            Some(self),
+            || {},
+        )?;
         self.committed()?;
         Ok(result)
     }
@@ -329,6 +343,56 @@ impl ProductionLifecyclePorts {
         Ok(())
     }
 
+    fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
+        let pending = self.store.read_transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT id,server,body FROM runtime_server_outbox \
+                 WHERE state IN ('queued','running') ORDER BY rowid",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(studio_runtime_store::StoreError::from)
+        })?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let effects = Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&self.store)));
+        let driver = OrchestrationDriver::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.remote_transport),
+            effects,
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        for (request_id, server, body) in pending {
+            let Ok(envelope) = serde_json::from_str::<Value>(&body) else {
+                eprintln!("stored cross-server stop intent is invalid: {request_id}");
+                continue;
+            };
+            if envelope.get("action").and_then(Value::as_str) != Some("stop") {
+                continue;
+            }
+            let Some(payload) = envelope.get("payload") else {
+                eprintln!("stored cross-server stop intent is incomplete: {request_id}");
+                continue;
+            };
+            // The signed driver preserves the exact request identity. A lost
+            // reply stays pending and is replayed only under the same identity.
+            if let Err(error) = driver.exchange(&server, "stop", payload, &request_id, now) {
+                eprintln!("cross-server stop remains queued ({request_id}): {error}");
+            }
+        }
+        Ok(())
+    }
+
     fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
         let pending = self.store.read_transaction(|tx| {
             let mut pending = Vec::new();
@@ -413,6 +477,8 @@ impl LifecyclePorts for ProductionLifecyclePorts {
                 required_str(effect.before(), "id", "Invalid deleted agent")?;
                 Ok(())
             }
+            LifecycleEffectKind::VoiceStop => self.stage_voice_stop(tx, effect),
+            LifecycleEffectKind::RemoteStop => self.stage_remote_stop(tx, effect),
         }
     }
 
@@ -432,10 +498,15 @@ impl LifecyclePorts for ProductionLifecyclePorts {
     fn committed(&self) -> Result<(), ManagementError> {
         self.monitor_wake.notify_one();
         self.lifecycle_wake.notify_one();
+        if let Some(wake) = &self.continuation_wake {
+            wake.notify_one();
+        }
         self.reconcile_deleted_tombstones()?;
         self.dispatch_prepared()?;
         self.reconcile_deleted_tombstones()?;
         self.dispatch_deleted_voice_sessions()?;
+        self.dispatch_active_voice_stops()?;
+        self.dispatch_remote_stops()?;
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
             .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))?;
         Ok(())
@@ -443,6 +514,156 @@ impl LifecyclePorts for ProductionLifecyclePorts {
 }
 
 impl ProductionLifecyclePorts {
+    fn stage_voice_stop(
+        &self,
+        tx: &Transaction<'_>,
+        effect: &LifecycleEffect,
+    ) -> Result<(), ManagementError> {
+        let agent_id = required_str(effect.before(), "id", "Invalid voice stop owner")?;
+        let epoch = effect
+            .stopped()
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .ok_or(ManagementError::Invalid("Invalid voice stop epoch"))?;
+        let id = format!("agent-voice-stop:{agent_id}:{epoch}");
+        let result = json!({"agent":agent_id,"epoch":epoch,"status":"pending"});
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![id, VOICE_STOP_SIGNATURE, result.to_string()],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        let stored_signature: String = tx
+            .query_row(
+                "SELECT signature FROM runtime_operation_receipts WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if stored_signature != VOICE_STOP_SIGNATURE {
+            return Err(ManagementError::Invalid(
+                "Voice stop intent identity collision",
+            ));
+        }
+        Ok(())
+    }
+
+    fn stage_remote_stop(
+        &self,
+        tx: &Transaction<'_>,
+        effect: &LifecycleEffect,
+    ) -> Result<(), ManagementError> {
+        let agent_id = required_str(effect.before(), "id", "Invalid remote stop owner")?;
+        let remote = effect
+            .before()
+            .get("remoteWorker")
+            .filter(|remote| remote.is_object())
+            .ok_or(ManagementError::Invalid("Invalid remote worker route"))?;
+        let server = required_str(remote, "server", "Invalid remote worker server")?;
+        let link = required_str(remote, "link", "Invalid remote worker link")?;
+        let request_id = required_str(
+            effect.stopped(),
+            "remoteStopRequest",
+            "Invalid remote stop request identity",
+        )?;
+        let control_epoch = effect
+            .stopped()
+            .get("remoteControlEpoch")
+            .and_then(Value::as_i64)
+            .ok_or(ManagementError::Invalid("Invalid remote control epoch"))?;
+        let reason = effect
+            .stopped()
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("Stopped by the parent");
+        let payload = json!({
+            "link": link,
+            "worker": agent_id,
+            "reason": reason,
+            "controlEpoch": control_epoch,
+        });
+        multi_server_transport::enqueue_in_transaction(
+            tx,
+            server,
+            "stop",
+            &payload,
+            request_id,
+            effect.at().max(0.0) as i64,
+        )
+        .map_err(|_| ManagementError::Unavailable("cross-server/agent-management"))
+    }
+}
+
+impl ProductionLifecyclePorts {
+    fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
+        let intents = self.store.read_transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
+                 WHERE signature=?1 AND json_extract(result,'$.status')='pending' ORDER BY id",
+            )?;
+            let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(studio_runtime_store::StoreError::from)
+        })?;
+        if intents.is_empty() {
+            return Ok(());
+        }
+        let provider = self
+            .voice_provider
+            .clone()
+            .ok_or(ManagementError::Unavailable("voice-driver/agent-stop"))?;
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
+        for (intent_id, agent_id) in intents {
+            let dispatch_key = intent_id.clone();
+            let already_dispatching = !self
+                .voice_dispatching
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(dispatch_key.clone());
+            if already_dispatching {
+                continue;
+            }
+            let store = Arc::clone(&self.store);
+            let provider = Arc::clone(&provider);
+            let dispatching = Arc::clone(&self.voice_dispatching);
+            let completion_store = Arc::clone(&store);
+            let completion_intent = intent_id.clone();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or_default();
+            handle.spawn(async move {
+                if let Err(error) = crate::voice::provider::end_active_for_agent(
+                    store,
+                    provider,
+                    agent_id.clone(),
+                    now,
+                )
+                .await
+                {
+                    eprintln!("voice sessions remain stopped-pending for {agent_id}: {error}");
+                } else if let Err(error) = completion_store.transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2 \
+                         AND json_extract(result,'$.status')='pending'",
+                        rusqlite::params![completion_intent, VOICE_STOP_SIGNATURE],
+                    )?;
+                    Ok(())
+                }) {
+                    eprintln!("voice stop intent remains pending for {agent_id}: {error}");
+                }
+                dispatching
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&dispatch_key);
+            });
+        }
+        Ok(())
+    }
+
     fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
         let intents = crate::voice::provider::pending_delete_intents(&self.store)
             .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
@@ -647,6 +868,26 @@ fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), Ma
 
 fn notify_parent(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
     notify_parent_with_id(tx, effect, None)
+}
+
+pub(crate) fn notify_continuation_hold(
+    tx: &Transaction<'_>,
+    before: &Value,
+    stopped: &Value,
+    operation: &str,
+    transition: &str,
+    reason: &str,
+    at: f64,
+) -> Result<(), ManagementError> {
+    let mut stopped = stopped.clone();
+    stopped["error"] = Value::String(reason.to_owned());
+    let effect = LifecycleEffect::new(
+        LifecycleEffectKind::NotifyParent,
+        before.clone(),
+        stopped,
+        at,
+    );
+    notify_parent_with_id(tx, &effect, Some(&format!("hold:{operation}:{transition}")))
 }
 
 fn notify_parent_with_id(

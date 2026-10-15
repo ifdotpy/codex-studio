@@ -87,7 +87,20 @@ impl EventWriteRepository {
         let Some(raw) = raw else {
             return Ok(Some(false));
         };
-        let mut record: Value = serde_json::from_str(&raw)?;
+        let mut record: Value =
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredObject {
+                table: "runtime_capacity_retries",
+                id: retry_id.to_owned(),
+            })?;
+        if record.get("id").and_then(Value::as_str) != Some(retry_id)
+            || !studio_runtime_schema::validate("continuation/CapacityContinuation", &record)
+                .map_err(StoreError::SchemaValidation)?
+        {
+            return Err(StoreError::InvalidStoredObject {
+                table: "runtime_capacity_retries",
+                id: retry_id.to_owned(),
+            });
+        }
         record["status"] = Value::String("finished".to_owned());
         record["dueAt"] = Value::Null;
         record["reason"] = Value::String("A new instruction replaces this retry.".to_owned());

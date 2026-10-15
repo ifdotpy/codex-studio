@@ -3,76 +3,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "account-worker/agent-interrupt",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "account-worker/deleted-settlement",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "agent-management/snapshot-limit",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        },
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "cross-server/agent-management",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p06-notification-effects",
-          "kind": "accepted_branch",
-          "owner": "P06"
-        },
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "event-driver/child-stop-notification",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
           "closes": "NEW macOS layr-desk adapter (out of scope)",
           "kind": "external_or_scope",
           "owner": "NEW macOS layr-desk adapter (out of scope)"
@@ -85,86 +15,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        },
-        {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "monitor-driver/agent-stop",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p09-budget-runtime",
-          "kind": "accepted_branch",
-          "owner": "P09"
-        },
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "usage-policy/agent-stop",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R2",
-          "kind": "external_or_scope",
-          "owner": "R2"
-        },
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "voice-driver/agent-stop",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        },
-        {
-          "closes": "origin/feat/wave7-p16-work-assignment",
-          "kind": "accepted_branch",
-          "owner": "P16"
-        }
-      ],
-      "dependency": "work-driver/deletion-release",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p10-stop-delete",
-          "kind": "accepted_branch",
-          "owner": "P10"
-        }
-      ],
-      "dependency": "workspace-state/agent-lifecycle",
-      "operation_count": 2,
-      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R3",
           "kind": "external_or_scope",
           "owner": "R3"
@@ -173,52 +23,6 @@
       "dependency": "account-driver/reset-credit-redemption",
       "operation_count": 1,
       "operations": ["POST /api/limits/reset"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "account-transfer/destination-settings",
-      "operation_count": 1,
-      "operations": ["POST /api/agents/account-transfer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p07-recovery-runtime",
-          "kind": "accepted_branch",
-          "owner": "P07"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "account-transfer/provider-history-executor",
-      "operation_count": 1,
-      "operations": ["POST /api/agents/account-transfer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "account-transfer/usage-resume-cancellation",
-      "operation_count": 1,
-      "operations": ["POST /api/agents/account"]
     },
     {
       "closures": [
@@ -240,14 +44,31 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
         }
       ],
-      "dependency": "event-driver/queue-mutations",
+      "dependency": "cross-server/remote-events",
       "operation_count": 1,
-      "operations": ["POST /api/capacity-retry"]
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        },
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        }
+      ],
+      "dependency": "federation-driver/rooms",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
     },
     {
       "closures": [
@@ -276,66 +97,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "store-bootstrap/account-transfer-schema",
-      "operation_count": 1,
-      "operations": ["POST /api/agents/account-transfer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        }
-      ],
-      "dependency": "store-bootstrap/capacity-retry-schema",
-      "operation_count": 1,
-      "operations": ["POST /api/capacity-retry"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        }
-      ],
-      "dependency": "store-bootstrap/usage-resume-schema",
-      "operation_count": 1,
-      "operations": ["POST /api/usage-resume"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        }
-      ],
-      "dependency": "turn-driver/capacity-retry",
-      "operation_count": 1,
-      "operations": ["POST /api/capacity-retry"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        }
-      ],
-      "dependency": "turn-driver/usage-resume",
-      "operation_count": 1,
-      "operations": ["POST /api/usage-resume"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -347,10 +108,10 @@
     }
   ],
   "counts": {
-    "implemented": 149,
-    "named_dependencies": 25,
+    "implemented": 155,
+    "named_dependencies": 8,
     "not_registered": 0,
-    "partial": 11,
+    "partial": 5,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -742,18 +503,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-transfer/usage-resume-cancellation"],
+      "dependencies": [],
       "operation": "POST /api/agents/account",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": [
-        "account-transfer/destination-settings",
-        "account-transfer/provider-history-executor",
-        "store-bootstrap/account-transfer-schema"
-      ],
+      "dependencies": [],
       "operation": "POST /api/agents/account-transfer",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -781,13 +538,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "event-driver/queue-mutations",
-        "store-bootstrap/capacity-retry-schema",
-        "turn-driver/capacity-retry"
-      ],
+      "dependencies": [],
       "operation": "POST /api/capacity-retry",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -850,20 +603,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "account-worker/agent-interrupt",
-        "account-worker/deleted-settlement",
-        "agent-management/snapshot-limit",
-        "cross-server/agent-management",
-        "event-driver/child-stop-notification",
-        "monitor-driver/agent-stop",
-        "usage-policy/agent-stop",
-        "voice-driver/agent-stop",
-        "work-driver/deletion-release",
-        "workspace-state/agent-lifecycle"
-      ],
+      "dependencies": [],
       "operation": "POST /api/conversation/delete",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -923,6 +665,8 @@
     {
       "dependencies": [
         "capacity-retry/store",
+        "cross-server/remote-events",
+        "federation-driver/rooms",
         "payload-store/uploads",
         "workspace-policy/message-admission"
       ],
@@ -1045,20 +789,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "account-worker/agent-interrupt",
-        "account-worker/deleted-settlement",
-        "agent-management/snapshot-limit",
-        "cross-server/agent-management",
-        "event-driver/child-stop-notification",
-        "monitor-driver/agent-stop",
-        "usage-policy/agent-stop",
-        "voice-driver/agent-stop",
-        "work-driver/deletion-release",
-        "workspace-state/agent-lifecycle"
-      ],
+      "dependencies": [],
       "operation": "POST /api/stop",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1106,12 +839,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "store-bootstrap/usage-resume-schema",
-        "turn-driver/usage-resume"
-      ],
+      "dependencies": [],
       "operation": "POST /api/usage-resume",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

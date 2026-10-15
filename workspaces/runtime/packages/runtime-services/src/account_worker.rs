@@ -1467,9 +1467,11 @@ impl Worker {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
+        let claude_account_pin = self.resources.claude_account_pin.clone();
         let (previous, committed) = self
             .db("journal", move |store| {
-                let result = store::journal_batch(store, &account, &streams, entries);
+                let result =
+                    store::journal_batch(store, &account, &streams, entries, &claude_account_pin);
                 Ok((streams, result))
             })
             .await?;

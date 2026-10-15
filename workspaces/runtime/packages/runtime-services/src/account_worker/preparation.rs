@@ -98,6 +98,25 @@ pub fn prepare_native_thread(
     pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation)
 }
 
+/// Prepare a destination thread for the exact active account transfer owner.
+pub fn prepare_account_transfer_native_thread(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    transfer_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<PreparedNativeThread, WorkerError> {
+    pipeline::prepare_account_transfer_native_thread(
+        store,
+        resources,
+        agent_id,
+        transfer_id,
+        attempt_id,
+        generation,
+    )
+}
+
 /// Prepare permission settings for an already-admitted monitor command. This
 /// deliberately skips native-action startAttempt admission; monitor owners
 /// authorize the running monitor and pass its observed agent epoch.

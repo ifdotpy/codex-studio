@@ -30,17 +30,20 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use axum::Extension;
+use rusqlite::OptionalExtension;
 use studio_runtime_http::{HttpState, VaultJobOwner, router};
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
 // Allow the worker and retained-service bounds to complete before process exit.
 const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
+const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
+const CONTINUATION_IDLE_RECHECK_SECONDS: u64 = 24 * 60 * 60;
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 
 fn main() {
@@ -280,6 +283,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
     let account_session_broker = account_registry::AccountSessionBroker::new();
+    let continuation_wake = Arc::new(Notify::new());
     let retained_session: Arc<
         dyn studio_runtime_services::account_session_runtime::RetainedAccountSession,
     > = Arc::new(account_session_broker.clone());
@@ -295,7 +299,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             home,
         )
         .with_limits(account_policy.clone())
-        .with_store(Arc::clone(&store)),
+        .with_store(Arc::clone(&store))
+        .with_continuation_wake(Arc::clone(&continuation_wake)),
     );
     let session_binaries = Arc::new(Mutex::new(BTreeMap::<
         String,
@@ -348,6 +353,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Some(store.clone()),
         Some(account_policy.clone()),
     )
+    .with_continuation_wake_handle(Arc::clone(&continuation_wake))
     .with_account_driver(account_driver.clone())
     .with_provider_versions(provider_versions)
     .with_credentials(credentials)
@@ -461,6 +467,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )
     .await?;
     let monitor_wake = state.event_wake_handle();
+    let continuation_scheduler_wake = state.continuation_wake_handle();
     let monitor_port = Arc::new(monitor_port::RetainedMonitorPort::new(
         Arc::clone(&store),
         state
@@ -486,7 +493,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                 Arc::clone(&monitor_wake),
                 Arc::clone(&account_session),
                 state.voice_request_port_handle(),
-            ),
+            )
+            .with_continuation_wake(Arc::clone(&continuation_scheduler_wake)),
         );
     let creation_environment =
         studio_runtime_http::routes::managed_creation_environment(Arc::clone(&account_driver), {
@@ -537,13 +545,15 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                 Arc::clone(&monitor_wake),
                 Arc::clone(&account_session),
                 state.voice_request_port_handle(),
-            ),
+            )
+            .with_continuation_wake(Arc::clone(&continuation_scheduler_wake)),
         );
     if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(
         lifecycle_ports.as_ref(),
     ) {
         eprintln!("lifecycle startup reconciliation remains pending: {error}");
     }
+    state = state.with_lifecycle_ports(Arc::clone(&lifecycle_ports));
     let sync_changes = state.sync_changes_handle();
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
     let vault_job_owner = VaultJobOwner::start();
@@ -595,6 +605,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         monitor_runtime,
         monitor_shutdown.subscribe(),
     );
+    let continuation_task = tokio::spawn(continuation_scheduler(
+        Arc::clone(&store),
+        continuation_scheduler_wake,
+        Arc::clone(&monitor_wake),
+        monitor_shutdown.subscribe(),
+    ));
     let orchestration_task = state.orchestration_driver_handle().map(|driver| {
         let mut shutdown = monitor_shutdown.subscribe();
         tokio::spawn(async move {
@@ -703,6 +719,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     #[cfg(unix)]
     history_cleanup.map_err(std::io::Error::other)??;
     shutdown_join("federation delivery task", federation_task).await??;
+    shutdown_join("continuation scheduler task", continuation_task).await??;
     if let Some(task) = orchestration_task {
         shutdown_join("orchestration driver task", task).await??;
     }
@@ -727,6 +744,190 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     shutdown_join("retained services", state.shutdown_services()).await??;
     result?;
     Ok(())
+}
+
+async fn continuation_scheduler(
+    store: Arc<RuntimeStore>,
+    wake: Arc<Notify>,
+    event_wake: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut retry_not_before = None;
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let store_for_due = Arc::clone(&store);
+        let now = epoch_seconds();
+        let next_due = match studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/continuation-scheduler",
+            move || -> studio_runtime_store::StoreResult<Option<f64>> {
+                let db = store_for_due.read()?;
+                let due: Option<f64> = db.query_row(
+                    "SELECT MIN(due) FROM (\
+                     SELECT CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real') \
+                     UNION ALL SELECT CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_capacity_retries WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real'))",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let auth_proof_pending: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(if auth_proof_pending { Some(now) } else { due })
+            },
+        )
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                eprintln!("continuation scheduler due-time read failed: {error}");
+                Some(now + 60.0)
+            }
+            Err(error) => {
+                eprintln!("continuation scheduler blocking read failed: {error}");
+                Some(now + 60.0)
+            }
+        };
+        let next_due = next_due
+            .map(|due| retry_not_before.map_or(due, |retry_at: f64| due.max(retry_at)))
+            .or(retry_not_before);
+        let delay = next_due
+            .map(|due| std::time::Duration::from_secs_f64((due - now).max(0.0)))
+            .unwrap_or(std::time::Duration::from_secs(
+                CONTINUATION_IDLE_RECHECK_SECONDS,
+            ));
+        match wait_for_continuation(delay, &wake, &mut shutdown).await {
+            ContinuationWait::Due => {
+                let store_for_tick = Arc::clone(&store);
+                let tick_now = epoch_seconds();
+                let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/continuation-scheduler",
+                    move || run_continuation_tick(&store_for_tick, tick_now),
+                )
+                .await;
+                match result {
+                    Ok(Ok(changed)) => {
+                        retry_not_before = None;
+                        if changed {
+                            wake.notify_one();
+                            event_wake.notify_one();
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        eprintln!("continuation scheduler tick failed: {error}");
+                        retry_not_before =
+                            Some(epoch_seconds() + CONTINUATION_FAILURE_RETRY_SECONDS);
+                    }
+                    Err(error) => {
+                        eprintln!("continuation scheduler blocking tick failed: {error}");
+                        retry_not_before =
+                            Some(epoch_seconds() + CONTINUATION_FAILURE_RETRY_SECONDS);
+                    }
+                }
+            }
+            ContinuationWait::Wake => {
+                retry_not_before = None;
+            }
+            ContinuationWait::Shutdown => return,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContinuationWait {
+    Due,
+    Wake,
+    Shutdown,
+}
+
+async fn wait_for_continuation(
+    delay: Duration,
+    wake: &Notify,
+    shutdown: &mut watch::Receiver<bool>,
+) -> ContinuationWait {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => ContinuationWait::Due,
+        _ = wake.notified() => ContinuationWait::Wake,
+        changed = shutdown.changed() => {
+            if changed.is_err() || *shutdown.borrow() {
+                ContinuationWait::Shutdown
+            } else {
+                ContinuationWait::Wake
+            }
+        }
+    }
+}
+
+fn run_continuation_tick(
+    store: &RuntimeStore,
+    now: f64,
+) -> studio_runtime_store::StoreResult<bool> {
+    let db = store.read()?;
+    let mut statement = db.prepare_cached(
+        "SELECT DISTINCT agent FROM (\
+         SELECT agent,CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real') \
+         UNION ALL SELECT agent,CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_capacity_retries WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real')) \
+         WHERE due<=?1 ORDER BY agent LIMIT 32",
+    )?;
+    let mut agents = statement
+        .query_map([now], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    if agents.is_empty() {
+        let mut statement = db.prepare_cached(
+            "SELECT id FROM runtime_agents WHERE json_type(record,'$.authResumeProofPending')='object' LIMIT 32",
+        )?;
+        agents = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    drop(db);
+    let limits = account_state::limits_snapshots(&store.read()?)?
+        .snapshots
+        .into_iter()
+        .filter_map(|(account_key, value)| {
+            let mut value = value;
+            if value.get("accountKey").is_none() {
+                value["accountKey"] = serde_json::json!(account_key);
+            }
+            studio_runtime_services::usage_resume::LimitsObservation::from_record(value, None)
+                .ok()
+                .map(|limits| (account_key, limits))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut changed = false;
+    for agent_id in agents {
+        let observations = limits.clone();
+        let staged = store.transaction_with(|tx| {
+            let account: Option<String> = tx
+                .query_row(
+                    "SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",
+                    [&agent_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(account) = account else { return Ok(false) };
+            let observation = observations.get(&account);
+            let stage = studio_runtime_services::continuation_runtime::stage_tick(
+                tx,
+                &agent_id,
+                now,
+                observation,
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
+            Ok::<_, studio_runtime_store::StoreError>(stage.changed())
+        })?;
+        changed |= staged;
+    }
+    Ok(changed)
+}
+
+fn epoch_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 #[cfg(unix)]
@@ -907,9 +1108,12 @@ async fn shutdown_signal() -> ShutdownReason {
 
 #[cfg(test)]
 mod exit_logging_tests {
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::{Notify, watch};
+
     use super::{
-        ShutdownReason, error_exit_log, panic_exit_log, runtime_initialization_exit_log,
-        shutdown_exit_log, shutdown_join,
+        ContinuationWait, ShutdownReason, error_exit_log, panic_exit_log,
+        runtime_initialization_exit_log, shutdown_exit_log, shutdown_join, wait_for_continuation,
     };
 
     #[test]
@@ -951,5 +1155,43 @@ mod exit_logging_tests {
             .await
             .expect_err("shutdown joins must have a finite bound");
         assert!(error.to_string().contains("active account worker"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuation_timer_waits_for_due_time_and_wakes_on_enable_or_cancel() {
+        let wake = Arc::new(Notify::new());
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let timer_wake = Arc::clone(&wake);
+        let timer = tokio::spawn(async move {
+            wait_for_continuation(Duration::from_secs(10), &timer_wake, &mut shutdown_rx).await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(!timer.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(timer.await.expect("timer task"), ContinuationWait::Due);
+
+        let (shutdown_tx2, mut shutdown_rx2) = watch::channel(false);
+        let timer_wake = Arc::clone(&wake);
+        let wake_task = tokio::spawn(async move {
+            wait_for_continuation(Duration::from_secs(10_000), &timer_wake, &mut shutdown_rx2).await
+        });
+        tokio::task::yield_now().await;
+        wake.notify_one();
+        assert_eq!(wake_task.await.expect("wake task"), ContinuationWait::Wake);
+
+        let timer_wake = Arc::clone(&wake);
+        let shutdown_for_task = shutdown_tx.clone();
+        let shutdown_task = tokio::spawn(async move {
+            let mut shutdown_rx = shutdown_for_task.subscribe();
+            wait_for_continuation(Duration::from_secs(10_000), &timer_wake, &mut shutdown_rx).await
+        });
+        tokio::task::yield_now().await;
+        shutdown_tx.send_replace(true);
+        assert_eq!(
+            shutdown_task.await.expect("shutdown task"),
+            ContinuationWait::Shutdown
+        );
+        drop(shutdown_tx2);
     }
 }
