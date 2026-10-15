@@ -1018,6 +1018,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         writes.try_recv().is_err(),
         "radio queue event was sent twice"
     );
+    registry.shutdown().await.unwrap();
     let status_before_restart: String = fixture
         .store
         .read()
@@ -1028,7 +1029,6 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
             |row| row.get(0),
         )
         .unwrap();
-    drop(registry);
     let mut restarted =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
             .await
@@ -1036,7 +1036,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     let recovery = restarted.reconcile(None).await;
     assert!(
         recovery.is_ok(),
-        "workspaceMode is only a preference for this non-worktree actor; Python creates its worktree only when worktree=true (codex_runtime.py:5001-5002, 6307-6308)"
+        "restarting a worker with an uncertain radio turn must preserve it without rejecting the actor; recovery={recovery:?}. workspaceMode is only a preference for this non-worktree actor; Python creates its worktree only when worktree=true (codex_runtime.py:5001-5002, 6307-6308)"
     );
     let status_after_recovery: String = fixture
         .store
