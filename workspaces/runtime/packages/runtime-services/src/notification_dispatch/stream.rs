@@ -962,7 +962,7 @@ mod tests {
         let observation = |cursor, delta: &str| NotificationObservation {
             agent: None,
             method: key.method.clone(),
-            params: json!({"delta":delta}),
+            params: crate::notification_dispatch::SharedJson::new(json!({"delta":delta})),
             delivery: crate::notification_dispatch::ProviderDeliveryIdentity {
                 provider_handle: "account:default".into(),
                 generation: 1,
