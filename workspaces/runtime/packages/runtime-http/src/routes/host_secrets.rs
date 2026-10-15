@@ -1451,12 +1451,16 @@ mod tests {
     #[tokio::test]
     async fn valid_vault_setup_request_completes_over_http_with_fake_desk() {
         let home = tempfile::tempdir().unwrap();
+        let home_token = test_request_id("private-home");
+        std::fs::write(home.path().join(".vault-setup-test-home"), &home_token).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .arg("--exact")
             .arg("routes::host_secrets::tests::vault_setup_http_positive_child")
             .arg("--ignored")
             .arg("--nocapture")
             .env("HOME", home.path())
+            .env("CODEX_STUDIO_VAULT_SETUP_TEST_HOME", home.path())
+            .env("CODEX_STUDIO_VAULT_SETUP_TEST_HOME_TOKEN", &home_token)
             .output()
             .unwrap();
         assert!(
@@ -1471,6 +1475,21 @@ mod tests {
     #[tokio::test]
     #[ignore = "run by the parent test with a private HOME"]
     async fn vault_setup_http_positive_child() {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let marked_home =
+            std::env::var_os("CODEX_STUDIO_VAULT_SETUP_TEST_HOME").map(std::path::PathBuf::from);
+        let token = std::env::var("CODEX_STUDIO_VAULT_SETUP_TEST_HOME_TOKEN")
+            .expect("parent test provides a private HOME token");
+        assert_eq!(home, marked_home, "child HOME must match parent marker");
+        let sentinel = home
+            .expect("parent test provides HOME")
+            .join(".vault-setup-test-home");
+        assert_eq!(
+            std::fs::read_to_string(sentinel).expect("parent private HOME sentinel exists"),
+            token,
+            "child must use the parent-created private HOME"
+        );
+
         let state = tempfile::tempdir().unwrap();
         let prefix = test_request_id("fixture");
         let settings = super::settings_dir("unused");
