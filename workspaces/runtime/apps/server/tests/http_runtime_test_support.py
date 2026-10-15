@@ -2,11 +2,9 @@
 
 ANSWER_REFUSAL_DEPENDENCIES = (
     "provider-session/question-answer",
-    "question-answer/async-question",
-    "question-answer/browser-open",
-    "question-answer/monitor-approval",
 )
 
 
 def answer_refusal_error() -> str:
-    return f"Not implemented: requires {', '.join(ANSWER_REFUSAL_DEPENDENCIES)}"
+    # Native callback delivery needs the live retained provider session.
+    return "Not implemented: requires provider-session/question-answer"

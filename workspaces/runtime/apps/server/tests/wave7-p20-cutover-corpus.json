@@ -350,30 +350,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "provider-session/monitor-commands",
-      "operation_count": 2,
-      "operations": ["POST /api/monitor/cancel", "POST /api/monitor/input"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        }
-      ],
-      "dependency": "provider-session/question-answer",
-      "operation_count": 2,
-      "operations": ["POST /api/answer", "POST /api/questions/delete"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -850,74 +826,6 @@
     {
       "closures": [
         {
-          "closes": "R4",
-          "kind": "external_or_scope",
-          "owner": "R4"
-        }
-      ],
-      "dependency": "provider-session/title-generation",
-      "operation_count": 1,
-      "operations": ["POST /api/rename"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        }
-      ],
-      "dependency": "question-answer/async-question",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "question-answer/browser-open",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "question-answer/monitor-approval",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -1076,10 +984,10 @@
     }
   ],
   "counts": {
-    "implemented": 107,
-    "named_dependencies": 74,
+    "implemented": 111,
+    "named_dependencies": 68,
     "not_registered": 0,
-    "partial": 53,
+    "partial": 49,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1516,14 +1424,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "provider-session/question-answer",
-        "question-answer/async-question",
-        "question-answer/browser-open",
-        "question-answer/monitor-approval"
-      ],
+      "dependencies": [],
       "operation": "POST /api/answer",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1711,17 +1614,14 @@
       "status": "partial"
     },
     {
-      "dependencies": [
-        "cross-server/remote-events",
-        "provider-session/monitor-commands"
-      ],
+      "dependencies": ["cross-server/remote-events"],
       "operation": "POST /api/monitor/cancel",
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/monitor-commands"],
+      "dependencies": [],
       "operation": "POST /api/monitor/input",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1812,9 +1712,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/question-answer"],
+      "dependencies": [],
       "operation": "POST /api/questions/delete",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1822,9 +1722,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/title-generation"],
+      "dependencies": [],
       "operation": "POST /api/rename",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

@@ -348,6 +348,7 @@ pub fn send_followup(
             text: input.text,
             delivery: input.delivery,
             now: input.now,
+            radio_answer_turn_id: None,
         },
         admission,
     )
@@ -367,6 +368,17 @@ pub fn send_system_followup(
     input: SystemFollowup<'_>,
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
+    send_system_followup_with_radio_answer(transaction, input, None, admission)
+}
+
+/// Queue an async-question answer and bind it to the exact active radio turn,
+/// as Runtime.send(..., radio_question=...) does.
+pub fn send_system_followup_with_radio_answer(
+    transaction: &Transaction<'_>,
+    input: SystemFollowup<'_>,
+    radio_answer_turn_id: Option<&str>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
     send_followup_inner(
         transaction,
         None,
@@ -376,6 +388,7 @@ pub fn send_system_followup(
             text: input.text,
             delivery: input.delivery,
             now: input.now,
+            radio_answer_turn_id,
         },
         admission,
     )
@@ -387,6 +400,7 @@ struct FollowupInput<'a> {
     text: &'a str,
     delivery: &'a str,
     now: f64,
+    radio_answer_turn_id: Option<&'a str>,
 }
 
 fn send_followup_inner(
@@ -401,6 +415,7 @@ fn send_followup_inner(
         text,
         delivery,
         now,
+        radio_answer_turn_id,
     } = input;
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > 32_000 {
@@ -477,6 +492,9 @@ fn send_followup_inner(
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
     let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery});
+    if let Some(turn_id) = radio_answer_turn_id.filter(|value| !value.is_empty()) {
+        metadata["radioAnswerTurnId"] = Value::String(turn_id.to_owned());
+    }
     if let Some((sender_id, _)) = sender_identity {
         metadata["senderId"] = Value::String(sender_id.to_owned());
     }

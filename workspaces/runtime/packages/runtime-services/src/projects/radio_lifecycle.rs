@@ -424,6 +424,72 @@ pub fn route_question_answer(
     Ok(false)
 }
 
+/// Mirror an accepted durable async-question follow-up into its matching radio
+/// room. The caller invokes this inside the same transaction that records the
+/// follow-up event and marks the request answered.
+pub fn record_question_answer_followup(
+    db: &Transaction<'_>,
+    prepared: &PreparedHost,
+    question: &Value,
+    text: &str,
+    now: f64,
+) -> Result<(), ProjectsError> {
+    if question["method"] != "agent/asyncQuestion"
+        || question["turnId"].as_str().is_none_or(str::is_empty)
+    {
+        return Ok(());
+    }
+    prepared.recheck(db)?;
+    for mut room in rooms(db)? {
+        let Some(active) = room.radio.active.as_ref() else {
+            continue;
+        };
+        if active.agent_id != question["agent"] || question["epoch"] != json!(active.epoch) {
+            continue;
+        }
+        let Some(agent) = records::get(db, "runtime_agents", &active.agent_id)? else {
+            continue;
+        };
+        let active_event = event(db, active)?;
+        if turn(&agent, active, active_event.as_ref()).as_deref() != question["turnId"].as_str() {
+            continue;
+        }
+        if agent["epoch"] != active.epoch || agent["threadId"] != json!(active.thread_id) {
+            continue;
+        }
+        if let Some(denial) = validate(db, &room, prepared, true)? {
+            return Err(ProjectsError::Invalid(denial));
+        }
+        if matches!(room.radio.status, Status::Blocked | Status::Stopping) {
+            return Err(ProjectsError::Invalid(
+                "The shared reply is stopped or blocked",
+            ));
+        }
+        let key = format!(
+            "{}:answer",
+            question["id"].as_str().ok_or_else(|| invalid(room.id()))?
+        );
+        let old = db
+            .query_row(
+                "SELECT text FROM runtime_chat_messages WHERE id=?1",
+                [&key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if old.as_ref().is_some_and(|previous| previous != text) {
+            return Err(ProjectsError::Invalid(
+                "This question already has a different answer",
+            ));
+        }
+        if old.is_none() {
+            message(db, &room, &key, "user", text, now)?;
+            save(db, &mut room, prepared, now)?;
+        }
+        return Ok(());
+    }
+    Ok(())
+}
+
 /// Proof that the native worker accepted the exact radio turn. Fields stay
 /// private so callers cannot substitute a boolean for the worker receipt.
 pub struct NativeAcceptanceReceipt {

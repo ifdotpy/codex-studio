@@ -23,6 +23,9 @@ use crate::routes::{self, compose};
 use crate::schema::{matching_template, operations};
 use crate::validation::Registry;
 
+pub(crate) const BROWSER_HOST_FOLDER_NAME: &str = "browser-host";
+pub(crate) const BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "control.sock";
+
 #[derive(Clone)]
 pub struct HttpState {
     /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
@@ -31,6 +34,14 @@ pub struct HttpState {
     pub(crate) callback_runtime:
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
     pub(crate) browser_forwarder: Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) browser_local_forwarder:
+        Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) browser_answer_guest:
+        Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
+    pub(crate) browser_answer_host_guest:
+        Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
+    pub(crate) browser_host_local_forwarder:
+        Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
     pub(crate) orchestration_driver:
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub(crate) project_secrets_guest:
@@ -125,6 +136,26 @@ impl HttpState {
         let browser_forwarder = orchestration_driver
             .as_ref()
             .map(|driver| crate::routes::browser::new_forwarder(Arc::clone(driver)));
+        let browser_answer_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
+            Arc::new(
+                studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                    &vm_state_dir,
+                ),
+            );
+        let browser_answer_host_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
+            Arc::new(
+                studio_runtime_services::linux_vm_guest::UnixSocketGuestRpc::new(
+                    std::path::Path::new(&state_dir)
+                        .join(BROWSER_HOST_FOLDER_NAME)
+                        .join(BROWSER_HOST_CONTROL_SOCKET_NAME),
+                ),
+            );
+        let browser_local_forwarder = Some(crate::routes::browser::new_local_forwarder(
+            Arc::clone(&browser_answer_guest),
+        ));
+        let browser_host_local_forwarder = Some(crate::routes::browser::new_local_forwarder(
+            Arc::clone(&browser_answer_host_guest),
+        ));
         let model_changes = Arc::clone(&sync_changes);
         let model_catalog =
             studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
@@ -143,6 +174,10 @@ impl HttpState {
             message_admission: None,
             callback_runtime: None,
             browser_forwarder,
+            browser_local_forwarder,
+            browser_answer_guest: Some(browser_answer_guest),
+            browser_answer_host_guest: Some(browser_answer_host_guest),
+            browser_host_local_forwarder,
             orchestration_driver,
             project_secrets_guest: None,
             vault_job_client: None,
@@ -202,6 +237,29 @@ impl HttpState {
         guest: Arc<dyn studio_runtime_services::project_secrets::GuestRpc>,
     ) -> Self {
         self.project_secrets_guest = Some(guest);
+        self
+    }
+
+    /// Attach the guest bridge used to answer browser sign-in requests.
+    pub fn with_browser_answer_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+    ) -> Self {
+        self.browser_answer_guest = Some(guest);
+        self.browser_local_forwarder = self
+            .browser_answer_guest
+            .as_ref()
+            .map(|guest| crate::routes::browser::new_local_forwarder(Arc::clone(guest)));
+        self
+    }
+
+    pub fn with_browser_answer_host_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+    ) -> Self {
+        self.browser_answer_host_guest = Some(guest.clone());
+        self.browser_host_local_forwarder =
+            Some(crate::routes::browser::new_local_forwarder(guest));
         self
     }
 

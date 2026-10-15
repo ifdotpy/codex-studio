@@ -13,6 +13,7 @@ pub(crate) mod tools;
 pub use crate::managed_child_create::{
     ManagedCreationEnvironment, ManagedCreationEnvironmentError,
 };
+pub(crate) use cards::answer_signature;
 pub use cards::{
     AnswerAuthority, answer, answer_value, expire, pending_native_delete_context, prepare_delete,
     prepare_user_answer, resolve,
