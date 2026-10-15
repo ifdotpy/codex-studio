@@ -444,12 +444,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
                     expected = probe_case.get("expected", "2xx")
                     self.assertTrue(
-                        expected in {"2xx", "400", "403", "404", "409", "not_501"}
+                        expected in {"2xx", "400", "403", "404", "409"}
                         or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
                     )
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
+                    if probe_case.get("unverified"):
+                        self.assertIsNone(probe_case.get("expected"))
 
     def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
         self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
@@ -472,6 +474,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     self.assertEqual(refusals[0]["expected"], "400")
                     self.assertTrue(refusals[0]["assert_no_write"])
                     self.assertFalse(refusals[0].get("expected_error"))
+                elif operation == ("POST", "/api/messages"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertIn("schema rejects attachment objects", refusals[0]["reason"])
                 else:
                     self.assertTrue(all(case["expected"] == "501" for case in refusals))
                     self.assertTrue(all(case.get("expected_error") for case in refusals))
@@ -490,10 +496,43 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 ledger.PROBE_CASES[operation]["primary"],
                 *ledger.PROBE_CASES[operation]["additional"],
             ]
-            self.assertTrue(all(case["expected"] == "not_501" for case in cases))
+            self.assertTrue(all(case.get("expected") is None for case in cases))
+            self.assertTrue(all(case["unverified"] for case in cases))
             self.assertTrue(all("expected_error" not in case for case in cases))
         finally:
             ledger.PROBE_CASES.pop(operation, None)
+
+    def test_unverified_additional_probe_never_accepts_a_server_error(self) -> None:
+        cases = [
+            ("primary", {"expected": "2xx"}),
+            ("legacy refusal", {"expected": None, "unverified": True}),
+        ]
+        observations = [
+            {"status": 200, "expectedMatches": True},
+            {"status": 503, "expectedMatches": ledger.probe_status_matches(
+                None, 503, standard_501=False, response_body={"error": "unavailable"},
+            )},
+        ]
+        self.assertFalse(observations[1]["expectedMatches"])
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
+        observations[0] = {"status": 503, "expectedMatches": False}
+        observations[1] = {"status": 400, "expectedMatches": False}
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
+        self.assertFalse(ledger.probe_status_matches(
+            "not_501", 200, standard_501=True, response_body={},
+        ))
+
+    def test_message_attachment_probe_is_an_explicit_schema_rejection(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/messages")]["additional"][0]
+        self.assertEqual(probe["expected"], "400")
+        self.assertNotIn("expected_error", probe)
+        self.assertIn("schema rejects attachment objects", probe["reason"])
 
     def test_named_refusal_expectations_remain_owned_by_partial_manifest(self) -> None:
         operation = ("POST", "/api/ledger-test")

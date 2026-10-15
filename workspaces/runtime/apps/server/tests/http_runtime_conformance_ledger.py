@@ -537,13 +537,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "2xx",
         },
         "additional": [{
-            "name": "attachment payload dependency",
+            "name": "attachment IDs must be strings",
             "body": {
                 "id": "77777777-7777-4777-8777-777777777777",
                 "room": "$agent", "text": "", "assets": [{"name": "pending"}],
             },
-            "expected": "501",
-            "expected_error": "Not implemented: requires payload-store/uploads",
+            "expected": "400",
+            "reason": "request schema rejects attachment objects; uploaded attachment IDs are strings",
         }],
     },
     ("POST", "/api/complaints"): {
@@ -1046,11 +1046,14 @@ def ensure_operation_probe_cases(
             primary.setdefault("expected", "2xx")
             for probe_case in [primary, *spec.get("additional", [])]:
                 if probe_case.get("expected") == "501":
-                    # The route census is the owner of a named 501 capability gap.
-                    # Once implemented, leave the exact Python probe outcome to
-                    # an explicit case when it is a runtime precondition; otherwise
-                    # require only that the stale refusal has disappeared.
-                    probe_case["expected"] = "not_501"
+                    # A stale refusal does not describe the expected result after
+                    # implementation. Require an explicit success or named
+                    # precondition case instead of treating any non-501 as valid.
+                    probe_case["expected"] = None
+                    probe_case["unverified"] = True
+                    probe_case["reason"] = (
+                        "previous 501 expectation needs an explicit success or runtime-precondition case"
+                    )
                     probe_case.pop("expected_error", None)
         elif not primary.get("expected"):
             primary["unverified"] = True
@@ -1651,11 +1654,6 @@ def probe_operations(
                     copy_mode=backend.copy_mode,
                 )
                 if copy_exclusion is not None:
-                    expected_status = (
-                        "not_501" if implementation == "implemented"
-                        else "any" if implementation == "partial"
-                        else 501
-                    )
                     observations = [{
                         "case": "primary",
                         "status": None,
@@ -1676,7 +1674,7 @@ def probe_operations(
                         "observedStatus": None,
                         "classification": "unverified",
                         "covered": bool(successful_assertions.get(f"{method} {template}")),
-                        "expectedStatus": expected_status,
+                        "expectedStatus": "unverified",
                         "dependencies": dependencies,
                         "schemaHeader": None,
                         "schemaHeaderMatches": None,
@@ -1840,17 +1838,11 @@ def probe_operations(
                         for relative, original in files_before.items()
                     )
                     expected = probe_case.get("expected")
-                    expected_matches = (
-                        (expected == "501" and result.status == 501 and standard_501)
-                        or (implementation == "unimplemented" and result.status == 501 and standard_501)
-                        or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
-                        or (expected == "400" and result.status == 400)
-                        or (expected == "403" and result.status == 403)
-                        or (expected == "409" and result.status == 409)
-                        or (expected == "not_501" and result.status != 501)
-                        or (expected == "4xx" and 400 <= result.status < 500)
-                        or (expected == "2xx" and 200 <= result.status < 300)
-                        or (isinstance(expected, str) and expected.isdecimal() and result.status == int(expected))
+                    expected_matches = probe_status_matches(
+                        expected,
+                        result.status,
+                        standard_501=standard_501,
+                        response_body=response_body,
                     )
                     if probe_case.get("functional_witness"):
                         expected_matches = expected_matches and functional_witness
@@ -1890,13 +1882,9 @@ def probe_operations(
                     classification = "implemented"
                 if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
                     classification = "implemented"
-                if not all(observation["expectedMatches"] for observation in observations):
-                    classification = "unexpected"
-                if implementation == "partial" and any(
-                    case.get("unverified") or not case.get("expected")
-                    for _, case in cases
-                ):
-                    classification = "unverified"
+                classification = apply_probe_expectations(
+                    classification, cases, observations
+                )
                 if not all(observation["noWrite"] for observation in observations):
                     classification = "unexpected"
                 rows.append({
@@ -1908,11 +1896,12 @@ def probe_operations(
                     "classification": classification,
                     "covered": bool(successful_assertions.get(operation_key)),
                     "expectedStatus": (
-                        "not_501"
-                        if implementation == "implemented"
-                        else "any"
-                        if implementation == "partial"
-                        else 501
+                        "unverified"
+                        if any(
+                            case.get("unverified") or not case.get("expected")
+                            for _, case in cases
+                        )
+                        else cases[0][1]["expected"]
                     ),
                     "dependencies": dependencies,
                     "schemaHeader": schema_header,
@@ -1947,6 +1936,56 @@ def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
     if any(case.get("functionalWitness") for case in observations):
         return "pass"
     return "unverified"
+
+
+def probe_status_matches(
+    expected: Any,
+    status: int,
+    *,
+    standard_501: bool,
+    response_body: Any,
+) -> bool:
+    """Match only an explicit status contract; never infer success from the census."""
+    if expected == "501":
+        return status == 501 and standard_501
+    if expected == "404":
+        return status == 404 and response_body == {"error": "Not found"}
+    if expected in {"400", "403", "409"}:
+        return status == int(expected)
+    if expected == "4xx":
+        return 400 <= status < 500
+    if expected == "2xx":
+        return 200 <= status < 300
+    if isinstance(expected, str) and expected.isdecimal():
+        return status == int(expected)
+    return False
+
+
+def apply_probe_expectations(
+    classification: str,
+    cases: list[tuple[str, dict[str, Any]]],
+    observations: list[dict[str, Any]],
+) -> str:
+    declared_case_failed = any(
+        case.get("expected") is not None
+        and not case.get("unverified")
+        and not observations[index]["expectedMatches"]
+        for index, (_, case) in enumerate(cases)
+    )
+    if declared_case_failed:
+        return "unexpected"
+    unverified_cases = [
+        index for index, (_, case) in enumerate(cases)
+        if case.get("unverified") or not case.get("expected")
+    ]
+    if unverified_cases:
+        unresolved_server_error = any(
+            observations[index]["status"] >= 500
+            and observations[index]["status"] != 501
+            for index in unverified_cases
+        )
+        classification = "unexpected" if unresolved_server_error else "unverified"
+    return classification
 
 
 def copy_mode_probe_exclusion(
