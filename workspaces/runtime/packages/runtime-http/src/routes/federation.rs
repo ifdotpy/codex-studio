@@ -299,6 +299,12 @@ async fn manage(
 
 fn map_service_error(error: FederationError) -> ApiError {
     match error {
+        FederationError::Store(studio_runtime_store::StoreError::SchemaMismatch(_)) => {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Federation data is unavailable",
+            )
+        }
         FederationError::Store(error) => ApiError::stored(error),
         FederationError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         FederationError::NeedsIdentity => ApiError::new(
