@@ -166,11 +166,11 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let token = tokens.and_then(|tokens| {
         tokens
             .get("id_token")
-            .filter(|value| python_truthy(value))
+            .filter(|value| studio_runtime_store::truthy(Some(value)))
             .or_else(|| {
                 tokens
                     .get("access_token")
-                    .filter(|value| python_truthy(value))
+                    .filter(|value| studio_runtime_store::truthy(Some(value)))
             })
     });
     let claims = match token.and_then(Value::as_str) {
@@ -188,27 +188,27 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let profile = object_if_truthy(claims.get("https://api.openai.com/profile"))?;
     let account_id = tokens
         .and_then(|tokens| tokens.get("account_id"))
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .or_else(|| {
             details
                 .and_then(|details| details.get("chatgpt_account_id"))
-                .filter(|value| python_truthy(value))
+                .filter(|value| studio_runtime_store::truthy(Some(value)))
         })
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?;
     let email = claims
         .get("email")
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .or_else(|| {
             profile
                 .and_then(|profile| profile.get("email"))
-                .filter(|value| python_truthy(value))
+                .filter(|value| studio_runtime_store::truthy(Some(value)))
         })
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?;
     let api_key = auth
         .get("OPENAI_API_KEY")
-        .filter(|value| python_truthy(value));
+        .filter(|value| studio_runtime_store::truthy(Some(value)));
     if api_key.is_some_and(|value| value.as_str().is_none()) {
         return Err(());
     }
@@ -216,7 +216,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let ready = (account_id.as_ref().is_some_and(|value| !value.is_empty())
         && tokens
             .and_then(|tokens| tokens.get("access_token"))
-            .is_some_and(python_truthy))
+            .is_some_and(studio_runtime_store::truthy))
         || api_key.is_some();
     let credential_identity = account_id
         .as_ref()
@@ -225,7 +225,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
         .or_else(|| api_key.map(|value| format!("api:{}", hex_sha256(value.as_bytes()))));
     let plan = details
         .and_then(|details| details.get("chatgpt_plan_type"))
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?
         .or_else(|| api_key.map(|_| "API key".to_owned()));
@@ -245,20 +245,9 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
 }
 
 fn object_if_truthy(value: Option<&Value>) -> Result<Option<&serde_json::Map<String, Value>>, ()> {
-    match value.filter(|value| python_truthy(value)) {
+    match value.filter(|value| studio_runtime_store::truthy(Some(value))) {
         None => Ok(None),
         Some(value) => value.as_object().map(Some).ok_or(()),
-    }
-}
-
-fn python_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_none_or(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 
@@ -737,8 +726,12 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
                 != "codex"
-                || !row.get("accountId").is_some_and(python_truthy)
-                || row.get("duplicateOf").is_some_and(python_truthy)
+                || !row
+                    .get("accountId")
+                    .is_some_and(studio_runtime_store::truthy)
+                || row
+                    .get("duplicateOf")
+                    .is_some_and(studio_runtime_store::truthy)
             {
                 return Err(AccountMutationError::Refused(
                     "Select a saved Codex subscription account",
@@ -804,7 +797,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if login_terminal(receipt)
             || receipt["status"] == "pending"
             || (receipt["status"] == "uncertain"
-                && receipt.get("loginId").is_some_and(python_truthy))
+                && receipt
+                    .get("loginId")
+                    .is_some_and(studio_runtime_store::truthy))
         {
             return Ok(receipt.clone());
         }
@@ -874,7 +869,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if login_terminal(receipt) {
             return Ok(LoginReservation::Replay(receipt.clone()));
         }
-        if !receipt.get("loginId").is_some_and(python_truthy) {
+        if !receipt
+            .get("loginId")
+            .is_some_and(studio_runtime_store::truthy)
+        {
             return Err(AccountDriverError::LoginResponseUnknown.into());
         }
         if receipt["status"] == "uncertain" {
@@ -1591,7 +1589,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             {
                 return Ok(AccountStatus::Unavailable);
             }
-            if row.get("duplicateOf").is_some_and(python_truthy) {
+            if row
+                .get("duplicateOf")
+                .is_some_and(studio_runtime_store::truthy)
+            {
                 return Ok(status_from_value(row.get("status")));
             }
             AuthProfile {
@@ -1935,7 +1936,9 @@ fn ready_replacement<'a>(
             && row.get("status").and_then(Value::as_str) == Some("ready")
             && row.get("deleted") != Some(&Value::Bool(true))
             && row.get("disconnected") != Some(&Value::Bool(true))
-            && !row.get("duplicateOf").is_some_and(python_truthy))
+            && !row
+                .get("duplicateOf")
+                .is_some_and(studio_runtime_store::truthy))
         .then_some(key.as_str())
     })
 }

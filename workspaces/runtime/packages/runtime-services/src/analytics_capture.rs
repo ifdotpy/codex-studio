@@ -202,7 +202,7 @@ impl PreparedCapture {
         if self.model {
             let p = &self.params;
             let call = first(&[&p["call_id"], &p["callId"], &p["id"], &p["_analyticsId"]]);
-            if !truthy(&call) {
+            if !studio_runtime_store::truthy(Some(&call)) {
                 return None;
             }
             let category = model_category(p);
@@ -221,7 +221,7 @@ impl PreparedCapture {
             ))
         } else {
             let id = first(&[&self.params["item"]["id"], &self.params["itemId"]]);
-            truthy(&id).then(|| key(meta, &id))
+            studio_runtime_store::truthy(Some(&id)).then(|| key(meta, &id))
         }
     }
 }
@@ -287,7 +287,7 @@ impl CaptureSnapshot {
     }
     pub fn load(db: &Connection, prepared: PreparedCapture) -> Result<Self, CaptureError> {
         let meta = prepared.meta();
-        let turn = truthy(&meta["turnId"])
+        let turn = studio_runtime_store::truthy(Some(&meta["turnId"]))
             .then(|| Repo::read(db, CaptureTable::Turns, &key(&meta, &meta["turnId"])))
             .transpose()?
             .flatten();
@@ -325,13 +325,15 @@ impl CaptureSnapshot {
                 }
             }
             let response = &prepared.params["responseId"];
-            if truthy(response) {
+            if studio_runtime_store::truthy(Some(response)) {
                 rows.exact_response =
                     Repo::usage_response(db, text(&meta["agentId"]), &meta["threadId"], response)?;
             }
             if rows.exact_response.is_none()
                 && rows.usage.as_ref().is_some_and(|v| {
-                    truthy(response) && truthy(&v["responseId"]) && v["responseId"] != *response
+                    studio_runtime_store::truthy(Some(response))
+                        && studio_runtime_store::truthy(Some(&v["responseId"]))
+                        && v["responseId"] != *response
                 })
             {
                 rows.collision_usage =
@@ -767,7 +769,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
         model_item(&q, &meta, rows.item, &mut result);
         return Ok(result);
     }
-    if truthy(&meta["turnId"])
+    if studio_runtime_store::truthy(Some(&meta["turnId"]))
         && matches!(
             method,
             "turn/started"
@@ -791,16 +793,17 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             }
             "turn/completed" => {
                 let error = &p["turn"]["error"];
-                let status = if truthy(error) {
+                let status = if studio_runtime_store::truthy(Some(error)) {
                     json!("failed")
                 } else {
                     p["turn"].get("status").cloned().unwrap_or(json!("unknown"))
                 };
-                let previous = truthy(&row["error"]) || row["status"] == "failed";
-                let incoming = truthy(error) || status == "failed";
+                let previous =
+                    studio_runtime_store::truthy(Some(&row["error"])) || row["status"] == "failed";
+                let incoming = studio_runtime_store::truthy(Some(error)) || status == "failed";
                 if !previous
                     || incoming
-                        && (!truthy(&row["error"])
+                        && (!studio_runtime_store::truthy(Some(&row["error"]))
                             || q.source == CaptureSource::Live
                             || row.get("terminalSource").unwrap_or(&row["source"]) != "live")
                 {
@@ -823,8 +826,10 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
                 }
             }
             _ => {
-                if (method == "item/agentMessage/delta" && truthy(&p["delta"])
-                    || p["item"]["type"] == "agentMessage" && truthy(&p["item"]["text"]))
+                if (method == "item/agentMessage/delta"
+                    && studio_runtime_store::truthy(Some(&p["delta"]))
+                    || p["item"]["type"] == "agentMessage"
+                        && studio_runtime_store::truthy(Some(&p["item"]["text"])))
                     && row["firstOutputAt"].is_null()
                 {
                     row["firstOutputAt"] = json!(at)
@@ -943,7 +948,7 @@ fn protocol_item(
             row["status"] = json!(if method != "item/completed" {
                 "running"
             } else if item["success"] == false
-                || truthy(&item["error"])
+                || studio_runtime_store::truthy(Some(&item["error"]))
                 || matches!(item["status"].as_str(), Some("failed" | "declined"))
                 || !item["exitCode"].is_null() && item["exitCode"] != 0
             {
@@ -956,10 +961,10 @@ fn protocol_item(
                     row[k] = v.clone()
                 }
             }
-            if truthy(&item["compactionMetadata"]) {
+            if studio_runtime_store::truthy(Some(&item["compactionMetadata"])) {
                 row["compactionMetadata"] = item["compactionMetadata"].clone();
             }
-            if truthy(&item["error"]) {
+            if studio_runtime_store::truthy(Some(&item["error"])) {
                 let s = item["error"]
                     .as_str()
                     .map(str::to_owned)
@@ -1022,7 +1027,7 @@ fn model_item(
         .get("_analyticsTimestampSource")
         .cloned()
         .unwrap_or(json!("record"));
-    if truthy(&p["name"]) {
+    if studio_runtime_store::truthy(Some(&p["name"])) {
         row["name"] = json!(format!(
             "{}{}",
             p["namespace"]
@@ -1143,7 +1148,7 @@ pub(crate) fn text(v: &Value) -> &str {
 pub(crate) fn first(values: &[&Value]) -> Value {
     values
         .iter()
-        .find(|v| truthy(v))
+        .find(|v| studio_runtime_store::truthy(Some(v)))
         .map(|v| (*v).clone())
         .unwrap_or_default()
 }
@@ -1179,7 +1184,7 @@ fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
 fn domain(p: &Value) -> &str {
-    if truthy(&p["rawTokenUsageRecord"]) {
+    if studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
         "response"
     } else {
         "nativeNotice"
@@ -1249,8 +1254,11 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         meta["daybreakEnabled"] = turn["daybreakEnabled"].clone();
         meta["cyberAccessProgram"] = turn["cyberAccessProgram"].clone();
     }
-    if q.source == CaptureSource::Rollout && truthy(response) {
-        let usage = p.get("requestUsage").filter(|v| truthy(v)).unwrap_or(&last);
+    if q.source == CaptureSource::Rollout && studio_runtime_store::truthy(Some(response)) {
+        let usage = p
+            .get("requestUsage")
+            .filter(|v| studio_runtime_store::truthy(Some(v)))
+            .unwrap_or(&last);
         if let Some(n) = number(&usage["outputTokens"]) {
             out.response_rate = Some(ResponseRateAssociation {
                 agent: text(&meta["agentId"]).into(),
@@ -1269,7 +1277,9 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
     let mut existing = rows.usage.clone();
     if rows.exact_response.is_none()
         && existing.as_ref().is_some_and(|r| {
-            truthy(response) && truthy(&r["responseId"]) && r["responseId"] != *response
+            studio_runtime_store::truthy(Some(response))
+                && studio_runtime_store::truthy(Some(&r["responseId"]))
+                && r["responseId"] != *response
         })
     {
         id.push(':');
@@ -1277,7 +1287,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         existing = rows.collision_usage.clone();
     }
     if p["usageSource"] == "claudeResponse" {
-        if !truthy(response) || !p["requestUsage"].is_object() {
+        if !studio_runtime_store::truthy(Some(response)) || !p["requestUsage"].is_object() {
             return;
         }
         let usage = &p["requestUsage"];
@@ -1317,7 +1327,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         return;
     }
     if let Some(exact) = rows.exact_response.as_ref() {
-        if !truthy(&p["rawTokenUsageRecord"]) {
+        if !studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
             let mut row = exact.clone();
             row["noticeTotal"] = total;
             row["noticeLast"] = last;
@@ -1332,9 +1342,10 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         id = text(&exact["id"]).into();
     }
     if let Some(mut row) = existing {
-        if truthy(response)
-            && (!truthy(&row["responseId"])
-                || truthy(&p["rawTokenUsageRecord"]) && !truthy(&row["rawTokenUsageRecord"]))
+        if studio_runtime_store::truthy(Some(response))
+            && (!studio_runtime_store::truthy(Some(&row["responseId"]))
+                || studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"]))
+                    && !studio_runtime_store::truthy(Some(&row["rawTokenUsageRecord"])))
         {
             let extra = json!({"responseId":response,"source":q.source.name(),"at":q.at,"recordedAt":q.recorded_at,"rawTokenUsageRecord":p["rawTokenUsageRecord"],"turnUsage":p["turnUsage"],"requestUsage":p["requestUsage"],"model":first(&[&p["model"],&meta["model"]]),"last":last,"total":total,"delta":token_numbers(&last),"counterDomain":domain(p),"cumulativeDelta":token_numbers(&Value::Null),"reset":null,"baselineMissing":true});
             row = merge(&row, extra);
@@ -1343,7 +1354,10 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         }
         return;
     }
-    if truthy(response) && rows.usage.is_none() && rows.exact_response.is_none() { /* key collision checked by the indexed response lookup in load */
+    if studio_runtime_store::truthy(Some(response))
+        && rows.usage.is_none()
+        && rows.exact_response.is_none()
+    { /* key collision checked by the indexed response lookup in load */
     }
     let prior = rows.prior_usage.as_ref();
     let reset = prior.is_some_and(|r| {
@@ -1406,10 +1420,6 @@ fn response_content(v: &Value) -> Value {
         }
     }
     value
-}
-
-pub(crate) fn truthy(v: &Value) -> bool {
-    studio_runtime_store::truthy(Some(v))
 }
 
 /// The notification dispatcher can commit one bounded delta batch. Preparation

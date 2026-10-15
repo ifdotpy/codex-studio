@@ -270,7 +270,11 @@ fn checked_agent_cwd(
     let connection = store.read()?;
     let agent = AgentRepository::get(&connection, &AgentId::from(id))?
         .ok_or(TerminalError::InvalidRequest)?;
-    if agent.extra.get("deletedAt").is_some_and(json_truthy) {
+    if agent
+        .extra
+        .get("deletedAt")
+        .is_some_and(studio_runtime_store::truthy)
+    {
         return Err(TerminalError::InvalidRequest);
     }
     let agent_cwd = agent
@@ -311,17 +315,6 @@ fn terminal_body_error(error: TerminalError) -> ApiError {
             ApiError::validation(vec![Value::String("body".to_owned())])
         }
         other => terminal_error(other),
-    }
-}
-
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 
