@@ -803,7 +803,7 @@ fn frame_account_origin(headers: &HeaderMap, host: &str, port: u16) -> bool {
 mod tests {
     use axum::Router;
     use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::Request;
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use serde_json::Value;
