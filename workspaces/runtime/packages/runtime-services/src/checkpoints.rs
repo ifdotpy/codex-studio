@@ -131,6 +131,149 @@ pub fn capture(
     )
 }
 
+/// Capture the pre-restore tree while the durable restore reservation owns the
+/// workspace. The operation records the checkpoint identity before returning,
+/// so a retry never creates a second before-restore checkpoint.
+pub fn capture_before_restore(
+    store: &RuntimeStore,
+    agent_id: &str,
+    operation_id: &str,
+    expected_tree: &str,
+) -> Result<Value, CheckpointsError> {
+    let snapshot = capture_context(store, agent_id)?;
+    if snapshot
+        .agent
+        .record
+        .get("workspaceOperation")
+        .and_then(Value::as_str)
+        != Some("restore")
+        || snapshot
+            .agent
+            .record
+            .get("workspaceReservationId")
+            .and_then(Value::as_str)
+            != Some(operation_id)
+    {
+        return Err(CheckpointsError::ActivityChanged);
+    }
+    ensure_workspace_idle(&snapshot, Some(operation_id))?;
+    let cwd = agent_string(&snapshot, "cwd")?;
+    let tree = snapshot_tree(store, cwd)?;
+    if tree != expected_tree {
+        return Err(CheckpointsError::ActivityChanged);
+    }
+    let checkpoint_id =
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, operation_id.as_bytes()).to_string();
+    let existing = store.read().and_then(|db| {
+        studio_runtime_store::CheckpointsRepository::checkpoint(&db, &checkpoint_id)
+    })?;
+    if let Some(existing) = existing {
+        return Ok(checkpoint_summary(existing.record));
+    }
+    let commit_output = git(
+        cwd,
+        &["commit-tree", tree.as_str(), "-p", "HEAD"],
+        &[
+            ("GIT_AUTHOR_NAME", "Codex Agents"),
+            ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
+            ("GIT_COMMITTER_NAME", "Codex Agents"),
+            ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
+        ],
+        Some(b"Codex Agents workspace checkpoint\n"),
+        128,
+    )?;
+    let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
+    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{checkpoint_id}");
+    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+    let parent_id = snapshot
+        .agent
+        .record
+        .get("checkpointHistoryHead")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let parent_boundary = snapshot
+        .parent_checkpoint
+        .as_ref()
+        .and_then(|parent| parent.record.get("historyBoundary"))
+        .and_then(Value::as_i64);
+    store.transaction_with(|tx| {
+        let Some(mut operation) = studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, operation_id)? else {
+            return Err(CheckpointsError::ActivityChanged);
+        };
+        if operation.get("kind").and_then(Value::as_str) != Some("restore")
+            || operation.get("phase").and_then(Value::as_str) != Some("local_mutation")
+            || operation.get("beforeCheckpoint").is_some_and(|value| !value.is_null())
+            || !studio_runtime_store::CheckpointsRepository::workspace_unchanged(tx, &snapshot)?
+        {
+            return Err(CheckpointsError::ActivityChanged);
+        }
+        let (history_delta, history_boundary) = studio_runtime_store::CheckpointsRepository::history_delta(tx, agent_id, parent_boundary)?;
+        let record = json!({
+            "historyParent":parent_id,"historyDelta":history_delta,"historyBoundary":history_boundary,
+            "id":checkpoint_id,"agent":agent_id,"rootId":snapshot.agent.record.get("rootId"),
+            "label":"Before restore","tree":tree,"commit":commit,"ref":reference,
+            "threadId":snapshot.agent.record.get("threadId"),
+            "turnId":snapshot.agent.record.get("lastCompletedTurn"),"created":now_seconds(),"cwd":cwd
+        });
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![checkpoint_id, record.to_string()])
+            .map_err(StoreError::from)?;
+        let Some(mut agent) = studio_runtime_store::CheckpointsRepository::agent(tx, agent_id)? else {
+            return Err(CheckpointsError::UnknownAgent);
+        };
+        agent.record["checkpointHistoryHead"] = json!(checkpoint_id);
+        let agent = studio_runtime_store::AgentRecord::from_value(agent.record)
+            .map_err(StoreError::from)?;
+        studio_runtime_store::AgentRepository::put(tx, &agent)?;
+        operation["beforeCheckpoint"] = json!(checkpoint_id);
+        studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::put_operation(tx, &operation)?;
+        Ok::<_, CheckpointsError>(record)
+    })
+}
+
+/// Restore a previously previewed tree in the caller's already-reserved,
+/// isolated worktree. The expected tree is rechecked immediately before Git
+/// mutates the index and files.
+pub fn restore_files(
+    store: &RuntimeStore,
+    cwd: &str,
+    expected_tree: &str,
+    target_tree: &str,
+) -> Result<(), CheckpointsError> {
+    if !is_full_object_id(expected_tree) || !is_full_object_id(target_tree) {
+        return Err(CheckpointsError::GitFailed);
+    }
+    if snapshot_tree(store, cwd)? != expected_tree {
+        return Err(CheckpointsError::ActivityChanged);
+    }
+    git(cwd, &["read-tree", expected_tree], &[], None, 0)?;
+    git(
+        cwd,
+        &["read-tree", "--reset", "-u", target_tree],
+        &[],
+        None,
+        0,
+    )?;
+    if snapshot_tree(store, cwd)? != target_tree {
+        return Err(CheckpointsError::GitFailed);
+    }
+    Ok(())
+}
+
+/// Validate a checkpoint tree before a restore creates its provider thread.
+pub fn validate_tree(cwd: &str, tree: &str) -> Result<(), CheckpointsError> {
+    if !is_full_object_id(tree) {
+        return Err(CheckpointsError::GitFailed);
+    }
+    git(
+        cwd,
+        &["cat-file", "-e", &format!("{tree}^{{tree}}")],
+        &[],
+        None,
+        0,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn finish_reserved(
     store: &RuntimeStore,
     snapshot: &WorkspaceSnapshot,
@@ -320,9 +463,7 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
     }))
 }
 
-pub(crate) fn ensure_agent_available(
-    agent: &StoredCheckpointObject,
-) -> Result<(), CheckpointsError> {
+pub fn ensure_agent_available(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
     ensure_agent_identity(agent)?;
     if is_image_workspace(agent) {
         return Err(CheckpointsError::ExecutionWorkspace);
@@ -344,7 +485,7 @@ fn is_image_workspace(agent: &StoredCheckpointObject) -> bool {
     agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
 }
 
-pub(crate) fn ensure_workspace_idle(
+pub fn ensure_workspace_idle(
     snapshot: &WorkspaceSnapshot,
     reservation_id: Option<&str>,
 ) -> Result<(), CheckpointsError> {
@@ -399,7 +540,7 @@ pub(crate) fn ensure_workspace_idle(
                 && record.get("workspaceReservationId").and_then(Value::as_str) == Some(reservation)
                 && matches!(
                     record.get("workspaceOperation").and_then(Value::as_str),
-                    Some("capture" | "checkpoint")
+                    Some("capture" | "checkpoint" | "restore")
                 )
         });
         if active
@@ -494,7 +635,7 @@ fn canonical_cwd(record: &serde_json::Map<String, Value>) -> Result<PathBuf, Che
         .map_err(|_| CheckpointsError::WorkspaceUnavailable)
 }
 
-pub(crate) fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsError> {
+pub fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsError> {
     snapshot_tree_at(cwd, store.root())
 }
 

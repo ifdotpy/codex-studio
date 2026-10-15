@@ -742,18 +742,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "provider-session/thread-fork",
-      "operation_count": 1,
-      "operations": ["POST /api/checkpoint/restore"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R4",
           "kind": "external_or_scope",
           "owner": "R4"
@@ -850,23 +838,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "turn-path/native-command-input",
-      "operation_count": 1,
-      "operations": ["POST /api/native-command"]
-    },
-    {
-      "closures": [
-        {
           "closes": "first-cutover refusal: VM excluded",
           "kind": "external_or_scope",
           "owner": "first-cutover refusal: VM excluded"
@@ -890,10 +861,10 @@
     }
   ],
   "counts": {
-    "implemented": 116,
-    "named_dependencies": 62,
+    "implemented": 118,
+    "named_dependencies": 60,
     "not_registered": 0,
-    "partial": 44,
+    "partial": 42,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1362,9 +1333,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/thread-fork"],
+      "dependencies": [],
       "operation": "POST /api/checkpoint/restore",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1547,9 +1518,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["turn-path/native-command-input"],
+      "dependencies": [],
       "operation": "POST /api/native-command",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

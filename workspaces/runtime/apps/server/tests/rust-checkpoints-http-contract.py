@@ -611,27 +611,103 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 )
                 database.commit()
 
-    @unittest.skipUnless(is_rust_backend(), "Provider 501s belong to Rust")
-    def test_provider_dependencies_return_named_501_without_writes(self) -> None:
-        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
-        cases = (
-            (
-                "/api/checkpoint/restore",
-                {
-                    "agent": AGENT_ID,
-                    "checkpoint": self.initial_checkpoint_id,
-                    "expectedTree": "0" * 40,
-                },
-                "Not implemented: requires provider-session/thread-fork",
-            ),
+    def test_restore_uses_fake_provider_and_restores_previewed_files(self) -> None:
+        backend = self.backend
+        (self.workspace / "tracked.txt").write_text("edited after checkpoint\n", encoding="utf-8")
+        preview = backend.request(
+            "POST", "/api/checkpoint/preview",
+            body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
+            headers=self.headers(),
         )
-        for path, body, error in cases:
-            response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, (path, response.body[:1000]))
-            self.assertEqual(response.json()["error"], error)
-            self.assertEqual(
-                (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        self.assertEqual(preview.status, 200, preview.body[:1000])
+        expected_tree = preview.json()["expectedTree"]
+        self.assertTrue(expected_tree)
+        restored = backend.request(
+            "POST", "/api/checkpoint/restore",
+            body={
+                "agent": AGENT_ID,
+                "checkpoint": self.initial_checkpoint_id,
+                "expectedTree": expected_tree,
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(restored.status, 200, restored.body[:1000])
+        self.assertEqual(restored.json()["status"], "restored")
+        self.assertEqual(restored.json()["checkpoint"], self.initial_checkpoint_id)
+        if is_rust_backend():
+            self.assertEqual(restored.json(), {
+                "status": "restored", "checkpoint": self.initial_checkpoint_id,
+            })
+        else:
+            self.assertIsInstance(restored.json().get("_syncEntities"), list)
+        self.assertEqual((self.workspace / "tracked.txt").read_text(encoding="utf-8"), "base checkpoint\n")
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+            agent = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,),
+            ).fetchone()[0])
+            operation = json.loads(database.execute(
+                "SELECT record FROM runtime_workspace_operations WHERE id LIKE 'restore:%' "
+                "ORDER BY rowid DESC LIMIT 1",
+            ).fetchone()[0])
+            before = database.execute(
+                "SELECT id FROM runtime_checkpoints WHERE id=?", (operation["beforeCheckpoint"],),
+            ).fetchone()
+            system_item = database.execute(
+                "SELECT record FROM runtime_items WHERE id=?",
+                (f"{AGENT_ID}:restore:{self.initial_checkpoint_id}",),
+            ).fetchone()
+        self.assertEqual(operation["phase"], "completed")
+        self.assertIsNotNone(before)
+        self.assertIsNotNone(system_item)
+        self.assertIsNone(agent.get("workspaceReservationId"))
+        self.assertIsNone(agent.get("workspaceOperation"))
+        self.assertEqual(agent["checkpointHistoryHead"], self.initial_checkpoint_id)
+        self.assertNotEqual(agent["threadId"], "thread-contract")
+
+    def test_malformed_provider_thread_start_settles_recovery_and_returns_value_error(self) -> None:
+        scratch = Path(os.environ["TMPDIR"])
+        backend = BackendProcess(scratch)
+        try:
+            backend.create_codex_replay("checkpoint-restore-malformed-thread-start.json")
+            initialize_repository(backend.cwd)
+            checkpoint_id = seed_python_state(backend)
+            backend.start()
+            headers = {
+                "Origin": backend.origin or "",
+                "X-Canvas-Token": backend.session["token"],
+                "X-Canvas-Workspace": backend.identity["workspaceId"],
+                "X-Studio-API-Schema": backend.schema_hash,
+            }
+            edited = backend.cwd / "tracked.txt"
+            edited.write_text("edited before malformed restore\n", encoding="utf-8")
+            preview = backend.request(
+                "POST", "/api/checkpoint/preview",
+                body={"agent": AGENT_ID, "checkpoint": checkpoint_id}, headers=headers,
             )
+            self.assertEqual(preview.status, 200, preview.body[:1000])
+            response = backend.request(
+                "POST", "/api/checkpoint/restore",
+                body={
+                    "agent": AGENT_ID,
+                    "checkpoint": checkpoint_id,
+                    "expectedTree": preview.json()["expectedTree"],
+                },
+                headers=headers,
+            )
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(response.json()["error"], "The native workspace response has no thread id")
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                operation = json.loads(database.execute(
+                    "SELECT record FROM runtime_workspace_operations WHERE id LIKE 'restore:%' LIMIT 1",
+                ).fetchone()[0])
+                agent = json.loads(database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,),
+                ).fetchone()[0])
+            self.assertEqual(operation["phase"], "recovery_required")
+            self.assertEqual(agent["workspaceOperation"], "restore_recovery")
+            self.assertEqual((backend.cwd / "tracked.txt").read_text(encoding="utf-8"), "edited before malformed restore\n")
+        finally:
+            backend.close()
 
     def test_image_checkpoint_refusal_matches_python_without_writes(self) -> None:
         before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
