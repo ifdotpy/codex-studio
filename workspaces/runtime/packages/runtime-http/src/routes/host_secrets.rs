@@ -1359,6 +1359,29 @@ mod tests {
         .unwrap();
     }
 
+    struct SetupRecipientFixture(std::path::PathBuf);
+
+    impl SetupRecipientFixture {
+        fn create(prefix: &str) -> Self {
+            let settings = super::settings_dir("unused");
+            let directory = settings.join(prefix);
+            std::fs::create_dir_all(&directory).unwrap();
+            let recipient = directory.join("recipient.txt");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(recipient)
+                .unwrap();
+            Self(directory)
+        }
+    }
+
+    impl Drop for SetupRecipientFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn progress_buffer_stays_bounded_and_discards_until_the_next_newline() {
         let mut pending = String::new();
@@ -1445,6 +1468,87 @@ mod tests {
                 "profiles":[{"name":"fixture"}]
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn valid_vault_setup_request_completes_over_http_with_fake_desk() {
+        let state = tempfile::tempdir().unwrap();
+        let prefix = test_request_id("fixture");
+        let _recipient = SetupRecipientFixture::create(&prefix);
+        let source = state.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        let project = state.path().join("linux-vm/layr-projects/p1");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("project.json"),
+            serde_json::to_vec(&json!({
+                "projectId":"p1",
+                "source":source.to_string_lossy()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let fake_script = format!(
+            "[ \"$1\" = deploy ] && [ \"$2\" = --project ] && [ \"$3\" = '{prefix}' ] && [ \"$4\" = --profile ] && [ \"$5\" = fixture ] && [ \"$6\" = --region ] && [ \"$7\" = eu-central-1 ] || exit 91\nprintf '%s\\n' '{{\"site\":\"https://desk.example/\"}}'"
+        );
+        let host_command = fake_host_command(state.path(), &fake_script);
+        let (owner, client) = test_job_client().await;
+        let mut state_http = HttpState::new(
+            "test-token".to_owned(),
+            "test-workspace".to_owned(),
+            None,
+            state.path().to_string_lossy().into_owned(),
+            TEST_HTTP_PORT,
+            None,
+            None,
+            None,
+        );
+        state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
+        state_http.vault_host_command = Some(host_command);
+        state_http.vault_job_client = Some(client.clone());
+        let app = crate::router::router(state_http).expect("runtime HTTP router starts");
+        let request_id = test_request_id("setup");
+        let response = app
+            .oneshot(authorized_request_at(
+                "/api/vault/setup",
+                json!({
+                    "projectId":"p1",
+                    "requestId":request_id,
+                    "prefix":prefix,
+                    "profile":"fixture",
+                    "region":"eu-central-1"
+                }),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let initial: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(initial["requestId"], request_id);
+        assert_eq!(initial["state"], "running");
+        assert_eq!(initial["prefix"], prefix);
+
+        let job = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(job) = find_job(&client, VaultJobKind::Setup, &request_id)
+                    .await
+                    .unwrap()
+                    && job["state"] != "running"
+                {
+                    break job;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake setup job completes");
+        assert_eq!(job["state"], "done");
+        assert_eq!(job["site"], "https://desk.example/");
+        owner.shutdown().await.unwrap();
     }
 
     #[cfg(unix)]
