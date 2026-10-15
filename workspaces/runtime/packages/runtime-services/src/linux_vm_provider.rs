@@ -24,7 +24,7 @@ use studio_runtime_process::{
     provider_seam::{
         AdapterCommand, AdapterError, AttachmentInfo, AttachmentStatus, CommandReceipt,
         InitializationStatus, JournalEntry, JournalPayload, LANE_CAPACITY, OpenFuture, OpenOptions,
-        ProviderAttachment, ProviderTaskFactory, Shutdown, TaskExit,
+        ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
     },
 };
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
@@ -258,9 +258,11 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
                 outbox,
                 state,
                 shutdown.subscribe(),
-                options.clock,
-                options.launch.retained_response_ids,
-                generation,
+                GuestAttachmentContext {
+                    clock: options.clock,
+                    response_ids: options.launch.retained_response_ids,
+                    session_generation: generation,
+                },
             ));
             Ok(ProviderAttachment::from_task(
                 commands, journal, status, shutdown, task,
@@ -269,15 +271,19 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
     }
 }
 
+struct GuestAttachmentContext {
+    clock: SessionClock,
+    response_ids: BTreeMap<u64, u64>,
+    session_generation: Generation,
+}
+
 async fn run_guest_attachment(
     session: GuestProviderSession,
     mut commands: tokio::sync::mpsc::Receiver<AdapterCommand>,
     journal: tokio::sync::mpsc::Sender<JournalEntry>,
     status: tokio::sync::watch::Sender<AttachmentStatus>,
     mut stop: tokio::sync::watch::Receiver<bool>,
-    clock: studio_runtime_process::provider_seam::SessionClock,
-    mut response_ids: BTreeMap<u64, u64>,
-    session_generation: Generation,
+    mut context: GuestAttachmentContext,
 ) -> TaskExit {
     // Keep the guest read RPC alive across command arrivals. GuestRpc uses a
     // blocking socket boundary; cancelling its future would orphan an in-flight
@@ -317,16 +323,16 @@ async fn run_guest_attachment(
                 Some(AdapterCommand::Write { write, reply, observed }) => {
                     let message = write.message().clone();
                     let method = message.get("method").and_then(Value::as_str).map(str::to_owned);
-                    if method.as_deref() == Some("initialize") {
-                        if let Some(cached) = cached_initialize.take() {
-                            initialize_id = message.get("id").cloned();
-                            let _ = reply.send(CommandReceipt::CachedInitialize(cached));
-                            if observed.await.is_err() {
-                                result = Err(AdapterError::ConsumerClosed);
-                                break;
-                            }
-                            continue;
+                    if method.as_deref() == Some("initialize")
+                        && let Some(cached) = cached_initialize.take()
+                    {
+                        initialize_id = message.get("id").cloned();
+                        let _sent = reply.send(CommandReceipt::CachedInitialize(cached));
+                        if observed.await.is_err() {
+                            result = Err(AdapterError::ConsumerClosed);
+                            break;
                         }
+                        continue;
                     }
                     let native_id = message.get("id").cloned().or_else(|| {
                         (method.as_deref() == Some("initialize")).then_some(Value::from(1))
@@ -336,7 +342,7 @@ async fn run_guest_attachment(
                         Ok(value) if value.get("accepted") == Some(&Value::Bool(true)) => {
                             let remote_id = value.get("remoteId").and_then(Value::as_u64);
                             if let (Some(remote), Some(local)) = (remote_id, native_id.as_ref().and_then(Value::as_u64)) {
-                                response_ids.insert(remote, local);
+                                context.response_ids.insert(remote, local);
                             }
                             if method.as_deref() == Some("initialize") { initialize_id = native_id; }
                             if method.as_deref() == Some("initialized") {
@@ -354,7 +360,7 @@ async fn run_guest_attachment(
                         Err(_) => CommandReceipt::NotSent,
                     };
                     let observe = matches!(receipt, CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_));
-                    let _ = reply.send(receipt);
+                    let _sent = reply.send(receipt);
                     if observe && observed.await.is_err() {
                         result = Err(AdapterError::ConsumerClosed);
                         break;
@@ -395,10 +401,10 @@ async fn run_guest_attachment(
                 Ok(Some(mut event)) => {
                     if event.kind == "stdout" {
                         if let Some(remote) = event.payload.get("id").and_then(Value::as_u64)
-                            && let Some(local) = response_ids.get(&remote) {
-                                if let Some(object) = event.payload.as_object_mut() {
-                                    object.insert("id".into(), Value::from(*local));
-                                }
+                            && let Some(local) = context.response_ids.get(&remote)
+                            && let Some(object) = event.payload.as_object_mut()
+                        {
+                            object.insert("id".into(), Value::from(*local));
                         }
                         if let Some(id) = &initialize_id
                             && event.payload.get("id") == Some(id)
@@ -413,20 +419,18 @@ async fn run_guest_attachment(
                     }
                     unacked.insert(event.sequence, event.clone());
                     let payload = match event.kind.as_str() {
-                        "stdout" => match decode_journal_value(event.sequence, event.generation, event.payload) {
-                            decoded => match decoded.payload {
-                                DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
-                                DecodedJournalPayload::RawStdout { bytes, error } => JournalPayload::RawStdout { bytes, error },
-                            }
+                        "stdout" => match decode_journal_value(event.sequence, event.generation, event.payload).payload {
+                            DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
+                            DecodedJournalPayload::RawStdout { bytes, error } => JournalPayload::RawStdout { bytes, error },
                         },
                         "stderr" => JournalPayload::Stderr(event.payload),
                         "exit" => JournalPayload::Exit(event.payload),
                         kind => JournalPayload::Other { kind: kind.to_owned(), payload: event.payload },
                     };
                     if journal.send(JournalEntry {
-                        received_at_ms: clock.now_ms(),
+                        received_at_ms: context.clock.now_ms(),
                         cursor: EventCursor(event.sequence),
-                        generation: session_generation,
+                        generation: context.session_generation,
                         payload,
                     }).await.is_err() {
                         result = Err(AdapterError::ConsumerClosed);
@@ -961,9 +965,10 @@ pub async fn copy_guest_credentials(
 fn hex_digest(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut output, "{byte:02x}");
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
 }
@@ -1207,6 +1212,8 @@ fn parse_event(value: &Value) -> Result<ProviderEvent> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::linux_vm_guest::GuestError;
     use serde_json::json;

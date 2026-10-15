@@ -531,7 +531,7 @@ fn validate_vm_git_object_store(git_dir: &Path) -> std::io::Result<()> {
         ));
     }
     let canonical_objects = fs::canonicalize(&objects)?;
-    if !canonical_objects.starts_with(&git_dir) {
+    if !canonical_objects.starts_with(git_dir) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "VM source repository has an external Git object store",
@@ -699,7 +699,6 @@ impl Preparation<'_> {
         };
         let guest = self
             .guest
-            .as_deref()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
         if agent.get("layrReady").and_then(Value::as_bool) == Some(true) {
             Self::verify_vm_connection(guest, &agent)?;
@@ -1336,6 +1335,8 @@ pub fn prepare_child(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::linux_vm_guest::GuestError;
     use flate2::read::GzDecoder;

@@ -91,6 +91,8 @@ impl<R: Read> Read for CountReader<R> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::TarGzipWriter;
     use flate2::read::GzDecoder;
     use std::{
@@ -152,9 +154,6 @@ mod tests {
         let mut content = String::new();
         file.take(16).read_to_string(&mut content).unwrap();
         assert_eq!(content, "data");
-        drop(entries);
-        drop(archive);
-
         let directory = tempfile::tempdir().expect("fixture operation succeeds");
         let archive_path = directory.path().join("guest.tar.gz");
         std::fs::write(&archive_path, output).expect("write guest archive fixture");
