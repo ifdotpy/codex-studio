@@ -1,4 +1,3 @@
-import type { createSidebarRpcClient } from "./sidebarRpc";
 import { useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import { ApiError, errorText, type PostBody } from "../api";
@@ -16,7 +15,7 @@ export default function CombinedServerSidebar({
   backends,
   online,
   refreshOwner,
-  rpc,
+  executeCommand,
   aliases,
   current,
   navigation,
@@ -35,7 +34,7 @@ export default function CombinedServerSidebar({
   backends: ReadonlyMap<string, SidebarBackend>;
   online: (owner: string) => boolean;
   refreshOwner: (owner: string) => Promise<ServerNavigation>;
-  rpc: ReturnType<typeof createSidebarRpcClient>;
+  executeCommand: (owner: string, command: ServerCommand) => Promise<void>;
   aliases: Record<string, string>;
   current: string;
   navigation: Record<string, ServerNavigation>;
@@ -125,12 +124,10 @@ export default function CombinedServerSidebar({
       prepareChat={(id) => {
         const reference = model.chatReferences.get(id);
         if (!reference || !online(reference.owner)) return;
-        void rpc
-          .request(reference.owner, {
-            action: "command",
-            command: { action: "prepare-chat", id: reference.id },
-          })
-          .catch(() => {});
+        void executeCommand(reference.owner, {
+          action: "prepare-chat",
+          id: reference.id,
+        }).catch(() => {});
       }}
       newChat={(path, folder) => {
         if (!path) {
@@ -249,16 +246,12 @@ export default function CombinedServerSidebar({
         )
           return;
         setMarking((old) => new Set([...old, agent.id]));
-        void rpc
-          .request(reference.owner, {
-            action: "command",
-            command: {
-              action: "mark-unread",
-              id: reference.id,
-              threadId: agent.threadId,
-              turnId: agent.lastCompletedTurn,
-            },
-          })
+        void executeCommand(reference.owner, {
+          action: "mark-unread",
+          id: reference.id,
+          threadId: agent.threadId,
+          turnId: agent.lastCompletedTurn,
+        })
           .then(refresh)
           .catch((failure) => notify(errorText(failure)))
           .finally(() =>

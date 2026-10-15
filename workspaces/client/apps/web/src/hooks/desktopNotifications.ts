@@ -10,6 +10,7 @@ import type { Snapshot } from "../types";
 export function useDesktopNotifications(
   data: Snapshot | null,
   opened: string | null,
+  enabled = true,
 ) {
   const state = useRef({
     scope: "",
@@ -19,7 +20,7 @@ export function useDesktopNotifications(
     started: Date.now(),
   });
   useEffect(() => {
-    if (!data || isServerView) return;
+    if (!enabled || !data || isServerView) return;
     const scope = data.stateDir;
     if (state.current.scope !== scope)
       state.current = {
@@ -92,5 +93,5 @@ export function useDesktopNotifications(
         };
       }
     }
-  }, [data, opened]);
+  }, [data, opened, enabled]);
 }

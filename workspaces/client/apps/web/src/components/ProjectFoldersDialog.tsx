@@ -25,7 +25,7 @@ export default function ProjectFoldersDialog({
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    void readProjectServers()
+    void readProjectServers(get)
       .then((rows) => {
         if (active) setServers(rows);
       })

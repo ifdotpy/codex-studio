@@ -15,6 +15,7 @@ export function canForwardSignIn(): boolean {
 export async function openSignInPage(
   url: string,
   forward?: SignInForward | null,
+  owner?: string,
 ): Promise<void> {
   const parsed = new URL(url);
   if (!["http:", "https:"].includes(parsed.protocol))
@@ -24,6 +25,7 @@ export async function openSignInPage(
     if (hasNativeClient() && !desktop) {
       await nativeRequest("desktop.openSignIn", {
         value: { url: parsed.href, forward },
+        ...(owner ? { signInOwner: owner } : {}),
       });
       return;
     }

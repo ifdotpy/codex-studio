@@ -121,17 +121,6 @@ test("accounts settings show per-server state and provider choices", async ({
   };
   await pair(remote);
   await pair(empty);
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() =>
-          window.__studioAccountMessages.some(
-            (message) => message.accounts.length > 0,
-          ),
-        ),
-      { timeout: 20000 },
-    )
-    .toBe(true);
   await page
     .getByRole("complementary", { name: "Conversations" })
     .getByRole("button", { name: "Studio settings", exact: true })
@@ -190,13 +179,13 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
   await expect(settings).toBeHidden();
-  const profileFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const profileFrame = page;
   const profile = profileFrame.getByRole("dialog", {
     name: "Configure Claude",
     exact: true,
   });
   await expect(profile).toBeVisible();
-  await expect(page.locator('iframe[title="Studio on Remote"]')).toBeVisible();
+  await expect(page.locator(".server-views")).toBeVisible();
   await profile
     .getByLabel("Custom models", { exact: true })
     .fill("remote-model | Remote Model");
@@ -304,12 +293,10 @@ test("accounts settings show per-server state and provider choices", async ({
   await add.getByLabel("Email (optional)").fill("new@example.test");
   await add.getByRole("button", { name: "Continue" }).click();
   await expect(
-    page
-      .frameLocator('iframe[title="Studio on Remote"]')
-      .getByRole("dialog", { name: /Sign in to Claude · New Claude/ }),
+    page.getByRole("dialog", { name: /Sign in to Claude · New Claude/ }),
   ).toBeVisible();
   await expect(settings).toBeHidden();
-  const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const remoteFrame = page;
   const claudeSignIn = remoteFrame.getByRole("dialog", {
     name: /Sign in to Claude · New Claude/,
   });

@@ -1,6 +1,6 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useServerFileDialogs } from "../servers/ServerServicesContext";
-import { isRemoteServerView } from "../servers/environment";
+
 import {
   ActionIcon,
   Button,
@@ -56,7 +56,7 @@ export default function ProjectDirectoryPicker({
       return;
     }
     let active = true;
-    void readProjectServers()
+    void readProjectServers(get)
       .then((rows) => {
         if (active) setServers(rows);
       })
@@ -185,7 +185,7 @@ export default function ProjectDirectoryPicker({
           Open path
         </Button>
       </form>
-      {canPickDirectory() && !isRemoteServerView && server === "local" && (
+      {canPickDirectory() && server === "local" && (
         <Button
           variant="light"
           onClick={() => {

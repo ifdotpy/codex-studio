@@ -1,6 +1,8 @@
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
+  useServerStorage,
+  useServerStorageEventKey,
   useServerChatCreations,
   useServerResources,
   useServerAccountLimits,
@@ -22,7 +24,6 @@ import "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import { serverParentOrigin } from "./servers/environment";
-import { serverStorageEventKey } from "./servers/storage";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
 import { localServer, viewServer } from "./servers/registry";
@@ -223,7 +224,9 @@ const Workspace = lazy(() => import("./components/shell/Workspace"));
 const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
-export default function App() {
+export default function App({ active = true }: { active?: boolean }) {
+  const activeScreen = useRef(active);
+  activeScreen.current = active;
   const {
     screen,
     postToShell,
@@ -261,6 +264,10 @@ export default function App() {
     automaticallyUpdateRenderer,
   } = useServerApi();
 
+  const serverStorageEventKey = useServerStorageEventKey();
+  const projectStorage = useServerStorage();
+  const projectApi = useServerApi();
+  const projectServices = { ...projectApi, storage: projectStorage };
   reportPromptComposerRender("app");
   const [schemaMismatch, setSchemaMismatch] = useState(false);
   const [schemaMismatchNeedsRebuild, setSchemaMismatchNeedsRebuild] =
@@ -477,23 +484,36 @@ export default function App() {
     saved("codex-sidebar-collapsed", false),
   );
   useEffect(() => {
-    if (studioPreferences.theme !== colorScheme)
+    if (active && studioPreferences.theme !== colorScheme)
       setColorScheme(studioPreferences.theme);
-  }, [studioPreferences.theme, colorScheme, setColorScheme]);
+  }, [studioPreferences.theme, colorScheme, setColorScheme, active]);
   useEffect(() => {
-    applyStudioPreferences(studioPreferences, document.documentElement);
-  }, [studioPreferences]);
+    if (active)
+      applyStudioPreferences(studioPreferences, document.documentElement);
+  }, [studioPreferences, active]);
   useEffect(() => {
-    const preferences = (event: StorageEvent) => {
-      if (event.key !== studioPreferencesStorageKey || !event.newValue) return;
+    const preferences = (event: Event) => {
+      if (
+        event instanceof StorageEvent &&
+        (event.key !== studioPreferencesStorageKey || !event.newValue)
+      )
+        return;
       try {
-        const next = parseStudioPreferences(event.newValue);
+        const next = parseStudioPreferences(
+          event instanceof StorageEvent
+            ? event.newValue!
+            : JSON.stringify((event as CustomEvent).detail),
+        );
         setStudioPreferences(next);
         setColorScheme(next.theme);
       } catch {}
     };
     window.addEventListener("storage", preferences);
-    return () => window.removeEventListener("storage", preferences);
+    window.addEventListener("studio-shell-preferences", preferences);
+    return () => {
+      window.removeEventListener("storage", preferences);
+      window.removeEventListener("studio-shell-preferences", preferences);
+    };
   }, []);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
@@ -513,6 +533,7 @@ export default function App() {
     const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
     if (!shortcut) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeScreen.current || screen) return;
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -558,7 +579,7 @@ export default function App() {
   const selectionScope = useRef("");
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
-  useMobileViewport(mobileClient);
+  useMobileViewport(active && mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const {
       data,
@@ -692,7 +713,8 @@ export default function App() {
   const rendererUpdateSafe = useRef(canUpdateRenderer);
   rendererUpdateSafe.current = canUpdateRenderer;
   useEffect(() => {
-    if (!schemaMismatch || rendererBusy || !canUpdateRenderer) return;
+    if (!active || !schemaMismatch || rendererBusy || !canUpdateRenderer)
+      return;
     const controller = new AbortController();
     void automaticallyUpdateRenderer(
       () =>
@@ -709,7 +731,7 @@ export default function App() {
       if (!controller.signal.aborted) setSchemaUpdateError(errorText(error));
     });
     return () => controller.abort();
-  }, [schemaMismatch, rendererBusy, canUpdateRenderer]);
+  }, [schemaMismatch, rendererBusy, canUpdateRenderer, active]);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),
@@ -756,7 +778,7 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(""), 5000);
   }, []);
   const nativeActions = useNativeAction(data?.stateDir, workspaceId, notify);
-  useDesktopNotifications(data, opened);
+  useDesktopNotifications(data, opened, !isServerView);
   const submitNativeAction = async (
     target: Agent,
     action: "compact" | "review",
@@ -951,8 +973,9 @@ export default function App() {
     else save(key, opened);
   }, [data, opened, agent, room, legacy, mobileClient]);
   useEffect(() => {
-    const onError = (event: Event) =>
-      notify((event as CustomEvent<string>).detail);
+    const onError = (event: Event) => {
+      if (activeScreen.current) notify((event as CustomEvent<string>).detail);
+    };
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
@@ -970,6 +993,7 @@ export default function App() {
     }) => {
       setNavigationTarget({ ...target, requestId: crypto.randomUUID() });
     };
+    if (screen) return;
     const unsubscribe = onDesktopNavigate(navigate);
     const onNavigate = (event: Event) =>
       navigate((event as CustomEvent<Parameters<typeof navigate>[0]>).detail);
@@ -1319,6 +1343,7 @@ export default function App() {
   }, [data?.runtime?.rateLimits, data?.runtime?.rateLimitsByAccount]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (!activeScreen.current) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         if (isServerView) {
@@ -1389,7 +1414,7 @@ export default function App() {
       if (project.path || !mobileClient) {
         let servers: ProjectServerChoice[];
         try {
-          servers = await readProjectServers();
+          servers = await readProjectServers(get);
         } catch (failure) {
           notify(errorText(failure));
           return null;
@@ -1514,6 +1539,7 @@ export default function App() {
                   path,
                   server,
                   crypto.randomUUID(),
+                  projectServices,
                 );
                 setModal(null);
                 await refresh();
@@ -1920,7 +1946,12 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           onSelect={async (path, server) => {
-            await registerProject(path, server, crypto.randomUUID());
+            await registerProject(
+              path,
+              server,
+              crypto.randomUUID(),
+              projectServices,
+            );
             setModal(null);
             await refresh();
           }}
@@ -2116,9 +2147,11 @@ export default function App() {
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
       } else if (command.action === "notifications")
-        window.dispatchEvent(
-          new CustomEvent("studio-navigate", { detail: command }),
-        );
+        setNavigationTarget({
+          ...command,
+          section: "messages",
+          requestId: crypto.randomUUID(),
+        });
       else if (command.action === "projects") {
         document.documentElement.dataset.serverProjects = "true";
         setSidebarCollapsed(false);
@@ -2133,6 +2166,7 @@ export default function App() {
     publicAccounts,
     creating,
   );
+  if (!active) return null;
   if (!data)
     return schemaMismatch ? (
       schemaMismatchDialog
@@ -2959,8 +2993,17 @@ export default function App() {
           />
         </Suspense>
       )}
+      <Accounts
+        managerOnly
+        dialogsOnly
+        onModalOpenChange={updateAccountModalOpen}
+        state={accounts}
+        onError={notify}
+        externalCommand={serverAccountCommand}
+        onExternalCommandHandled={() => setServerAccountCommand(null)}
+      />
       <Modal
-        opened={studioSettingsOpen}
+        opened={studioSettingsOpen && !accountModalOpen}
         transitionProps={{ duration: 0 }}
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
@@ -2995,15 +3038,6 @@ export default function App() {
                       .then(accounts.setData)
                       .catch((failure: unknown) => notify(errorText(failure)));
                   }}
-                />
-                <Accounts
-                  managerOnly
-                  dialogsOnly
-                  onModalOpenChange={updateAccountModalOpen}
-                  state={accounts}
-                  onError={notify}
-                  externalCommand={serverAccountCommand}
-                  onExternalCommandHandled={() => setServerAccountCommand(null)}
                 />
               </section>
             </Tabs.Panel>

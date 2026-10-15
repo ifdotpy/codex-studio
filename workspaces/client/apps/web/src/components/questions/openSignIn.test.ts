@@ -103,3 +103,27 @@ it("passes a native sign-in forward as one request without opening early or retr
     },
   ]);
 });
+
+it("captures the direct request owner's identity for native sign-in forwarding", async () => {
+  vi.stubGlobal("window", {});
+  const invoke = vi.fn(async (_command, { request }) => ({
+    id: request.id,
+    result: true,
+  }));
+  vi.stubGlobal("__TAURI__", { core: { invoke } });
+  const forward = {
+    server: "remote",
+    bridgeId: "a".repeat(32),
+    host: "127.0.0.1" as const,
+    port: 49152,
+    path: "/callback",
+    expiresAt: 1900000000,
+    token: "token",
+  };
+  await openSignInPage(LINK, forward, "remote");
+  expect(invoke).toHaveBeenCalledOnce();
+  expect(invoke.mock.calls[0][1].request.params).toEqual({
+    value: { url: LINK, forward },
+    signInOwner: "remote",
+  });
+});
