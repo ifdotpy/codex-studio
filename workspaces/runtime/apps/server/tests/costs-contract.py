@@ -15,6 +15,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import time
@@ -22,7 +23,14 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_costs import CostReader, normalize
+from codex_costs import (
+    COST_REFRESH_INTERVAL_SECONDS,
+    COST_SCAN_OUTPUT_LIMIT_BYTES,
+    COST_SCAN_TIMEOUT_SECONDS,
+    COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+    CostReader,
+    normalize,
+)
 from server_test_waits import wait_for_condition
 
 
@@ -73,6 +81,42 @@ class CostsTests(unittest.TestCase):
     def tearDown(self):
         self.reader.close()
         self.tmp.cleanup()
+
+    def test_rust_scanner_bounds_match_named_python_owners(self):
+        rust_source = (
+            REPOSITORY_ROOT
+            / "workspaces/runtime/packages/runtime-services/src/usage.rs"
+        ).read_text()
+        bounds = {
+            "COST_REFRESH_SECONDS": (
+                COST_REFRESH_INTERVAL_SECONDS,
+                "120.0",
+                120,
+            ),
+            "COST_SCAN_TIMEOUT": (
+                COST_SCAN_TIMEOUT_SECONDS,
+                "Duration::from_secs(900)",
+                900,
+            ),
+            "COST_SCANNER_BUILD_TIMEOUT": (
+                COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+                "Duration::from_secs(120)",
+                120,
+            ),
+            "COST_SCAN_OUTPUT_LIMIT": (
+                COST_SCAN_OUTPUT_LIMIT_BYTES,
+                "32 * 1024 * 1024",
+                32 * 1024 * 1024,
+            ),
+        }
+        for name, (python_value, rust_value, expected) in bounds.items():
+            match = re.search(
+                rf"const\s+{name}\s*:[^=]+?=\s*([^;]+);", rust_source
+            )
+            with self.subTest(name=name):
+                self.assertIsNotNone(match, f"Rust constant {name} is missing")
+                self.assertEqual(python_value, expected)
+                self.assertEqual(match.group(1).strip(), rust_value)
 
     def test_estimate_is_not_bill_and_does_not_add_token_categories(self):
         row = report()

@@ -21,6 +21,14 @@ from codex_pricing import PricingCatalog, price_usage
 from codex_claude_costs import parse_claude_usage
 
 
+# Canonical Python scanner limits; duration values are seconds and the output
+# limit is bytes. runtime-services/src/usage.rs checks these values for parity.
+COST_REFRESH_INTERVAL_SECONDS = 120
+COST_SCAN_TIMEOUT_SECONDS = 900
+COST_SCANNER_BUILD_TIMEOUT_SECONDS = 120
+COST_SCAN_OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024
+
+
 def amount(value):
     return (
         value
@@ -155,7 +163,8 @@ class CostReader:
 
     # A first scan of a large profile (25 GB of sessions) takes minutes. A kill
     # discards its progress, so a short bound never let such a profile finish.
-    def __init__(self, root, interval=120, timeout=900, clock=None, *, command, environment=None, scan_lock=None,
+    def __init__(self, root, interval=COST_REFRESH_INTERVAL_SECONDS,
+                 timeout=COST_SCAN_TIMEOUT_SECONDS, clock=None, *, command, environment=None, scan_lock=None,
                  on_change: Callable[[], None] | None = None):
         if not callable(command):
             raise ValueError("A local cost scanner command is required.")
@@ -252,7 +261,7 @@ class CostReader:
                     raise ValueError("Local cost scan timed out.") from None
                 if code:
                     raise ValueError(f"Local cost scan failed (exit {code}).")
-                if output.tell() > 32 * 1024 * 1024:
+                if output.tell() > COST_SCAN_OUTPUT_LIMIT_BYTES:
                     raise ValueError("Local cost report exceeds 32 MiB.")
                 output.seek(0)
                 data = normalize(json.load(output))
@@ -331,7 +340,7 @@ class AccountCostReader:
         builder = Path(__file__).with_name("cost-scanner") / "build.py"
         result = subprocess.run([sys.executable, str(builder), "--output", str(executable)],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                timeout=120, text=True)
+                                timeout=COST_SCANNER_BUILD_TIMEOUT_SECONDS, text=True)
         if result.returncode:
             raise ValueError("Cannot prepare the local cost scanner.")
         return [str(executable), "--home", str(home), "--cache", str(cache)]
