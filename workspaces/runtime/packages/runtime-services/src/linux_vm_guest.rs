@@ -456,7 +456,7 @@ fn request_identity(request_id: Option<&str>) -> Result<String, GuestError> {
     }
     let mut random = [0; 16];
     getrandom::fill(&mut random).map_err(|_| GuestError::Identity)?;
-    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(data_encoding::HEXLOWER.encode(&random))
 }
 
 fn validate_request(method: &str, identity: &str, timeout: Duration) -> Result<(), GuestError> {

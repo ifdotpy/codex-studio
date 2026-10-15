@@ -851,10 +851,7 @@ impl VoiceCallbackActor {
             if text.is_empty() {
                 continue;
             }
-            let digest = Sha256::digest(text.as_bytes())
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes()));
             record_native_transcript(
                 store,
                 &session,
@@ -1911,10 +1908,7 @@ pub fn handle_notification(
             .unwrap_or_default();
         if !text.is_empty() {
             let digest = Sha256::digest(text.as_bytes());
-            let digest = digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            let digest = data_encoding::HEXLOWER.encode(&digest);
             record_native_transcript(
                 store,
                 &session_value,

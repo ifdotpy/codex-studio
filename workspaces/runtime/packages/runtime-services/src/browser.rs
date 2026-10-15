@@ -276,10 +276,7 @@ impl BrowserCallbackReceiver {
                     "The sign-in forward token is not valid",
                 )
             })?;
-        let actual = Sha256::digest(token.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let actual = data_encoding::HEXLOWER.encode(&Sha256::digest(token.as_bytes()));
         if expected.len() != actual.len()
             || expected
                 .bytes()

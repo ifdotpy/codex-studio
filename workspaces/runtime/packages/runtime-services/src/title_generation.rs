@@ -699,7 +699,7 @@ fn signature(snapshot: &Snapshot) -> String {
         "accountKey": snapshot.account_key,
     });
     let digest = Sha256::digest(serde_json::to_vec(&content).unwrap_or_default());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    data_encoding::HEXLOWER.encode(&digest)
 }
 
 fn python_rename_signature(agent_id: &str) -> String {
@@ -710,7 +710,7 @@ fn python_rename_signature(agent_id: &str) -> String {
         serde_json::to_string(agent_id).unwrap_or_default()
     );
     let digest = Sha256::digest(body.as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    data_encoding::HEXLOWER.encode(&digest)
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {

@@ -1477,10 +1477,7 @@ pub fn rename_operation(
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
     let body = python_json(&json!({"chat": id, "name": name, "operation": "rename"}));
-    Sha256::digest(body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
 }
 
 fn previous_lead(
