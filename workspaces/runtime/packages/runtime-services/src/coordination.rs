@@ -144,6 +144,45 @@ pub struct PostManagedMessage<'a> {
     pub assets: &'a [Value],
 }
 
+/// Return the saved receipt only when the stable message identity already
+/// names the exact durable message accepted for a paired anchor input.
+pub(crate) fn remote_message_receipt(
+    connection: &Transaction<'_>,
+    room: &str,
+    id: &str,
+    text: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    let text = crate::event_write::python_strip(text);
+    let Some(event) = QueueEventRepository::get(connection, &QueueEventId::from(id))? else {
+        return Ok(None);
+    };
+    let metadata = QueueWriteRepository::metadata(connection, id)?
+        .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+    let assets = metadata
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| invalid_stored("runtime_event_meta", id))?;
+    if event.agent.0 != room || event.kind != "user" || event.text != text || !assets.is_empty() {
+        return Ok(None);
+    }
+
+    let signature = crate::event_write::python_json(&json!({
+        "agent": room,
+        "text": text,
+        "assets": [],
+    }));
+    crate::event_write::read_receipt(
+        connection,
+        Some(id),
+        &signature,
+        "runtime_events",
+        id,
+        |value| valid_message_receipt(value, id),
+    )
+    .map_err(event_write_error)
+}
+
 #[derive(Debug, PartialEq)]
 pub struct PostMessageResult {
     pub receipt: Value,

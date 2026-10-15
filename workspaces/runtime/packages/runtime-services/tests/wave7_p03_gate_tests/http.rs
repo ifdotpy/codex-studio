@@ -145,6 +145,21 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         }
     }
 
+    struct UnknownEffects;
+    impl OrchestrationEffects for UnknownEffects {
+        fn supports(&self, action: &str) -> bool {
+            action == "input"
+        }
+
+        fn execute(&self, _: &str, _: &serde_json::Value) -> Result<ExchangeOutcome, AccessError> {
+            Err(refused(
+                503,
+                "unknown_effect",
+                "The test effect leaves its receipt unknown",
+            ))
+        }
+    }
+
     let fixture = support::Fixture::new("remote-anchor-message", python::prepared_python);
     fixture
         .store
@@ -361,6 +376,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     else {
         panic!("paired input and its recovered retry must both be applied");
     };
+    assert_eq!(recovered, delivered, "recovery returns the saved receipt");
     assert_eq!(first_receipt["id"], recovered_receipt["id"]);
     let connection = receiver.store.read().expect("receiver event reader");
     let (event_count, event_status): (i64, String) = connection
@@ -372,6 +388,38 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .expect("durable home user event");
     assert_eq!(event_count, 1);
     assert_eq!(event_status, "pending");
+    drop(connection);
+
+    let mut uncertain_envelope = envelope.clone();
+    uncertain_envelope["requestId"] = serde_json::json!("00000000-0000-4000-8000-000000000008");
+    let uncertain_driver = OrchestrationDriver::new(
+        receiver_store.clone(),
+        Arc::new(NoTransport),
+        Arc::new(UnknownEffects),
+    );
+    assert_eq!(
+        uncertain_driver
+            .receive("source-server", &uncertain_envelope, 103)
+            .expect("first uncertain input"),
+        ExchangeOutcome::Unknown
+    );
+    assert_eq!(
+        driver
+            .receive("source-server", &uncertain_envelope, 104)
+            .expect("uncertain retry remains unknown"),
+        ExchangeOutcome::Unknown
+    );
+    let connection = receiver.store.read().expect("uncertain retry reader");
+    let uncertain_event_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE id=?1",
+            [uncertain_envelope["requestId"]
+                .as_str()
+                .expect("request ID")],
+            |row| row.get(0),
+        )
+        .expect("uncertain retry has no event");
+    assert_eq!(uncertain_event_count, 0);
     drop(connection);
 
     let unicode_text = "🙂".repeat(10_000);

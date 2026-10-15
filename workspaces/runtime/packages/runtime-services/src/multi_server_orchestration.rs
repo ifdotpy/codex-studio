@@ -829,6 +829,69 @@ fn receive_remote_anchor_input(
     Ok(ExchangeOutcome::Applied(receipt))
 }
 
+fn durable_anchor_input_receipt(
+    transaction: &Transaction<'_>,
+    principal: &str,
+    envelope: &Envelope,
+) -> Result<Option<Value>, AccessError> {
+    let payload = &envelope.payload;
+    if envelope.action != "input"
+        || payload
+            .get(REMOTE_ANCHOR_INPUT_FIELD)
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Ok(None);
+    }
+    let link_id = text(payload, "link");
+    let event_text = text(payload, "text");
+    let delivery = payload
+        .get("delivery")
+        .and_then(Value::as_str)
+        .unwrap_or("queue");
+    let Some(parent_epoch) = payload.get("parentEpoch").and_then(Value::as_i64) else {
+        return Ok(None);
+    };
+    if envelope.key.is_empty()
+        || link_id.is_empty()
+        || text(payload, "kind") != "user"
+        || !crate::coordination::message_text_within_limit(event_text)
+        || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
+    {
+        return Ok(None);
+    }
+    let raw: Option<String> = transaction
+        .query_row(
+            "SELECT record FROM runtime_server_links WHERE id=?1",
+            [link_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(link) = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    else {
+        return Ok(None);
+    };
+    if link.get("side").and_then(Value::as_str) != Some("home")
+        || link.get("server").and_then(Value::as_str) != Some(principal)
+        || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
+    {
+        return Ok(None);
+    }
+    let Some(parent_id) = link.get("parent").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    crate::coordination::remote_message_receipt(transaction, parent_id, &envelope.key, event_text)
+        .map_err(|_| {
+            refused(
+                503,
+                "invalid_record",
+                "Stored remote message receipt is invalid",
+            )
+        })
+}
+
 fn receive_remote_input(
     store: &RuntimeStore,
     principal: &str,
@@ -1469,6 +1532,18 @@ pub fn decide_delivery(
     action: &str,
     now: i64,
 ) -> Result<DeliveryDecision, AccessError> {
+    decide_delivery_with_durable_effect(snapshot, signature, server, outgoing, action, false, now)
+}
+
+fn decide_delivery_with_durable_effect(
+    snapshot: Option<&DeliverySnapshot>,
+    signature: &str,
+    server: Option<&str>,
+    outgoing: bool,
+    action: &str,
+    durable_effect_proven: bool,
+    now: i64,
+) -> Result<DeliveryDecision, AccessError> {
     let Some(snapshot) = snapshot else {
         return Ok(DeliveryDecision::Execute);
     };
@@ -1491,7 +1566,9 @@ pub fn decide_delivery(
     // leave the receipt unknown instead of executing the input again.
     if !outgoing
         && (snapshot.state == "waiting"
-            || (peer_replay_safe(action) && action != "input" && snapshot.state == "running"))
+            || (peer_replay_safe(action)
+                && (action != "input" || durable_effect_proven)
+                && snapshot.state == "running"))
     {
         return Ok(DeliveryDecision::Execute);
     }
@@ -1654,21 +1731,38 @@ impl OrchestrationDriver {
             ));
         }
         let signature = envelope.incoming_signature(principal)?;
-        let (decision, replaying_claim) = self.store.transaction_with(|tx| {
+        let (decision, replaying_claim, recovered_anchor_receipt) = self.store.transaction_with(|tx| {
             if !is_local {
                 require_paired(tx, principal)?;
             }
             if retired(tx, &envelope.key, "in", &signature, None)? {
-                return Ok((DeliveryDecision::Return(ExchangeOutcome::Unknown), false));
+                return Ok((
+                    DeliveryDecision::Return(ExchangeOutcome::Unknown),
+                    false,
+                    None,
+                ));
             }
             let saved = inbox(tx, &envelope.key, now)?;
             let replaying_claim = saved.is_some();
-            let decision = decide_delivery(
+            let recovered_anchor_receipt = if saved
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot.state == "running"
+                        && snapshot.signature == signature
+                        && snapshot.server.is_none()
+                })
+            {
+                durable_anchor_input_receipt(tx, principal, &envelope)?
+            } else {
+                None
+            };
+            let decision = decide_delivery_with_durable_effect(
                 saved.as_ref(),
                 &signature,
                 None,
                 false,
                 &envelope.action,
+                recovered_anchor_receipt.is_some(),
                 now,
             )?;
             if matches!(decision,DeliveryDecision::Execute) {
@@ -1684,9 +1778,22 @@ impl OrchestrationDriver {
                     )?;
                 }
             }
-            Ok::<_, AccessError>((decision, replaying_claim))
+            Ok::<_, AccessError>((decision, replaying_claim, recovered_anchor_receipt))
         })?;
         if let DeliveryDecision::Return(result) = decision {
+            return Ok(result);
+        }
+        if let Some(receipt) = recovered_anchor_receipt {
+            let result = ExchangeOutcome::Applied(receipt);
+            self.finish(
+                "inbox",
+                &envelope.key,
+                &envelope.action,
+                &signature,
+                None,
+                &result,
+                now,
+            )?;
             return Ok(result);
         }
         let mut result = match self.effects.execute(principal, &envelope.value()) {
@@ -1907,7 +2014,7 @@ fn retired(
 mod tests {
     use super::{
         DeliveryDecision, DeliverySnapshot, ExchangeOutcome, HttpsPairedTransport, decide_delivery,
-        peer_retry_delay,
+        decide_delivery_with_durable_effect, peer_retry_delay,
     };
     use rusqlite::params;
     use std::sync::{Arc, mpsc};
@@ -1996,6 +2103,18 @@ mod tests {
         assert!(matches!(
             decide_delivery(Some(&running), "same-content", None, false, "input", 200),
             Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
+        ));
+        assert!(matches!(
+            decide_delivery_with_durable_effect(
+                Some(&running),
+                "same-content",
+                None,
+                false,
+                "input",
+                true,
+                200
+            ),
+            Ok(DeliveryDecision::Execute)
         ));
     }
 
