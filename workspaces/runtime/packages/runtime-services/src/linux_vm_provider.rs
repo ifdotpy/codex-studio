@@ -74,7 +74,8 @@ pub fn vm_actor_matches(
         && !record
             .extra
             .get("deletedAt")
-            .is_some_and(|value| !value.is_null()))
+            .is_some_and(|value| !value.is_null())
+        && record.extra.get("deleted") != Some(&json!(true)))
 }
 
 /// Actor-scoped destination for an allow-listed credential document copy.
@@ -582,7 +583,11 @@ impl GuestProviderSession {
         .await
         {
             Ok(receipt) => Ok(receipt),
-            Err(error) if error.uncertain() => {
+            // The guest may persist an operation before returning an error
+            // (for example, when writing to the provider's stdin fails).
+            // Reconcile every post-dispatch failure and keep the outcome
+            // unknown unless the guest has a durable accepted receipt.
+            Err(_error) => {
                 let status = call_guest(
                     self.guest.clone(),
                     "provider.rpc",
@@ -598,7 +603,6 @@ impl GuestProviderSession {
                     Err(GuestProviderError::Unknown)
                 }
             }
-            Err(error) => Err(error.into()),
         }
     }
 
@@ -1220,6 +1224,7 @@ mod tests {
         uncertain_start_once: Mutex<bool>,
         definite_start_failure_once: Mutex<bool>,
         malformed_write_once: Mutex<bool>,
+        committed_internal_write_once: Mutex<bool>,
         start_ids: Mutex<Vec<Option<String>>>,
     }
 
@@ -1234,6 +1239,7 @@ mod tests {
                 uncertain_start_once: Mutex::new(uncertain_start_once),
                 definite_start_failure_once: Mutex::new(false),
                 malformed_write_once: Mutex::new(false),
+                committed_internal_write_once: Mutex::new(false),
                 start_ids: Mutex::new(Vec::new()),
             }
         }
@@ -1291,6 +1297,15 @@ mod tests {
                     "next" => Ok(json!({"event":null})),
                     "write" => {
                         *self.writes.lock().unwrap() += 1;
+                        let mut internal = self.committed_internal_write_once.lock().unwrap();
+                        if *internal {
+                            *internal = false;
+                            return Err(GuestError::Rejected {
+                                code: Some("internal".into()),
+                                detail: None,
+                                uncertain: false,
+                            });
+                        }
                         let mut malformed = self.malformed_write_once.lock().unwrap();
                         if *malformed {
                             *malformed = false;
@@ -1358,6 +1373,21 @@ mod tests {
             })
             .unwrap();
         (directory, store)
+    }
+
+    #[test]
+    fn legacy_deleted_flag_fences_vm_actor_identity() {
+        let (_directory, store) = open_store();
+        store
+            .transaction(|tx| {
+                let mut record =
+                    AgentRepository::get(tx, &AgentId::from("agent-1"))?.expect("fixture agent");
+                record.extra.insert("deleted".into(), json!(true));
+                AgentRepository::put(tx, &record)
+            })
+            .unwrap();
+        let connection = store.read().unwrap();
+        assert!(!vm_actor_matches(&connection, "agent-1", 9, "default", Some("codex")).unwrap());
     }
 
     async fn open_session(
@@ -1444,6 +1474,27 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], ids[1]);
         assert_eq!(*guest.starts.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn committed_write_with_guest_internal_error_reconciles_without_resend() {
+        let (_directory, store) = open_store();
+        let guest = Arc::new(FakeGuest::new(false));
+        let session = open_session(store, guest.clone()).await.unwrap();
+        *guest.committed_internal_write_once.lock().unwrap() = true;
+
+        let receipt = session
+            .write(
+                "turn-op-committed-before-error",
+                &json!(8),
+                json!({"id":8,"method":"turn/start"}),
+            )
+            .await
+            .expect("operationStatus proves the committed write");
+
+        assert_eq!(receipt["accepted"], true);
+        assert_eq!(receipt["operationId"], "turn-op-committed-before-error");
+        assert_eq!(*guest.writes.lock().unwrap(), 1);
     }
 
     #[tokio::test]

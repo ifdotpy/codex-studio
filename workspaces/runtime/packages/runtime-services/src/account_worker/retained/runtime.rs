@@ -32,50 +32,7 @@ impl Worker {
             let _ignored = reply.send(Err(PortError::Capacity));
             return Ok(());
         }
-        let actor_id = request.actor.as_ref().map(|actor| actor.agent.clone());
-        let actor_lookup = request.actor.as_ref().map(|actor| actor.agent.clone());
-        let is_vm_actor = if let Some(actor) = actor_lookup {
-            self.db("retained_actor_mode", move |store| {
-                let connection = store.read()?;
-                let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
-                Ok(record.is_some_and(|record| {
-                    record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-                }))
-            })
-            .await?
-        } else {
-            false
-        };
-        if is_vm_actor
-            && let Some(actor) = actor_id.as_deref()
-            && !self.vm_sessions.contains_key(actor)
-            && self.resolving_vm_actors.contains(actor)
-        {
-            if self.queued_commands.len() >= COMMAND_CAPACITY {
-                let _ignored = reply.send(Err(PortError::Capacity));
-            } else {
-                self.queued_commands
-                    .push_back(AccountCommand::RetainedRequest(Box::new(RequestCommand {
-                        request,
-                        reply,
-                    })));
-            }
-            return Ok(());
-        }
-        let control = if is_vm_actor {
-            let Some(control) = actor_id
-                .as_deref()
-                .and_then(|actor| self.vm_sessions.get(actor))
-                .map(|session| session.control.clone())
-            else {
-                let _ignored = reply.send(Err(PortError::NotSent));
-                return Ok(());
-            };
-            control
-        } else {
-            self.control.clone()
-        };
-        let journal_actor_id = if is_vm_actor { actor_id.clone() } else { None };
+        let deferred_request = request.clone();
         let call = Call {
             scope: request.scope,
             operation: request.operation,
@@ -116,6 +73,60 @@ impl Worker {
             }
             Ok(Replay::Retry(ticket)) => Some(ticket),
         };
+        let actor_id = call.actor.as_ref().map(|actor| actor.agent.clone());
+        let actor_lookup = actor_id.clone();
+        let is_vm_actor = if let Some(actor) = actor_lookup {
+            self.db("retained_actor_mode", move |store| {
+                let connection = store.read()?;
+                let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
+                Ok(record.is_some_and(|record| {
+                    record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                }))
+            })
+            .await?
+        } else {
+            false
+        };
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && !self.vm_sessions.contains_key(actor)
+            && self.resolving_vm_actors.contains(actor)
+        {
+            if self.queued_commands.len() >= COMMAND_CAPACITY {
+                let _ignored = reply.send(Err(PortError::Capacity));
+            } else {
+                self.queued_commands
+                    .push_back(AccountCommand::RetainedRequest(Box::new(RequestCommand {
+                        request: deferred_request,
+                        reply,
+                    })));
+            }
+            return Ok(());
+        }
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && let Some(actor_identity) = call.actor.as_ref()
+            && !self
+                .vm_session_matches_actor(actor, &call.scope.account, actor_identity.epoch)
+                .await?
+        {
+            let _ignored = reply.send(Err(PortError::NotSent));
+            return Ok(());
+        }
+        let control = if is_vm_actor {
+            let Some(control) = actor_id
+                .as_deref()
+                .and_then(|actor| self.vm_sessions.get(actor))
+                .map(|session| session.control.clone())
+            else {
+                let _ignored = reply.send(Err(PortError::NotSent));
+                return Ok(());
+            };
+            control
+        } else {
+            self.control.clone()
+        };
+        let journal_actor_id = if is_vm_actor { actor_id.clone() } else { None };
         let remaining = tokio::time::Instant::from_std(request.deadline)
             .saturating_duration_since(tokio::time::Instant::now());
         let deadline = tokio::time::Instant::from_std(request.deadline);

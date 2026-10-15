@@ -586,32 +586,50 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 )
                 .await
                 .map_err(|_| WorkerError::TaskFailed)??;
+            let mut profile_copy_failed = false;
             for actor in active_actors {
-                validate_vm_actor_scope(
+                match validate_vm_actor_scope(
                     Arc::clone(&self.store),
                     self.account_session.clone(),
                     &actor,
                 )
-                .await?;
+                .await
+                {
+                    Ok(()) => {}
+                    Err(WorkerError::PreparationRefused(_)) => continue,
+                    Err(error) => return Err(error),
+                }
                 // A replaced actor cannot receive an old epoch's profile: the
                 // worker only supplies currently attached requests and the
                 // receipt identity is scoped to agent + account + digest.
-                studio_runtime_services::linux_vm_provider::copy_guest_credentials(
-                    Arc::clone(&self.store),
-                    Arc::clone(&self.guest),
-                    studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
-                        agent_id: &actor.agent_id,
-                        actor_epoch: actor.epoch,
-                        provider: "claude",
-                        account_key: &actor.account_key,
-                        relative_path: &credential_path,
-                    },
-                    &credential_document,
-                )
-                .await
-                .map_err(|error| {
-                    WorkerError::PreparationPending(format!("vm-credentials/{error}"))
-                })?;
+                if let Err(error) =
+                    studio_runtime_services::linux_vm_provider::copy_guest_credentials(
+                        Arc::clone(&self.store),
+                        Arc::clone(&self.guest),
+                        studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
+                            agent_id: &actor.agent_id,
+                            actor_epoch: actor.epoch,
+                            provider: "claude",
+                            account_key: &actor.account_key,
+                            relative_path: &credential_path,
+                        },
+                        &credential_document,
+                    )
+                    .await
+                {
+                    match error {
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task
+                        | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
+                            return Err(WorkerError::TaskFailed);
+                        }
+                        _ => profile_copy_failed = true,
+                    }
+                }
+            }
+            if profile_copy_failed {
+                return Err(WorkerError::PreparationPending(
+                    "vm-credentials/profile-copy-pending".into(),
+                ));
             }
             Ok(())
         })
@@ -1346,7 +1364,8 @@ fn read_vm_claude_keychain(
             let mut output = Vec::new();
             let result = std::io::Read::take(stdout, limit as u64 + 1)
                 .read_to_end(&mut output)
-                .map(|_| output);
+                .map(|_| output)
+                .map_err(|_| ());
             let _sent = sender.send(result);
         })
         .map_err(|_| WorkerError::TaskFailed)?;
@@ -1368,12 +1387,31 @@ fn read_vm_claude_keychain(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let output = receiver
+    let output = match receiver.recv_timeout(Duration::from_secs(1)) {
         // The process has exited, but the pipe-reader thread may not yet have
-        // been scheduled to report EOF.
-        .recv_timeout(Duration::from_secs(1))
-        .map_err(|_| WorkerError::TaskFailed)?
-        .map_err(|_| WorkerError::TaskFailed)?;
+        // been scheduled to report EOF. A credential read timeout can be
+        // retried on the next account-level maintenance sweep.
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            drop(reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/keychain-read-pending".into(),
+            ));
+        }
+        // A disconnected channel means the reader exited without delivering a
+        // result. Join it so a panic remains a worker failure, not a retryable
+        // credential condition.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            reader.join().map_err(|_| WorkerError::TaskFailed)?;
+            return Err(WorkerError::TaskFailed);
+        }
+        Ok(Err(())) => {
+            reader.join().map_err(|_| WorkerError::TaskFailed)?;
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/keychain-read-pending".into(),
+            ));
+        }
+        Ok(Ok(output)) => output,
+    };
     reader.join().map_err(|_| WorkerError::TaskFailed)?;
     if !status.success() {
         return Ok(None);

@@ -88,6 +88,25 @@ pub enum WorkerError {
     CallbackUnknown,
 }
 
+fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> {
+    match error {
+        WorkerError::PreparationPending(_) => Some("pending"),
+        WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
+        _ => None,
+    }
+}
+
+fn vm_account_generation_matches(
+    resources: &preparation::PreparationResources,
+    request: &preparation::VmProviderLaunchRequest,
+) -> bool {
+    resources
+        .account_session
+        .as_deref()
+        .and_then(|session| session.current_scope(&request.account_key))
+        .is_some_and(|scope| scope.generation == request.generation)
+}
+
 /// Share one bridge among all account workers of a runtime. The permit bounds
 /// queued blocking work as well as SQLite access; no database call runs on Tokio.
 #[derive(Clone)]
@@ -1175,8 +1194,19 @@ impl Worker {
             // This is one account-worker sweep, sharing the existing Claude
             // auth probe cadence; the host resolver reads credentials once and
             // fans the result out to the active actor profiles.
-            self.drive(resolver.refresh_claude_credentials(actors))
-                .await?;
+            match self
+                .drive(resolver.refresh_claude_credentials(actors.clone()))
+                .await
+            {
+                Ok(()) => {}
+                Err(error) => match vm_credential_maintenance_error(&error) {
+                    Some(class) => eprintln!(
+                        "VM Claude credential maintenance deferred; class={class}; actors={}",
+                        actors.len()
+                    ),
+                    None => return Err(error),
+                },
+            }
         }
         Ok(())
     }
@@ -1393,7 +1423,26 @@ impl Worker {
             method,
             Method::ThreadStart | Method::TurnStart | Method::TurnInterrupt | Method::ThreadResume
         ) {
-            self.ensure_vm_session(&context.intent).await?
+            match self.ensure_vm_session(&context.intent).await {
+                Ok(session) => session,
+                Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
+                    let blocked_intent = context.intent.clone();
+                    let _settled = self
+                        .db("vm-session-identity-blocked", move |store| {
+                            store::preparation_step(store, &blocked_intent, || {
+                                Err::<(), WorkerError>(WorkerError::PreparationRefused(reason))
+                            })
+                        })
+                        .await?;
+                    return Ok(());
+                }
+                // Stop already committed the actor's new epoch and disabled
+                // wake. A stale provider session must not receive an interrupt
+                // under the replacement identity; retain the existing receipt
+                // state for recovery instead of failing the account worker.
+                Err(WorkerError::PreparationRefused(_)) => return Ok(()),
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };
@@ -1549,6 +1598,11 @@ impl Worker {
             return Ok(None);
         };
         if let Some(session) = self.vm_sessions.get(&request.agent_id) {
+            if session.launch_request != request {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-agent/session-identity-changed".into(),
+                ));
+            }
             if session.session.status.borrow().initialization == InitializationStatus::Ready {
                 let bootstrap = session.bootstrap.clone();
                 if let Some(payload) = bootstrap {
@@ -1708,6 +1762,77 @@ impl Worker {
             }
         }
         Ok(Some(request.agent_id))
+    }
+
+    /// Confirm that a retained VM session still represents the current durable
+    /// actor identity before selecting it for any RPC lane.
+    pub(super) async fn vm_session_matches_actor(
+        &mut self,
+        agent_id: &str,
+        account_key: &str,
+        epoch: i64,
+    ) -> Result<bool, WorkerError> {
+        let agent_id = agent_id.to_owned();
+        let lookup_id = agent_id.clone();
+        let account_key = account_key.to_owned();
+        let expected_account_key = account_key.clone();
+        let generation = self.generation.0;
+        let expected = self
+            .db("retained_vm_session_identity", move |store| {
+                let connection = store.read()?;
+                let Some(record) =
+                    AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
+                else {
+                    return Ok(None);
+                };
+                let provider = record
+                    .extra
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex");
+                if !crate::linux_vm_provider::vm_actor_matches(
+                    &connection,
+                    &record.id.0,
+                    epoch,
+                    &account_key,
+                    Some(provider),
+                )? {
+                    return Ok(None);
+                }
+                let cwd = record.extra.get("cwd").and_then(Value::as_str);
+                if cwd.is_some_and(|value| !value.starts_with('/')) {
+                    return Ok(None);
+                }
+                let guest_home = record
+                    .extra
+                    .get("layrHome")
+                    .and_then(Value::as_str)
+                    .filter(|value| value.starts_with('/'))
+                    .unwrap_or("/home/studio");
+                Ok(Some((
+                    record.id.0,
+                    provider.to_owned(),
+                    cwd.map(str::to_owned),
+                    guest_home.to_owned(),
+                )))
+            })
+            .await?;
+        let Some((id, provider, cwd, guest_home)) = expected else {
+            return Ok(false);
+        };
+        let Some(session) = self.vm_sessions.get(agent_id.as_str()) else {
+            return Ok(false);
+        };
+        let expected = preparation::VmProviderLaunchRequest {
+            agent_id: id,
+            epoch,
+            generation,
+            account_key: expected_account_key,
+            provider,
+            cwd: cwd.unwrap_or_else(|| session.launch_request.cwd.clone()),
+            guest_home,
+        };
+        Ok(session.launch_request == expected)
     }
     async fn bootstrap_vm_provider(
         &mut self,
@@ -2407,6 +2532,7 @@ impl Worker {
             if expected.epoch != self.vm_sessions.get(actor).map(|session| session.epoch).unwrap_or(-1)
                 || expected.account_key != self.account
                 || expected.generation != self.generation.0
+                || !vm_account_generation_matches(&self.resources, &expected)
             {
                 self.retire_vm_actor(actor);
                 return Ok(());
@@ -2493,7 +2619,9 @@ impl Worker {
                         "account-worker/vm-notification-actor-changed".into(),
                     )
                 })?;
-            if expected.generation != self.generation.0 {
+            if expected.generation != self.generation.0
+                || !vm_account_generation_matches(&self.resources, &expected)
+            {
                 return Err(WorkerError::PreparationRefused(
                     "account-worker/vm-notification-actor-changed".into(),
                 ));

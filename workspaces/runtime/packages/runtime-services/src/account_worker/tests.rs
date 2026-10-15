@@ -670,7 +670,10 @@ impl State {
                     .push(format!("annotation:{id}"))
             })
             .ok();
-        let agent = self.agent.clone();
+        self.enqueue_for(&self.agent, id).await;
+    }
+    async fn enqueue_for(&self, agent: &str, id: &str) {
+        let agent = agent.to_owned();
         let id = id.to_owned();
         self.bridge
             .run(move |store| {
@@ -2939,7 +2942,7 @@ struct TurnStartGuest {
     project_id: std::sync::Mutex<Option<String>>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct VmTurnGuestState {
     calls: Vec<String>,
     writes: Vec<Value>,
@@ -2948,6 +2951,7 @@ struct VmTurnGuestState {
     acknowledged: u64,
     starts: usize,
     uncertain_start_once: bool,
+    unknown_write_once: bool,
     codex_refresh_on_start: bool,
     stops: Vec<Value>,
     credential_documents: Vec<Value>,
@@ -2960,9 +2964,20 @@ struct VmTurnGuest {
 }
 
 impl VmTurnGuest {
-    fn enqueue_frame(state: &mut VmTurnGuestState, payload: Value) {
+    fn thread_id(handle: &Value) -> &'static str {
+        if handle
+            .as_str()
+            .is_some_and(|handle| handle.ends_with("-sibling"))
+        {
+            "fake-thread-sibling"
+        } else {
+            "fake-thread-0"
+        }
+    }
+    fn enqueue_frame(state: &mut VmTurnGuestState, owner: &str, payload: Value) {
         state.sequence += 1;
         state.events.push_back(json!({
+            "_test_owner": owner,
             "sequence": state.sequence,
             "generation": 31,
             "kind": "stdout",
@@ -2996,10 +3011,14 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
             "agent.context" => Ok(json!({"projectId":params["projectId"],"line":"main"})),
             "provider.start" => {
                 state.starts += 1;
+                state.events.clear();
+                state.sequence = 0;
+                state.acknowledged = 0;
                 if state.codex_refresh_on_start {
                     state.codex_refresh_on_start = false;
                     Self::enqueue_frame(
                         &mut state,
+                        params["handle"].as_str().unwrap_or_default(),
                         json!({
                             "id":"vm-auth-refresh",
                             "method":"account/chatgptAuthTokens/refresh",
@@ -3026,23 +3045,53 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                 Ok(json!({"files":[{"path":params["files"][0]["path"],"bytes":64}]}))
             }
             "provider.rpc" => match params["action"].as_str().unwrap_or("") {
-                "next" => Ok(json!({"event":state.events.pop_front()})),
+                "next" => {
+                    let sibling_handle = params["handle"]
+                        .as_str()
+                        .is_some_and(|handle| handle.ends_with("-sibling"));
+                    let owner_matches = state.events.front().is_some_and(|event| {
+                        event["_test_owner"]
+                            .as_str()
+                            .is_some_and(|owner| owner.ends_with("-sibling") == sibling_handle)
+                    });
+                    if owner_matches {
+                        let mut event = state.events.pop_front().expect("front event exists");
+                        event
+                            .as_object_mut()
+                            .expect("fake event object")
+                            .remove("_test_owner");
+                        Ok(json!({"event":event}))
+                    } else {
+                        Ok(json!({"event":null}))
+                    }
+                }
                 "write" => {
                     let message = params["message"].clone();
                     state.writes.push(message.clone());
+                    if state.unknown_write_once {
+                        state.unknown_write_once = false;
+                        return Err(crate::linux_vm_guest::GuestError::Rejected {
+                            code: Some("internal".into()),
+                            detail: None,
+                            uncertain: false,
+                        });
+                    }
                     if message["method"] == "thread/start" || message["method"] == "thread/resume" {
                         Self::enqueue_frame(
                             &mut state,
-                            json!({"id":message["id"],"result":{"thread":{"id":"fake-thread-0"}}}),
+                            params["handle"].as_str().unwrap_or_default(),
+                            json!({"id":message["id"],"result":{"thread":{"id":Self::thread_id(&params["handle"])}}}),
                         );
                     } else if message["method"] == "turn/start" {
                         Self::enqueue_frame(
                             &mut state,
+                            params["handle"].as_str().unwrap_or_default(),
                             json!({"id":message["id"],"result":{"turn":{"id":"vm-turn"}}}),
                         );
                         Self::enqueue_frame(
                             &mut state,
-                            json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"vm-turn","status":"completed"}}}),
+                            params["handle"].as_str().unwrap_or_default(),
+                            json!({"method":"turn/completed","params":{"threadId":Self::thread_id(&params["handle"]),"turn":{"id":"vm-turn","status":"completed"}}}),
                         );
                     }
                     self.changed.notify_one();
@@ -3055,6 +3104,7 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                     self.changed.notify_one();
                     Ok(json!({"acknowledged":state.acknowledged}))
                 }
+                "operationStatus" => Ok(json!({"accepted":false})),
                 "info" => Ok(json!({
                     "handle":params["handle"],"generation":31,"sequence":state.sequence,
                     "acknowledged":state.acknowledged,"pid":42,"resumed":true,
@@ -3071,7 +3121,10 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
     }
 }
 
-struct VmTurnResolver;
+#[derive(Default)]
+struct VmTurnResolver {
+    reconnect_generation: Option<Arc<std::sync::atomic::AtomicU64>>,
+}
 impl preparation::VmProviderLaunchResolver for VmTurnResolver {
     fn resolve(
         &self,
@@ -3099,11 +3152,37 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
         _actor_epoch: i64,
         _generation: u64,
     ) -> preparation::VmProviderAuthFuture<'_> {
+        let reconnect_generation = self.reconnect_generation.clone();
         Box::pin(async move {
+            if let Some(generation) = reconnect_generation {
+                generation.store(2, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(json!({
                 "accessToken":"fake-fresh-access-token",
                 "chatgptAccountId":previous_account_id
             }))
+        })
+    }
+}
+
+struct FakeVmAccountSession {
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    checks: std::sync::atomic::AtomicUsize,
+    reconnect_on_second_check: bool,
+}
+impl crate::account_session_runtime::AccountSessionPort for FakeVmAccountSession {
+    fn current_scope(&self, account: &str) -> Option<crate::recovery_history::ConnectionScope> {
+        let check = self
+            .checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.reconnect_on_second_check && check >= 1 {
+            self.generation
+                .store(2, std::sync::atomic::Ordering::SeqCst);
+        }
+        (account == "default").then(|| crate::recovery_history::ConnectionScope {
+            account: account.to_owned(),
+            connection: "vm-test-connection".into(),
+            generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
         })
     }
 }
@@ -3113,6 +3192,8 @@ struct VmClaudeRefreshResolver {
     guest: Arc<VmTurnGuest>,
     refreshes: std::sync::atomic::AtomicUsize,
     refreshed: tokio::sync::Notify,
+    attempted: tokio::sync::Notify,
+    fail_next_refresh: std::sync::atomic::AtomicBool,
 }
 
 impl VmClaudeRefreshResolver {
@@ -3184,6 +3265,15 @@ impl preparation::VmProviderLaunchResolver for VmClaudeRefreshResolver {
         actors: Vec<preparation::VmProviderLaunchRequest>,
     ) -> preparation::VmProviderRefreshFuture<'_> {
         Box::pin(async move {
+            self.attempted.notify_one();
+            if self
+                .fail_next_refresh
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(WorkerError::PreparationPending(
+                    "test/transient-credential-refresh".into(),
+                ));
+            }
             let version = self
                 .refreshes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -3224,7 +3314,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     let guest = Arc::new(VmTurnGuest::default());
     let mut resources = test_resources().unwrap();
     resources.guest_rpc = Some(guest.clone());
-    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
     let peer = Peer::new();
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), resources)
@@ -3279,6 +3369,164 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     );
 }
 
+#[tokio::test]
+async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() {
+    let state = State::new().await;
+    let primary_id = state.agent.clone();
+    let sibling_id = format!("{}-sibling", state.agent);
+    let sibling = sibling_id.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut primary = AgentRepository::get(tx, &AgentId::from(primary_id.as_str()))?
+                    .expect("fixture agent");
+                primary.extra.insert("executionMode".into(), json!("vm"));
+                primary.extra.insert("layrReady".into(), json!(true));
+                primary
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                primary.extra.insert("workspaceMode".into(), json!("layr"));
+                primary.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &primary)?;
+
+                let mut sibling_record = primary.clone();
+                sibling_record.id = AgentId::from(sibling.as_str());
+                sibling_record.root_id = sibling_record.id.clone();
+                sibling_record.status = studio_runtime_store::AgentStatus::Queued;
+                sibling_record.extra.insert("threadId".into(), Value::Null);
+                sibling_record.extra.insert("autoWake".into(), json!(true));
+                sibling_record.extra.insert("inFlight".into(), json!(false));
+                sibling_record.extra.insert("error".into(), Value::Null);
+                sibling_record.extra.remove("startAttempt");
+                sibling_record.extra.remove("preparationWake");
+                AgentRepository::put(tx, &sibling_record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("create a second durable VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.expect("account worker ready");
+    }
+    state.wake(&worker).await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let guest_state = guest.state.lock().unwrap();
+            let complete = guest_state.starts == 1 && guest_state.acknowledged >= 3;
+            drop(guest_state);
+            if complete {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("first actor attaches and finishes one turn");
+
+    let primary = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(primary.as_str()))?
+                    .expect("primary actor");
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/changed-profile"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("primary actor profile changes while its guest is retained");
+    state.enqueue_for(&state.agent, "stale-profile-turn").await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    let held = state.record().await;
+    assert_eq!(
+        held["error"], "vm-agent/session-identity-changed",
+        "the stale actor turn is visibly held by the preparation refusal"
+    );
+    assert_eq!(guest.state.lock().unwrap().starts, 1);
+
+    state.enqueue_for(&sibling_id, "sibling-turn").await;
+    worker
+        .send(AccountCommand::Wake {
+            agent_id: sibling_id.clone(),
+            epoch: state.epoch,
+        })
+        .await
+        .expect("wake sibling through the same account worker");
+    let sibling_progress = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let guest_state = guest.state.lock().unwrap();
+            let sibling_complete = guest_state.starts == 2
+                && guest_state.acknowledged >= 3
+                && guest_state
+                    .writes
+                    .iter()
+                    .any(|write| write["method"] == "turn/start");
+            drop(guest_state);
+            if sibling_complete {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await;
+    if sibling_progress.is_err() {
+        worker_barrier(&worker).await;
+        let sibling = sibling_id.clone();
+        let sibling_record = state
+            .bridge
+            .run(move |store| {
+                Ok(
+                    AgentRepository::get(&store.read()?, &AgentId::from(sibling.as_str()))?
+                        .map(|record| record.value()),
+                )
+            })
+            .await
+            .expect("read sibling actor after its wake");
+        let guest_state = guest.state.lock().unwrap();
+        let methods = guest_state
+            .writes
+            .iter()
+            .filter_map(|write| write["method"].as_str())
+            .collect::<Vec<_>>();
+        panic!(
+            "sibling VM actor did not progress; starts={}; methods={methods:?}; sibling status={}, error={}, attempt={}",
+            guest_state.starts,
+            sibling_record
+                .as_ref()
+                .map_or(Value::Null, |record| record["status"].clone()),
+            sibling_record
+                .as_ref()
+                .map_or(Value::Null, |record| record["error"].clone()),
+            sibling_record
+                .as_ref()
+                .map_or(Value::Null, |record| record["startAttempt"].clone())
+        );
+    }
+    worker
+        .shutdown()
+        .await
+        .expect("account worker remains healthy");
+}
+
 #[cfg(unix)]
 #[tokio::test(start_paused = true)]
 async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
@@ -3312,6 +3560,8 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
         guest: guest.clone(),
         refreshes: std::sync::atomic::AtomicUsize::new(0),
         refreshed: tokio::sync::Notify::new(),
+        attempted: tokio::sync::Notify::new(),
+        fail_next_refresh: std::sync::atomic::AtomicBool::new(true),
     });
     let mut resources = claude_preparation::claude_resources(&state);
     resources.guest_rpc = Some(guest.clone());
@@ -3347,11 +3597,22 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
     .await
     .expect("Claude VM turn remains attached");
 
+    let failed_sweep = resolver.attempted.notified();
+    tokio::time::advance(crate::claude_auth_runtime::PROBE_INTERVAL).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), failed_sweep)
+        .await
+        .expect("first account-level Claude refresh attempt fails transiently");
+    assert_eq!(
+        guest.state.lock().unwrap().starts,
+        1,
+        "a failed profile maintenance sweep leaves the guest attached"
+    );
+
     let refreshed = resolver.refreshed.notified();
     tokio::time::advance(crate::claude_auth_runtime::PROBE_INTERVAL).await;
     tokio::time::timeout(std::time::Duration::from_secs(10), refreshed)
         .await
-        .expect("account-level Claude refresh sweep runs");
+        .expect("later account-level Claude refresh sweep recovers");
     {
         let state_after = guest.state.lock().unwrap();
         assert_eq!(
@@ -3376,7 +3637,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
                 .any(|document| { document["claudeAiOauth"]["accessToken"] == "fake-claude-1" })
         );
     }
-    worker.shutdown().await.expect("worker shuts down");
+    worker.shutdown().await.unwrap();
 }
 
 #[test]
@@ -3516,7 +3777,13 @@ async fn retained_vm_auth_callback_replies_through_the_account_session() {
     guest.state.lock().unwrap().codex_refresh_on_start = true;
     let mut resources = test_resources().unwrap();
     resources.guest_rpc = Some(guest.clone());
-    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+    let account_generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    resources.account_session = Some(Arc::new(FakeVmAccountSession {
+        generation: Arc::clone(&account_generation),
+        checks: std::sync::atomic::AtomicUsize::new(0),
+        reconnect_on_second_check: false,
+    }));
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
     let peer = Peer::new();
     let mut worker = peer
         .open_worker_with_resources(state.bridge.clone(), resources)
@@ -3552,7 +3819,218 @@ async fn retained_vm_auth_callback_replies_through_the_account_session() {
     })
     .await
     .expect("retained account callback replies through the VM actor session");
-    worker.shutdown().await.expect("worker shuts down");
+
+    let _shutdown = worker.shutdown().await;
+}
+
+#[tokio::test]
+async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture becomes VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.expect("account worker ready");
+    }
+    state.wake(&worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let guest_state = guest.state.lock().unwrap();
+            let ready_for_request = guest_state.starts == 1
+                && guest_state
+                    .writes
+                    .iter()
+                    .any(|write| write["method"] == "turn/start");
+            drop(guest_state);
+            if ready_for_request {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("VM session is ready to accept a retained request");
+
+    guest.state.lock().unwrap().unknown_write_once = true;
+    let retained = worker.retained_session();
+    let make_request =
+        |scope: crate::recovery_history::ConnectionScope| super::retained::SessionRequest {
+            scope,
+            expected_scope: None,
+            operation: "vm-unknown-profile-change".into(),
+            actor: Some(super::retained::RequestActor {
+                agent: state.agent.clone(),
+                epoch: state.epoch,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: Method::ThreadRead,
+            params: json!({"threadId":"fake-thread-0"}),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
+        };
+    let writes_before_unknown = guest.state.lock().unwrap().writes.len();
+    let first = retained
+        .request(make_request(retained.scope().clone()))
+        .await;
+    assert!(
+        matches!(
+            &first,
+            Ok(super::retained::SessionReceipt {
+                result: super::retained::RequestResult::Unknown,
+                ..
+            })
+        ) || matches!(&first, Err(super::retained::PortError::Unknown)),
+        "first write must preserve an Unknown outcome: {first:?}"
+    );
+    assert_eq!(
+        guest.state.lock().unwrap().writes.len(),
+        writes_before_unknown + 1
+    );
+
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/changed-profile"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture profile changes while operation identity is frozen");
+    let _first_shutdown = worker.shutdown().await;
+    let replay_peer = Peer::new();
+    let mut replay_resources = test_resources().unwrap();
+    replay_resources.guest_rpc = Some(guest.clone());
+    replay_resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
+    let mut replay_worker = replay_peer
+        .open_worker_with_resources(state.bridge.clone(), replay_resources)
+        .await;
+    let mut replay_ready = replay_peer.ready.clone();
+    while !*replay_ready.borrow_and_update() {
+        replay_ready
+            .changed()
+            .await
+            .expect("replacement account worker ready");
+    }
+    let replay_session = replay_worker.retained_session();
+    let replay = replay_session
+        .request(make_request(replay_session.scope().clone()))
+        .await;
+    assert!(
+        matches!(
+            replay,
+            Ok(super::retained::SessionReceipt {
+                result: super::retained::RequestResult::Unknown,
+                replayed: true,
+                ..
+            })
+        ),
+        "same-operation replay preserves its recorded Unknown outcome: {replay:?}"
+    );
+    assert_eq!(
+        guest.state.lock().unwrap().writes.len(),
+        writes_before_unknown + 1,
+        "profile change cannot cause a second dispatch or downgrade Unknown to NotSent"
+    );
+    replay_worker
+        .shutdown()
+        .await
+        .expect("replay worker closes cleanly");
+}
+
+#[tokio::test]
+async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture becomes VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    guest.state.lock().unwrap().codex_refresh_on_start = true;
+    let account_generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.account_session = Some(Arc::new(FakeVmAccountSession {
+        generation: account_generation,
+        checks: std::sync::atomic::AtomicUsize::new(0),
+        reconnect_on_second_check: true,
+    }));
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.expect("account worker ready");
+    }
+    state.wake(&worker).await;
+
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(10), worker.completion())
+        .await
+        .expect("stale callback closes its fenced worker");
+    assert!(exit.is_err());
+    assert!(
+        !guest
+            .state
+            .lock()
+            .unwrap()
+            .writes
+            .iter()
+            .any(|write| write["id"] == "vm-auth-refresh"),
+        "a reconnect after callback resolution must prevent the token reply"
+    );
 }
 
 #[tokio::test]
@@ -3583,7 +4061,7 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     let make_resources = || {
         let mut resources = test_resources().unwrap();
         resources.guest_rpc = Some(guest.clone());
-        resources.vm_provider_launch = Some(Arc::new(VmTurnResolver));
+        resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
         resources
     };
     let first_peer = Peer::new();
