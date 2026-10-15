@@ -3,24 +3,6 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/signed-server-requests",
-      "operation_count": 5,
-      "operations": [
-        "GET /api/multi-server/v1/status",
-        "POST /api/multi-server",
-        "POST /api/multi-server/v1/name",
-        "POST /api/multi-server/v1/pair",
-        "POST /api/servers/orchestration"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "first-cutover refusal: image excluded",
           "kind": "external_or_scope",
           "owner": "first-cutover refusal: image excluded"
@@ -81,22 +63,6 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/orchestration",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/browser/forward",
-        "POST /api/multi-server",
-        "POST /api/servers/orchestration"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p18-account-catalog",
           "kind": "accepted_branch",
           "owner": "P18"
@@ -113,22 +79,6 @@
         "POST /api/agents",
         "POST /api/conversation",
         "POST /api/leads"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/owner-lookup",
-      "operation_count": 3,
-      "operations": [
-        "GET /api/multi-server/v1/identity",
-        "POST /api/multi-server",
-        "POST /api/multi-server/v1/auto-pair"
       ]
     },
     {
@@ -191,23 +141,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server-driver/local-identity",
-      "operation_count": 2,
-      "operations": ["POST /api/leads", "POST /api/projects"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -221,18 +154,6 @@
       "dependency": "cross-server/agent-management",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 2,
-      "operations": ["POST /api/messages", "POST /api/monitor/cancel"]
     },
     {
       "closures": [
@@ -295,30 +216,6 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server/move-receipt",
-      "operation_count": 2,
-      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server/project-location-receipt",
-      "operation_count": 2,
-      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p04-callback-runtime",
           "kind": "accepted_branch",
           "owner": "P04"
@@ -332,21 +229,6 @@
       "dependency": "payload-store/tool-request-recovery",
       "operation_count": 2,
       "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/tailscale-discovery",
-      "operation_count": 2,
-      "operations": [
-        "POST /api/multi-server",
-        "POST /api/multi-server/v1/auto-pair"
-      ]
     },
     {
       "closures": [
@@ -562,35 +444,6 @@
           "closes": "origin/feat/wave7-p19-projects-radio",
           "kind": "accepted_branch",
           "owner": "P19"
-        }
-      ],
-      "dependency": "cross-server-driver/project-binding",
-      "operation_count": 1,
-      "operations": ["POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server-driver/project-location-read",
-      "operation_count": 1,
-      "operations": ["GET /api/project-locations"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
         },
         {
           "closes": "R1",
@@ -605,18 +458,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        }
-      ],
-      "dependency": "cross-server-driver/project-registration",
-      "operation_count": 1,
-      "operations": ["POST /api/projects"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p11-native-actions",
           "kind": "accepted_branch",
           "owner": "P11"
@@ -625,6 +466,18 @@
       "dependency": "cross-server/native-review",
       "operation_count": 1,
       "operations": ["POST /api/action"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server/remote-events",
+      "operation_count": 1,
+      "operations": ["POST /api/monitor/cancel"]
     },
     {
       "closures": [
@@ -687,7 +540,7 @@
           "owner": "R1"
         }
       ],
-      "dependency": "multi-server-runtime/pairing",
+      "dependency": "multi-server-runtime/orchestration",
       "operation_count": 1,
       "operations": ["POST /api/multi-server"]
     },
@@ -699,21 +552,9 @@
           "owner": "R1"
         }
       ],
-      "dependency": "multi-server/discovery-pairing",
+      "dependency": "multi-server-runtime/pairing",
       "operation_count": 1,
-      "operations": ["GET /api/directories"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server/folder-browse",
-      "operation_count": 1,
-      "operations": ["GET /api/directories"]
+      "operations": ["POST /api/multi-server"]
     },
     {
       "closures": [
@@ -726,18 +567,6 @@
       "dependency": "payload-store/uploads",
       "operation_count": 1,
       "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "project-driver/folder-selection",
-      "operation_count": 1,
-      "operations": ["POST /api/leads"]
     },
     {
       "closures": [
@@ -771,9 +600,33 @@
           "owner": "R1"
         }
       ],
+      "dependency": "remote-transport/owner-lookup",
+      "operation_count": 1,
+      "operations": ["POST /api/multi-server"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
       "dependency": "remote-transport/signed-federation-exchange",
       "operation_count": 1,
       "operations": ["POST /api/federation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/signed-server-requests",
+      "operation_count": 1,
+      "operations": ["POST /api/multi-server"]
     },
     {
       "closures": [
@@ -890,10 +743,10 @@
     }
   ],
   "counts": {
-    "implemented": 116,
-    "named_dependencies": 62,
+    "implemented": 125,
+    "named_dependencies": 52,
     "not_registered": 0,
-    "partial": 44,
+    "partial": 35,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -965,12 +818,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "multi-server/discovery-pairing",
-        "multi-server/folder-browse"
-      ],
+      "dependencies": [],
       "operation": "GET /api/directories",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1053,9 +903,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["remote-transport/owner-lookup"],
+      "dependencies": [],
       "operation": "GET /api/multi-server/v1/identity",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1063,9 +913,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["remote-transport/signed-server-requests"],
+      "dependencies": [],
       "operation": "GET /api/multi-server/v1/status",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1083,9 +933,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["cross-server-driver/project-location-read"],
+      "dependencies": [],
       "operation": "GET /api/project-locations",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1169,8 +1019,6 @@
     },
     {
       "dependencies": [
-        "multi-server/move-receipt",
-        "multi-server/project-location-receipt",
         "payload-store/tool-request-recovery",
         "store-bootstrap/tool-request-schema"
       ],
@@ -1333,9 +1181,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["multi-server-runtime/orchestration"],
+      "dependencies": [],
       "operation": "POST /api/browser/forward",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1465,9 +1313,6 @@
     {
       "dependencies": [
         "account-driver/unavailable",
-        "cross-server-driver/local-identity",
-        "cross-server-driver/project-binding",
-        "project-driver/folder-selection",
         "provider-session/model-list",
         "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
@@ -1499,7 +1344,6 @@
     {
       "dependencies": [
         "capacity-retry/store",
-        "cross-server/remote-events",
         "federation-driver/rooms",
         "payload-store/uploads",
         "workspace-policy/message-admission"
@@ -1522,29 +1366,25 @@
         "multi-server-runtime/orchestration",
         "multi-server-runtime/pairing",
         "remote-transport/owner-lookup",
-        "remote-transport/signed-server-requests",
-        "remote-transport/tailscale-discovery"
+        "remote-transport/signed-server-requests"
       ],
       "operation": "POST /api/multi-server",
       "status": "partial"
     },
     {
-      "dependencies": [
-        "remote-transport/owner-lookup",
-        "remote-transport/tailscale-discovery"
-      ],
+      "dependencies": [],
       "operation": "POST /api/multi-server/v1/auto-pair",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["remote-transport/signed-server-requests"],
+      "dependencies": [],
       "operation": "POST /api/multi-server/v1/name",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["remote-transport/signed-server-requests"],
+      "dependencies": [],
       "operation": "POST /api/multi-server/v1/pair",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["turn-path/native-command-input"],
@@ -1592,11 +1432,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "cross-server-driver/local-identity",
-        "cross-server-driver/project-location-write",
-        "cross-server-driver/project-registration"
-      ],
+      "dependencies": ["cross-server-driver/project-location-write"],
       "operation": "POST /api/projects",
       "status": "partial"
     },
@@ -1631,12 +1467,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "multi-server-runtime/orchestration",
-        "remote-transport/signed-server-requests"
-      ],
+      "dependencies": [],
       "operation": "POST /api/servers/orchestration",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1696,8 +1529,6 @@
     },
     {
       "dependencies": [
-        "multi-server/move-receipt",
-        "multi-server/project-location-receipt",
         "payload-store/tool-request-recovery",
         "store-bootstrap/tool-request-schema"
       ],

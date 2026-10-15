@@ -44,6 +44,8 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
     pub(crate) orchestration_driver:
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
+    pub(crate) server_discovery:
+        Option<Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>>,
     pub(crate) project_secrets_guest:
         Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
     pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
@@ -53,6 +55,7 @@ pub struct HttpState {
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
+    pub(crate) peer_link_advert: Arc<std::sync::RwLock<Option<String>>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
@@ -123,13 +126,19 @@ impl HttpState {
         let vm_state_dir =
             studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state_dir));
         let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let project_accounts = account_policy.as_ref().map(|policy| policy.accounts());
         let orchestration_driver = store.as_ref().map(|store| {
             Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
                 Arc::clone(store),
                 Arc::new(studio_runtime_services::multi_server_orchestration::HttpsPairedTransport::new(Arc::clone(store))),
-                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_browser_callback(
+                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_project_accounts(
                     Arc::clone(store),
                     Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                    project_accounts.as_ref()
+                        .and_then(|snapshot| snapshot.default_account_key.as_str())
+                        .unwrap_or("default")
+                        .to_owned(),
+                    project_accounts.as_ref().map(|snapshot| snapshot.accounts.clone()).unwrap_or_default(),
                 )),
             ))
         });
@@ -179,6 +188,7 @@ impl HttpState {
             browser_answer_host_guest: Some(browser_answer_host_guest),
             browser_host_local_forwarder,
             orchestration_driver,
+            server_discovery: None,
             project_secrets_guest: None,
             vault_job_client: None,
             vault_host_command: None,
@@ -191,6 +201,7 @@ impl HttpState {
             voice_request_port: None,
             credentials: Arc::default(),
             multi_server_boundary: None,
+            peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
             token,
             workspace_id,
             native_path,
@@ -228,6 +239,21 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the host Tailscale status and discovery probe adapter.
+    pub fn with_server_discovery(
+        mut self,
+        discovery: Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>,
+    ) -> Self {
+        self.server_discovery = Some(discovery);
+        self
+    }
+
+    /// Advertise the running QUIC link to authenticated paired-server requests.
+    pub fn with_peer_link_advert(mut self, advert: Arc<std::sync::RwLock<Option<String>>>) -> Self {
+        self.peer_link_advert = advert;
         self
     }
 

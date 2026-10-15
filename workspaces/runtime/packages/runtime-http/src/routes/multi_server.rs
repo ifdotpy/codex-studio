@@ -12,17 +12,6 @@ use studio_runtime_services::multi_server::{self, MultiServerError};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const SIGNED_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("remote-transport/signed-server-requests")];
-const AUTO_PAIR_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/tailscale-discovery"),
-    Dependency::new("remote-transport/owner-lookup"),
-];
-const OWNER_DEPENDENCIES: [Dependency; 1] = [Dependency::new("remote-transport/owner-lookup")];
-const SIGNED_ORCHESTRATION_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/signed-server-requests"),
-    Dependency::new("multi-server-runtime/orchestration"),
-];
 const PLATFORM_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("server-credentials/platform-support")];
 const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
@@ -30,7 +19,6 @@ const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("multi-server-runtime/pairing"),
     Dependency::new("remote-transport/owner-lookup"),
     Dependency::new("remote-transport/signed-server-requests"),
-    Dependency::new("remote-transport/tailscale-discovery"),
     #[cfg(not(unix))]
     Dependency::new("server-credentials/platform-support"),
 ];
@@ -58,17 +46,17 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server/v1/auto-pair",
-            OperationStatus::partial(&AUTO_PAIR_DEPENDENCIES),
+            OperationStatus::Implemented,
             auto_pair,
         ),
         get(
             "/api/multi-server/v1/identity",
-            OperationStatus::partial(&OWNER_DEPENDENCIES),
+            OperationStatus::Implemented,
             identity,
         ),
         post(
             "/api/multi-server/v1/name",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             rename,
         ),
         get(
@@ -78,17 +66,17 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server/v1/pair",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             pair,
         ),
         get(
             "/api/multi-server/v1/status",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             status,
         ),
         post(
             "/api/servers/orchestration",
-            OperationStatus::partial(&SIGNED_ORCHESTRATION_DEPENDENCIES),
+            OperationStatus::Implemented,
             orchestration,
         ),
     ])
@@ -155,6 +143,31 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if action == "discover"
+        && let Some(origin) = state.public_origin.clone()
+    {
+        let store = state.store.ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials;
+        let discovery = state
+            .server_discovery
+            .ok_or_else(|| unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES))?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server",
+            move || {
+                let identity = credentials
+                    .identity(&store, Some(&origin))
+                    .map_err(map_credential_error)?;
+                discovery
+                    .discover(&store, &identity, &origin)
+                    .map_err(map_discovery_error)
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(super::generated_json::<
+            crate::generated::AccessSnapshot,
+        >(result)?));
+    }
     if matches!(
         action,
         "settings" | "alias" | "revoke" | "unrevoke" | "name"
@@ -179,10 +192,31 @@ async fn manage(
                     ));
                 }
                 if action == "name" {
+                    let target = body["serverId"].as_str().unwrap_or_default();
+                    if !credentials
+                        .is_local_target(&store, target)
+                        .map_err(map_credential_error)?
+                    {
+                        let paired = store
+                            .read()
+                            .map_err(ApiError::stored)?
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
+                                [target],
+                                |row| row.get::<_, bool>(0),
+                            )
+                            .map_err(|_| ApiError::internal())?;
+                        if !paired {
+                            return Err(ApiError::new(
+                                StatusCode::FORBIDDEN,
+                                "The server is not paired or is revoked",
+                            ));
+                        }
+                    }
                     credentials
                         .rename(
                             &store,
-                            body["serverId"].as_str().unwrap_or_default(),
+                            target,
                             body["label"].as_str().unwrap_or_default(),
                             body["requestId"].as_str().unwrap_or_default(),
                             "local",
@@ -214,26 +248,37 @@ async fn manage(
 }
 
 async fn auto_pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/multi-server/v1/auto-pair",
-        &AUTO_PAIR_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Auto pairing requires a signed paired-server request",
     ))
 }
 
-async fn identity() -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "GET",
-        "/api/multi-server/v1/identity",
-        &OWNER_DEPENDENCIES,
-    ))
+async fn identity(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ServerIdentityResponse>, ApiError> {
+    let credentials = state.credentials;
+    let origin = state.public_origin;
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server",
+        move || {
+            credentials
+                .identity(&store, origin.as_deref())
+                .map_err(map_credential_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(super::generated_json::<
+        crate::generated::ServerIdentityResponse,
+    >(value)?))
 }
 
 async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/multi-server/v1/name",
-        &SIGNED_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Renaming requires a signed paired-server request",
     ))
 }
 
@@ -242,29 +287,26 @@ async fn no_pair_get() -> Result<Json<Value>, ApiError> {
 }
 
 async fn pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/multi-server/v1/pair"))
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Pairing requires a signed paired-server request",
+    ))
 }
 
 async fn status() -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "GET",
-        "/api/multi-server/v1/status",
-        &SIGNED_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Status requires a signed paired-server request",
     ))
 }
 
 async fn orchestration(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/servers/orchestration",
-        &SIGNED_ORCHESTRATION_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Orchestration requires a signed paired-server request",
     ))
 }
 
-fn unavailable(method: &str, path: &str) -> ApiError {
-    dependency_unavailable(method, path, &SIGNED_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
-}
 fn unavailable_for(method: &str, path: &str, dependencies: &'static [Dependency]) -> ApiError {
     dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
@@ -308,10 +350,40 @@ fn map_service_error(error: MultiServerError) -> ApiError {
     }
 }
 
+fn map_discovery_error(error: studio_runtime_services::multi_server_auth::AccessError) -> ApiError {
+    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    ApiError::new(status, "The Tailscale server discovery operation failed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct FakeDiscovery(Arc<AtomicUsize>);
+    impl studio_runtime_services::multi_server_discovery::ServerDiscoveryPort for FakeDiscovery {
+        fn discover(
+            &self,
+            _store: &studio_runtime_store::RuntimeStore,
+            identity: &Value,
+            public_origin: &str,
+        ) -> Result<Value, studio_runtime_services::multi_server_auth::AccessError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(identity["origin"], public_origin);
+            Ok(serde_json::json!({
+                "protocol": 1,
+                "identity": identity,
+                "clients": [],
+                "servers": [],
+                "invites": [],
+                "settings": {"autoPair": true, "aliases": {}}
+            }))
+        }
+    }
 
     #[tokio::test]
     async fn unsupported_credentials_have_a_named_501_refusal() {
@@ -324,6 +396,35 @@ mod tests {
             serde_json::from_slice::<Value>(&body).expect("error envelope"),
             serde_json::json!({"error":"Not implemented: requires server-credentials/platform-support"})
         );
+    }
+
+    #[tokio::test]
+    async fn discover_action_calls_the_injected_host_driver() {
+        let root = tempfile::tempdir().expect("isolated discovery state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .expect("runtime store opens"),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().display().to_string(),
+            12345,
+            Some("https://local.example".into()),
+            Some(store),
+            None,
+        )
+        .with_server_discovery(Arc::new(FakeDiscovery(Arc::clone(&calls))));
+        let response = manage(
+            State(state),
+            ApiJson(serde_json::json!({"action":"discover"})),
+        )
+        .await
+        .expect("fake discovery succeeds");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(response.0.settings.auto_pair, true);
     }
 }
 

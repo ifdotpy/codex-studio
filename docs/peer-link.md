@@ -79,6 +79,8 @@ at the end. A failure is a JSON line `{failure, sent}`.
 
 A signed response to a paired server carries `X-Studio-Link: ADDRESS:PORT` when the link runs.
 The client keeps the latest address per server and uses the link for the next requests.
+Orchestration and multi-server access management use the same QUIC-first signed-request
+exchange and share this learned-route state.
 
 - `sent: false`: the paired server cannot have run the request (no connection, a refused key,
   a failed send). The client sends the same signed request over HTTPS and does not try the

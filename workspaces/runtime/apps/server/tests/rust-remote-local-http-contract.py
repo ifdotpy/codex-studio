@@ -230,6 +230,20 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(body["settings"]["autoPair"],True)
         self.assertNotIn("privateKey",response.body.decode())
 
+    def test_discover_without_serve_origin_returns_local_snapshot_without_host_access(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={"action": "discover", "requestId": "discover-local"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        body = response.json()
+        self.assertTrue(body["identity"]["serverId"])
+        self.assertIn("discovered-a", [peer["id"] for peer in body["servers"]])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
     def test_multi_server_local_actions_commit_replay_and_conflict(self) -> None:
         revoked=self.backend.request("POST","/api/multi-server",body={"action":"revoke","requestId":"revoke-a","clientId":"client-a"},headers=self.headers())
         self.assertEqual(revoked.status,200,revoked.body[:1000])
@@ -269,8 +283,12 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ),
         ):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("remote-transport/signed-server-requests", response.json()["error"])
+            if path == "/api/multi-server":
+                self.assertEqual(response.status, 403, response.body[:1000])
+                self.assertEqual(response.json()["error"], "The server is not paired or is revoked")
+            else:
+                self.assertEqual(response.status, 403, response.body[:1000])
+                self.assertIn("signed paired-server request", response.json()["error"])
             self.assertEqual(no_write_snapshot(self.backend.state), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
@@ -305,11 +323,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             },
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("signed-server-requests",response.json()["error"])
-        else:
-            self.assertEqual(response.status, 403, response.body[:1000])
+        self.assertEqual(response.status, 403, response.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 

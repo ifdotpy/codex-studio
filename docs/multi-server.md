@@ -258,6 +258,9 @@ mutation receipt. Revocation takes precedence over discovery and saved receipts.
 The backend runs discovery at start and every 300 seconds. Each pass reads
 `tailscale status --json`. It selects online, untagged peers with Self's UserID
 and a valid Tailscale DNS name. It probes their identity endpoint over HTTPS.
+For already-paired peers, discovery refreshes the displayed name through the
+signed status endpoint. That request uses the shared QUIC-first paired transport
+when a route has been learned, with HTTPS fallback only before any bytes were sent.
 Each probe has a five-second timeout. A pass uses at most four concurrent probes,
 64 candidates, and a 90-second deadline. Unknown services are ignored quietly.
 A pass does not overlap another pass on the same server.

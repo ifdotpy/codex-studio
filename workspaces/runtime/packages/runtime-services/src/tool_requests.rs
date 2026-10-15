@@ -2,7 +2,7 @@
 pub(crate) mod admission;
 pub(crate) mod lifecycle;
 use crate::event_write::truthy;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
@@ -30,7 +30,6 @@ pub enum Action<'a> {
 }
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
-const MOVE: &str = "multi-server/move-receipt";
 
 pub fn execute(
     tx: &Transaction<'_>,
@@ -75,7 +74,19 @@ pub fn execute(
     }
     let Some(mut record) = resolve(tx, actor_id, id)? else {
         if !cancel && truthy(actor.get("movedFrom")) {
-            return Err(ToolRequestError::RequiresDependency(MOVE));
+            let local_server = studio_runtime_store::RuntimeStore::transaction_local_server_id(tx)?
+                .unwrap_or_default();
+            let move_status = crate::agent_move::status(tx, actor_id, id, &local_server)
+                .map_err(relocation_error)?;
+            if move_status
+                .get("acceptance")
+                .is_some_and(|value| !value.is_null())
+            {
+                let tool = session_tool_name(&actor);
+                return Ok(
+                    json!({"id":id,"stage":"complete","outcome":"applied","tool":tool,"operationResult":move_status["acceptance"],"move":move_status}),
+                );
+            }
         }
         return Ok(
             json!({"id":id,"stage":"not_found","outcome":"unknown","message":"No receipt found. This does not prove that the operation did not execute."}),
@@ -90,7 +101,18 @@ pub fn execute(
             "orchestration_move" | "orchestration_teleport"
         )
     {
-        return Err(ToolRequestError::RequiresDependency(MOVE));
+        let local_server = studio_runtime_store::RuntimeStore::transaction_local_server_id(tx)?
+            .unwrap_or_default();
+        record["move"] = crate::agent_move::status(
+            tx,
+            actor_id,
+            record
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or(id),
+            &local_server,
+        )
+        .map_err(relocation_error)?;
     }
     refresh(tx, &mut record, &actor, now, true)?;
     if cancel && lifecycle::cancel(&mut record)? {
@@ -173,46 +195,12 @@ fn refresh(
     if truthy(record.get("_payloadBlobs")) {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
+    if crate::project_locations::refresh_tool_receipt(tx, record, now).map_err(relocation_error)? {
+        return Ok(());
+    }
     if terminal(record) {
         populate_spawned_agent_ids(record);
         return Ok(());
-    }
-    if record["tool"] == "orchestration_servers"
-        && record["outcome"] == "unknown"
-        && records::exists(tx, "runtime_server_outbox")?
-    {
-        let key = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_URL,
-            format!(
-                "studio-cross-server:project-location:{}:{}",
-                text(record, "agent"),
-                text(record, "id")
-            )
-            .as_bytes(),
-        );
-        let raw: Option<String> = tx.query_row(
-            "SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",
-            [key.to_string()],
-            |r| r.get(0),
-        ).optional()?;
-        if let Some(raw) = raw {
-            // The storage boundary validates the complete delivery row. This
-            // consumer only needs its identity, regardless of envelope action.
-            #[derive(serde::Deserialize)]
-            struct LocationOutbox {
-                id: String,
-            }
-            let row: LocationOutbox = serde_json::from_value(records::decode(
-                "runtime_server_outbox",
-                &key.to_string(),
-                &raw,
-            )?)
-            .map_err(StoreError::from)?;
-            debug_assert_eq!(row.id, key.to_string());
-            return Err(ToolRequestError::RequiresDependency(
-                "multi-server/project-location-receipt",
-            ));
-        }
     }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
     if saved
@@ -291,6 +279,71 @@ fn populate_spawned_agent_ids(record: &mut Value) {
     }
     if !ids.is_empty() {
         record["agentIds"] = json!(ids);
+    }
+}
+
+fn session_tool_name(actor: &Value) -> &'static str {
+    const MOVE: &str = "orchestration_move";
+    const TELEPORT: &str = "orchestration_teleport";
+    if actor
+        .get("nativeTeleportTool")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name == MOVE || name == TELEPORT)
+    {
+        return if actor["nativeTeleportTool"] == MOVE {
+            MOVE
+        } else {
+            TELEPORT
+        };
+    }
+    if actor
+        .pointer("/frozenNativeParams/dynamicTools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == MOVE || name == TELEPORT)
+            })
+        })
+    {
+        return if actor
+            .pointer("/frozenNativeParams/dynamicTools")
+            .and_then(Value::as_array)
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .find_map(|tool| tool.get("name").and_then(Value::as_str))
+            })
+            == Some(TELEPORT)
+        {
+            TELEPORT
+        } else {
+            MOVE
+        };
+    }
+    if actor.get("threadId").is_some_and(|value| !value.is_null()) {
+        MOVE
+    } else {
+        TELEPORT
+    }
+}
+
+fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestError {
+    match error {
+        crate::relocation::RelocationError::InvalidStored { object, pointer } => {
+            ToolRequestError::Store(StoreError::SchemaMismatch(format!(
+                "invalid stored {object} at {pointer}"
+            )))
+        }
+        crate::relocation::RelocationError::Refused(message) => {
+            ToolRequestError::InvalidRequest(message)
+        }
+        crate::relocation::RelocationError::Requires(name) => {
+            ToolRequestError::RequiresDependency(name)
+        }
+        crate::relocation::RelocationError::Store(error) => ToolRequestError::Store(error),
+        crate::relocation::RelocationError::Sqlite(error) => ToolRequestError::Store(error.into()),
     }
 }
 

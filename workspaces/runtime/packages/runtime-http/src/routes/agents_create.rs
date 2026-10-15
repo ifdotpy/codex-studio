@@ -555,12 +555,9 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 8] = [
+    const LEAD_DEPENDENCIES: [Dependency; 5] = [
         Dependency::new("account-driver/unavailable"),
-        Dependency::new("cross-server-driver/local-identity"),
-        Dependency::new("cross-server-driver/project-binding"),
         Dependency::new("provider-session/model-list"),
-        Dependency::new("project-driver/folder-selection"),
         Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
@@ -1214,6 +1211,7 @@ fn operation_error(error: OperationError) -> ApiError {
         | OperationError::Create(MutationError::CapabilityUnavailable(
             "provider-session/model-list" | "worker-driver/settings-catalog",
         )) => StatusCode::BAD_REQUEST,
+        OperationError::Forbidden(_) => StatusCode::FORBIDDEN,
         OperationError::Unavailable(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_)) => {
             StatusCode::NOT_IMPLEMENTED

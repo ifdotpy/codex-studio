@@ -13,6 +13,7 @@ use crate::remote_transport::{self, MultiServerSigningInput};
 pub const PAIR_PATH: &str = "/api/multi-server/v1/pair";
 pub const AUTO_PAIR_PATH: &str = "/api/multi-server/v1/auto-pair";
 pub const STATUS_PATH: &str = "/api/multi-server/v1/status";
+pub const NAME_PATH: &str = "/api/multi-server/v1/name";
 pub const MAX_OBSERVATION_BYTES: usize = 1024 * 1024;
 const SIGNED_HEADERS: [&str; 6] = [
     "x-studio-client",
@@ -174,6 +175,9 @@ impl SignedRequest {
         if request.is_auto_pairing() {
             schema("AutoPairRequest", &request.body)?;
         }
+        if request.is_name() {
+            schema("RenameServer", &request.body)?;
+        }
         if request.is_auto_pairing()
             || (request.is_pairing() && text(&request.body, "kind") == "server")
         {
@@ -200,10 +204,13 @@ impl SignedRequest {
         self.method == "GET" && self.target.split('?').next() == Some(STATUS_PATH)
     }
     pub fn is_pairing(&self) -> bool {
-        self.method == "POST" && self.target == PAIR_PATH
+        self.method == "POST" && self.target.split('?').next() == Some(PAIR_PATH)
     }
     pub fn is_auto_pairing(&self) -> bool {
-        self.method == "POST" && self.target == AUTO_PAIR_PATH
+        self.method == "POST" && self.target.split('?').next() == Some(AUTO_PAIR_PATH)
+    }
+    pub fn is_name(&self) -> bool {
+        self.method == "POST" && self.target.split('?').next() == Some(NAME_PATH)
     }
     pub fn is_orchestration(&self) -> bool {
         self.method == "POST" && self.target.split('?').next() == Some("/api/servers/orchestration")

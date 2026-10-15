@@ -2,11 +2,41 @@
 
 #[path = "multi_server/common.rs"]
 mod common;
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use common::*;
 use serde_json::{Value, json};
+use std::time::Duration;
 use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
 use studio_runtime_store::RuntimeStore;
+
+#[test]
+fn tailscale_discovery_uses_only_online_untagged_same_owner_candidates() {
+    let status = json!({
+        "BackendState": "Running",
+        "Self": {"UserID": 7, "DNSName": "local.example.ts.net."},
+        "User": {"7": {"LoginName": "Owner@Example.test"}},
+        "Peer": {
+            "same-owner": {"UserID": 7, "Online": true, "DNSName": "peer.example.ts.net."},
+            "offline": {"UserID": 7, "Online": false, "DNSName": "offline.example.ts.net."},
+            "other-owner": {"UserID": 8, "Online": true, "DNSName": "other.example.ts.net."},
+            "tagged": {"UserID": 7, "Online": true, "Tags": ["tag:server"], "DNSName": "tagged.example.ts.net."}
+        }
+    });
+    let snapshot =
+        DiscoverySnapshot::from_status(&status, "local-server", "https://local.example.ts.net")
+            .expect("valid fake Tailscale status");
+    let candidates = snapshot.candidates();
+    assert_eq!(snapshot.owner(), "owner@example.test");
+    assert!(candidates.contains(&"https://peer.example.ts.net"));
+    assert!(candidates.contains(&"https://peer.example.ts.net:8443"));
+    assert!(!candidates.iter().any(|origin| origin.contains("offline")));
+    assert!(!candidates.iter().any(|origin| origin.contains("other.")));
+    assert!(!candidates.iter().any(|origin| origin.contains("tagged")));
+    assert!(!candidates.contains(&"https://local.example.ts.net"));
+    assert!(candidates.contains(&"https://local.example.ts.net:8443"));
+}
 
 #[test]
 fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once() {
@@ -203,6 +233,112 @@ fn received_remote_event_replays_cached_receipt_after_restart_without_duplicate_
         )
         .unwrap();
     assert_eq!(text, "owner monitor exit");
+}
+
+#[test]
+fn paired_project_location_read_uses_the_fake_peer_transport() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            Err(refused(503, "unused", "peer transport not expected"))
+        }
+    }
+    struct FakePeer(Arc<OrchestrationDriver>);
+    impl PairedTransport for FakePeer {
+        fn exchange(
+            &self,
+            server: &str,
+            envelope: &Value,
+            _: Duration,
+        ) -> Result<Value, AccessError> {
+            assert_eq!(server, "peer-server");
+            let key = envelope["requestId"]
+                .as_str()
+                .expect("stable request identity");
+            Ok(self.0.receive("local-server", envelope, 100)?.to_value(key))
+        }
+    }
+
+    let (_peer_root, peer_store) = store();
+    peer_store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO runtime_access_clients(id,record) VALUES('local-server',?1)",
+                [json!({"id":"local-server","clientId":"local-client","kind":"server","label":"Fake local peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("pair reciprocal fake peer");
+    let peer = Arc::new(OrchestrationDriver::new(
+        Arc::clone(&peer_store),
+        Arc::new(NoTransport),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&peer_store))),
+    ));
+    let (local_root, local_store) = store();
+    local_store.transaction(|tx| {
+        tx.execute(
+            "INSERT OR REPLACE INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
+            [json!({"id":"peer-server","clientId":"peer-client","kind":"server","label":"Fake peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
+        )?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).expect("pair fake peer");
+    let local = OrchestrationDriver::new(
+        Arc::clone(&local_store),
+        Arc::new(FakePeer(peer)),
+        Arc::new(RuntimeOrchestrationEffects::new(local_store)),
+    );
+    let folder = local_root.path().join("remote-project");
+    std::fs::create_dir_all(&folder).expect("fake remote project directory");
+    let initialized = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&folder)
+        .status()
+        .expect("local Git fixture initializes");
+    assert!(initialized.success(), "local Git fixture initializes");
+    std::fs::write(
+        folder.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://example.invalid/team/repo.git\n",
+    )
+    .expect("fake Git origin");
+    let outcome = local
+        .exchange(
+            "peer-server",
+            "location_info",
+            &json!({"cwd":folder.to_string_lossy()}),
+            "project-location-read-1",
+            100,
+        )
+        .expect("fake remote location read");
+    let ExchangeOutcome::Applied(value) = outcome else {
+        panic!("expected applied location read")
+    };
+    assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
+    assert_eq!(value["matches"], json!([]));
+    let browse = local_root.path().join("remote-browse");
+    std::fs::create_dir_all(browse.join("visible-child")).expect("fake remote child");
+    std::fs::create_dir_all(browse.join(".hidden-child")).expect("fake hidden child");
+    let folders = local
+        .exchange(
+            "peer-server",
+            "folders",
+            &json!({"cwd":browse.to_string_lossy()}),
+            "folder-browse-read-1",
+            101,
+        )
+        .expect("fake remote folder browse");
+    let ExchangeOutcome::Applied(folders) = folders else {
+        panic!("expected applied folder browse")
+    };
+    assert_eq!(folders["path"], browse.to_string_lossy().as_ref());
+    assert_eq!(folders["directories"].as_array().unwrap().len(), 1);
+    assert_eq!(folders["directories"][0]["name"], "visible-child");
 }
 
 #[test]
@@ -438,15 +574,13 @@ fn child_result_requires_link_membership_and_updates_proxy() {
 #[test]
 fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     use sha2::Digest;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
     use studio_runtime_services::multi_server_auth::{AccessError, refused};
     use studio_runtime_services::multi_server_orchestration::{
         ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
     };
-    const CALLBACK_FIXTURE_TIMEOUT: Duration = Duration::from_secs(2);
     struct NoTransport;
     impl PairedTransport for NoTransport {
         fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
@@ -463,41 +597,21 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     .to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback callback fixture");
     let port = listener.local_addr().unwrap().port();
-    listener.set_nonblocking(true).expect("nonblocking fixture");
     let (start_relay_tx, start_relay_rx) = std::sync::mpsc::channel();
     let relay = std::thread::spawn(move || {
         start_relay_rx
             .recv()
             .expect("start callback relay after store setup");
-        let deadline = Instant::now() + CALLBACK_FIXTURE_TIMEOUT;
-        let mut calls = 0;
-        while Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    calls += 1;
-                    stream
-                        .set_read_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
-                        .expect("bounded callback read");
-                    stream
-                        .set_write_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
-                        .expect("bounded callback write");
-                    let mut request = [0; 1024];
-                    let count = stream.read(&mut request).expect("callback request");
-                    assert!(
-                        String::from_utf8_lossy(&request[..count])
-                            .starts_with("GET /callback?code=ok HTTP/1.1")
-                    );
-                    stream
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in")
-                        .expect("callback response");
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("bounded loopback accept failed: {error}"),
-            }
-        }
-        calls
+        let (mut stream, _) = listener.accept().expect("callback relay connection");
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().expect("clone callback stream"))
+            .read_line(&mut request)
+            .expect("callback request line");
+        assert!(request.starts_with("GET /callback?code=ok HTTP/1.1"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in")
+            .expect("callback response");
+        1
     });
     let (_root, store) = store();
     let mut record = json!({"id":request_id,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port}}});
@@ -522,8 +636,8 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
         Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
     );
     let envelope = json!({"requestId":"browser-callback:stable-1","action":"browser_callback","payload":{"bridgeId":bridge_id,"token":token,"target":"/callback?code=ok","headers":{"accept":"text/plain"}}});
-    // Start the fixture's short network deadline only after RuntimeStore setup;
-    // cold store initialization is unrelated to callback delivery.
+    // Start the fixture after RuntimeStore setup so cold initialization cannot
+    // race the callback accept. The relay then uses event-driven blocking I/O.
     start_relay_tx
         .send(())
         .expect("start callback relay after store setup");
@@ -731,6 +845,99 @@ fn python_authentication_outputs_match_complete_principal_and_writes() {
             );
         }
     }
+}
+
+#[test]
+fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+    use std::path::PathBuf;
+    use std::process::Command;
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
+    };
+
+    const SEED: [u8; 32] = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
+        0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
+        0x7f, 0x60,
+    ];
+    let key = Ed25519KeyPair::from_seed_unchecked(&SEED).expect("fixed test seed loads");
+    let method = "POST";
+    let target = "/api/multi-server/v1/auto-pair";
+    let server_id = "peer-server";
+    let client_id = "rust-server";
+    let timestamp = "1700000000";
+    let nonce = "abcdefghijklmnopqrstuvwxyz012345";
+    let request_id = "rust-request";
+    let body = br#"{"clientId":"rust-server","requestId":"rust-request"}"#;
+    let rust_wire = multi_server_signing_bytes(MultiServerSigningInput {
+        method,
+        target,
+        server_id,
+        client_id,
+        timestamp,
+        nonce,
+        request_id,
+        body,
+    });
+    let rust_signature = STANDARD.encode(key.sign(&rust_wire).as_ref());
+    UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
+        .verify(
+            &rust_wire,
+            &STANDARD.decode(&rust_signature).expect("signature decodes"),
+        )
+        .expect("Rust signature verifies locally");
+    let mut spki = vec![
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    spki.extend_from_slice(key.public_key().as_ref());
+    let public_key = format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+        STANDARD.encode(spki)
+    );
+    let python_input = json!({
+        "method":method, "target":target, "serverId":server_id,
+        "clientId":client_id, "timestamp":timestamp, "nonce":nonce,
+        "requestId":request_id, "body":STANDARD.encode(body),
+        "seed":STANDARD.encode(SEED), "rustSignature":rust_signature,
+        "publicKey":public_key,
+    });
+    let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/multi_server/interop_verify.py");
+    let mut command = Command::new(prepared_python::prepared_python(&server_source));
+    command
+        .arg(&script)
+        .arg(python_input.to_string())
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    let environment = prepared_python::IsolatedTestEnvironment::new();
+    environment.apply(&mut command);
+    let output = command.output().expect("run Python signature verifier");
+    assert!(
+        output.status.success(),
+        "Python rejected the Rust signature: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let python_result: Value =
+        serde_json::from_slice(&output.stdout).expect("Python signing and verification JSON");
+    assert_eq!(python_result["verified"], true);
+    let python_signature = python_result["pythonSignature"]
+        .as_str()
+        .expect("Python produced a request signature");
+    let python_wire = multi_server_signing_bytes(MultiServerSigningInput {
+        method,
+        target,
+        server_id,
+        client_id,
+        timestamp,
+        nonce,
+        request_id,
+        body,
+    });
+    verify_signature(&public_key, &python_wire, python_signature)
+        .expect("Rust verifies Python's fixture request signature");
 }
 fn malformed_stored_rows_are_located_without_panics() {
     let data = &fixture().data;

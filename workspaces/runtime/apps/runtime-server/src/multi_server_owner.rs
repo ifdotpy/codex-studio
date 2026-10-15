@@ -34,14 +34,46 @@ impl OwnerLookup for TailscaleOwnerLookup {
     }
 }
 
-fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
-    let mut child = Command::new("tailscale")
+pub(crate) fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
+    tailscale_json_from(std::path::Path::new("tailscale"), args)
+}
+
+pub(crate) fn tailscale_json_from(
+    executable: &std::path::Path,
+    args: &[&str],
+) -> Result<Value, AccessError> {
+    let mut command = Command::new(executable);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| unavailable())?;
+        .stderr(Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) if executable == std::path::Path::new("tailscale") => {
+            #[cfg(target_os = "macos")]
+            {
+                let bundled =
+                    std::path::Path::new("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+                if bundled.is_file() {
+                    Command::new(bundled)
+                        .args(args)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|_| unavailable())?
+                } else {
+                    return Err(unavailable());
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(unavailable());
+            }
+        }
+        Err(_) => return Err(unavailable()),
+    };
     let mut stdout = child.stdout.take().ok_or_else(unavailable)?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || {
