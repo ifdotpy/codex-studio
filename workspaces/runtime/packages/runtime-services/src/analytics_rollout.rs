@@ -73,9 +73,11 @@ impl RolloutContext {
         let mut actions = Vec::new();
         match record["type"].as_str().unwrap_or("") {
             "session_meta" => {
-                if let Some(window) = p.get("context_window") {
-                    self.value["window"] = canonical_context_window(window)?;
-                }
+                let window = p
+                    .get("context_window")
+                    .unwrap_or(&self.value["window"])
+                    .clone();
+                self.value["window"] = canonical_context_window(&window)?;
             }
             "turn_context" => {
                 for (src, dst) in [
@@ -156,9 +158,11 @@ impl RolloutContext {
                 match p["type"].as_str().unwrap_or("") {
                     "task_started" => {
                         self.value["turnId"] = p["turn_id"].clone();
-                        if let Some(window) = p.get("model_context_window") {
-                            self.value["window"] = canonical_context_window(window)?;
-                        }
+                        let window = p
+                            .get("model_context_window")
+                            .unwrap_or(&self.value["window"])
+                            .clone();
+                        self.value["window"] = canonical_context_window(&window)?;
                         actions.push(event("turn/started",json!({"threadId":self.value["threadId"],"turnId":p["turn_id"],"turn":{"id":p["turn_id"]}}),at));
                     }
                     "task_complete" | "turn_aborted" => {
@@ -406,6 +410,15 @@ mod tests {
     fn context_window_import_accepts_only_schema_owned_number_or_null() {
         let mut context = RolloutContext::from_record(json!({"threadId":"thread"}))
             .expect("fixture context is valid");
+        context
+            .actions(
+                &json!({"type":"session_meta","payload":{}}),
+                "identity",
+                0.5,
+            )
+            .expect("missing provider window is normalized to null");
+        assert!(context.record()["window"].is_null());
+
         context
             .actions(
                 &json!({
