@@ -10,6 +10,8 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
+import uuid
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -82,23 +84,6 @@ finally:
         check=True,
         timeout=30,
     )
-
-
-def rules_state(backend):
-    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
-        existing = {
-            row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
-        return {
-            name: database.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
-            for name in (
-                "runtime_rules", "runtime_monitors", "runtime_agents", "runtime_events", "runtime_event_meta",
-                "runtime_operation_receipts", "sync_entities", "sync_entity_versions",
-            )
-            if name in existing
-        }
 
 
 class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -180,28 +165,118 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(conditional.body, b"")
         self.assertEqual(conditional.headers.get("etag"), etag)
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_active_check_pause_and_delete_are_named_no_write_refusals(self) -> None:
-        # Rust has no scheduler in this fixture; the monitor proves active-check refusal.
+    def test_active_check_pause_and_delete_cancel_the_check(self) -> None:
         backend = self.backend
         path = backend.state / "canvas.sqlite3"
-        with sqlite3.connect(path) as db:
-            db.execute("INSERT INTO runtime_monitors(id,record) VALUES(?,?)", (
-                "active-rule-check", json.dumps({"id": "active-rule-check", "agent": "rules-contract-live",
-                                                 "ruleId": "visible", "status": "running"}),
-            ))
-        try:
-            for action in ("pause", "delete"):
-                with self.subTest(action=action):
-                    before = rules_state(backend)
-                    response = backend.request("POST", "/api/rules", headers=self._headers(),
-                                               body={"action": action, "agent": "rules-contract-live", "id": "visible"})
-                    self.assertEqual(response.status, 501, response.body[:1000])
-                    self.assertEqual(response.json()["error"], "Not implemented: requires monitor-driver/active-checks")
-                    self.assertEqual(rules_state(backend), before)
-        finally:
-            with sqlite3.connect(path) as db:
-                db.execute("DELETE FROM runtime_monitors WHERE id='active-rule-check'")
+        rule_id = "active-check-fixture"
+        monitor_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rule:{rule_id}:1"))
+        create_response = backend.request(
+            "POST",
+            "/api/rules",
+            headers=self._headers(),
+            body={
+                "action": "save",
+                "agent": "rules-contract-live",
+                "id": rule_id,
+                "name": "Active check fixture",
+                "kind": "interval",
+                "intervalSeconds": 60,
+            },
+        )
+        self.assertEqual(create_response.status, 200, create_response.body[:1000])
+        for action in ("pause", "delete"):
+            with self.subTest(action=action):
+                with sqlite3.connect(path) as db:
+                    rule_row = db.execute(
+                        "SELECT record FROM runtime_rules WHERE id=?", (rule_id,)
+                    ).fetchone()
+                    rule = json.loads(rule_row[0])
+                    rule.update(
+                        status="active",
+                        inFlight=True,
+                        checks=1,
+                        command="echo fixture",
+                        nextAt=time.time() + 60,
+                    )
+                    db.execute(
+                        "UPDATE runtime_rules SET record=? WHERE id=?",
+                        (json.dumps(rule), rule_id),
+                    )
+                    monitor = {
+                        "id": monitor_id,
+                        "agent": "rules-contract-live",
+                        "epoch": 0,
+                        "command": "echo fixture",
+                        "status": "approval",
+                        "created": time.time(),
+                        "tail": "",
+                        "bytes": 0,
+                        "ruleId": rule_id,
+                    }
+                    db.execute(
+                        "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES(?,?)",
+                        (monitor_id, json.dumps(monitor)),
+                    )
+                if action == "pause":
+                    before = no_write_snapshot(backend.state)
+                    update_response = backend.request(
+                        "POST",
+                        "/api/rules",
+                        headers=self._headers(),
+                        body={
+                            "action": "save",
+                            "agent": "rules-contract-live",
+                            "id": rule_id,
+                            "name": "edited during active check",
+                            "kind": "interval",
+                        },
+                    )
+                    self.assertEqual(update_response.status, 400, update_response.body[:1000])
+                    self.assertEqual(no_write_snapshot(backend.state), before)
+                    create_response = backend.request(
+                        "POST",
+                        "/api/rules",
+                        headers=self._headers(),
+                        body={
+                            "action": "save",
+                            "agent": "rules-contract-live",
+                            "id": "created-with-active-check",
+                            "name": "Independent check rule",
+                            "kind": "once",
+                        },
+                    )
+                    self.assertEqual(create_response.status, 200, create_response.body[:1000])
+                    cleanup_response = backend.request(
+                        "POST",
+                        "/api/rules",
+                        headers=self._headers(),
+                        body={
+                            "action": "delete",
+                            "agent": "rules-contract-live",
+                            "id": "created-with-active-check",
+                        },
+                    )
+                    self.assertEqual(cleanup_response.status, 200, cleanup_response.body[:1000])
+                response = backend.request(
+                    "POST",
+                    "/api/rules",
+                    headers=self._headers(),
+                    body={"action": action, "agent": "rules-contract-live", "id": rule_id},
+                )
+                self.assertEqual(response.status, 200, response.body[:1000])
+                with sqlite3.connect(path) as db:
+                    monitor = json.loads(db.execute(
+                        "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,),
+                    ).fetchone()[0])
+                    self.assertEqual(monitor["status"], "cancelled")
+                    row = db.execute(
+                        "SELECT record FROM runtime_rules WHERE id=?", (rule_id,)
+                    ).fetchone()
+                if action == "pause":
+                    self.assertEqual(json.loads(row[0])["status"], "paused")
+                    self.assertFalse(json.loads(row[0])["inFlight"])
+                else:
+                    self.assertIsNone(row)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_rule_is_refused_without_writes(self) -> None:

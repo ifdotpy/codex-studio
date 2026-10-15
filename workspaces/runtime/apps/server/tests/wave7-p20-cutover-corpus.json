@@ -696,18 +696,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "monitor-driver/active-checks",
-      "operation_count": 1,
-      "operations": ["POST /api/rules"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -984,10 +972,10 @@
     }
   ],
   "counts": {
-    "implemented": 111,
-    "named_dependencies": 68,
+    "implemented": 112,
+    "named_dependencies": 67,
     "not_registered": 0,
-    "partial": 49,
+    "partial": 48,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1732,9 +1720,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["monitor-driver/active-checks"],
+      "dependencies": [],
       "operation": "POST /api/rules",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [

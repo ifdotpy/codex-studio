@@ -671,10 +671,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "command": "echo ledger probe", "text": "Check the probe fixture.",
         }, "expected": "2xx"},
         "additional": [{
-            "name": "active-check dependency",
+            "name": "active rule check is cancelled on pause",
             "body": {"agent": "$agent", "action": "pause", "id": "$activeRule"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires monitor-driver/active-checks",
+            "expected": "2xx",
             "fixture_mutations": {"activate_rule_check": True},
             "restore": ["rule_monitor"],
         }],
@@ -900,7 +899,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     monitor_id = "ledger-probe-monitor"
     terminal_id = "ledger-probe-terminal"
     active_rule_id = "ledger-probe-active-rule"
-    active_monitor_id = "ledger-probe-active-rule-monitor"
+    active_monitor_id = f"rule:{active_rule_id}:1"
     chat_id = "55555555-5555-4555-8555-555555555555"
     message_id = "66666666-6666-4666-8666-666666666666"
     file_path = "ledger-probe.txt"
@@ -1052,7 +1051,7 @@ try:
         if rule["id"] == {active_rule_id!r}
     )
     active_monitor = runtime.monitor(
-        {agent_id!r}, {{"command": "echo active rule probe", "stall_timeout_seconds": 0}},
+        {agent_id!r}, {{"command": "echo ledger probe", "stall_timeout_seconds": 0}},
         key={active_monitor_id!r}, rule=active_rule,
     )
     monitor = runtime.monitor(
@@ -1294,7 +1293,7 @@ def probe_fixture_state(
                         raise RuntimeError("seeded rule-check monitor is missing")
                     rule_monitor = (monitor_id, row[0])
                     changed = json.loads(row[0])
-                    changed["status"] = "running"
+                    changed["status"] = "approval"
                     changed["ruleId"] = identifiers["activeRule"]
                     connection.execute(
                         "UPDATE runtime_monitors SET record=? WHERE id=?",

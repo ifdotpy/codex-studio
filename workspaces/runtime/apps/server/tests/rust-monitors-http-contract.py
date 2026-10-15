@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -411,21 +412,48 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute("DROP TRIGGER IF EXISTS fail_rule_insert")
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_active_rule_check_refusal_is_named_and_writes_nothing(self) -> None:
+    def test_active_rule_check_is_cancelled_when_rule_is_paused(self) -> None:
         backend = self.backend
+        monitor_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rule:active-rule:1"))
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            rule_row = database.execute(
+                "SELECT record FROM runtime_rules WHERE id='active-rule'"
+            ).fetchone()
+            rule = json.loads(rule_row[0])
+            rule.update(
+                status="active",
+                inFlight=True,
+                checks=1,
+                launchIntent={
+                    "ruleId": "active-rule",
+                    "checkNumber": 1,
+                    "agentId": "monitor-contract-agent",
+                    "epoch": 0,
+                    "accountKey": None,
+                    "threadId": None,
+                    "monitorId": monitor_id,
+                    "command": "echo",
+                    "timeoutMs": 60000,
+                    "liveness": False,
+                },
+            )
+            database.execute(
+                "UPDATE runtime_rules SET record=? WHERE id='active-rule'",
+                (json.dumps(rule),),
+            )
             row = database.execute(
                 "SELECT record FROM runtime_monitors WHERE id='active-check'"
             ).fetchone()
             self.assertIsNotNone(row)
             monitor = json.loads(row[0])
-            monitor.update(status="running", ruleId="active-rule")
+            monitor.update(id=monitor_id, status="approval", ruleId="active-rule")
             database.execute(
-                "UPDATE runtime_monitors SET record=? WHERE id='active-check'",
-                (json.dumps(monitor),),
+                "DELETE FROM runtime_monitors WHERE id='active-check'",
             )
-        before = no_write_snapshot(backend.state)
+            database.execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES(?,?)",
+                (monitor_id, json.dumps(monitor)),
+            )
         response = backend.request(
             "POST",
             "/api/rules",
@@ -436,12 +464,17 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "agent": "monitor-contract-agent",
             },
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json()["error"],
-            "Not implemented: requires monitor-driver/active-checks",
-        )
-        self.assertEqual(no_write_snapshot(backend.state), before)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            paused = json.loads(database.execute(
+                "SELECT record FROM runtime_rules WHERE id='active-rule'"
+            ).fetchone()[0])
+            cancelled = json.loads(database.execute(
+                "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,),
+            ).fetchone()[0])
+        self.assertEqual(paused["status"], "paused")
+        self.assertFalse(paused["inFlight"])
+        self.assertEqual(cancelled["status"], "cancelled")
 
     def test_null_resize_fields_are_refused_without_writes(self) -> None:
         self.start_quiescent_backend()

@@ -71,17 +71,17 @@ impl RulesRepository {
         Ok(())
     }
 
-    pub fn has_active_check(connection: &Connection, rule_id: &str) -> StoreResult<bool> {
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE \
-                 CASE WHEN json_valid(record) THEN \
-                 json_extract(record,'$.ruleId')=?1 AND \
-                 json_extract(record,'$.status') IN ('running','starting','approval') \
-                 ELSE 0 END)",
-                [rule_id],
-                |row| row.get(0),
-            )
+    pub fn active_check_ids(connection: &Connection, rule_id: &str) -> StoreResult<Vec<String>> {
+        let mut statement = connection.prepare(
+            "SELECT id FROM runtime_monitors WHERE \
+             CASE WHEN json_valid(record) THEN \
+             json_extract(record,'$.ruleId')=?1 AND \
+             json_extract(record,'$.status') IN ('running','starting','approval') \
+             ELSE 0 END ORDER BY rowid",
+        )?;
+        statement
+            .query_map([rule_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 }
@@ -225,8 +225,15 @@ mod tests {
                  ('unrelated','{\"id\":\"unrelated\",\"status\":false}');",
         )
         .expect("monitor table creates");
-        assert!(RulesRepository::has_active_check(&db, "r1").expect("active check is found"));
-        assert!(!RulesRepository::has_active_check(&db, "r2").expect("other rule has no check"));
+        assert_eq!(
+            RulesRepository::active_check_ids(&db, "r1").expect("active check is found"),
+            ["m1"]
+        );
+        assert!(
+            RulesRepository::active_check_ids(&db, "r2")
+                .expect("other rule has no check")
+                .is_empty()
+        );
     }
 }
 inventory::submit! {

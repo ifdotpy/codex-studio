@@ -386,6 +386,58 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
 }
 
 #[test]
+fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
+    let template = Template::new();
+    let state = template.clone_state();
+    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    change(
+        &store,
+        json!({
+            "kind":"interval",
+            "status":"active",
+            "inFlight":false,
+            "checks":0,
+            "intervalSeconds":60,
+            "nextAt":NOW,
+            "command":"printf fake-runner"
+        }),
+    );
+    let monitor = CapturingMonitor {
+        store: &store,
+        calls: RefCell::new(Vec::new()),
+        unknown: false,
+    };
+
+    let report = tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+        .expect("schedule and submit the due check");
+    assert_eq!(report.launched, 1);
+    let check = monitor.calls.borrow()[0].clone();
+    assert_eq!(check.command, "printf fake-runner");
+    assert_eq!(check.check_number, 1);
+    assert_eq!(rule(&store)["inFlight"], true);
+
+    assert!(
+        finish(
+            &store,
+            &check,
+            CheckResult {
+                code: Some(0),
+                error: None,
+                output: "fake output",
+            },
+            NOW + 2.0,
+        )
+        .expect("persist fake runner result")
+    );
+    let completed = rule(&store);
+    assert_eq!(completed["inFlight"], false);
+    assert_eq!(completed["lastExitCode"], 0);
+    assert_eq!(completed["lastOutput"], "fake output");
+    assert_eq!(completed["lastFinished"], NOW + 2.0);
+    assert_eq!(events(&store).len(), 1);
+}
+
+#[test]
 fn local_metadata_reports_size_timestamp_and_missing_file() {
     let root = tempfile::tempdir().expect("file root");
     let path = root.path().join("watch");
