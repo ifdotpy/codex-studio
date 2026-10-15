@@ -100,23 +100,46 @@ def compile_binary(output, files, swiftc):
         str(temporary),
         "-lsqlite3",
     ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        # The host shell can export the Command Line Tools SDK. It is built
-        # by a newer Swift release on this machine than the selected Xcode
-        # compiler, so let swiftc select its matching SDK.
-        env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
-    )
+    process = None
+    previous_handlers = {}
+    termination_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+    def forward_termination(signum, _frame):
+        if process is not None:
+            stop_process_group(process)
+        raise SystemExit(128 + signum)
+
     try:
-        stdout, stderr = process.communicate(timeout=SCANNER_COMPILER_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        stop_process_group(process)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, termination_signals)
+        try:
+            for signum in termination_signals:
+                previous_handlers[signum] = signal.signal(signum, forward_termination)
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                # The host shell can export the Command Line Tools SDK. It is built
+                # by a newer Swift release on this machine than the selected Xcode
+                # compiler, so let swiftc select its matching SDK.
+                env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
+            )
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        try:
+            stdout, stderr = process.communicate(timeout=SCANNER_COMPILER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stop_process_group(process)
+            raise RuntimeError("swiftc timed out while building the local cost scanner.") from None
+    except BaseException:
+        if process is not None:
+            stop_process_group(process)
         temporary.unlink(missing_ok=True)
-        raise RuntimeError("swiftc timed out while building the local cost scanner.") from None
+        raise
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     if process.returncode:
         temporary.unlink(missing_ok=True)
         detail = (stderr or stdout).strip()

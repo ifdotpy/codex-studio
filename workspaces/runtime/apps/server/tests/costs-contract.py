@@ -16,6 +16,8 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -137,6 +139,11 @@ class CostsTests(unittest.TestCase):
                 "64 * 1024",
                 64 * 1024,
             ),
+            "COST_COMMAND_TERMINATION_GRACE_SECONDS": (
+                5,
+                "Duration::from_secs(5)",
+                5,
+            ),
             "COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS": (
                 None,
                 "50",
@@ -180,6 +187,79 @@ class CostsTests(unittest.TestCase):
             COST_SCANNER_BUILD_TIMEOUT_SECONDS,
             "The scanner compiler timeout must remain inside the outer build timeout",
         )
+
+    @unittest.skipUnless(
+        os.name == "posix", "the cost scanner helper requires POSIX signals"
+    )
+    def test_build_helper_forwards_shutdown_to_the_swiftc_session(self):
+        build_script = SERVER_SOURCE_ROOT / "cost-scanner/build.py"
+        compiler_pid_path = self.root / "compiler.pid"
+        fake_compiler = self.root / "fake-swiftc"
+        fake_compiler.write_text(
+            f"#!{sys.executable}\n"
+            "import os,pathlib,sys,time\n"
+            "marker=pathlib.Path(os.environ['FAKE_COMPILER_PID'])\n"
+            "temporary=marker.with_suffix('.tmp')\n"
+            "temporary.write_text(str(os.getpid()))\n"
+            "os.replace(temporary,marker)\n"
+            "time.sleep(60)\n"
+        )
+        fake_compiler.chmod(0o700)
+        output = self.root / "scanner"
+        helper_code = (
+            "import importlib.util,pathlib,sys; "
+            "spec=importlib.util.spec_from_file_location('cost_scanner_build',sys.argv[1]); "
+            "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "module.compile_binary(pathlib.Path(sys.argv[2]),[],sys.argv[3])"
+        )
+        helper = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                helper_code,
+                str(build_script),
+                str(output),
+                str(fake_compiler),
+            ],
+            env={**os.environ, "FAKE_COMPILER_PID": str(compiler_pid_path)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        compiler_pid = None
+        compiler_reaped = False
+        try:
+            wait_for_condition(
+                lambda: compiler_pid_path.read_text().strip()
+                if compiler_pid_path.is_file()
+                and compiler_pid_path.read_text().strip().isdigit()
+                else None,
+                "fake swiftc PID publication",
+            )
+            compiler_pid = int(compiler_pid_path.read_text())
+            helper.send_signal(signal.SIGTERM)
+            self.assertEqual(helper.wait(timeout=10), 128 + signal.SIGTERM)
+            helper.communicate()
+
+            def compiler_is_gone():
+                try:
+                    os.kill(compiler_pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+
+            wait_for_condition(compiler_is_gone, "swiftc process reaping")
+            compiler_reaped = True
+            self.assertFalse(output.exists())
+        finally:
+            if helper.poll() is None:
+                helper.kill()
+                helper.communicate()
+            if compiler_pid is not None and not compiler_reaped:
+                try:
+                    os.kill(compiler_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_estimate_is_not_bill_and_does_not_add_token_categories(self):
         row = report()

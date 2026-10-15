@@ -32,6 +32,8 @@ const COST_SCANNER_BUILD_SCRIPT: &str = concat!(
 const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
 const COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS: u64 = 50;
 const COST_COMMAND_POLL_INTERVAL_MILLISECONDS: u64 = 10;
+// Keep helper shutdown aligned with cost-scanner/build.py's compiler cleanup grace.
+const COST_COMMAND_TERMINATION_GRACE_SECONDS: Duration = Duration::from_secs(5);
 static COST_REFRESH_ATTEMPTS: LazyLock<Mutex<BTreeMap<String, tokio::time::Instant>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static CODEX_SCAN_LOCK: Mutex<()> = Mutex::new(());
@@ -381,7 +383,7 @@ fn refresh_claude_costs(
     create_private_dir(&root)?;
     let cache = root.join("claude-costs.json");
     let lock_path = cache.with_extension("refresh.lock");
-    let Some(lock) = claim_refresh_lock(&lock_path)? else {
+    let Some(_lock) = claim_refresh_lock(&lock_path)? else {
         return Ok(());
     };
     let previous = read_json(&cache);
@@ -406,8 +408,6 @@ fn refresh_claude_costs(
             .map_err(|_| UsageError::Scan)?;
     }
     fs::rename(&temporary, cache).map_err(|_| UsageError::Scan)?;
-    drop(lock);
-    remove_refresh_lock(&lock_path);
     Ok(())
 }
 
@@ -900,6 +900,30 @@ fn read_cost_pipe(mut pipe: impl Read, limit: usize) -> std::io::Result<CostPipe
 }
 
 fn terminate_cost_child(child: &mut dyn ChildWrapper) -> Result<(), UsageError> {
+    #[cfg(unix)]
+    {
+        let process_group = nix::unistd::Pid::from_raw(child.id() as i32);
+        if nix::sys::signal::killpg(process_group, nix::sys::signal::Signal::SIGTERM).is_ok() {
+            let deadline = Instant::now()
+                + COST_COMMAND_TERMINATION_GRACE_SECONDS
+                + Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS);
+            while Instant::now() < deadline {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        return child
+                            .wait()
+                            .map(|_| ())
+                            .map_err(|_| UsageError::ScannerCleanup);
+                    }
+                    Ok(None) => thread::sleep(
+                        Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    ),
+                    Err(_) => break,
+                }
+            }
+        }
+    }
     if child.start_kill().is_err()
         && child
             .try_wait()
@@ -1126,10 +1150,33 @@ fn local_day(timestamp: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_cost_snapshot, refresh_account_costs, scan_claude_sessions};
+    use super::{
+        account_cost_snapshot, claim_refresh_lock, refresh_account_costs, scan_claude_sessions,
+    };
     use serde_json::{Value, json};
+    use std::process::Command;
     use std::sync::atomic::AtomicBool;
+    use std::thread;
     use std::time::Duration;
+    use std::time::Instant;
+
+    #[test]
+    fn successor_refresh_lock_survives_previous_holder_release() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let lock_path = directory.path().join("claude.refresh.lock");
+
+        let first = claim_refresh_lock(&lock_path)
+            .expect("first holder claims lock")
+            .expect("lock is initially available");
+        drop(first);
+
+        let second = claim_refresh_lock(&lock_path)
+            .expect("successor claims released lock")
+            .expect("previous holder released lock");
+        assert!(lock_path.exists(), "successor's lock remains present");
+        drop(second);
+        assert!(!lock_path.exists(), "successor releases its own lock");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn long_fake_scan_records_checked_at_when_the_scan_finishes() {
@@ -1211,7 +1258,7 @@ mod tests {
                     let mut command = std::process::Command::new("python3");
                     command
                         .arg("-c")
-                        .arg("import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)")
+                        .arg("import os,pathlib,sys,time\nmarker=pathlib.Path(sys.argv[1])\ntemporary=marker.with_suffix('.tmp')\nwith temporary.open('w') as file: file.write(str(os.getpid()))\nos.replace(temporary, marker)\ntime.sleep(60)")
                         .arg(&marker_for_worker);
                     super::run_cost_command(
                         command,
@@ -1261,6 +1308,90 @@ mod tests {
             .join("account-costs")
             .join(super::digest(&account_identity));
         assert!(!cache_root.join(".refresh.lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_scanner_build_reaps_its_detached_fake_compiler() {
+        const READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let build_script = super::COST_SCANNER_BUILD_SCRIPT;
+        let output = directory.path().join("scanner");
+        let compiler = directory.path().join("fake-swiftc");
+        let compiler_pid_path = directory.path().join("compiler.pid");
+        std::fs::write(
+            &compiler,
+            "#!/usr/bin/env python3\nimport os,pathlib,sys,time\n".to_owned()
+                + "marker=pathlib.Path(os.environ['FAKE_SWIFTC_PID'])\n"
+                + "temporary=marker.with_suffix('.tmp')\n"
+                + "temporary.write_text(str(os.getpid()))\n"
+                + "os.replace(temporary, marker)\n"
+                + "time.sleep(60)\n",
+        )
+        .expect("fake compiler script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o700))
+                .expect("make fake compiler executable");
+        }
+        let helper_code = "import importlib.util,pathlib,sys; spec=importlib.util.spec_from_file_location('cost_scanner_build',sys.argv[1]); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.compile_binary(pathlib.Path(sys.argv[2]),[],sys.argv[3])";
+        let mut command = Command::new("python3");
+        command
+            .arg("-c")
+            .arg(helper_code)
+            .arg(build_script)
+            .arg(&output)
+            .arg(&compiler)
+            .env("FAKE_SWIFTC_PID", &compiler_pid_path);
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_cancelled = std::sync::Arc::clone(&cancelled);
+        let worker = tokio::task::spawn_blocking(move || {
+            super::run_cost_command(
+                command,
+                Duration::from_secs(900),
+                1024,
+                Some(1024),
+                &worker_cancelled,
+            )
+        });
+        let ready_path = compiler_pid_path.clone();
+        let compiler_pid = tokio::task::spawn_blocking(move || {
+            let deadline = Instant::now() + READY_TIMEOUT;
+            while Instant::now() < deadline {
+                if let Ok(value) = std::fs::read_to_string(&ready_path) {
+                    if let Ok(pid) = value.trim().parse::<u32>() {
+                        return Some(pid);
+                    }
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            None
+        })
+        .await
+        .expect("fake compiler PID waiter");
+        let Some(compiler_pid) = compiler_pid else {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            let _ = worker.await;
+            panic!("fake compiler did not publish its PID");
+        };
+
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let result = worker.await.expect("scanner build worker");
+        assert!(matches!(result, Err(super::UsageError::ScannerCancelled)));
+        let probe = Command::new("/bin/kill")
+            .args(["-0", &compiler_pid.to_string()])
+            .status()
+            .expect("probe fake compiler process");
+        assert!(
+            !probe.success(),
+            "cancelled compiler process must be reaped"
+        );
+        assert!(
+            !output.exists(),
+            "cancelled build must not publish the scanner"
+        );
     }
 
     #[tokio::test(start_paused = true)]
