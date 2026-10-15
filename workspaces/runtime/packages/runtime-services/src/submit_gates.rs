@@ -311,6 +311,7 @@ impl AuthorizationSnapshot {
             projects: BTreeMap::new(),
             events: Vec::new(),
         };
+        let mut malformed_agents = BTreeMap::new();
         for (key, raw) in &rows.agents {
             let location = format!("agents/{key}");
             let authority = (|| {
@@ -336,9 +337,11 @@ impl AuthorizationSnapshot {
                 Ok(authority) => {
                     snapshot.agents.insert(key.clone(), authority);
                 }
-                Err(_) if key != &rows.recipient_id => {
-                    // An unrelated malformed agent has no authority in this
-                    // decision. Its own turn is held by the account worker.
+                Err(error) if key != &rows.recipient_id => {
+                    // A malformed row has no authority unless a submitted
+                    // event names it as a sender. Keep the refusal so that a
+                    // missing authority cannot become a room-boundary result.
+                    malformed_agents.insert(key.clone(), error);
                 }
                 Err(error) => return Err(error),
             }
@@ -454,6 +457,19 @@ impl AuthorizationSnapshot {
                 _ => EventSnapshot::Other,
             };
             snapshot.events.push(projected);
+        }
+        for event in &snapshot.events {
+            let sender = match event {
+                EventSnapshot::AgentMessage { sender, .. }
+                | EventSnapshot::Followup { sender, .. }
+                | EventSnapshot::ComplaintResponse {
+                    responder: sender, ..
+                } => sender.as_deref(),
+                _ => None,
+            };
+            if let Some(error) = sender.and_then(|sender| malformed_agents.get(sender)) {
+                return Err(error.clone());
+            }
         }
         Ok(snapshot)
     }

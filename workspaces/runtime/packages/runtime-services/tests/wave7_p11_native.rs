@@ -840,10 +840,27 @@ fn stored_native_action_errors_name_the_table_and_row() {
     .expect("corrupt agent fixture");
     let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
     let tx = db.unchecked_transaction().expect("begin");
-    assert!(matches!(
-        reserve(&tx, &request, "attempt", 1.0, &Gate),
-        Err(NativeError::Store(studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_agents", ref id })) if id == "lead"
-    ));
+    let refusal = match reserve(&tx, &request, "attempt", 1.0, &Gate) {
+        Ok(_) => panic!("malformed stored agent must be refused"),
+        Err(error) => error,
+    };
+    let NativeError::Store(studio_runtime_store::StoreError::InvalidSyncObjectField {
+        scope,
+        id,
+        pointer,
+        reason,
+    }) = &refusal
+    else {
+        panic!("stored agent refusal must retain typed schema cause: {refusal:?}");
+    };
+    assert_eq!(scope, "runtime_agents");
+    assert_eq!(id, "lead");
+    assert!(
+        pointer.is_empty(),
+        "missing required fields fail at the row root"
+    );
+    assert!(reason.starts_with("required;"));
+    assert!(!reason.contains("SECRET_STORED_SENTINEL"));
     drop(tx);
     db.execute(
         "UPDATE runtime_agents SET record=?1 WHERE id='lead'",

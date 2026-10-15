@@ -18,7 +18,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
-use studio_runtime_store::{RuntimeStore, SchedulerRepository, TurnAttemptIdentity};
+use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError, TurnAttemptIdentity};
 
 const ORACLE_ENVIRONMENT_ALLOWLIST: &[&str] = &[
     "PATH",
@@ -231,7 +231,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }
             Ok(json!(submitted))
         },
-        "accepted" => lifecycle_transaction(store, |tx| {
+        "accepted" => match lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
                 tx,
                 "agent",
@@ -239,10 +239,30 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 "attempt",
                 case["turnId"].as_str().unwrap_or("turn"),
             )
-            .map(|value| json!(value))
-        })
-        .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
+        }) {
+            Ok(value) => Ok(json!(value)),
+            Err(error) => {
+                if let Some(refusal) = case.get("expectRefusal") {
+                    let table = refusal["table"].as_str().expect("refusal table");
+                    let stored_id = refusal["id"].as_str().expect("refusal ID");
+                    let pointer = refusal["pointer"].as_str().expect("refusal pointer");
+                    assert!(
+                        matches!(
+                            &error,
+                            StoreError::InvalidSyncObjectField { scope, id, pointer: actual_pointer, reason }
+                                if scope == table
+                                    && id == stored_id
+                                    && actual_pointer == pointer
+                                    && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                                    && !reason.contains("SECRET_STORED_SENTINEL")
+                        ),
+                        "{}: acceptance must return the expected typed stored-field refusal: {error:?}",
+                        case["id"]
+                    );
+                }
+                Err(error.to_string())
+            }
+        },
         "unknown" | "not_sent" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_start_outcome(
                 tx,
@@ -591,15 +611,20 @@ fn python_written_turn_lifecycle_corpus() {
                 let refusal = case
                     .get("expectRefusal")
                     .unwrap_or_else(|| panic!("{id}: open Python-written state: {error}"));
-                let location = format!(
-                    "{}/{}",
-                    refusal["table"].as_str().expect("table"),
-                    refusal["id"].as_str().expect("id")
-                );
+                let table = refusal["table"].as_str().expect("table");
+                let stored_id = refusal["id"].as_str().expect("id");
                 let message = error.to_string();
                 assert!(
-                    message.contains(&location),
-                    "{id}: startup refusal must locate {location}: {message}"
+                    matches!(
+                        &error,
+                        StoreError::InvalidSyncObjectField { scope, id, pointer, reason }
+                            if scope == table
+                                && id == stored_id
+                                && pointer == refusal["pointer"].as_str().expect("pointer")
+                                && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                                && !reason.contains("SECRET_STORED_SENTINEL")
+                    ),
+                    "{id}: startup refusal must preserve its structured stored-field cause: {message} ({error:?})"
                 );
                 assert!(
                     !message.contains("CORPUS_PRIVATE_PAYLOAD")
@@ -735,18 +760,35 @@ fn python_written_turn_lifecycle_corpus() {
             let message = error
                 .take()
                 .expect("malformed or conflicting stored evidence must be refused");
-            assert!(
-                message
-                    == refusal["message"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!(
-                            "invalid stored sync object {}/{}",
-                            refusal["table"].as_str().expect("refusal table"),
-                            refusal["id"].as_str().expect("refusal id")
-                        )),
-                "{id}: error must locate table and stored id only: {message}"
-            );
+            if let Some(pointer) = refusal["pointer"].as_str() {
+                let prefix = format!(
+                    "invalid stored sync object {}/{} at {pointer}: ",
+                    refusal["table"].as_str().expect("refusal table"),
+                    refusal["id"].as_str().expect("refusal ID")
+                );
+                assert!(
+                    message.starts_with(&prefix),
+                    "{id}: wrong typed refusal body: {message}"
+                );
+                assert!(
+                    !message.contains("CORPUS_PRIVATE_PAYLOAD")
+                        && !message.contains("SECRET_STORED_SENTINEL"),
+                    "{id}: refusal body exposed planted data: {message}"
+                );
+            } else {
+                assert!(
+                    message
+                        == refusal["message"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!(
+                                "invalid stored sync object {}/{}",
+                                refusal["table"].as_str().expect("refusal table"),
+                                refusal["id"].as_str().expect("refusal ID")
+                            )),
+                    "{id}: error must locate table and stored id only: {message}"
+                );
+            }
             &expected["before"]
         } else {
             &expected["after"]

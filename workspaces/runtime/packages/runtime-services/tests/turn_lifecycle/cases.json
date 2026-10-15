@@ -5292,7 +5292,8 @@
     ],
     "expectRefusal": {
       "table": "runtime_agents",
-      "id": "agent"
+      "id": "agent",
+      "pointer": "/epoch"
     },
     "expectedDifferences": [],
     "tier": "fast",

@@ -221,6 +221,13 @@ fn compare(oracle: &mut Oracle, name: &str, case: &Value, deviation: Option<&str
         );
         assert_eq!(actual["denial"], denial, "{name}: wrong named refusal");
     }
+    if let Some(location) = case.get("refusal_location") {
+        assert_eq!(
+            actual["location"].as_str(),
+            location.as_str(),
+            "{name}: stored-input refusal must locate the malformed row field"
+        );
+    }
     if python["allowed"] == true && actual["allowed"] == false {
         assert_eq!(
             actual["denial"].as_str(),

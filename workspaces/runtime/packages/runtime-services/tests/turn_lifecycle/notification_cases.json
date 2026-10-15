@@ -8777,6 +8777,11 @@
         "value": "SECRET_STORED_SENTINEL"
       }
     ],
+    "expect_refusal_detail": {
+      "table": "runtime_agents",
+      "id": "agent",
+      "pointer": "/epoch"
+    },
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast",
@@ -12689,6 +12694,12 @@
         "value": []
       }
     ],
+    "expect_refusal_detail": {
+      "table": "runtime_agents",
+      "id": "agent",
+      "pointer": "/nativeSafetyBuffering"
+    },
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "steps": [
       {
         "frame": {
@@ -12700,7 +12711,6 @@
         }
       }
     ],
-    "expect_refusal": "invalid stored object runtime_agents:agent",
     "return": []
   },
   {

@@ -2815,6 +2815,7 @@
           "value": "renamed"
         }
       ],
+      "refusal_location": "agents/sender/id",
       "deviation": "invalid-stored-input"
     },
     {

@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, StoreError};
 
 struct Oracle {
     child: Child,
@@ -295,7 +295,28 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     effects,
                 )
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                if let Some(refusal) = case.get("expect_refusal_detail") {
+                    let table = refusal["table"].as_str().expect("refusal table");
+                    let stored_id = refusal["id"].as_str().expect("refusal ID");
+                    let pointer = refusal["pointer"].as_str().expect("refusal pointer");
+                    assert!(
+                        matches!(
+                            &error,
+                            studio_runtime_services::notification_dispatch::NotificationDispatchError::Store(
+                                StoreError::InvalidSyncObjectField { scope, id, pointer: actual_pointer, reason }
+                            ) if scope == table
+                                && id == stored_id
+                                && actual_pointer == pointer
+                                && !reason.contains("SECRET_STORED_SENTINEL")
+                                && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                        ),
+                        "{}: expected typed refusal for {table}/{stored_id} at {pointer}, got {error:?}",
+                        case["id"]
+                    );
+                }
+                error.to_string()
+            })?;
         assert_eq!(
             rolled.as_ref(),
             Some(&result),
@@ -1164,13 +1185,21 @@ fn corpus(full: bool, runtime_effects: bool) {
                 expected["pythonRoot"].as_str().expect("Python root"),
             )
         });
-        let error_matches = match expected_error {
-            Some(message) => error.as_deref().is_some_and(|error| {
-                error == message.as_str()
+        let error_matches = if case.get("expect_refusal_detail").is_some() {
+            error.as_deref().is_some_and(|error| {
+                error.starts_with("invalid stored sync object runtime_agents/agent at ")
                     && !error.contains("SECRET_STORED_SENTINEL")
                     && !error.contains("CORPUS_PRIVATE_PAYLOAD")
-            }),
-            None => error.is_none(),
+            })
+        } else {
+            match expected_error {
+                Some(message) => error.as_deref().is_some_and(|error| {
+                    error == message.as_str()
+                        && !error.contains("SECRET_STORED_SENTINEL")
+                        && !error.contains("CORPUS_PRIVATE_PAYLOAD")
+                }),
+                None => error.is_none(),
+            }
         };
         if diff.is_empty() && error_matches {
             green += 1;
