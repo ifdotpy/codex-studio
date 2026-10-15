@@ -8,6 +8,7 @@ import {
   readFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -38,6 +39,36 @@ test("Python remains the default backend and Rust requires an explicit selection
   expect(() => backendSelection({ CODEX_DESKTOP_BACKEND: "other" })).toThrow(
     "CODEX_DESKTOP_BACKEND",
   );
+});
+
+test("desktop identity rejects a Rust backend build that differs from the selected executable", async () => {
+  const state = path.join(os.tmpdir(), "codex-desktop-identity-fixture");
+  const server = createHttpServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(
+      JSON.stringify({
+        application: "codex-agents",
+        protocol: 1,
+        backendBuild: "b".repeat(64),
+        pid: process.pid,
+        stateDir: state,
+      }),
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  try {
+    await expect(
+      identity(`http://127.0.0.1:${address.port}`, state, {
+        timeoutMs: 1000,
+        expectedBackendBuild: "a".repeat(64),
+      }),
+    ).rejects.toThrow("does not match the selected executable");
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });
 
 test("explicit Rust selection starts the configured executable with desktop identity", async () => {

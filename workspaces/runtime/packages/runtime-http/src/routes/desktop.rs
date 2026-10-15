@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::State;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::io::{self, Read};
 
 use crate::router::HttpState;
 
@@ -19,15 +20,35 @@ pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
     Json(status(&state))
 }
 
-fn backend_build_from(launcher_value: Option<&str>, executable: &[u8]) -> String {
-    if let Some(value) = launcher_value.filter(|value| is_sha256_hex(value)) {
-        return value.to_owned();
+fn backend_build_from(
+    launcher_value: Option<&str>,
+    executable_build: &str,
+) -> Result<String, &'static str> {
+    if launcher_value
+        .filter(|value| is_sha256_hex(value))
+        .is_some_and(|value| value != executable_build)
+    {
+        return Err("CODEX_BACKEND_BUILD does not match this executable");
     }
-    sha256_hex(executable)
+    Ok(executable_build.to_owned())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
+fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(data_encoding::HEXLOWER.encode(&hasher.finalize()))
+}
+
+fn executable_build() -> io::Result<String> {
+    let executable_path = std::env::current_exe()?;
+    sha256_reader(std::fs::File::open(executable_path)?)
 }
 
 fn is_sha256_hex(value: &str) -> bool {
@@ -37,25 +58,28 @@ fn is_sha256_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+static BACKEND_BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Hash the actual executable before serving so `/api/desktop` never performs
+/// blocking file I/O on the first request.
+pub fn initialize_backend_identity() -> io::Result<()> {
+    let actual_build = executable_build()?;
+    let launcher_build = std::env::var("CODEX_BACKEND_BUILD").ok();
+    let actual_build = backend_build_from(launcher_build.as_deref(), &actual_build)
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+    match BACKEND_BUILD.set(actual_build.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if BACKEND_BUILD.get() == Some(&actual_build) => Ok(()),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "runtime backend identity was already initialized differently",
+        )),
+    }
+}
+
 fn backend_build() -> String {
-    static BACKEND_BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BACKEND_BUILD
-        .get_or_init(|| {
-            let launcher_value = std::env::var("CODEX_BACKEND_BUILD").ok();
-            if let Some(value) = launcher_value
-                .as_deref()
-                .filter(|value| is_sha256_hex(value))
-            {
-                return value.to_owned();
-            }
-            // A directly launched server must be able to read its own binary
-            // to report a stable identity; if not, identity cannot be verified.
-            let executable_path =
-                std::env::current_exe().expect("runtime executable path is available");
-            let executable =
-                std::fs::read(executable_path).expect("runtime executable is readable");
-            backend_build_from(launcher_value.as_deref(), &executable)
-        })
+        .get_or_init(|| executable_build().expect("runtime executable is readable"))
         .clone()
 }
 
@@ -105,10 +129,10 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_build_from, is_sha256_hex, sha256_hex};
+    use super::{backend_build_from, is_sha256_hex, sha256_reader};
     use axum::{body::to_bytes, extract::ConnectInfo, http::Request};
     use serde_json::Value;
-    use std::{path::Path, sync::Arc, time::Instant};
+    use std::{io::Cursor, path::Path, sync::Arc, time::Instant};
     use studio_runtime_services::provider_versions::{
         ActiveProviderConnections, Clock, ProviderPortError, ProviderProfile,
         ProviderVersionMonitor, ProviderVersionStore, SystemVersionProbe, UpstreamFetch,
@@ -117,17 +141,23 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
-    fn backend_build_uses_the_launcher_identity_and_has_a_binary_hash_fallback() {
+    fn backend_build_uses_actual_executable_hash_and_rejects_launcher_mismatch() {
         let executable = b"runtime executable fixture";
-        let launcher = "ab".repeat(32);
-        assert_eq!(backend_build_from(Some(&launcher), executable), launcher);
-        let derived = backend_build_from(None, executable);
-        assert!(is_sha256_hex(&derived));
-        assert_eq!(derived, sha256_hex(executable));
-        assert!(is_sha256_hex(&backend_build_from(
-            Some("invalid"),
-            executable
-        )));
+        let actual = sha256_reader(Cursor::new(executable)).expect("fixture hashes");
+        assert!(is_sha256_hex(&actual));
+        assert_eq!(
+            backend_build_from(Some(&actual), &actual),
+            Ok(actual.clone())
+        );
+        assert_eq!(backend_build_from(None, &actual), Ok(actual.clone()));
+        assert_eq!(
+            backend_build_from(Some("invalid"), &actual),
+            Ok(actual.clone())
+        );
+        assert_eq!(
+            backend_build_from(Some(&"ab".repeat(32)), &actual),
+            Err("CODEX_BACKEND_BUILD does not match this executable")
+        );
     }
 
     fn prepared_python(source: &Path) -> std::path::PathBuf {

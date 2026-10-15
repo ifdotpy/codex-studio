@@ -67,7 +67,20 @@ function runtimeServer(resources, env = process.env) {
 
 function runtimeServerBuild(resources, env = process.env) {
   const file = runtimeServer(resources, env);
-  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytesRead;
+    while (
+      (bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0
+    ) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 function claimRustState(state, backendBuild) {
@@ -263,7 +276,12 @@ function apiPython(resources, env = process.env) {
 async function identity(
   origin,
   state,
-  { attemptTimeoutMs = 5000, timeoutMs = 15000, retryDelayMs = 200 } = {},
+  {
+    attemptTimeoutMs = 5000,
+    timeoutMs = 15000,
+    retryDelayMs = 200,
+    expectedBackendBuild,
+  } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let uncertain = false;
@@ -314,6 +332,13 @@ async function identity(
       "The existing server is incompatible or uses a different state directory. Update or stop it before desktop startup.",
     );
   }
+  if (
+    expectedBackendBuild !== undefined &&
+    data.backendBuild !== expectedBackendBuild
+  )
+    throw new Error(
+      "The started Rust backend identity does not match the selected executable.",
+    );
   process.kill(data.pid, 0);
   return data;
 }
@@ -481,7 +506,13 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   for (let attempt = 0; attempt < 100; attempt++) {
     await sleep(100);
     if (failure) throw failure;
-    const ready = await identity(origin, canonicalState);
+    const ready = await identity(
+      origin,
+      canonicalState,
+      selectedBackend === "rust"
+        ? { expectedBackendBuild: backendBuildId }
+        : {},
+    );
     if (ready) {
       // A competing launcher can win the port. Its runtime flock remains authoritative.
       fs.writeFileSync(path.join(state, "canvas.pid"), `${ready.pid}\n`, {

@@ -205,6 +205,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
     let port = parse_port(args.into_iter())?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/backend-identity",
+        studio_runtime_http::initialize_backend_identity,
+    )
+    .await??;
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
     let address = listener.local_addr()?;
     let mut token = [0_u8; 32];
