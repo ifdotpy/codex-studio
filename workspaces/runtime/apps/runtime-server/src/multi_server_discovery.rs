@@ -1,5 +1,5 @@
 //! Tailscale host adapter for owner-only server discovery.
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Mutex, time::Duration};
 
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
@@ -23,6 +23,7 @@ const MAX_PROBE_BATCH: usize = 4;
 pub struct TailscaleServerDiscovery {
     state_root: PathBuf,
     executable: PathBuf,
+    discovery_lock: Mutex<()>,
 }
 
 impl TailscaleServerDiscovery {
@@ -34,6 +35,7 @@ impl TailscaleServerDiscovery {
         Self {
             state_root,
             executable,
+            discovery_lock: Mutex::new(()),
         }
     }
 
@@ -66,11 +68,9 @@ impl TailscaleServerDiscovery {
     ) -> Result<(), AccessError> {
         let peer_id = text(peer, "serverId");
         let local_origin = text(identity, "origin");
-        let Some(request_id) = reserve_auto_pair_id(store, peer_id, identity, local_origin)? else {
-            // An earlier send may have reached the peer even if its response was
-            // lost. Never replay an automatic pairing request after that point.
-            return Ok(());
-        };
+        // Reuse the persisted request ID. The shared exchange path recovers a
+        // completed receipt and refuses an unknown outcome without resending.
+        let request_id = reserve_auto_pair_id(store, peer_id, identity, local_origin)?;
         let body = json!({
             "protocol": 1,
             "serverId": identity["serverId"],
@@ -127,6 +127,10 @@ impl ServerDiscoveryPort for TailscaleServerDiscovery {
         identity: &Value,
         public_origin: &str,
     ) -> Result<Value, AccessError> {
+        let _discovery_guard = self
+            .discovery_lock
+            .try_lock()
+            .map_err(|_| refused(409, "discovery_busy", "A discovery pass is already running"))?;
         let status = crate::multi_server_owner::tailscale_json_from(
             &self.executable,
             &["status", "--json"],
@@ -304,7 +308,7 @@ fn reserve_auto_pair_id(
     peer_id: &str,
     identity: &Value,
     origin: &str,
-) -> Result<Option<String>, AccessError> {
+) -> Result<String, AccessError> {
     let request_content = json!({
         "protocol": 1,
         "serverId": identity["serverId"],
@@ -333,7 +337,7 @@ fn reserve_auto_pair_id(
                 && saved.get("publicKey") == request_content.get("publicKey")
                 && saved.get("requestId").and_then(Value::as_str).is_some()
             {
-                return Ok(None);
+                return Ok(saved["requestId"].as_str().unwrap_or_default().to_owned());
             }
         }
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -344,7 +348,7 @@ fn reserve_auto_pair_id(
             "INSERT INTO runtime_access_auto_attempts(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![peer_id, record.to_string()],
         )?;
-        Ok::<_, studio_runtime_store::StoreError>(Some(request_id))
+        Ok::<_, studio_runtime_store::StoreError>(request_id)
     })
     .map_err(|_| unavailable("The auto-pair intent could not be saved"))
 }
@@ -359,10 +363,22 @@ fn save_auto_pair(
     now: i64,
 ) -> Result<(), AccessError> {
     let id = text(peer, "serverId");
-    let fingerprint =
-        remote_transport::multi_server_request_fingerprint("POST", AUTO_PAIR_PATH, raw)
-            .map_err(|_| unavailable("The auto-pair response identity is invalid"))?;
+    let url = format!("{}{AUTO_PAIR_PATH}", text(peer, "origin"));
+    let fingerprint = remote_transport::multi_server_request_fingerprint("POST", &url, raw)
+        .map_err(|_| unavailable("The auto-pair response identity is invalid"))?;
     store.transaction_with(|tx| {
+        let auto_pair_enabled = tx
+            .query_row(
+                "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(1)
+            != 0;
+        if !auto_pair_enabled {
+            return Ok::<_, studio_runtime_store::StoreError>(false);
+        }
         let saved_raw = tx
             .query_row(
                 "SELECT record FROM runtime_access_clients WHERE id=?1",
@@ -420,9 +436,11 @@ fn save_auto_pair(
                 params![id, now],
             )?;
         }
-        Ok::<_, studio_runtime_store::StoreError>(())
+        Ok::<_, studio_runtime_store::StoreError>(true)
     })
-    .map_err(|_| unavailable("The auto-paired server could not be registered"))
+    .map_err(|_| unavailable("The auto-paired server could not be registered"))?
+    .then_some(())
+    .ok_or_else(|| refused(403, "auto_pair_disabled", "Automatic pairing is disabled"))
 }
 
 fn mark_missing_peers_unreachable(
@@ -500,12 +518,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(root.path())).unwrap();
         let identity = json!({"serverId":"local","label":"Local","publicKey":"key"});
-        let first = reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example")
-            .unwrap()
-            .expect("first call reserves one outbound attempt");
+        let first =
+            reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example").unwrap();
+        drop(store);
+        let store = RuntimeStore::open(Some(root.path())).unwrap();
         let second =
             reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example").unwrap();
-        assert_eq!(second, None, "uncertain first send must never be replayed");
+        assert_eq!(
+            second, first,
+            "the durable request identity is recovered after restart"
+        );
         let saved: String = store
             .read()
             .unwrap()
@@ -526,6 +548,118 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "attempted");
+    }
+
+    #[test]
+    fn auto_pair_registration_uses_absolute_url_and_rechecks_setting_atomically() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let peer = json!({
+            "serverId":"peer", "origin":"https://peer.example",
+            "publicKey":"peer-key", "label":"Peer"
+        });
+        let reply = json!({
+            "paired":true, "clientId":"local", "origin":"https://local.example",
+            "tailscaleUser":"owner@example.test"
+        });
+        let raw = br#"{"requestId":"auto-request"}"#;
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_access_settings SET auto_pair=0 WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("disable auto-pair during exchange");
+        let denied = save_auto_pair(
+            &store,
+            &peer,
+            "owner@example.test",
+            "auto-request",
+            raw,
+            &reply,
+            100,
+        );
+        assert!(matches!(
+            denied,
+            Err(AccessError::Refused {
+                status: 403,
+                code: "auto_pair_disabled",
+                ..
+            })
+        ));
+        let clients: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM runtime_access_clients", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(clients, 0, "disabled setting prevents the grant");
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_access_settings SET auto_pair=1 WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("enable auto-pair");
+        save_auto_pair(
+            &store,
+            &peer,
+            "owner@example.test",
+            "auto-request",
+            raw,
+            &reply,
+            100,
+        )
+        .expect("register after re-enabling auto-pair");
+        let expected = remote_transport::multi_server_request_fingerprint(
+            "POST",
+            "https://peer.example/api/multi-server/v1/auto-pair",
+            raw,
+        )
+        .expect("absolute HTTPS request fingerprint");
+        let saved: String = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(record,'$.autoPairingHash') FROM runtime_access_clients WHERE id='peer'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, expected);
+    }
+
+    #[test]
+    fn overlapping_discovery_returns_busy_before_probing() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let discovery = TailscaleServerDiscovery::with_executable(
+            root.path().to_owned(),
+            root.path().join("must-not-run-tailscale"),
+        );
+        let _guard = discovery.discovery_lock.lock().unwrap();
+        let error = discovery
+            .discover(
+                &store,
+                &json!({"serverId":"local"}),
+                "https://local.example",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AccessError::Refused {
+                status: 409,
+                code: "discovery_busy",
+                ..
+            }
+        ));
     }
 
     #[test]
