@@ -607,12 +607,15 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
     ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$liveTerminal", "title": "Ledger"}, "expected": "2xx"}},
     ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$liveTerminal", "cols": 80, "rows": 24}, "expected": "2xx"}},
+    # Python implements native command input for a seeded running command
+    # (codex_workspace.py:2183-2217), and Rust now queues the same durable
+    # message through the implemented route.
     ("POST", "/api/native-command"): {
         "primary": {
             "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires turn-path/native-command-input",
-            "assert_no_write": True,
+            "fixture_mutations": {"activate_native_command": True},
+            "restore": ["active_command_record"],
+            "expected": "2xx",
         },
     },
     ("POST", "/api/sync/notify"): {
@@ -912,6 +915,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     agent_id = "ledger-probe-agent"
     image_agent_id = "ledger-probe-image-agent"
     task_id = "ledger-probe-task"
+    active_command_id = "ledger-probe-active-command"
     work_id = "ledger-probe-work"
     complaint_id = "ledger-probe-complaint"
     room_id = "ledger-probe-room"
@@ -987,6 +991,11 @@ try:
         runtime.put(db, "tasks", {{
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
+            "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {active_command_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "completed", "processId": "44", "itemId": "ledger-probe-command-item",
             "created": 1.0, "finished": 2.0,
         }}, sync_rooms=False)
         runtime.put(db, "work", {{
@@ -1150,6 +1159,7 @@ finally:
         "agent": agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
+        "activeCommand": active_command_id,
         "complaint": complaint_id,
         "room": room_id,
         "checkpoint": terminal_identifiers["checkpoint"],
@@ -1257,12 +1267,15 @@ def probe_fixture_state(
         raise ValueError("workspace monitor mutations must declare restoration")
     if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
         raise ValueError("active rule-check mutations must declare restoration")
+    if ("activate_native_command" in mutations) != ("active_command_record" in restore):
+        raise ValueError("active command mutations must declare task record restoration")
 
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
     workspace_monitors: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
+    active_command_record: tuple[str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
@@ -1285,6 +1298,22 @@ def probe_fixture_state(
             path = backend.state / "multi-server" / "identity.json"
             identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
             path.unlink()
+        if mutations.get("activate_native_command"):
+            command_id = identifiers["activeCommand"]
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_tasks WHERE id=?", (command_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded native command task is missing")
+                active_command_record = (command_id, row[0])
+                changed = json.loads(row[0])
+                changed["status"] = "running"
+                changed.pop("finished", None)
+                connection.execute(
+                    "UPDATE runtime_tasks SET record=? WHERE id=?",
+                    (json.dumps(changed), command_id),
+                )
         if mutations.get("stale_session_cost_cache"):
             cache_files = sorted((backend.state / "session-costs").glob("cost-*.json"))
             if not cache_files:
@@ -1345,7 +1374,11 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
-                if workspace_monitors is not None or rule_monitor is not None:
+                if (
+                    workspace_monitors is not None
+                    or rule_monitor is not None
+                    or active_command_record is not None
+                ):
                     with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                         if workspace_monitors is not None:
                             for monitor_id, raw in workspace_monitors.items():
@@ -1358,6 +1391,12 @@ def probe_fixture_state(
                             connection.execute(
                                 "UPDATE runtime_monitors SET record=? WHERE id=?",
                                 (raw, monitor_id),
+                            )
+                        if active_command_record is not None:
+                            command_id, raw = active_command_record
+                            connection.execute(
+                                "UPDATE runtime_tasks SET record=? WHERE id=?",
+                                (raw, command_id),
                             )
 
 

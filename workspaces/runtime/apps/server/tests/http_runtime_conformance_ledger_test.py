@@ -240,6 +240,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertEqual(defer_body["id"], "ledger-probe-question")
         self.assertNotEqual(answer_body["id"], defer_body["id"])
 
+    def test_native_command_probe_uses_a_distinct_seeded_running_task(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/native-command")]["primary"]
+        identifiers = {"activeCommand": "ledger-probe-active-command"}
+        _, body, _ = ledger.valid_probe("POST", "/api/native-command", identifiers, probe)
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(body["id"], "ledger-probe-active-command")
+        self.assertNotEqual(body["id"], "ledger-probe-task")
+
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
         changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
@@ -259,9 +267,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             state = Path(scratch)
             with sqlite3.connect(state / "canvas.sqlite3") as connection:
                 connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
                 connection.execute(
                     "INSERT INTO runtime_agents VALUES(?, ?)",
                     ("lead-agent", json.dumps({"id": "lead-agent", "executionMode": "host"})),
+                )
+                connection.execute(
+                    "INSERT INTO runtime_tasks VALUES(?, ?)",
+                    ("active-command", json.dumps({"id": "active-command", "status": "completed"})),
                 )
             identity_path = state / "multi-server" / "identity.json"
             identity_path.parent.mkdir()
@@ -270,20 +283,27 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             case = {
                 "fixture_mutations": {
                     "agent_execution_mode": "vm", "remove_identity": True,
+                    "activate_native_command": True,
                 },
-                "restore": ["agent_record", "identity_file"],
+                "restore": ["agent_record", "identity_file", "active_command_record"],
             }
 
             with self.assertRaisesRegex(RuntimeError, "probe failed"):
                 with ledger.probe_fixture_state(
-                    SimpleNamespace(state=state), {"agent": "lead-agent"}, case,
+                    SimpleNamespace(state=state), {
+                        "agent": "lead-agent", "activeCommand": "active-command",
+                    }, case,
                 ):
                     self.assertFalse(identity_path.exists())
                     with sqlite3.connect(state / "canvas.sqlite3") as connection:
                         changed = json.loads(connection.execute(
                             "SELECT record FROM runtime_agents WHERE id='lead-agent'",
                         ).fetchone()[0])
+                        active = json.loads(connection.execute(
+                            "SELECT record FROM runtime_tasks WHERE id='active-command'",
+                        ).fetchone()[0])
                     self.assertEqual(changed["executionMode"], "vm")
+                    self.assertEqual(active["status"], "running")
                     raise RuntimeError("probe failed")
 
             self.assertEqual(identity_path.read_bytes(), b'{"serverId":"local"}')
@@ -293,6 +313,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     "SELECT record FROM runtime_agents WHERE id='lead-agent'",
                 ).fetchone()[0])
             self.assertEqual(restored["executionMode"], "host")
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                restored_task = json.loads(connection.execute(
+                    "SELECT record FROM runtime_tasks WHERE id='active-command'",
+                ).fetchone()[0])
+            self.assertEqual(restored_task["status"], "completed")
 
     def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
         panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
