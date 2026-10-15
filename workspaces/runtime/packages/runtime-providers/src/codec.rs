@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -576,59 +576,112 @@ fn serialize_error(error: serde_json::Error) -> CodecError {
 
 /// Serialize a frame with the provider stdio newline delimiter.
 pub fn encode_line(frame: &Frame) -> Result<Vec<u8>, CodecError> {
-    let fields = match frame {
-        Frame::Request(method) => {
-            let mut fields = method.fields.clone();
-            fields.insert(
-                "id".into(),
-                serde_json::to_value(&method.id).map_err(serialize_error)?,
-            );
-            fields.insert(
-                "method".into(),
-                Value::String(method.method.as_str().to_owned()),
-            );
-            if let Some(params) = &method.params {
-                fields.insert("params".into(), params.clone());
-            }
-            fields
-        }
-        Frame::Notification(method) => {
-            let mut fields = method.fields.clone();
-            fields.insert(
-                "method".into(),
-                Value::String(method.method.as_str().to_owned()),
-            );
-            if let Some(params) = &method.params {
-                fields.insert("params".into(), params.clone());
-            }
-            fields
-        }
-        Frame::UnknownMethod(unknown) => unknown.fields.clone(),
-        Frame::Response { id, body, fields } => {
-            let mut fields = fields.clone();
-            fields.insert(
-                "id".into(),
-                serde_json::to_value(id).map_err(serialize_error)?,
-            );
-            match body {
-                ResponseBody::Result(value) => {
-                    fields.insert("result".into(), value.clone());
-                }
-                ResponseBody::Error(value) => {
-                    fields.insert("error".into(), value.clone());
-                }
-            }
-            fields
-        }
-    };
-    let mut output = serde_json::to_vec(&fields).map_err(serialize_error)?;
+    let mut output = Vec::new();
+    encode_line_into(frame, &mut output)?;
+    Ok(output)
+}
+
+/// Serialize into a caller-owned buffer, retaining its allocation for reuse.
+pub fn encode_line_into(frame: &Frame, output: &mut Vec<u8>) -> Result<(), CodecError> {
+    output.clear();
+    let view = FrameView::new(frame);
+    if let Err(error) = serde_json::to_writer(&mut *output, &view) {
+        output.clear();
+        return Err(serialize_error(error));
+    }
     if output.len() > MAX_FRAME_BYTES {
+        output.clear();
         return Err(CodecError::FrameTooLarge {
             limit: MAX_FRAME_BYTES,
         });
     }
     output.push(b'\n');
-    Ok(output)
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum FrameValue<'a> {
+    Json(&'a Value),
+    Id(&'a RequestId),
+    Text(&'a str),
+}
+
+impl Serialize for FrameValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Json(value) => value.serialize(serializer),
+            Self::Id(value) => value.serialize(serializer),
+            Self::Text(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+struct FrameView<'a> {
+    entries: Vec<(&'a str, FrameValue<'a>)>,
+}
+
+impl<'a> FrameView<'a> {
+    fn new(frame: &'a Frame) -> Self {
+        let (fields, overrides): (&Map<String, Value>, Vec<(&str, FrameValue<'a>)>) = match frame {
+            Frame::Request(method) => {
+                let mut overrides = vec![
+                    ("id", FrameValue::Id(&method.id)),
+                    ("method", FrameValue::Text(method.method.as_str())),
+                ];
+                if let Some(params) = &method.params {
+                    overrides.push(("params", FrameValue::Json(params)));
+                }
+                (&method.fields, overrides)
+            }
+            Frame::Notification(method) => {
+                let mut overrides = vec![("method", FrameValue::Text(method.method.as_str()))];
+                if let Some(params) = &method.params {
+                    overrides.push(("params", FrameValue::Json(params)));
+                }
+                (&method.fields, overrides)
+            }
+            Frame::UnknownMethod(unknown) => (&unknown.fields, Vec::new()),
+            Frame::Response { id, body, fields } => {
+                let mut overrides = vec![("id", FrameValue::Id(id))];
+                match body {
+                    ResponseBody::Result(value) => {
+                        overrides.push(("result", FrameValue::Json(value)))
+                    }
+                    ResponseBody::Error(value) => {
+                        overrides.push(("error", FrameValue::Json(value)))
+                    }
+                }
+                (fields, overrides)
+            }
+        };
+        let mut entries = fields
+            .iter()
+            .map(|(key, value)| (key.as_str(), FrameValue::Json(value)))
+            .collect::<Vec<_>>();
+        for (key, value) in overrides {
+            match entries.binary_search_by(|(existing, _)| existing.cmp(&key)) {
+                Ok(index) => entries[index].1 = value,
+                Err(index) => entries.insert(index, (key, value)),
+            }
+        }
+        Self { entries }
+    }
+}
+
+impl Serialize for FrameView<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in &self.entries {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }
 
 /// Validate provider initialization parameters before opening a child process.

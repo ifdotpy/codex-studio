@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::{
     CodecError, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES, Method,
     NotificationFrame, PendingBook, RequestFrame, RequestId, RequestState, ResponseBody,
-    decode_journal_entry, decode_journal_value, encode_line,
+    decode_journal_entry, decode_journal_value, encode_line, encode_line_into,
 };
 
 fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame {
@@ -135,6 +135,36 @@ fn unknown_method_and_extension_fields_round_trip_structurally() {
 }
 
 #[test]
+fn borrowed_encoder_preserves_exact_bytes_and_reuses_output_storage() {
+    let mut fields = Map::new();
+    fields.insert("extension".into(), json!({"nested":[1,2]}));
+    fields.insert("id".into(), json!(99));
+    fields.insert("method".into(), json!("old"));
+    fields.insert("params".into(), json!({"old":true}));
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::Number(7),
+        method: Method::Initialize,
+        params: Some(json!({"ok":true})),
+        fields,
+    });
+    let expected = b"{\"extension\":{\"nested\":[1,2]},\"id\":7,\"method\":\"initialize\",\"params\":{\"ok\":true}}\n";
+    let mut output = Vec::new();
+
+    encode_line_into(&frame, &mut output).expect("first borrowed encode");
+    assert_eq!(output, expected);
+    let allocation = (output.as_ptr(), output.capacity());
+
+    output.extend_from_slice(b"discarded prior contents");
+    encode_line_into(&frame, &mut output).expect("reused borrowed encode");
+    assert_eq!(output, expected);
+    assert_eq!((output.as_ptr(), output.capacity()), allocation);
+    assert_eq!(
+        encode_line(&frame).expect("compatibility encoder"),
+        expected
+    );
+}
+
+#[test]
 fn decoder_reports_malformed_oversized_and_truncated_frames() {
     let mut malformed = LineDecoder::new();
     assert!(matches!(
@@ -170,11 +200,10 @@ fn line_decoder_compacts_once_and_keeps_tail_after_frame_error() {
         decoder.push(&input),
         Err(CodecError::MalformedJson(_))
     ));
-    assert_eq!(decoder.push(&[]).expect("tail remains decodable"), vec![method(
-        Method::TurnStarted,
-        None,
-        Some(json!({"id":"t"}))
-    )]);
+    assert_eq!(
+        decoder.push(&[]).expect("tail remains decodable"),
+        vec![method(Method::TurnStarted, None, Some(json!({"id":"t"})))]
+    );
     decoder.finish().expect("tail fully consumed");
 }
 
