@@ -29,7 +29,9 @@ use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocuments
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
+#[cfg(windows)]
+use super::manifest::Dependency;
+use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
@@ -61,16 +63,9 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
-static STREAM_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-session/app-server"),
-    Dependency::new("usage-policy/token-rates"),
-];
 #[cfg(windows)]
-static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-session/app-server"),
-    Dependency::new("resource-policy/windows-file-identity"),
-    Dependency::new("usage-policy/token-rates"),
-];
+static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] =
+    &[Dependency::new("resource-policy/windows-file-identity")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get("/api/sync/stream", stream_status(), sync_stream)])
@@ -83,7 +78,7 @@ fn stream_status() -> OperationStatus {
 
 #[cfg(not(windows))]
 fn stream_status() -> OperationStatus {
-    OperationStatus::partial(STREAM_DEPENDENCIES)
+    OperationStatus::Implemented
 }
 
 async fn sync_stream(
@@ -525,6 +520,20 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn sync_stream_manifest_is_implemented_on_hosts_without_the_windows_file_identity_gap() {
+        let operation = crate::routes::manifest::operation_manifest()
+            .expect("route manifest validates")
+            .into_iter()
+            .find(|operation| operation.key() == ("GET".to_owned(), "/api/sync/stream".to_owned()))
+            .expect("sync stream operation is registered");
+        assert_eq!(
+            serde_json::to_value(operation).expect("operation serializes")["status"],
+            "implemented"
+        );
+    }
 
     mod python {
         include!(concat!(
@@ -1041,9 +1050,7 @@ inventory::submit! {
         name: "sync_stream",
         routes: Some(routes),
         dependencies: &[
-        "provider-session/app-server",
         "resource-policy/windows-file-identity",
-        "usage-policy/token-rates",
         ],
     }
 }
