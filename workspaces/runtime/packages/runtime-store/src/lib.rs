@@ -273,12 +273,6 @@ impl RuntimeStore {
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
         let runtime_lock = RuntimeLock::acquire(&root)?;
-        // Verify once after acquiring the ownership lock. The earlier pre-lock
-        // verification duplicated the complete registered-schema inspection
-        // on every open and raced another writer before the lock was held.
-        if canvas_path.is_file() && analytics_path.is_file() {
-            schema::verify_core(&canvas_path, &analytics_path)?;
-        }
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 
@@ -287,6 +281,8 @@ impl RuntimeStore {
                 return Err(StoreError::MissingDatabase(database.clone()));
             }
         }
+        // Existing paired databases make fresh_state::prepare a no-op; newly
+        // created databases are verified here after their catalog is prepared.
         schema::verify_core(&canvas_path, &analytics_path)?;
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
