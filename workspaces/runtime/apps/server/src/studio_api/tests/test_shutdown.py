@@ -22,6 +22,8 @@ from unittest.mock import patch
 import httpx
 from server_test_waits import HANG_GUARD_SECONDS
 
+READY_FD_ENV = "STUDIO_SHUTDOWN_TEST_READY_FD"
+
 
 def run_fixture(mode: str) -> None:
     """Run the real main and listeners without native workers or model calls."""
@@ -41,9 +43,13 @@ def run_fixture(mode: str) -> None:
     peer_link_module = ModuleType("codex_peer_link")
     listeners: list[Any] = []
 
+    def publish_ready(port: int) -> None:
+        with os.fdopen(int(os.environ[READY_FD_ENV]), "w") as ready:
+            print(json.dumps({"ready": port}), file=ready, flush=True)
+
     def make_runtime(_root: object) -> Any:
         if mode == "startup":
-            print(json.dumps({"ready": listeners[0].server_port}), flush=True)
+            publish_ready(listeners[0].server_port)
             os.kill(os.getpid(), signal.SIGTERM)
             threading.Event().wait()
         return SimpleNamespace(close=close_runtime, lock=threading.RLock())
@@ -64,7 +70,7 @@ def run_fixture(mode: str) -> None:
         # The bound TCP socket can accept connections before Uvicorn's event
         # loop is serving them. Publish readiness only after Uvicorn startup.
         if listeners and server is listeners[0].server:
-            print(json.dumps({"ready": listeners[0].server_port}), flush=True)
+            publish_ready(listeners[0].server_port)
 
     def make_server(*args: Any, **kwargs: Any) -> Any:
         server = original_factory(*args, **kwargs)
@@ -121,22 +127,24 @@ class BackendShutdownTests(unittest.TestCase):
             command = [sys.executable, "-B", "-c",
                        "from studio_api.tests.test_shutdown import run_fixture; "
                        "import sys; run_fixture(sys.argv[1])", mode]
-            process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=True)
+            ready_read, ready_write = os.pipe()
+            environment[READY_FD_ENV] = str(ready_write)
             try:
-                assert process.stdout is not None
-                deadline = time.monotonic() + HANG_GUARD_SECONDS
-                port = None
-                while time.monotonic() < deadline:
-                    readable, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
-                    if not readable:
-                        break
-                    line = process.stdout.readline()
-                    if not line:
-                        break
-                    if line.startswith('{"ready":'):
-                        port = json.loads(line)["ready"]
-                        break
+                process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True,
+                                           pass_fds=(ready_write,))
+            except BaseException:
+                os.close(ready_read)
+                raise
+            finally:
+                os.close(ready_write)
+            try:
+                # A dedicated one-message pipe avoids mixing select() with a
+                # text wrapper that may have already buffered the ready line.
+                with os.fdopen(ready_read) as ready:
+                    readable, _, _ = select.select([ready], [], [], HANG_GUARD_SECONDS)
+                    line = ready.readline() if readable else ""
+                port = json.loads(line)["ready"] if line else None
                 if port is None:
                     if process.poll() is None:
                         process.kill()
