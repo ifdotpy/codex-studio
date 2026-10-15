@@ -180,14 +180,19 @@ impl ServerDiscoveryPort for TailscaleServerDiscovery {
                                 .min(deadline.saturating_duration_since(std::time::Instant::now()));
                             // The durable request ID is retained on every failure. The
                             // signed exchange layer turns an uncertain send into Unknown.
-                            let _ = self.exchange_auto_pair(
-                                store,
-                                identity,
-                                &origin,
-                                &peer,
-                                snapshot.owner(),
-                                timeout,
-                            );
+                            if self
+                                .exchange_auto_pair(
+                                    store,
+                                    identity,
+                                    &origin,
+                                    &peer,
+                                    snapshot.owner(),
+                                    timeout,
+                                )
+                                .is_err()
+                            {
+                                eprintln!("automatic server pairing exchange did not complete");
+                            }
                         }
                     }
                     Ok(())
@@ -394,15 +399,14 @@ fn save_auto_pair(
                     "invalid stored object runtime_access_clients".into(),
                 )
             })?;
-        if let Some(saved) = &saved {
-            if text(&saved, "status") == "revoked"
-                || text(&saved, "publicKey") != text(peer, "publicKey")
-                || text(&saved, "origin") != text(peer, "origin")
-            {
-                return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                    "auto-paired server identity changed".into(),
-                ));
-            }
+        if let Some(saved) = &saved
+            && (text(saved, "status") == "revoked"
+                || text(saved, "publicKey") != text(peer, "publicKey")
+                || text(saved, "origin") != text(peer, "origin"))
+        {
+            return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                "auto-paired server identity changed".into(),
+            ));
         }
         let created = saved
             .as_ref()
@@ -510,6 +514,7 @@ fn unavailable(message: &'static str) -> AccessError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

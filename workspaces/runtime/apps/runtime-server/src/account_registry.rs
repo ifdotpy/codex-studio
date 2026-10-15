@@ -81,6 +81,8 @@ struct EnsureRequest {
 
 pub(crate) type LaunchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AccountLaunch, WorkerError>> + Send + 'a>>;
+type WorkerCompletion = Pin<Box<dyn Future<Output = (String, u64)> + Send>>;
+pub(crate) type AccountTargetPage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
 pub(crate) struct AccountLaunch {
     pub factory: Arc<dyn ProviderTaskFactory>,
@@ -105,7 +107,7 @@ pub(crate) struct AccountRegistry {
     workers: BTreeMap<String, AccountHandle>,
     worker_completion_ids: BTreeMap<String, u64>,
     next_worker_completion_id: u64,
-    worker_completions: FuturesUnordered<Pin<Box<dyn Future<Output = (String, u64)> + Send>>>,
+    worker_completions: FuturesUnordered<WorkerCompletion>,
     session_broker: AccountSessionBroker,
     last_accepted_archive_tick: Option<Instant>,
     accepted_archive_tick_enabled: bool,
@@ -729,11 +731,13 @@ impl AccountRegistry {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Integration tests compile this module in a separate crate.
     pub fn set_radio_clock_for_test(&mut self, clock: Arc<dyn Fn() -> f64 + Send + Sync>) {
         self.radio_clock = clock;
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Integration tests compile this module in a separate crate.
     pub async fn close_worker_for_test(&mut self, account: &str) -> Result<(), WorkerError> {
         let worker = self.workers.get_mut(account).ok_or(WorkerError::Closed)?;
         worker.cancel();
@@ -775,7 +779,9 @@ impl AccountRegistry {
         self.worker_completion_ids
             .insert(completion_account.clone(), completion_id);
         self.worker_completions.push(Box::pin(async move {
-            let _ = finished.wait_for(|done| *done).await;
+            if finished.wait_for(|done| *done).await.is_err() {
+                eprintln!("account worker ended before publishing its completion signal");
+            }
             (completion_account, completion_id)
         }));
         Ok(())
@@ -797,7 +803,10 @@ impl AccountRegistry {
             // A retained worker can lose its session before its join handle is
             // observed by the registry select loop. Stop and reap it before
             // starting the replacement so concurrent ensures still own one worker.
-            let _ = worker.shutdown().await;
+            if worker.shutdown().await.is_err() {
+                // Completion was observed; the failed worker no longer owns a live session.
+                eprintln!("account worker exited with an error before replacement");
+            }
         }
         self.start(account).await?;
         self.session_broker
@@ -1018,7 +1027,9 @@ impl AccountRegistry {
                             "provider-session/account-session",
                         )),
                     };
-                    let _ = request.response.send(response);
+                    if request.response.send(response).is_err() {
+                        eprintln!("account-session requester stopped before receiving its result");
+                    }
                     continue;
                 }
                 Some(RegistryTrigger::Wake)
@@ -1125,7 +1136,7 @@ pub(crate) fn target_page(
     store: &RuntimeStore,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, Vec<(String, i64, Option<String>)>>, WorkerError> {
+) -> Result<AccountTargetPage, WorkerError> {
     let db = store.read()?;
     SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
         .map_err(Into::into)
@@ -1400,12 +1411,12 @@ mod bounded_reconcile_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, defer_wake, next_retry_delay};
     use std::time::Duration;
     use studio_runtime_services::account_session_runtime::{
-        AccountSessionError, NotSentReason, ProviderRequest, RequestCertainty,
-        RetainedAccountSession,
+        NotSentReason, ProviderRequest, RequestCertainty, RetainedAccountSession,
     };
 
     #[test]
@@ -1462,6 +1473,5 @@ mod tests {
         );
         assert!(receipt.ticket.is_none());
         assert!(receipt.result.is_none());
-        let _: Result<_, AccountSessionError> = Ok(receipt);
     }
 }

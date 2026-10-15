@@ -167,7 +167,9 @@ impl HistoryRuntime {
                 runtime = next;
                 if let Some(completed) = completion {
                     let response = result.as_ref().copied().map_err(ToString::to_string);
-                    let _ = completed.send(response);
+                    if completed.send(response).is_err() {
+                        eprintln!("provider history tick requester ended before completion");
+                    }
                 }
                 match result {
                     Ok(_) => failures = 0,

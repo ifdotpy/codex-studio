@@ -334,7 +334,10 @@ fn watch_file_changes(
     use notify::Watcher;
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
-        let _ = sender.send(());
+        match sender.send(()) {
+            Ok(()) => {}
+            Err(_) => return,
+        }
     })
     .expect("file watcher starts");
     watcher
@@ -522,7 +525,9 @@ impl ProviderTaskFactory for WireFactory {
                                 write.message()["method"].as_str(),
                                 Some("thread/resume" | "thread/start")
                             ) {
-                                let _ = observed.await;
+                                if observed.await.is_err() {
+                                    break;
+                                }
                                 status.send_modify(|current| {
                                     current.initialization = InitializationStatus::Ready;
                                 });

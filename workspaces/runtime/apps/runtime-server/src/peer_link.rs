@@ -117,13 +117,12 @@ fn run(
             }
             publish(&advert, None);
         }
-        if running.is_none() {
-            if let Some(link) =
+        if running.is_none()
+            && let Some(link) =
                 start_link(&state_root, &socket, &forwarded_host, backend_port, &keys)
-            {
-                publish(&advert, Some(link.advert.clone()));
-                running = Some(link);
-            }
+        {
+            publish(&advert, Some(link.advert.clone()));
+            running = Some(link);
         }
         match stop.recv_timeout(REFRESH_INTERVAL) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -290,12 +289,12 @@ fn peer_link_binary() -> Option<PathBuf> {
     if let Some(path) = configured {
         candidates.push(path);
     }
-    if let Some(executable) = current {
-        if let Some(parent) = executable.parent() {
-            candidates.push(parent.join("studio-peer-link"));
-            for ancestor in parent.ancestors() {
-                candidates.push(ancestor.join("target/release/studio-peer-link"));
-            }
+    if let Some(executable) = current
+        && let Some(parent) = executable.parent()
+    {
+        candidates.push(parent.join("studio-peer-link"));
+        for ancestor in parent.ancestors() {
+            candidates.push(ancestor.join("target/release/studio-peer-link"));
         }
     }
     if let Some(path) = std::env::var_os("PATH") {

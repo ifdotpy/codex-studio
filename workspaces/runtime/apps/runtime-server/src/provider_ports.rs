@@ -717,6 +717,7 @@ impl Drop for TitleHome {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::{
         ProviderTitleRequestPort, SupervisorDiagnostics, TitleHome, account_queue_counts,
         leased_session_binary,

@@ -223,7 +223,7 @@ impl RetainedMonitorPort {
                 "Provider account scope changed",
             ));
         }
-        Ok(self.session.provider_request(ProviderRequest {
+        self.session.provider_request(ProviderRequest {
             account: operation.account_key.clone(),
             operation: request_operation,
             actor: actor.then(|| RequestActor {
@@ -235,7 +235,7 @@ impl RetainedMonitorPort {
             method,
             params,
             deadline,
-        })?)
+        })
     }
 
     fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
@@ -859,10 +859,7 @@ impl RuleMonitor for RetainedMonitorPort {
         self.reconcile_rule_check(check)
     }
     fn cancel(&self, monitor_id: &str) -> Result<(), RulesTickError> {
-        let record = self
-            .store
-            .read()
-            .map_err(studio_runtime_store::StoreError::from)?;
+        let record = self.store.read()?;
         let Some(monitor) = MonitorsRepository::get(&record, monitor_id)? else {
             return Ok(());
         };
@@ -1026,16 +1023,20 @@ impl MonitorPort for RetainedMonitorPort {
                     &store,
                     session.as_ref(),
                     resources.as_ref(),
-                    &id,
-                    generation,
-                    &command,
-                    &operation,
-                    actor.value(),
+                    MonitorProbeRequest {
+                        id: &id,
+                        generation,
+                        command: &command,
+                        operation: &operation,
+                        actor: actor.value(),
+                    },
                 )
                 .unwrap_or_else(|error| json!({"error":error}));
-                let _ = monitor_event_queue::enqueue_probe(
-                    &store, &id, &operation, generation, &result,
-                );
+                if monitor_event_queue::enqueue_probe(&store, &id, &operation, generation, &result)
+                    .is_err()
+                {
+                    eprintln!("monitor liveness probe result could not be persisted");
+                }
             })
             .map_err(|_| MonitorError::Refused("Could not schedule monitor liveness probe"))?;
         Ok(())
@@ -1095,16 +1096,27 @@ fn prepare_monitor_permissions(
     Ok(prepared.settings)
 }
 
+struct MonitorProbeRequest<'a> {
+    id: &'a str,
+    generation: i64,
+    command: &'a str,
+    operation: &'a studio_runtime_services::monitor_policy::Operation,
+    actor: Value,
+}
+
 fn run_probe(
     store: &RuntimeStore,
     session: &dyn AccountSessionPort,
     resources: &studio_runtime_services::account_worker::preparation::PreparationResources,
-    id: &str,
-    generation: i64,
-    command: &str,
-    operation: &studio_runtime_services::monitor_policy::Operation,
-    actor: Value,
+    request: MonitorProbeRequest<'_>,
 ) -> Result<Value, String> {
+    let MonitorProbeRequest {
+        id,
+        generation,
+        command,
+        operation,
+        actor,
+    } = request;
     if actor["yoloMode"]
         .as_bool()
         .or_else(|| actor["approvalPolicy"].as_str().map(|v| v == "never"))

@@ -116,6 +116,44 @@ pub(crate) struct HostRuntime {
     preparation_resources: Option<Arc<PreparationResources>>,
 }
 
+struct RegistryRuntimeOptions {
+    continuation_wake: Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+    session_broker: AccountSessionBroker,
+    preparation_resources: Option<Arc<PreparationResources>>,
+    config: AccountRegistryConfig,
+    managed_tool_runtime:
+        Option<Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>>,
+}
+
+type VmLaunchInputs = (
+    String,
+    String,
+    ProviderLaunchSpec,
+    String,
+    Vec<u8>,
+    Option<Value>,
+);
+
+#[derive(Clone, Copy)]
+struct VmCodexRefreshIdentity<'a> {
+    account_key: &'a str,
+    previous_account_id: &'a str,
+    actor_id: &'a str,
+    actor_epoch: i64,
+    generation: u64,
+}
+
+struct ClaudeCredentialRequest<'a> {
+    path: &'a Path,
+    host_config: &'a Path,
+    email: &'a str,
+    account_key: &'a str,
+    original_account: &'a Value,
+    claude_bridge_dir: &'a Path,
+    explicit_host_config: bool,
+}
+
 impl HostRuntime {
     #[cfg(test)]
     #[allow(dead_code)] // Integration tests use these constructors from a separate crate.
@@ -261,12 +299,14 @@ impl HostRuntime {
             store,
             launcher,
             state.event_wake_handle(),
-            state.continuation_wake_handle(),
-            monitor_dispatch_wake,
-            session_broker,
-            Some(Arc::clone(&preparation_resources)),
-            config,
-            managed_tool_runtime,
+            RegistryRuntimeOptions {
+                continuation_wake: state.continuation_wake_handle(),
+                monitor_dispatch_wake,
+                session_broker,
+                preparation_resources: Some(Arc::clone(&preparation_resources)),
+                config,
+                managed_tool_runtime,
+            },
         )
         .await?;
         runtime.preparation_resources = Some(preparation_resources);
@@ -303,12 +343,14 @@ impl HostRuntime {
             store,
             launcher,
             wake,
-            Arc::new(tokio::sync::Notify::new()),
-            monitor_dispatch_wake,
-            AccountSessionBroker::new(),
-            None,
-            config,
-            None,
+            RegistryRuntimeOptions {
+                continuation_wake: Arc::new(tokio::sync::Notify::new()),
+                monitor_dispatch_wake,
+                session_broker: AccountSessionBroker::new(),
+                preparation_resources: None,
+                config,
+                managed_tool_runtime: None,
+            },
         )
         .await
     }
@@ -317,15 +359,16 @@ impl HostRuntime {
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
-        continuation_wake: Arc<tokio::sync::Notify>,
-        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
-        session_broker: AccountSessionBroker,
-        preparation_resources: Option<Arc<PreparationResources>>,
-        config: AccountRegistryConfig,
-        managed_tool_runtime: Option<
-            Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
-        >,
+        options: RegistryRuntimeOptions,
     ) -> Result<Self, WorkerError> {
+        let RegistryRuntimeOptions {
+            continuation_wake,
+            monitor_dispatch_wake,
+            session_broker,
+            preparation_resources,
+            config,
+            managed_tool_runtime,
+        } = options;
         let registry = AccountRegistry::new_with_broker(
             store,
             launcher,
@@ -519,11 +562,13 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         &accounts,
                         account_session.as_deref(),
                         &store,
-                        &account_key,
-                        &previous_account_id,
-                        &actor_id,
-                        actor_epoch,
-                        generation,
+                        VmCodexRefreshIdentity {
+                            account_key: &account_key,
+                            previous_account_id: &previous_account_id,
+                            actor_id: &actor_id,
+                            actor_epoch,
+                            generation,
+                        },
                     )
                 },
             )
@@ -687,17 +732,7 @@ fn resolve_vm_launch_inputs(
     >,
     claude_bridge_dir: &Path,
     request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
-) -> Result<
-    (
-        String,
-        String,
-        ProviderLaunchSpec,
-        String,
-        Vec<u8>,
-        Option<Value>,
-    ),
-    WorkerError,
-> {
+) -> Result<VmLaunchInputs, WorkerError> {
     let snapshot = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
@@ -791,14 +826,16 @@ fn resolve_vm_launch_inputs(
                     WorkerError::PreparationRefused("vm-credentials/account-identity".into())
                 })?;
             let credential_document = read_vm_claude_credentials(
-                &credential_file,
-                &host_config,
-                email,
-                &request.account_key,
-                account,
                 accounts,
-                claude_bridge_dir,
-                explicit_host_config,
+                ClaudeCredentialRequest {
+                    path: &credential_file,
+                    host_config: &host_config,
+                    email,
+                    account_key: &request.account_key,
+                    original_account: account,
+                    claude_bridge_dir,
+                    explicit_host_config,
+                },
             )?;
             let environment = BTreeMap::from([
                 ("CLAUDE_CONFIG_DIR".into(), guest_profile),
@@ -1057,12 +1094,15 @@ fn refresh_vm_codex_token(
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
     store: &RuntimeStore,
-    account_key: &str,
-    previous_account_id: &str,
-    actor_id: &str,
-    actor_epoch: i64,
-    generation: u64,
+    identity: VmCodexRefreshIdentity<'_>,
 ) -> Result<Value, WorkerError> {
+    let VmCodexRefreshIdentity {
+        account_key,
+        previous_account_id,
+        actor_id,
+        actor_epoch,
+        generation,
+    } = identity;
     let scope_is_current = || {
         account_session
             .and_then(|session| session.current_scope(account_key))
@@ -1127,15 +1167,18 @@ fn refresh_vm_codex_token(
 /// inside the CLI's existing helper, then verify account identity and expiry
 /// before the access-only document reaches the durable guest-copy operation.
 fn read_vm_claude_credentials(
-    path: &Path,
-    host_config: &Path,
-    email: &str,
-    account_key: &str,
-    original_account: &Value,
     accounts: &AccountDriver,
-    claude_bridge_dir: &Path,
-    explicit_host_config: bool,
+    request: ClaudeCredentialRequest<'_>,
 ) -> Result<Vec<u8>, WorkerError> {
+    let ClaudeCredentialRequest {
+        path,
+        host_config,
+        email,
+        account_key,
+        original_account,
+        claude_bridge_dir,
+        explicit_host_config,
+    } = request;
     let account_lock = VM_CLAUDE_ACCOUNT_LOCKS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
@@ -2086,7 +2129,9 @@ mod install_root_tests {
                 app.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(async move {
-                let _ = stopped.await;
+                if stopped.await.is_err() {
+                    eprintln!("host runtime shutdown requester ended before signaling");
+                }
             })
             .await
         });
@@ -2133,7 +2178,8 @@ mod install_root_tests {
         assert_eq!(accounts_status, 200);
         assert!(accounts["accounts"].as_array().is_some());
 
-        let _ = stop.send(());
+        stop.send(())
+            .expect("graceful shutdown receiver is still active");
         server
             .await
             .expect("HTTP server task completes")
@@ -2336,7 +2382,9 @@ mod voice_composition_tests {
                             if method == "initialize" {
                                 let _ignored =
                                     reply.send(CommandReceipt::CachedInitialize(json!({})));
-                                let _ = observed.await;
+                                if observed.await.is_err() {
+                                    break;
+                                }
                                 continue;
                             }
                             let _ignored = reply.send(CommandReceipt::Written {
@@ -2803,6 +2851,7 @@ fn selected_account(
 }
 
 #[cfg(test)]
+#[allow(dead_code)] // Integration tests compile this module in a separate crate.
 pub(crate) fn claude_launch(
     profile: serde_json::Value,
     bridge_dir: &Path,
