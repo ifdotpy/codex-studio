@@ -885,8 +885,10 @@ impl AccountRegistry {
                     }
                     // Durable input remains pending. Timer/next commit retries
                     // the hint; only the worker can claim and submit it.
-                    Err(mpsc::error::TrySendError::Full(_)) => break,
-                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    Err(error) => match *error {
+                        mpsc::error::TrySendError::Full(_) => break,
+                        mpsc::error::TrySendError::Closed(_) => break,
+                    },
                 }
             }
         }
