@@ -575,8 +575,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
     # Python routes this operation to Runtime.answer (studio_api/work/router.py:376-379;
     # codex_runtime.py:11215-11254), which handles async questions and schedules
-    # their follow-up. This probe answers the seeded async question.
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "answers": {"value": {"answers": ["Ledger answer"]}}}, "expected": "2xx"}},
+    # their follow-up. This probe answers a dedicated async question so the
+    # later defer/delete probes retain their independent pending fixture.
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$answerQuestion", "answers": {"value": {"answers": ["Ledger answer"]}}}, "expected": "2xx"}},
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
@@ -996,6 +997,11 @@ try:
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
+            "id": "ledger-probe-answer-question", "agent": {agent_id!r}, "epoch": 0,
+            "method": "agent/asyncQuestion", "status": "pending", "createdAt": 1.0,
+            "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
+        }}, sync_rooms=False)
+        runtime.put(db, "requests", {{
             "id": "ledger-probe-provider-question", "agent": {agent_id!r}, "epoch": 0,
             "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
@@ -1147,6 +1153,7 @@ finally:
         "activeRule": active_rule_id,
         "question": "ledger-probe-question",
         "questionDelete": "ledger-probe-question",
+        "answerQuestion": "ledger-probe-answer-question",
         "providerQuestion": "ledger-probe-provider-question",
         "voiceRecord": "ledger-probe-voice-record",
         "voiceEndedSession": "ledger-probe-voice-ended",
