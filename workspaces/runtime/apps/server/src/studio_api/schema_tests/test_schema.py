@@ -538,7 +538,10 @@ class SchemaContractTests(unittest.TestCase):
         )
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
-        self.assertEqual(loosenings, [])
+        # WAL checkpoint telemetry intentionally adds nullable diagnostic fields.
+        # Keep the historical baseline while requiring every other constraint to
+        # remain unchanged.
+        self.assertEqual(loosenings, manifest.get("acceptedLoosenings", []))
 
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

@@ -269,7 +269,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             ("GET", "/api/file-info"): ["2xx", "501"],
             ("GET", "/api/sync/pull"): ["2xx", "2xx"],
             ("POST", "/api/sync/drafts"): ["2xx", "400"],
-            ("POST", "/api/rules"): ["2xx", "501"],
+            ("POST", "/api/rules"): ["2xx", "2xx"],
             ("POST", "/api/agents"): ["2xx", "501"],
             ("POST", "/api/leads"): ["2xx", "501"],
             ("POST", "/api/configure"): ["2xx", "501"],
@@ -287,6 +287,15 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     [spec["primary"]["expected"], *[case["expected"] for case in spec.get("additional", [])]],
                     expected,
                 )
+        rules = ledger.PROBE_CASES[("POST", "/api/rules")]
+        self.assertEqual(rules["primary"]["python_citation"], "codex_rules.py:337-339")
+        self.assertEqual(
+            rules["additional"][0]["python_citation"],
+            "codex_rules.py:179-181,236-245",
+        )
+        smart_title = ledger.PROBE_CASES[("POST", "/api/rename")]["additional"][0]
+        self.assertEqual(smart_title["expected"], "2xx")
+        self.assertEqual(smart_title["python_citation"], "codex_rename.py:195-199")
 
     def test_classifier_rejects_server_errors_before_allowances(self) -> None:
         case = {"path": "/x", "method": "GET", "label": "known"}

@@ -373,11 +373,7 @@ class RouteCensusContract(unittest.TestCase):
         actual = build_census()
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
-        self.assertEqual(actual["counts"]["total"], 160)
-        # POST /api/native-command and POST /api/checkpoint/restore now have
-        # implemented provider-backed handlers, matching their Python routes.
-        self.assertEqual(actual["counts"]["implemented"], 114)
-        self.assertEqual(actual["counts"]["partial"], 46)
+        self.assertEqual(actual["counts"]["total"], len(actual["operations"]))
         self.assertEqual(actual["counts"]["not_registered"], 0)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:

@@ -19,7 +19,7 @@ if __name__ == "__main__":
     names = [
         "test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive",
         "test_pending_monitor_cancel_expires_approval_and_records_exit",
-        "test_running_monitor_cancel_refuses_native_dependency_without_writes",
+        "test_running_monitor_cancel_persists_local_request_without_a_live_session",
     ]
     suite = unittest.TestSuite(contract.MonitorsHTTPContract(name) for name in names)
     result = unittest.TextTestRunner(verbosity=2).run(suite)

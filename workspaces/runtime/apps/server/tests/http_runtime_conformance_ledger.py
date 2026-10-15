@@ -532,7 +532,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/rename"): {
         "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename", "request_id": "ledger-rename"}, "fixture_mutations": {"agent_name": "HTTP ledger probe rename"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "503", "expected_error": "Title provider session is unavailable", "assert_no_write": True}],
+        # Python persists and returns this pending receipt before finishing in the background.
+        # Source: codex_rename.py:195-199.
+        "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "2xx", "python_citation": "codex_rename.py:195-199"}],
     },
     ("POST", "/api/accounts/claude/add"): {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
@@ -669,11 +671,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {
             "agent": "$agent", "name": "HTTP ledger probe rule", "kind": "interval",
             "command": "echo ledger probe", "text": "Check the probe fixture.",
-        }, "expected": "2xx"},
+        }, "expected": "2xx", "python_citation": "codex_rules.py:337-339"},
         "additional": [{
             "name": "active rule check is cancelled on pause",
             "body": {"agent": "$agent", "action": "pause", "id": "$activeRule"},
             "expected": "2xx",
+            "python_citation": "codex_rules.py:179-181,236-245",
             "fixture_mutations": {"activate_rule_check": True},
             "restore": ["rule_monitor"],
         }],

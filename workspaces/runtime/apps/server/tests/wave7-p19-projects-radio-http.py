@@ -144,22 +144,47 @@ class HostProjectsRadio(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_05_peer_team_save_delete_and_move(self):
-        path = str(self.backend.cwd)
-        # Server-suite slicing gives every test a fresh backend, so reproduce
-        # the conversion that advanced this project's peer-team revision.
-        converted = self.post(dict(action="convert", path=path, member="a", target="c",
+        # Use a dedicated project and fresh live lead chats. Earlier tests in
+        # this class may already convert the original fixture's lead "a".
+        path_root = self.backend.cwd / "peer-team-save-delete"
+        path_root.mkdir(exist_ok=True)
+        path = str(path_root)
+        self.backend.stop()
+        from codex_runtime import Runtime
+        runtime = make_runtime(Runtime, self.backend)
+        try:
+            with runtime.lock, runtime.db() as db:
+                project = runtime.ensure_project(path, "default", db)
+                members = [f"p19-team-{suffix}" for suffix in "abcd"]
+                for member in members:
+                    runtime.put(db, "agents", dict(
+                        id=member, rootId=member, parentId=None, epoch=0,
+                        status="paused", name=member, role="orchestrator", cwd=path,
+                        isLead=True, autoWake=False, approvalPolicy="never", provider="codex",
+                        accountKey="default", model="gpt-6-astra", concurrency=32,
+                    ), sync_rooms=False)
+                project.update(peerTeams=[dict(
+                    id="33333333-3333-4333-8333-333333333333",
+                    name="Peers", members=members[:2],
+                )], peerTeamsRevision=0)
+                runtime.put(db, "projects", project)
+        finally:
+            runtime.close()
+            self.backend.start()
+        a, b, c, d = members
+        converted = self.post(dict(action="convert", path=path, member=a, target=c,
             expected_revision=0, request_id="p19-team-prior-conversion"))
         self.assertEqual(converted.status, 200, converted.body[:1000])
         self.assertEqual(converted.json()["peerTeamsRevision"], 1)
         saved = self.post(dict(action="save", path=path, request_id="p19-team-save", expected_revision=1,
-            team_id="33333333-3333-4333-8333-333333333333", name="Second", members=["c", "d"]))
+            team_id="44444444-4444-4444-8444-444444444444", name="Second", members=[c, d]))
         self.assertEqual(saved.status, 200, saved.body[:1000])
         moved = self.post(dict(action="move", path=path, request_id="p19-team-move", expected_revision=2,
-            team_id="33333333-3333-4333-8333-333333333333", member="b"))
+            team_id="44444444-4444-4444-8444-444444444444", member=b))
         self.assertEqual(moved.status, 200, moved.body[:1000])
         self.assertEqual(moved.json()["peerTeamsRevision"], 3)
         deleted = self.post(dict(action="delete", path=path, request_id="p19-team-delete", expected_revision=3,
-            team_id="33333333-3333-4333-8333-333333333333"))
+            team_id="44444444-4444-4444-8444-444444444444"))
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
         self.assertEqual(deleted.json()["peerTeamsRevision"], 4)
 
