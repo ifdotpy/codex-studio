@@ -152,9 +152,9 @@ pub fn admit_python_request(
             // to schedule. A Python-shaped pending receipt without it remains
             // uncertain and is returned unchanged.
             let effect = read_effect(tx, request_id, agent_id)?;
-            let should_finish = effect
-                .as_ref()
-                .is_some_and(|effect| matches!(effect.state.as_str(), "not_sent" | "scheduled"));
+            let should_finish = effect.as_ref().is_some_and(|effect| {
+                matches!(effect.state.as_str(), "not_sent" | "scheduled" | "written")
+            });
             return Ok((saved, should_finish));
         }
         tx.execute(

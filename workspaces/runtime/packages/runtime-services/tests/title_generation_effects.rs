@@ -351,6 +351,14 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
             Ok(())
         })
         .expect("remove deterministic failure");
+    let (retry_receipt, should_finish) =
+        admit_python_request(&store, "title-agent", "written-before-catalog-failure")
+            .expect("same-identity HTTP retry admission");
+    assert!(
+        should_finish,
+        "written effects must schedule application recovery"
+    );
+    assert_eq!(retry_receipt["status"], "pending");
     let no_provider = FixedPort::new(Vec::new());
     assert_eq!(
         generate_admitted(
