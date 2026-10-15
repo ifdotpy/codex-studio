@@ -474,14 +474,31 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             }))
             with patch.object(
                 ledger.subprocess, "run",
-                return_value=SimpleNamespace(stdout="exact-candidate\n"),
+                side_effect=[
+                    SimpleNamespace(stdout="exact-candidate\n"),
+                    SimpleNamespace(stdout=""),
+                ],
             ):
                 loaded = ledger.load_router_test_evidence(sidecar)
             self.assertEqual(loaded["status"], "pass")
+            with patch.object(
+                ledger.subprocess, "run",
+                side_effect=[
+                    SimpleNamespace(stdout="exact-candidate\n"),
+                    SimpleNamespace(stdout=" M workspaces/runtime/packages/runtime-http/src/lib.rs\n"),
+                ],
+            ):
+                dirty = ledger.load_router_test_evidence(sidecar)
+            self.assertEqual(dirty["status"], "unverified")
+            self.assertIn("dirty source worktree", dirty["assertions"][0]["reason"])
         self.assertEqual(ledger.load_router_test_evidence(None)["status"], "unverified")
 
         stale_revision = ledger.parse_router_test_evidence(metadata, report, "different-candidate")
         self.assertEqual(stale_revision["status"], "unverified")
+        dirty_worktree = ledger.parse_router_test_evidence(
+            metadata, report, "exact-candidate", worktree_clean=False,
+        )
+        self.assertEqual(dirty_worktree["status"], "unverified")
         wrong_hash = ledger.parse_router_test_evidence(
             {**metadata, "junitSha256": "0" * 64}, report, "exact-candidate",
         )

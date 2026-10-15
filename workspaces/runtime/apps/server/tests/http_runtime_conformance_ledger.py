@@ -917,6 +917,7 @@ def appendix_http_assertions(
 
 def parse_router_test_evidence(
     metadata: dict[str, Any], junit_bytes: bytes, current_revision: str,
+    *, worktree_clean: bool = True,
 ) -> dict[str, Any]:
     """Accept only the fixed router witnesses from a hashed, exact-revision JUnit report."""
     revision = metadata.get("revision")
@@ -939,6 +940,8 @@ def parse_router_test_evidence(
 
     if not isinstance(revision, str) or revision != current_revision:
         return unresolved("Router test evidence revision does not match the current source revision.")
+    if not worktree_clean:
+        return unresolved("Router test evidence cannot cover a dirty source worktree.")
     if not isinstance(expected_hash, str) or expected_hash != observed_hash:
         return unresolved("Router test evidence does not match the recorded JUnit report hash.")
     try:
@@ -1026,13 +1029,19 @@ def load_router_test_evidence(path: Path | None) -> dict[str, Any]:
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
+        worktree_status = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"],
+            check=True, capture_output=True, text=True,
+        ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         current_revision = ""
         evidence = parse_router_test_evidence(metadata, junit_bytes, current_revision)
         evidence["status"] = "unverified"
-        evidence["reason"] = f"Could not determine current source revision: {error}"
+        evidence["reason"] = f"Could not verify current source state: {error}"
         return evidence
-    return parse_router_test_evidence(metadata, junit_bytes, current_revision)
+    return parse_router_test_evidence(
+        metadata, junit_bytes, current_revision, worktree_clean=not worktree_status,
+    )
 
 
 def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
