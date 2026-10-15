@@ -621,19 +621,24 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", refused_id, agent_id,
             ), unchanged)
 
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            attachment_id = "adadadad-adad-adad-adad-adadadadadad"
-            unchanged = message_write_snapshot(
-                self.backend.state / "canvas.sqlite3", attachment_id, agent_id,
-            )
-            attachment = self.backend.request("POST", "/api/messages", body={
-                **body, "id": attachment_id, "assets": [{"name": "pending"}], "text": "",
-            }, headers=self.headers())
-            self.assertEqual(attachment.status, 501, attachment.body[:1000])
-            self.assertEqual(attachment.json().get("error"), "Not implemented: requires payload-store/uploads")
-            self.assertEqual(message_write_snapshot(
-                self.backend.state / "canvas.sqlite3", attachment_id, agent_id,
-            ), unchanged)
+        upload = self.backend.request("POST", "/api/assets", body={
+            "agent": agent_id, "name": "inline.txt", "data": "cGF5bG9hZA==",
+        }, headers=self.headers())
+        self.assertEqual(upload.status, 200, upload.body[:1000])
+        asset_id = upload.json()["id"]
+        attachment_id = "adadadad-adad-4dad-8dad-adadadadadad"
+        attachment = self.backend.request("POST", "/api/messages", body={
+            **body, "id": attachment_id, "assets": [asset_id], "text": "",
+        }, headers=self.headers())
+        self.assertEqual(attachment.status, 200, attachment.body[:1000])
+        self.assertEqual(attachment.json()["status"], "queued")
+
+        pending_id = "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae"
+        pending = self.backend.request("POST", "/api/messages", body={
+            **body, "id": pending_id, "assets": [{"name": "pending"}], "text": "",
+        }, headers=self.headers())
+        self.assertEqual(pending.status, 200, pending.body[:1000])
+        self.assertEqual(pending.json()["status"], "queued")
 
     def test_managed_send_matches_python_for_stopped_paused_and_busy_agents(self):
         cases = (
@@ -880,7 +885,7 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_federation_and_managed_send_routes_refuse_before_canvas_writes(self):
+    def test_federation_refusal_and_managed_inline_payload_acceptance(self):
         path = self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(path) as database:
             database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
@@ -894,13 +899,19 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=self.headers())
         self.assertEqual(federation.status, 501, federation.body[:1000])
         self.assertIn("federation-driver/rooms", federation.json()["error"])
+        self.assertEqual(no_write_snapshot(path.parent), before)
         direct = self.backend.request("POST", "/api/messages", body={
             "id": "17171717-1717-1717-1717-171717171717",
-            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
+            "room": self.agent_id, "text": "", "assets": [{"attachment": "pending"}],
         }, headers=self.headers())
-        self.assertEqual(direct.status, 501, direct.body[:1000])
-        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
-        self.assertEqual(no_write_snapshot(path.parent), before)
+        self.assertEqual(direct.status, 200, direct.body[:1000])
+        self.assertEqual(direct.json().get("status"), "queued")
+        with sqlite3.connect(path) as database:
+            raw = database.execute(
+                "SELECT record FROM runtime_event_meta WHERE id=?",
+                ("17171717-1717-1717-1717-171717171717",),
+            ).fetchone()[0]
+        self.assertEqual(json.loads(raw)["assets"], [{"attachment": "pending"}])
 
 
 

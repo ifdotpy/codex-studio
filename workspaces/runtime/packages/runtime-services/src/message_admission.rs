@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, Transaction,
+    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError, Transaction,
 };
 
 use crate::coordination::CoordinationError;
@@ -55,9 +55,9 @@ impl PreparedAdmission {
                 },
             )?;
             let cwd = cwd(&agent)?;
-            paths.entry(cwd.to_owned()).or_insert_with(|| {
-                std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd))
-            });
+            paths
+                .entry(cwd.to_owned())
+                .or_insert_with(|| resolve_path(cwd));
         }
         Ok(Self { paths })
     }
@@ -96,8 +96,11 @@ impl MessageAdmission for PreparedAdmission {
             let path = self.paths.get(cwd(agent)?);
             let other_path = self.paths.get(cwd(&other)?);
             if path.is_none() || other_path.is_none() {
-                return Err(CoordinationError::RequiresDependency(
-                    "workspace-policy/message-admission",
+                // Python resolves both cwd values in its locked snapshot
+                // (codex_workspace.py:2219); Rust cannot canonicalize a newly
+                // observed cwd inside the writer transaction.
+                return Err(CoordinationError::AdmissionDenied(
+                    "Workspace admission changed while the message was being prepared".into(),
                 ));
             }
             if path != other_path {
@@ -111,6 +114,15 @@ impl MessageAdmission for PreparedAdmission {
                 .and_then(Value::as_str)
                 && let Some(record) =
                     studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
+            {
+                for key in ["phase", "created", "turnId"] {
+                    blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
+                }
+                blocker["operationId"] = record["id"].clone();
+            }
+            if !matches!(operation, "checkpoint" | "capture")
+                && blocker.get("operationId").is_none()
+                && let Some(record) = other_operation(tx, &id)?
             {
                 for key in ["phase", "created", "turnId"] {
                     blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
@@ -243,14 +255,65 @@ fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
         })
 }
 
-/// Runtime.send stores attachment IDs verbatim. Existence, count and ownership
-/// belong to turn_prepare::compile, matching Python message_inputs timing.
-/// Non-ID upload requests still require the separately owned upload adapter.
-pub(crate) fn attachments(assets: &[Value]) -> Result<(), CoordinationError> {
-    if assets.iter().any(|asset| !asset.is_string()) {
-        return Err(CoordinationError::RequiresDependency(
-            "payload-store/uploads",
-        ));
+fn resolve_path(path: &str) -> PathBuf {
+    use std::path::Component;
+
+    let path = PathBuf::from(path);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            }
+        }
     }
-    Ok(())
+    resolved
+}
+
+fn other_operation(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    const ACTIVE_PHASES: [&str; 6] = [
+        "provider_pending",
+        "provider_ready",
+        "local_mutation",
+        "recovery_required",
+        "capture_pending",
+        "capture_running",
+    ];
+    let mut query = tx.prepare(
+        "SELECT id,record FROM runtime_workspace_operations \
+         WHERE json_extract(record,'$.agent')=?1 ORDER BY rowid",
+    )?;
+    let rows = query.query_map([agent_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, raw) = row?;
+        let value: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+        if value
+            .get("phase")
+            .and_then(Value::as_str)
+            .is_some_and(|phase| ACTIVE_PHASES.contains(&phase))
+        {
+            return studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, &id)
+                .map_err(CoordinationError::from);
+        }
+    }
+    Ok(None)
 }

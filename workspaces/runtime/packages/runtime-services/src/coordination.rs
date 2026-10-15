@@ -260,8 +260,6 @@ fn post_managed_message(
         }
         return Err(invalid_stored("runtime_events", input.id));
     }
-    crate::message_admission::attachments(input.assets)?;
-
     let root = if agent.root_id == agent.id {
         agent.clone()
     } else {
