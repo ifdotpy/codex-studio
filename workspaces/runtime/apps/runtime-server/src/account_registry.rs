@@ -48,6 +48,22 @@ fn defer_wake(
     last_error.is_some() && now < retry_at
 }
 
+async fn run_checkpoint_maintenance(
+    checkpoint: impl FnOnce() -> Result<bool, String> + Send + 'static,
+    on_error: impl FnOnce(String),
+) {
+    match studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/wal-checkpoint-maintenance",
+        checkpoint,
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => on_error(error),
+        Err(error) => on_error(format!("blocking task failed: {error}")),
+    }
+}
+
 enum RegistryTrigger {
     Wake,
     Retry,
@@ -978,12 +994,15 @@ impl AccountRegistry {
                 }
                 Some(RegistryTrigger::Retry) => {
                     let store = self.store.clone();
-                    studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-server/wal-checkpoint-maintenance",
-                        move || store.checkpoint_wal_if_due(),
+                    run_checkpoint_maintenance(
+                        move || {
+                            store
+                                .checkpoint_wal_if_due()
+                                .map_err(|error| error.to_string())
+                        },
+                        |error| eprintln!("account registry WAL checkpoint deferred: {error}"),
                     )
-                    .await
-                    .map_err(|_| WorkerError::TaskFailed)??;
+                    .await;
                 }
                 Some(RegistryTrigger::Wake) => {}
                 None => continue,
@@ -1292,6 +1311,26 @@ mod bounded_reconcile_tests {
         assert_eq!(image_agents, BTreeSet::from(["image-agent".to_owned()]));
         assert!(agents.is_empty());
         assert!(!recovery);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_failure_is_logged_and_registry_work_continues() {
+        let (error_tx, error_rx) = mpsc::channel();
+        run_checkpoint_maintenance(
+            || Err("injected checkpoint failure".to_owned()),
+            move |error| error_tx.send(error).expect("deferred failure reported"),
+        )
+        .await;
+
+        assert_eq!(
+            error_rx.recv().expect("maintenance failure reported"),
+            "injected checkpoint failure"
+        );
+        let registry_work = tokio::spawn(async { "reconciliation remains runnable" });
+        assert_eq!(
+            registry_work.await.expect("registry task continues"),
+            "reconciliation remains runnable"
+        );
     }
 
     #[test]

@@ -89,6 +89,7 @@ struct DeliveryWatermark {
 
 #[derive(Default)]
 struct ProjectedAgent {
+    provider_handle: String,
     root: String,
     turn: String,
     active: bool,
@@ -261,6 +262,7 @@ impl TokenRateHub {
                 projector.agents.remove(agent_id);
             }
             let entry = projector.agents.entry(agent_id.to_owned()).or_default();
+            entry.provider_handle.clone_from(&delivery.provider_handle);
             entry.root = agent
                 .get("rootId")
                 .and_then(serde_json::Value::as_str)
@@ -275,9 +277,20 @@ impl TokenRateHub {
                 }
             }
             while projector.watermarks.len() > MAX_TOKEN_RATE_WATERMARKS {
-                let oldest = projector.watermarks.keys().next().cloned();
+                let referenced = projector
+                    .agents
+                    .values()
+                    .map(|agent| agent.provider_handle.as_str())
+                    .collect::<BTreeSet<_>>();
+                let oldest = projector
+                    .watermarks
+                    .keys()
+                    .find(|provider| !referenced.contains(provider.as_str()))
+                    .cloned();
                 if let Some(oldest) = oldest {
                     projector.watermarks.remove(&oldest);
+                } else {
+                    break;
                 }
             }
             snapshot_from_projector(&projector)
@@ -648,8 +661,9 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PROJECTED_AGENTS, ProjectedAgent, TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
-        TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub,
+        MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent,
+        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES,
+        TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub,
     };
     use crate::notification_dispatch::{
         NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
@@ -858,6 +872,59 @@ mod tests {
                 .expect("replay after projection eviction")
         );
         assert!(!hub.snapshot().rates.contains_key("agent-0000"));
+    }
+
+    #[test]
+    fn watermark_cap_preserves_provider_of_a_live_projection() {
+        let hub = TokenRateHub::new();
+        assert!(
+            hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 1, "old-turn"))
+                .expect("first provider delivery")
+        );
+        assert!(
+            hub.publish_observation(usage_effect(
+                "z-agent",
+                "a-provider",
+                1,
+                2,
+                "current-turn"
+            ))
+            .expect("advance live projection")
+        );
+
+        {
+            let mut projector = hub.projector.lock().expect("token-rate projector");
+            for index in 0..(MAX_TOKEN_RATE_WATERMARKS - 1) {
+                projector.watermarks.insert(
+                    format!("b-provider-{index:04}"),
+                    super::DeliveryWatermark {
+                        generation: 1,
+                        cursor: 1,
+                        effects: 1,
+                    },
+                );
+            }
+            assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
+        }
+
+        assert!(
+            hub.publish_observation(usage_effect("a-agent", "z-provider", 1, 1, "other-turn"))
+                .expect("cross the watermark cap")
+        );
+        {
+            let projector = hub.projector.lock().expect("token-rate projector");
+            assert_eq!(projector.watermarks.len(), MAX_TOKEN_RATE_WATERMARKS);
+            assert!(projector.watermarks.contains_key("a-provider"));
+            assert!(!projector.watermarks.contains_key("b-provider-0000"));
+        }
+
+        let current = hub.snapshot();
+        assert!(
+            !hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 1, "old-turn"))
+                .expect("old committed delivery remains deduplicated")
+        );
+        assert_eq!(hub.snapshot(), current);
+        assert_eq!(hub.snapshot().rates["z-agent"].turn_id, "current-turn");
     }
 
     #[test]
