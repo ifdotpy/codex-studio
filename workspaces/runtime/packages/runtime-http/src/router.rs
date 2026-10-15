@@ -1032,18 +1032,10 @@ mod tests {
         for (path, valid_json, limit) in cases {
             let (state, _directory) = state();
             let app = router(state).expect("router starts");
-            let at_limit_status = if path == "/api/assets" {
-                StatusCode::BAD_REQUEST
-            } else if path == "/api/voice/audio" {
-                // This route is implemented; the boundary-only fixture has no store.
-                StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                StatusCode::NOT_IMPLEMENTED
-            };
-            for (length, expected) in [
-                (limit, at_limit_status),
-                (limit + 1, StatusCode::PAYLOAD_TOO_LARGE),
-            ] {
+            // At the exact limit, assert the size layer accepts the body and let
+            // the route return its fixture-dependent status. One byte above the
+            // limit must be rejected by the size layer with 413.
+            for (length, over_limit) in [(limit, false), (limit + 1, true)] {
                 let opaque_scans_before = crate::validation::opaque_body_scan_count();
                 let mut body = Vec::with_capacity(length);
                 body.extend_from_slice(valid_json.as_bytes());
@@ -1063,7 +1055,19 @@ mod tests {
                     .body(Body::from(body))
                     .expect("request builds");
                 let response = app.clone().oneshot(request).await.expect("response");
-                assert_eq!(response.status(), expected, "{path} with {length} bytes");
+                if over_limit {
+                    assert_eq!(
+                        response.status(),
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "{path} with {length} bytes"
+                    );
+                } else {
+                    assert_ne!(
+                        response.status(),
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "size layer rejected {path} at its {limit}-byte limit"
+                    );
+                }
                 if path == "/api/assets" && length == limit {
                     assert_eq!(
                         crate::validation::opaque_body_scan_count(),

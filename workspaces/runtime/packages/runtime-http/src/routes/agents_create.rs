@@ -683,6 +683,13 @@ async fn create_agent_with_import(
     imported_from: Option<String>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
     if state.store.is_none() && state.account_driver.is_none() {
+        if body.parent.as_ref().is_none_or(Option::is_none)
+            && body.cwd.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(operation_error(OperationError::Invalid(
+                "Select an existing project directory",
+            )));
+        }
         return Err(ApiError::internal());
     }
     wait_for_agent_catalog(

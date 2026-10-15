@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn dependency_unavailability_requires_a_known_nonempty_list() {
         static KNOWN: [Dependency; 1] = [Dependency::new(
-            "cross-server-driver/project-location-read",
+            "account-transfer/provider-history-executor",
         )];
         assert!(
             OperationStatus::Partial {
