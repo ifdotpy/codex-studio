@@ -114,7 +114,19 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_INSERT
         WHERE sync_entity_meta.value!=excluded.value;
         END;
 CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE
-          AFTER UPDATE OF id,agent,kind,status,created,error ON runtime_events WHEN OLD.id IS NEW.id AND OLD.created IS NEW.created AND (OLD.agent IS NOT NEW.agent OR OLD.kind IS NOT NEW.kind OR OLD.status IS NOT NEW.status OR OLD.error IS NOT NEW.error) BEGIN
+          AFTER UPDATE OF id,agent,kind,status,created,error ON runtime_events WHEN (OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR OLD.kind IS NOT NEW.kind OR OLD.status IS NOT NEW.status OR OLD.created IS NOT NEW.created OR OLD.error IS NOT NEW.error) AND NOT ((
+        (OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created)
+        AND (WITH old_member AS (SELECT EXISTS (SELECT 1 FROM (SELECT id FROM (
+        SELECT id,created FROM runtime_events WHERE id!=NEW.id
+        UNION ALL SELECT OLD.id,OLD.created
+    ) ORDER BY created DESC,id LIMIT 200) e WHERE e.id=OLD.id) AS present),
+                  new_member AS (SELECT EXISTS (SELECT 1 FROM (SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT 200) e WHERE e.id=NEW.id) AS present)
+             SELECT CASE WHEN OLD.id IS NEW.id
+                         THEN old_member.present != new_member.present
+                         ELSE old_member.present OR new_member.present
+                    END
+             FROM old_member,new_member)
+    )) BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
@@ -141,7 +153,19 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE
         WHERE sync_entity_meta.value!=excluded.value;
         END;
 CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE_WINDOW
-          AFTER UPDATE OF id,agent,kind,status,created,error ON runtime_events WHEN OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created BEGIN
+          AFTER UPDATE OF id,agent,kind,status,created,error ON runtime_events WHEN (
+        (OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created)
+        AND (WITH old_member AS (SELECT EXISTS (SELECT 1 FROM (SELECT id FROM (
+        SELECT id,created FROM runtime_events WHERE id!=NEW.id
+        UNION ALL SELECT OLD.id,OLD.created
+    ) ORDER BY created DESC,id LIMIT 200) e WHERE e.id=OLD.id) AS present),
+                  new_member AS (SELECT EXISTS (SELECT 1 FROM (SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT 200) e WHERE e.id=NEW.id) AS present)
+             SELECT CASE WHEN OLD.id IS NEW.id
+                         THEN old_member.present != new_member.present
+                         ELSE old_member.present OR new_member.present
+                    END
+             FROM old_member,new_member)
+    ) BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL

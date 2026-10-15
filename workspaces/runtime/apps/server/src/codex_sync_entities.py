@@ -540,12 +540,30 @@ def event_trigger_statements(operation: str) -> tuple[str, ...]:
         return (make_trigger(operation, operation, '', window_statements),)
 
     update_of = "UPDATE OF " + ",".join(EVENT_SYNC_COLUMNS)
-    payload_when = "WHEN OLD.id IS NEW.id AND OLD.created IS NEW.created AND (" \
-        "OLD.agent IS NOT NEW.agent OR OLD.kind IS NOT NEW.kind OR " \
-        "OLD.status IS NOT NEW.status OR OLD.error IS NOT NEW.error)"
-    membership_when = "WHEN OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created"
     from codex_entity_contracts import EVENT_WINDOW
     recent = f"SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"
+    recent_before = f"""SELECT id FROM (
+        SELECT id,created FROM runtime_events WHERE id!=NEW.id
+        UNION ALL SELECT OLD.id,OLD.created
+    ) ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"""
+    old_in_window = f"EXISTS (SELECT 1 FROM ({recent_before}) e WHERE e.id=OLD.id)"
+    new_in_window = f"EXISTS (SELECT 1 FROM ({recent}) e WHERE e.id=NEW.id)"
+    membership_changed = f"""(
+        (OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created)
+        AND (WITH old_member AS (SELECT {old_in_window} AS present),
+                  new_member AS (SELECT {new_in_window} AS present)
+             SELECT CASE WHEN OLD.id IS NEW.id
+                         THEN old_member.present != new_member.present
+                         ELSE old_member.present OR new_member.present
+                    END
+             FROM old_member,new_member)
+    )"""
+    payload_when = "WHEN (" \
+        "OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR " \
+        "OLD.kind IS NOT NEW.kind OR OLD.status IS NOT NEW.status OR " \
+        "OLD.created IS NOT NEW.created OR OLD.error IS NOT NEW.error) " \
+        f"AND NOT ({membership_changed})"
+    membership_when = f"WHEN {membership_changed}"
     dead_payload = "sync_entity_payload('event',NEW.id,'{}',1)"
     retire_if_outside = f"""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',NEW.id,(SELECT max(seq)+1 FROM (

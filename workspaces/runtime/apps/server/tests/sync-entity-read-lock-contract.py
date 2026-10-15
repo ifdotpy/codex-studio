@@ -286,6 +286,34 @@ class EntityReadLockContract(unittest.TestCase):
             for sql in self.statements
         ))
 
+    def test_created_change_with_stable_window_membership_skips_window_recompute(self):
+        import codex_entity_contracts
+        import codex_sync_entities
+        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3):
+            with self.connect() as db:
+                install_bypass_triggers(db)
+                db.executemany("INSERT INTO runtime_events VALUES (?,'owner','user','pending',?,NULL)",
+                               [(f'event-{index}', index + 1) for index in range(4)])
+            self.statements.clear()
+            projected = []
+            original_project = codex_sync_entities.project
+
+            def count_projection(collection, record):
+                projected.append((collection, record.get('id')))
+                return original_project(collection, record)
+
+            with patch.object(codex_sync_entities, 'project', count_projection), self.connect() as db:
+                db.execute("UPDATE runtime_events SET created=2.5 WHERE id='event-2'")
+            self.assertEqual(projected, [('event', 'event-2')] * 2)
+            self.assertFalse(any(
+                'ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id)' in sql
+                for sql in self.statements
+            ))
+            with self.connect() as db:
+                live = {row[0] for row in db.execute(
+                    "SELECT id FROM sync_entities WHERE collection='event' AND deleted=0")}
+            self.assertEqual(live, {'event-1', 'event-2', 'event-3'})
+
     def test_boot_markers_are_repaired_before_pulls(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
