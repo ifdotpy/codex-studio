@@ -2014,6 +2014,7 @@ def copied_data_evidence_status(evidence: dict[str, Any]) -> str:
         "preexistingRowsPreservedFromBeforeStartup",
         "unchangedDuringFinderRead",
         "schemaChangesReviewed",
+        "derivedIndexesReviewed",
         "stateCheckAfter",
         "baselineRestore",
         "pythonRollbackReadback",
@@ -2083,6 +2084,7 @@ def probe_copied_data(
                     "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
                     "unchangedDuringFinderRead": unchanged_during_read,
                     "schemaChangesReviewed": None,
+                    "derivedIndexesReviewed": None,
                     "stateCheckAfter": None,
                     "baselineRestore": None,
                     "pythonRollbackReadback": None,
@@ -2096,12 +2098,17 @@ def probe_copied_data(
                 "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
                 "unchangedDuringFinderRead": unchanged_during_read,
                 "schemaChangesReviewed": None,
+                "derivedIndexesReviewed": None,
                 "schemaChanges": {
                     "newTables": old_data["newTables"],
                     "newColumns": old_data["newColumns"],
                     "newSchemaObjects": old_data["newSchemaObjects"],
                     "changedTableDefinitions": old_data["changedTableDefinitions"],
                     "unsupportedTables": old_data["unsupportedTables"],
+                    "unreadableDerivedIndexes": old_data["unreadableDerivedIndexes"],
+                    "derivedIndexSchemaChanges": old_data["derivedIndexSchemaChanges"],
+                    "internalBookkeepingTables": old_data["internalBookkeepingTables"],
+                    "sqliteSequenceChanged": old_data["sqliteSequenceChanged"],
                 },
                 "stateCheckBefore": None,
                 "stateCheckAfter": None,
@@ -2644,6 +2651,10 @@ class SqliteSnapshot:
             "newSchemaObjects": 0,
             "changedTableDefinitions": 0,
             "unsupportedTables": 0,
+            "unreadableDerivedIndexes": 0,
+            "derivedIndexSchemaChanges": 0,
+            "internalBookkeepingTables": 0,
+            "sqliteSequenceChanged": False,
         }
         if not self.stable:
             result["preserved"] = False
@@ -2652,6 +2663,15 @@ class SqliteSnapshot:
             if _sqlite_file_identity(self.path) != self.identity:
                 result["preserved"] = False
                 return result
+            before_schema = _preservation_schema(self.baseline, "main")
+            before_tables = {
+                name for (kind, name) in before_schema if kind == "table"
+            }
+            known_fts = _known_contentless_fts_tables(before_schema)
+            result["unreadableDerivedIndexes"] = len(known_fts)
+            result["internalBookkeepingTables"] = sum(
+                name.startswith("sqlite_") for name in before_tables
+            )
             version_before = self._data_version()
             if version_before == self.version_before:
                 result["preserved"] = True
@@ -2660,21 +2680,44 @@ class SqliteSnapshot:
             self.baseline.execute(
                 "ATTACH DATABASE ? AS after_state", (current_uri,),
             )
-            before_schema = _preservation_schema(self.baseline, "main")
             after_schema = _preservation_schema(self.baseline, "after_state")
-            before_tables = {
-                name for (kind, name) in before_schema if kind == "table"
-            }
             after_tables = {
                 name for (kind, name) in after_schema if kind == "table"
             }
-            result["newTables"] = len(after_tables - before_tables)
+            after_fts = _known_contentless_fts_tables(after_schema)
+            derived_and_shadow_tables = _known_fts_shadow_tables(
+                before_schema, after_schema,
+            )
+            result["unreadableDerivedIndexes"] = len(known_fts)
+            result["derivedIndexSchemaChanges"] = sum(
+                before_schema.get(("table", name))
+                != after_schema.get(("table", name))
+                for name in known_fts | after_fts
+            )
+            result["newTables"] = sum(
+                1 for name in after_tables - before_tables
+                if not name.startswith("sqlite_")
+                and name not in (known_fts | after_fts)
+                and name not in derived_and_shadow_tables
+            )
             result["newSchemaObjects"] = sum(
-                kind != "table" and (kind, name) not in before_schema
+                kind != "table"
+                and not name.startswith("sqlite_")
+                and (kind, name) not in before_schema
                 for kind, name in after_schema
             )
-            preserved: bool | None = before_tables.issubset(after_tables)
-            for table in sorted(before_tables & after_tables):
+            old_user_tables = {
+                name for name in before_tables
+                if not name.startswith("sqlite_")
+                and name not in derived_and_shadow_tables
+            }
+            new_user_tables = {
+                name for name in after_tables
+                if not name.startswith("sqlite_")
+                and name not in derived_and_shadow_tables
+            }
+            preserved: bool | None = old_user_tables.issubset(new_user_tables)
+            for table in sorted(old_user_tables & new_user_tables):
                 old_sql = before_schema[("table", table)][1]
                 new_sql = after_schema[("table", table)][1]
                 if old_sql != new_sql:
@@ -2699,6 +2742,7 @@ class SqliteSnapshot:
                     continue
                 comparison = _preserve_table_rows(
                     self.baseline, table, old_columns,
+                    new_columns,
                     without_rowid=bool(re.search(r"\bWITHOUT\s+ROWID\b", old_sql, re.I)),
                 )
                 if comparison is None:
@@ -2708,9 +2752,17 @@ class SqliteSnapshot:
                 elif not comparison:
                     preserved = False
 
+            result["sqliteSequenceChanged"] = _sqlite_sequence_changed(
+                self.baseline, before_schema, after_schema,
+            )
+
             for key, (_table_name, old_sql) in before_schema.items():
                 kind, _name = key
-                if kind == "table":
+                if (
+                    kind == "table"
+                    or _name.startswith("sqlite_")
+                    or _name in derived_and_shadow_tables
+                ):
                     continue
                 current_object = after_schema.get(key)
                 if current_object is None or current_object[1] != old_sql:
@@ -2774,6 +2826,45 @@ def _preservation_schema(
     }
 
 
+_CONTENTLESS_DERIVED_FTS = "runtime_search_next"
+_CONTENTLESS_FTS_SHADOWS = frozenset({
+    "runtime_search_next_config",
+    "runtime_search_next_data",
+    "runtime_search_next_docsize",
+    "runtime_search_next_idx",
+})
+
+
+def _known_contentless_fts_tables(
+    schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> set[str]:
+    """Recognize only the repository's known unreadable derived FTS index."""
+    entry = schema.get(("table", _CONTENTLESS_DERIVED_FTS))
+    if entry is None or not entry[1]:
+        return set()
+    sql = entry[1]
+    if (
+        not sql.lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+        or re.search(r"\bUSING\s+fts5\s*\(", sql, re.I) is None
+        or re.search(r"""\bcontent\s*=\s*(['"])\s*\1""", sql, re.I) is None
+    ):
+        return set()
+    return {_CONTENTLESS_DERIVED_FTS}
+
+
+def _known_fts_shadow_tables(
+    before_schema: dict[tuple[str, str], tuple[str, str | None]],
+    after_schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> set[str]:
+    has_known_index = bool(
+        _known_contentless_fts_tables(before_schema)
+        or _known_contentless_fts_tables(after_schema)
+    )
+    if not has_known_index:
+        return set()
+    return {*_CONTENTLESS_FTS_SHADOWS, _CONTENTLESS_DERIVED_FTS}
+
+
 def _preservation_table_columns(
     connection: sqlite3.Connection,
     schema: str,
@@ -2793,12 +2884,15 @@ def _preserve_table_rows(
     connection: sqlite3.Connection,
     table: str,
     columns: dict[str, tuple[Any, ...]],
+    current_columns: dict[str, tuple[Any, ...]],
     *,
     without_rowid: bool,
 ) -> bool | None:
     """Stream old identities through an indexed join; None means unsupported."""
     quoted_table = _quote_sqlite_identifier(table)
-    folded_columns = {name.casefold() for name in columns}
+    folded_columns = {
+        name.casefold() for name in (*columns.keys(), *current_columns.keys())
+    }
     rowid_alias = next(
         (name for name in ("_rowid_", "rowid", "oid") if name not in folded_columns),
         None,
@@ -2850,6 +2944,39 @@ def _preserve_table_rows(
         f"WHERE {new_identity} IS NULL OR ({mismatch}) LIMIT 1"
     )
     return connection.execute(query).fetchone() is None
+
+
+def _sqlite_sequence_changed(
+    connection: sqlite3.Connection,
+    before_schema: dict[tuple[str, str], tuple[str, str | None]],
+    after_schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> bool | None:
+    """Report SQLite AUTOINCREMENT bookkeeping outside old user-row proof."""
+    before = before_schema.get(("table", "sqlite_sequence"))
+    after = after_schema.get(("table", "sqlite_sequence"))
+    if before is None and after is None:
+        return False
+    if before is None or after is None or before[1] != after[1]:
+        return True
+    old_columns = _preservation_table_columns(connection, "main", "sqlite_sequence")
+    new_columns = _preservation_table_columns(
+        connection, "after_state", "sqlite_sequence",
+    )
+    if old_columns != new_columns:
+        return True
+    rows_preserved = _preserve_table_rows(
+        connection, "sqlite_sequence", old_columns, new_columns,
+        without_rowid=False,
+    )
+    if rows_preserved is None:
+        return None
+    old_count = connection.execute(
+        "SELECT COUNT(*) FROM main.sqlite_sequence",
+    ).fetchone()[0]
+    new_count = connection.execute(
+        "SELECT COUNT(*) FROM after_state.sqlite_sequence",
+    ).fetchone()[0]
+    return not rows_preserved or old_count != new_count
 
 
 def _sqlite_content_digest(connection: sqlite3.Connection) -> bytes:

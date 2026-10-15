@@ -341,6 +341,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "stateCheckAfter": True,
             "unchangedDuringFinderRead": True,
             "schemaChangesReviewed": True,
+            "derivedIndexesReviewed": True,
             "baselineRestore": True,
             "pythonRollbackReadback": True,
         }
@@ -1179,6 +1180,139 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     connection.commit()
                 result = snapshot.preserved_existing_rows()
             self.assertFalse(result["preserved"])
+
+    def test_rowid_alias_must_be_available_in_both_schema_versions(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-rowid-alias-change-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(value TEXT)")
+                connection.execute("INSERT INTO records VALUES ('kept')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("ALTER TABLE records RENAME TO old_records")
+                    connection.execute(
+                        "CREATE TABLE records(_rowid_ TEXT, value TEXT)"
+                    )
+                    connection.execute(
+                        "INSERT INTO records(rowid, _rowid_, value) "
+                        "SELECT rowid, 'shadow', value FROM old_records"
+                    )
+                    connection.execute(
+                        "INSERT INTO records(rowid, _rowid_, value) "
+                        "VALUES (2, 'shadow-new', 'new row')"
+                    )
+                    connection.execute("DROP TABLE old_records")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newColumns"], 1)
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE records SET value='changed' WHERE rowid=1"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
+
+    def test_autoincrement_sequence_changes_are_reported_outside_user_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sequence-bookkeeping-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute(
+                    "CREATE TABLE records(id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT)"
+                )
+                connection.execute("INSERT INTO records(value) VALUES ('old row')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO records(value) VALUES ('new row')")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertTrue(result["sqliteSequenceChanged"])
+            self.assertEqual(result["internalBookkeepingTables"], 1)
+
+    def test_known_contentless_fts_is_reported_as_unreadable_derived_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-contentless-fts-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute(
+                    "CREATE TABLE runtime_search_next_meta "
+                    "(search_rowid INTEGER PRIMARY KEY, agent_id TEXT NOT NULL, kind TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE VIRTUAL TABLE runtime_search_next USING "
+                    "fts5(body,content='',contentless_delete=1,tokenize='unicode61')"
+                )
+                connection.execute(
+                    "INSERT INTO runtime_search_next_meta VALUES (1, 'agent-old', 'turn')"
+                )
+                connection.execute(
+                    "INSERT INTO runtime_search_next(rowid,body) VALUES (1, 'old terms')"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "INSERT INTO runtime_search_next_meta VALUES (2, 'agent-new', 'turn')"
+                    )
+                    connection.execute(
+                        "INSERT INTO runtime_search_next(rowid,body) VALUES (2, 'new terms')"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["unreadableDerivedIndexes"], 1)
+            self.assertEqual(result["unsupportedTables"], 0)
+            self.assertEqual(result["derivedIndexSchemaChanges"], 0)
+            self.assertEqual(
+                ledger.copied_data_evidence_status({
+                    "stateCheckBefore": True,
+                    "existingRowRead": True,
+                    "preexistingRowsPreservedFromBeforeStartup": True,
+                    "unchangedDuringFinderRead": True,
+                    "schemaChangesReviewed": True,
+                    "stateCheckAfter": True,
+                    "baselineRestore": True,
+                    "pythonRollbackReadback": True,
+                }),
+                "unverified",
+                "contentless FTS body preservation needs separate review evidence",
+            )
+
+    def test_unknown_virtual_tables_remain_unverified(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-unknown-virtual-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE state(value INTEGER)")
+                connection.execute("INSERT INTO state VALUES (1)")
+                connection.execute(
+                    "CREATE VIRTUAL TABLE other_search USING fts5(body)"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO state VALUES (2)")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertIsNone(result["preserved"])
+            self.assertEqual(result["unsupportedTables"], 1)
+            self.assertEqual(result["unreadableDerivedIndexes"], 0)
 
     def test_copy_privacy_and_reset_probe_is_always_preserved(self) -> None:
         copied_response = {
