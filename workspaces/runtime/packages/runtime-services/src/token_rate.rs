@@ -662,8 +662,8 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 mod tests {
     use super::{
         MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent,
-        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES,
-        TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub,
+        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
+        TokenRateHub,
     };
     use crate::notification_dispatch::{
         NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
@@ -882,14 +882,8 @@ mod tests {
                 .expect("first provider delivery")
         );
         assert!(
-            hub.publish_observation(usage_effect(
-                "z-agent",
-                "a-provider",
-                1,
-                2,
-                "current-turn"
-            ))
-            .expect("advance live projection")
+            hub.publish_observation(usage_effect("z-agent", "a-provider", 1, 2, "current-turn"))
+                .expect("advance live projection")
         );
 
         {

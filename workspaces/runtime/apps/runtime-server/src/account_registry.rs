@@ -48,19 +48,17 @@ fn defer_wake(
     last_error.is_some() && now < retry_at
 }
 
-async fn run_checkpoint_maintenance(
+async fn try_checkpoint_maintenance(
     checkpoint: impl FnOnce() -> Result<bool, String> + Send + 'static,
-    on_error: impl FnOnce(String),
-) {
+) -> bool {
     match studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/wal-checkpoint-maintenance",
         checkpoint,
     )
     .await
     {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => on_error(error),
-        Err(error) => on_error(format!("blocking task failed: {error}")),
+        Ok(Ok(_)) => true,
+        Ok(Err(_)) | Err(_) => false,
     }
 }
 
@@ -994,15 +992,15 @@ impl AccountRegistry {
                 }
                 Some(RegistryTrigger::Retry) => {
                     let store = self.store.clone();
-                    run_checkpoint_maintenance(
-                        move || {
-                            store
-                                .checkpoint_wal_if_due()
-                                .map_err(|error| error.to_string())
-                        },
-                        |error| eprintln!("account registry WAL checkpoint deferred: {error}"),
-                    )
+                    let checkpoint_succeeded = try_checkpoint_maintenance(move || {
+                        store
+                            .checkpoint_wal_if_due()
+                            .map_err(|error| error.to_string())
+                    })
                     .await;
+                    if !checkpoint_succeeded {
+                        eprintln!("account registry WAL checkpoint deferred after failure");
+                    }
                 }
                 Some(RegistryTrigger::Wake) => {}
                 None => continue,
@@ -1315,16 +1313,8 @@ mod bounded_reconcile_tests {
 
     #[tokio::test]
     async fn checkpoint_failure_is_logged_and_registry_work_continues() {
-        let (error_tx, error_rx) = mpsc::channel();
-        run_checkpoint_maintenance(
-            || Err("injected checkpoint failure".to_owned()),
-            move |error| error_tx.send(error).expect("deferred failure reported"),
-        )
-        .await;
-
-        assert_eq!(
-            error_rx.recv().expect("maintenance failure reported"),
-            "injected checkpoint failure"
+        assert!(
+            !try_checkpoint_maintenance(|| { Err("injected checkpoint failure".to_owned()) }).await
         );
         let registry_work = tokio::spawn(async { "reconciliation remains runnable" });
         assert_eq!(
