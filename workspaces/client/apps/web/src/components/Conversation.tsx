@@ -1,3 +1,4 @@
+import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
 import {
   useServerApi,
   useServerOutbox,
@@ -65,10 +66,7 @@ import {
   mergeQueueOrder,
 } from "./message-delivery/messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
-import {
-  isSendingMessage,
-  removeSendingMessage,
-} from "./removeSendingMessages";
+import { isSendingMessage } from "./removeSendingMessages";
 
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
@@ -256,6 +254,7 @@ export default function Conversation(p: {
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
+  const { removeSendingMessage } = useSendingMessageRemoval();
   const { get, post } = useServerApi();
   const { changeOutbox } = useServerOutbox();
 

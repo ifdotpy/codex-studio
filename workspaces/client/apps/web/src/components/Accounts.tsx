@@ -1,6 +1,7 @@
 import {
   useServerApi,
   useServerResources,
+  useServerStorage,
 } from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
@@ -640,6 +641,7 @@ export default function Accounts({
   dialogsOnly?: boolean;
 }) {
   const { post } = useServerApi();
+  const storage = useServerStorage();
 
   const [opened, setOpened] = useState(false);
   const [openActionMenuAccountId, setOpenActionMenuAccountId] = useState<
@@ -826,6 +828,7 @@ export default function Accounts({
         const requestId = getOrCreateAccountDeleteRequest(
           state.scope,
           account.id,
+          storage,
         );
         setDeleteRequestId(requestId);
         setDeleteChoice(account);
@@ -1151,6 +1154,7 @@ export default function Accounts({
                                           getOrCreateAccountDeleteRequest(
                                             state.scope,
                                             account.id,
+                                            storage,
                                           );
                                         setDeleteRequestId(requestId);
                                         setDeleteChoice(account);
@@ -1480,6 +1484,7 @@ export default function Accounts({
                       account_key: deleteChoice.id,
                       request_id: requestId,
                     }),
+                  storage,
                 ),
               );
               setDeleteChoice(null);

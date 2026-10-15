@@ -106,7 +106,7 @@ import {
   useCommittedCallback,
   useRetainedArray,
 } from "./hooks";
-import { removeAllSendingMessages } from "./components/removeSendingMessages";
+import { useSendingMessageRemoval } from "./components/useSendingMessageRemoval";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
@@ -229,6 +229,7 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const { removeAllSendingMessages } = useSendingMessageRemoval();
   const { pendingChatCreations, saveChatCreation, confirmChatCreation } =
     useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
