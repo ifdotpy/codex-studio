@@ -5,6 +5,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
@@ -249,7 +250,7 @@ async fn list_projects(
 async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<ProjectWriteResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_policy = state
         .account_policy
@@ -309,7 +310,7 @@ async fn write_project(
             {
                 return Err(ApiError::internal());
             }
-            return Ok(Json(ProjectWriteResponse::Remote(value)));
+            return Ok(Json(ProjectWriteResponse::Remote(value)).into_response());
         }
         if requested_server != "local" && local != requested_server {
             let driver = state.orchestration_driver.ok_or_else(|| {
@@ -342,7 +343,7 @@ async fn write_project(
             {
                 return Err(ApiError::internal());
             }
-            return Ok(Json(ProjectWriteResponse::Remote(value)));
+            return Ok(Json(ProjectWriteResponse::Remote(value)).into_response());
         }
     }
     let mut body = body;
@@ -369,7 +370,15 @@ async fn write_project(
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    Ok(Json(value))
+    let mut response = Json(value).into_response();
+    if is_sidebar {
+        // Python preserves the durable sidebar receipt on both first apply and
+        // exact retry; request-specific sync decoration would alter its shape.
+        response
+            .extensions_mut()
+            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+    }
+    Ok(response)
 }
 
 fn local_project_registration(
@@ -912,6 +921,21 @@ fn remote_location_request(
     };
     if server.is_empty() || local.as_deref() == Some(server) {
         return Ok(None);
+    }
+    let paired = store
+        .read()
+        .map_err(ApiError::stored)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
+            [server],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| ApiError::internal())?;
+    if !paired {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The server is not paired or is revoked",
+        ));
     }
     let project_id = query
         .get("project")
