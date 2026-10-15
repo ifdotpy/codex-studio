@@ -891,7 +891,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     reached
         .await
         .expect("worker reaches barrier after malformed-agent wake");
-    let (stored_record, diagnostic) = state
+    let (stored_record, diagnostic, json_extract_safe) = state
         .bridge
         .run({
             let bad_id = bad_id.clone();
@@ -907,15 +907,24 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
                 );
                 let diagnostic: String = db.query_row(
-                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND json_valid(result)",
                     [receipt_id],
                     |row| row.get(0),
                 )?;
-                Ok((raw, diagnostic))
+                let json_extract_safe: bool = db.query_row(
+                    "SELECT json_extract(result,'$.held')=1 AND json_extract(result,'$.diagnostic') IS NOT NULL FROM runtime_operation_receipts WHERE id=?1",
+                    [format!("{}{bad_id}", studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
+                    |row| row.get(0),
+                )?;
+                Ok((raw, diagnostic, json_extract_safe))
             }
         })
         .await
         .expect("read original agent row and separate hold");
+    assert!(
+        json_extract_safe,
+        "held receipt remains safe for JSON SQL consumers"
+    );
     assert_eq!(
         stored_record, original_record,
         "held row bytes remain untouched"

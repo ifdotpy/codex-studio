@@ -524,6 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn invalid_agent_hold_receipt_excludes_agent_from_wake_page() {
+        let connection = database();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_operation_receipts(
+                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL
+                 );",
+            )
+            .expect("receipt table creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    r#"{"held":true}"#,
+                ],
+            )
+            .expect("invalid agent hold receipt writes");
+
+        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8)
+            .expect("wake page skips held agent");
+
+        assert!(
+            page.is_empty(),
+            "held agent must not be eligible for wake selection"
+        );
+    }
+
+    #[test]
     fn native_failure_hold_added_after_claim_blocks_submission() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");

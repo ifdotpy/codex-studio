@@ -5,9 +5,9 @@ import logging
 import math
 import sqlite3
 from copy import deepcopy
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast, get_args
 
-from pydantic import AfterValidator, TypeAdapter, ValidationError
+from pydantic import AfterValidator, BaseModel, TypeAdapter, ValidationError
 
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
@@ -300,14 +300,40 @@ def _drop_error_path(value: Any, path: tuple[object, ...]) -> None:
 
 
 def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], ...]:
+    # Pydantic inserts the selected model name into errors produced by an
+    # untagged nested union (for example, ``nativeStatus.AgentNativeStatus``).
+    # Only those union-branch labels are metadata; the remaining path is the
+    # field path to remove from the selected DTO alternative.
+    branch_names: set[str] = set()
+    pending = list(_DTO_MODELS.values()) + [UiPreferencesDto]
+    visited: set[type[BaseModel]] = set()
+    while pending:
+        model = pending.pop()
+        if model in visited:
+            continue
+        visited.add(model)
+        for field in model.model_fields.values():
+            annotation = field.annotation
+            arguments = get_args(annotation)
+            if len(arguments) > 1:
+                branch_names.update(
+                    argument.__name__
+                    for argument in arguments
+                    if isinstance(argument, type)
+                    and issubclass(argument, BaseModel)
+                )
+            pending.extend(
+                argument
+                for argument in arguments
+                if isinstance(argument, type)
+                and issubclass(argument, BaseModel)
+            )
     paths: set[tuple[object, ...]] = set()
     for item in error.errors():
         if item.get("type") != "extra_forbidden":
             continue
         location = tuple(item.get("loc", ()))
-        # Discriminated-union validation prepends the collection and DTO value.
-        if "value" in location:
-            location = location[location.index("value") + 1:]
+        location = tuple(part for part in location if part not in branch_names)
         if location:
             paths.add(location)
     return tuple(sorted(paths, key=lambda path: tuple(map(str, path))))
@@ -343,7 +369,12 @@ def response_entity_payload_fail_open(
         for key in envelope_extras:
             del candidate[key]
 
-        paths = _contract_extra_paths(original_error)
+        selected_model = ChatEntityDto if deleted else _DTO_MODELS[envelope["collection"]]
+        try:
+            selected_model.model_validate(candidate["value"])
+            paths = ()
+        except ValidationError as selected_error:
+            paths = _contract_extra_paths(selected_error)
         if deleted:
             # The union adapter reports a legacy alias through its branch DTO;
             # remove forbidden fields from the value itself using that DTO.
