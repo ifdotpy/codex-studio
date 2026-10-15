@@ -248,7 +248,7 @@ def python_worker_draft(backend, request, parent_id):
 class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.backend = start_contract_backend(cls)
+        cls.backend = start_contract_backend(cls, fake_version_output="codex-cli 999.0.0")
         cls.agent_id = seed_python_agent(cls.backend)
         cls.backend.start()
 
@@ -326,6 +326,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             break
                         event = None
             self.fail("Background scheduler/workspace work did not become quiescent")
+
+    def await_provider_version_projection(self):
+        """Wait for the monitor that owns workspace.nativeNotices to finish its pass."""
+        def projection_settled():
+            response = self.backend.request("GET", "/api/desktop", headers=self.headers())
+            self.assertEqual(response.status, 200, response.body[:1000])
+            checked_at = response.json().get("providerVersions", {}).get("checkedAt")
+            return isinstance(checked_at, (int, float))
+
+        self.backend.wait_until(projection_settled, "provider-version workspace projection")
 
     def creation_preparation_settled(self, agent_id):
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
@@ -1473,6 +1483,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         fixture_agent_ids = {self.agent_id}
 
         def stable_snapshot():
+            self.await_provider_version_projection()
             snapshot = no_write_snapshot(self.backend.state)
             stable_databases = []
             for database, tables in snapshot:

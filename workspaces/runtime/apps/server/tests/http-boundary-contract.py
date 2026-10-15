@@ -290,7 +290,6 @@ class RestartContractTests(TimedBoundaryTest):
 
     def test_restart_serves_sync_receipt_and_provider_facts(self) -> None:
         backend = self.backend
-        rust_backend_configured = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         headers = {"Origin": backend.origin or "", "X-Canvas-Token": backend.session["token"],
                    "X-Studio-API-Schema": backend.schema_hash}
         identity = backend.request("GET", "/api/sync/identity",
@@ -366,12 +365,10 @@ class RestartContractTests(TimedBoundaryTest):
         backend.session = restarted_session.json()
         pulled = backend.request("GET", "/api/sync/pull?scope=drafts&after=0")
         assert_status(pulled, 200)
-        if rust_backend_configured:
-            self.assertFalse(any(document["id"] == draft["newDocumentState"]["id"]
-                                 for document in pulled.json()["documents"]))
-        else:
-            self.assertTrue(any(document["id"] == draft["newDocumentState"]["id"]
-                                for document in pulled.json()["documents"]))
+        # SyncStore.push_drafts owns durable session drafts; this unrelated provider turn must not discard one.
+        # Python owner: codex_sync.py:566-600.
+        self.assertTrue(any(document["id"] == draft["newDocumentState"]["id"]
+                            for document in pulled.json()["documents"]))
         restarted_identity = backend.request(
             "GET", "/api/sync/identity", headers={"X-Studio-API-Schema": backend.schema_hash}
         )
@@ -380,15 +377,8 @@ class RestartContractTests(TimedBoundaryTest):
         restarted_protocol = backend.request(
             "GET", "/api/sync/protocol", headers={"X-Studio-API-Schema": backend.schema_hash}
         )
-        if rust_backend_configured:
-            self.assertEqual(restarted_protocol.status, 501, restarted_protocol.body[:1000])
-            self.assertEqual(
-                restarted_protocol.json()["error"],
-                "Not implemented: requires sync-policy/runtime-capabilities",
-            )
-        else:
-            assert_status(restarted_protocol, 200)
-            self.assertEqual(restarted_protocol.json()["protocolVersion"], 3)
+        assert_status(restarted_protocol, 200)
+        self.assertEqual(restarted_protocol.json()["protocolVersion"], 3)
         headers = {"Origin": backend.origin or "", "X-Canvas-Token": backend.session["token"],
                    "X-Studio-API-Schema": backend.schema_hash}
         replay = backend.request("POST", "/api/messages", body=body, headers=headers)

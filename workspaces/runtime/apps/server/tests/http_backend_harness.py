@@ -1204,7 +1204,9 @@ class BackendProcess:
                 f"stderr tail:\n{self.stderr or '<empty>'}"
             ) from error
 
-    def create_codex_replay(self, fixture_name: str) -> Path:
+    def create_codex_replay(
+        self, fixture_name: str, *, fake_version_output: str = "codex-cli 0.1.0",
+    ) -> Path:
         (self.codex_home / "auth.json").write_text(
             json.dumps({"OPENAI_API_KEY": "fixture-only-replay-key"}),
             encoding="utf-8",
@@ -1227,8 +1229,9 @@ class BackendProcess:
             f"fixture = {str(fixture)!r}\n"
             f"replies = {str(replies)!r}\n"
             f"replay = {str(PROVIDER_REPLAY)!r}\n"
+            f"version_output = {fake_version_output!r}\n"
             "if sys.argv[1:] == ['--version']:\n"
-            "    print('codex-cli 0.1.0')\n"
+            "    print(version_output)\n"
             "elif sys.argv[1:3] == ['app-server', 'generate-json-schema']:\n"
             "    output = sys.argv[sys.argv.index('--out') + 1]\n"
             "    os.makedirs(os.path.join(output, 'v2'), exist_ok=True)\n"
@@ -1455,6 +1458,7 @@ def start_contract_backend(
     test_case: type[Any],
     fixture_name: str = "restart-mid-turn-supervisor-replay.json",
     *,
+    fake_version_output: str = "codex-cli 0.1.0",
     hold_provider_method: str | None = None,
     hold_provider_occurrence: int = 1,
     supervisor_protocol: bool = False,
@@ -1474,7 +1478,7 @@ def start_contract_backend(
     test_case.addClassCleanup(_report_contract_backend_timing, backend)
     test_case.addClassCleanup(backend.close)
     provider_started = time.monotonic()
-    backend.create_codex_replay(fixture_name)
+    backend.create_codex_replay(fixture_name, fake_version_output=fake_version_output)
     backend.class_setup_phases["fakeProviderSetupSeconds"] = round(
         time.monotonic() - provider_started, 4,
     )
