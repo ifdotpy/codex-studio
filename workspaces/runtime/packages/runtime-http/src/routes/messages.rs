@@ -165,9 +165,7 @@ pub(super) async fn post_message(
                 )
                 .map_err(federation_error)?;
                 result["id"] = Value::String(id);
-                super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
-                    result,
-                )
+                super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(result)
             },
         )
         .await
@@ -375,6 +373,23 @@ fn coordination_error(error: CoordinationError) -> ApiError {
         }
         CoordinationError::BudgetRuntime(_) => ApiError::internal(),
         CoordinationError::Store(error) => ApiError::stored(error),
+    }
+}
+
+fn federation_error(
+    error: studio_runtime_services::federation_messaging::FederationMessageError,
+) -> ApiError {
+    use studio_runtime_services::federation_messaging::FederationMessageError as Error;
+    match error {
+        Error::Invalid(_) | Error::Forbidden(_) => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Federation room is unavailable")
+        }
+        Error::Conflict(_) => ApiError::new(
+            StatusCode::CONFLICT,
+            "Federation message conflicts with stored state",
+        ),
+        Error::Unavailable(dependency) => ApiError::dependency(dependency),
+        Error::Store(_) | Error::Event(_) | Error::Transport(_) => ApiError::internal(),
     }
 }
 

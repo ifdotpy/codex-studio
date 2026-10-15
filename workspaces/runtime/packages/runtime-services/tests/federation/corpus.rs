@@ -1083,7 +1083,9 @@ fn bad_federation_response_signature_stays_unknown_and_does_not_learn_route() {
     use std::os::unix::net::UnixListener;
 
     let corpus = Corpus::new();
-    let (_, sender) = corpus.store("bad-response-signature-sender", false);
+    // Keep the Unix socket path below macOS's sockaddr_un path limit even
+    // when the system temp directory has a long per-user prefix.
+    let (_, sender) = corpus.store("s", false);
     let (_, receiver) = corpus.store("bad-response-signature-receiver", true);
     delivery::send_message(
         &sender,
