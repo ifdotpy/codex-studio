@@ -338,42 +338,74 @@ impl Worker {
         // Keep its correlation until checkpoint; after a crash, replay still
         // reports Unknown for this beyond-checkpoint result and never resends.
         let account = self.account.clone();
+        let retained_account = account.clone();
         let generation = self.generation.0;
-        let candidates: BTreeSet<u64> = self
+        let mut scopes: BTreeSet<String> = self
+            .retained_requests
+            .values()
+            .map(|pending| self.journal_scope(pending.actor_id.as_deref()))
+            .collect();
+        // A journal barrier always belongs to the host session, including when
+        // no retained requests are currently waiting.
+        scopes.insert(account.clone());
+        let request_scopes: BTreeMap<_, _> = self
+            .retained_requests
+            .iter()
+            .map(|(id, pending)| (id.clone(), self.journal_scope(pending.actor_id.as_deref())))
+            .collect();
+        let candidates: BTreeSet<(String, u64)> = self
             .retained_requests
             .values()
             .filter(|pending| {
                 pending.result_cursor > 0
-                    && self
-                        .managed_callback_cursors
-                        .iter()
-                        .any(|(_, callback_cursor)| *callback_cursor < pending.result_cursor)
+                    && self.managed_callback_cursors.iter().any(
+                        |(actor, actor_epoch, callback_cursor)| {
+                            actor == &pending.actor_id
+                                && *actor_epoch
+                                    == pending.call.actor.as_ref().map(|owner| owner.epoch)
+                                && *callback_cursor < pending.result_cursor
+                        },
+                    )
             })
-            .map(|pending| pending.result_cursor)
+            .map(|pending| {
+                (
+                    self.journal_scope(pending.actor_id.as_deref()),
+                    pending.result_cursor,
+                )
+            })
             .collect();
-        let (checkpoint, committed_replies) = self
+        let (checkpoints, committed_replies) = self
             .db("retained_barrier", move |s| {
                 s.transaction_with(|tx| {
-                    let checkpoint = store::checkpoint(tx, &account, generation)?;
+                    let mut checkpoints = BTreeMap::new();
+                    for scope in scopes {
+                        checkpoints
+                            .insert(scope.clone(), store::checkpoint(tx, &scope, generation)?);
+                    }
                     let committed = candidates
                         .into_iter()
-                        .filter_map(|cursor| {
-                            match store::journal_committed(tx, &account, generation, cursor) {
-                                Ok(true) => Some(Ok(cursor)),
+                        .filter_map(|(scope, cursor)| {
+                            match store::journal_committed(tx, &scope, generation, cursor) {
+                                Ok(true) => Some(Ok((scope, cursor))),
                                 Ok(false) => None,
                                 Err(error) => Some(Err(error)),
                             }
                         })
                         .collect::<Result<BTreeSet<_>, _>>()?;
-                    Ok((checkpoint, committed))
+                    Ok((checkpoints, committed))
                 })
             })
             .await?;
-        self.retained_requests.retain(|_, pending| {
+        self.retained_requests.retain(|id, pending| {
+            let scope = request_scopes
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| retained_account.clone());
+            let checkpoint = checkpoints.get(&scope).copied().unwrap_or(0);
             if pending.result_cursor > checkpoint {
                 if let Some(result @ (RequestResult::Reply(_) | RequestResult::Rejected(_))) =
                     pending.result.clone()
-                    && committed_replies.contains(&pending.result_cursor)
+                    && committed_replies.contains(&(scope, pending.result_cursor))
                     && let Some(reply) = pending.reply.take()
                 {
                     let _ignored =
@@ -395,7 +427,7 @@ impl Worker {
             return Ok(());
         }
         self.retained_barriers.retain_mut(|pending| {
-            let result = if pending.cursor <= checkpoint {
+            let result = if pending.cursor <= checkpoints.get(&account).copied().unwrap_or(0) {
                 Some(Ok(()))
             } else if tokio::time::Instant::from_std(pending.command.deadline)
                 <= tokio::time::Instant::now()

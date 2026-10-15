@@ -430,7 +430,8 @@ fn workspace_with_vm_action(
                 error => refusal(error.to_string()),
             })?;
         }
-        let ready = AgentRepository::get(&store.read()?, &AgentId::from(intent.agent_id.as_str()))?
+        let connection = store.read()?;
+        let ready = AgentRepository::get(&connection, &AgentId::from(intent.agent_id.as_str()))?
             .ok_or_else(|| invalid(&intent.agent_id))?;
         if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             return Err(WorkerError::PreparationPending(

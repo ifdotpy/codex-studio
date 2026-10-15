@@ -292,10 +292,14 @@ async fn run_guest_attachment(
                 break;
             }
             let next = reader_session.next().await;
+            let failed = next.is_err();
             tokio::select! {
                 biased;
                 _ = Shutdown::cancelled(&mut reader_stop) => break,
                 sent = read_tx.send(next) => if sent.is_err() { break; },
+            }
+            if failed {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

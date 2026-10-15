@@ -1365,17 +1365,17 @@ mod tests {
         tar::Archive::new(GzDecoder::new(
             File::open(path).expect("open project archive"),
         ))
-            .entries()
-            .expect("archive entries")
-            .map(|entry| {
-                entry
-                    .expect("valid archive entry")
-                    .path()
-                    .expect("valid archive path")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect()
+        .entries()
+        .expect("archive entries")
+        .map(|entry| {
+            entry
+                .expect("valid archive entry")
+                .path()
+                .expect("valid archive path")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
     }
 
     #[cfg(unix)]

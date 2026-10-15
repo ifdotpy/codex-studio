@@ -1703,6 +1703,7 @@ mod retained_executor_tests {
             account_driver: None,
             account_session: Some(session.clone()),
             guest_rpc: None,
+            vm_provider_launch: None,
         };
         crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
             .expect("the durable member enters Reading before preparation");
@@ -1887,6 +1888,7 @@ mod retained_executor_tests {
             account_driver: None,
             account_session: Some(recovered_session.clone()),
             guest_rpc: None,
+            vm_provider_launch: None,
         };
         let _ = before_start(
             &recovered_store,

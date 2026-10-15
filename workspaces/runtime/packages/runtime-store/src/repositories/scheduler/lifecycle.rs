@@ -128,6 +128,32 @@ impl SchedulerRepository {
         Ok(())
     }
 
+    /// Retire one VM actor after its provider session closes, preserving that
+    /// actor's recovery receipt without disconnecting sibling actors.
+    pub fn disconnect_vm_actor(
+        transaction: &Transaction<'_>,
+        id: &str,
+        epoch: i64,
+        account: &str,
+        generation: u64,
+        at: f64,
+    ) -> StoreResult<bool> {
+        for mut agent in account_agents(transaction, account, &unresolved_sql())? {
+            if agent.id.0 != id
+                || agent.epoch != epoch
+                || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+                || stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
+                    .as_u64()
+                    .is_some_and(|current| current != generation)
+            {
+                continue;
+            }
+            disconnect_agent(transaction, &mut agent, at, false, false)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// A new supervisor generation cannot prove an old turn's outcome. History reconciliation
     /// is a named dependency; preserve the Python recovery receipt and hold the old input.
     pub fn reconcile_generation(

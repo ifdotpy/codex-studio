@@ -850,6 +850,19 @@ pub(super) fn outcome(
         Ok((retired, effect))
     })
 }
+
+pub(super) fn disconnect_vm_actor(
+    store: &RuntimeStore,
+    agent_id: &str,
+    epoch: i64,
+    account: &str,
+    generation: u64,
+) -> Result<bool, WorkerError> {
+    let disconnected = scheduler::lifecycle_transaction_with(store, |tx| {
+        SchedulerRepository::disconnect_vm_actor(tx, agent_id, epoch, account, generation, now())
+    })?;
+    Ok(disconnected)
+}
 fn uncertain(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
