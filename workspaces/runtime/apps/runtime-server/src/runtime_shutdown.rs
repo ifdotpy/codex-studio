@@ -6,6 +6,7 @@ use studio_runtime_http::HttpState;
 use tokio::time::timeout;
 
 const SHUTDOWN_COMPONENT_WAIT: Duration = Duration::from_secs(5);
+const SHUTDOWN_SERVICES_WAIT: Duration = Duration::from_secs(12);
 
 pub(crate) async fn close(
     runtime: HostRuntime,
@@ -26,14 +27,14 @@ pub(crate) async fn close(
         });
     // Always reap other services, even when a worker reports unknown cleanup.
     eprintln!("runtime server shutdown step started: retained HTTP services");
-    let services = timeout(SHUTDOWN_COMPONENT_WAIT, state.shutdown_services())
+    let services = timeout(SHUTDOWN_SERVICES_WAIT, state.shutdown_services())
         .await
         .map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
                     "retained HTTP services shutdown exceeded its {:.0}s bound",
-                    SHUTDOWN_COMPONENT_WAIT.as_secs_f64()
+                    SHUTDOWN_SERVICES_WAIT.as_secs_f64()
                 ),
             )
         });

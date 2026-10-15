@@ -39,7 +39,8 @@ use tokio::sync::watch;
 
 const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
-const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(5);
+// Allow the worker and retained-service bounds to complete before process exit.
+const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 
 fn main() {

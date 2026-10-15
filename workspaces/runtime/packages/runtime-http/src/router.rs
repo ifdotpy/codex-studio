@@ -5,12 +5,51 @@ use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use studio_runtime_process::operational_log::OperationalLog;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
+
+const COST_REFRESH_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(9);
+
+#[derive(Default)]
+struct CostRefreshWorkers {
+    active: AtomicUsize,
+    idle: Notify,
+}
+
+pub(crate) struct CostRefreshWorkerGuard(Arc<CostRefreshWorkers>);
+
+impl Drop for CostRefreshWorkerGuard {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
+}
+
+impl CostRefreshWorkers {
+    fn track(self: &Arc<Self>) -> CostRefreshWorkerGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        CostRefreshWorkerGuard(Arc::clone(self))
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
 
 #[cfg(unix)]
 use studio_runtime_services::terminal_driver::TerminalDriver;
@@ -71,6 +110,8 @@ pub struct HttpState {
     pub(crate) native_path: Option<String>,
     pub(crate) state_dir: String,
     pub(crate) cost_scan_cancelled: Arc<std::sync::atomic::AtomicBool>,
+    cost_refresh_workers: Arc<CostRefreshWorkers>,
+    pub(crate) cost_scanner_build_script: Option<PathBuf>,
     pub(crate) vm_state_dir: std::path::PathBuf,
     pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
@@ -208,6 +249,8 @@ impl HttpState {
             native_path,
             state_dir,
             cost_scan_cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cost_refresh_workers: Arc::new(CostRefreshWorkers::default()),
+            cost_scanner_build_script: None,
             vm_state_dir,
             app_server_log: None,
             port,
@@ -408,6 +451,17 @@ impl HttpState {
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
         self.cost_scan_cancelled
             .store(true, std::sync::atomic::Ordering::Release);
+        let cost_refresh = tokio::time::timeout(
+            COST_REFRESH_SHUTDOWN_WAIT,
+            self.cost_refresh_workers.wait_idle(),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "local cost refresh workers did not stop within their shutdown bound",
+            )
+        });
         let model = self.model_catalog.shutdown().await;
         if let Some(monitor) = &self.provider_versions {
             monitor.shutdown();
@@ -415,12 +469,22 @@ impl HttpState {
         if let Some(login) = &self.claude_login {
             login.shutdown().await.map_err(std::io::Error::other)?;
         }
+        cost_refresh?;
         model
     }
 
     /// Cancellation shared with blocking local cost scans during shutdown.
     pub fn cost_scan_cancellation_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::clone(&self.cost_scan_cancelled)
+    }
+
+    pub(crate) fn track_cost_refresh_worker(&self) -> CostRefreshWorkerGuard {
+        self.cost_refresh_workers.track()
+    }
+
+    pub fn with_cost_scanner_build_script(mut self, path: PathBuf) -> Self {
+        self.cost_scanner_build_script = Some(path);
+        self
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.
@@ -1082,5 +1146,41 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cost_refresh_worker_tests {
+    use super::HttpState;
+    use std::sync::{Arc, atomic::Ordering};
+
+    #[tokio::test]
+    async fn shutdown_waits_until_cost_refresh_worker_finishes_cleanup() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            None,
+            None,
+        );
+        let cancelled = Arc::clone(&state.cost_scan_cancelled);
+        let guard = state.track_cost_refresh_worker();
+        let shutdown = tokio::spawn(async move { state.shutdown_services().await });
+        tokio::task::yield_now().await;
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown waits for the refresh worker"
+        );
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+            .await
+            .expect("shutdown waiter completes")
+            .expect("shutdown task succeeds")
+            .expect("shutdown services succeed");
     }
 }

@@ -71,7 +71,8 @@ async fn costs(
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
     let refresh_cancelled = state.cost_scan_cancellation_handle();
-    let state_dir = std::path::PathBuf::from(state.state_dir);
+    let build_script = state.cost_scanner_build_script.clone();
+    let state_dir = std::path::PathBuf::from(state.state_dir.clone());
     let refresh_state_dir = state_dir.clone();
     let refresh_account = account.clone();
     let refresh_key = account_key.clone();
@@ -91,12 +92,16 @@ async fn costs(
     }
     let refresh_claimed = refresh_due
         && result.get("refreshing").and_then(Value::as_bool) != Some(true)
+        && build_script.is_some()
         && usage::claim_cost_refresh_attempt(&account_key);
     if refresh_claimed {
+        let build_script = build_script.expect("the refresh requires the resolved scanner builder");
+        let refresh_worker = state.track_cost_refresh_worker();
         if let Some(object) = result.as_object_mut() {
             object.insert("refreshing".to_owned(), Value::Bool(true));
         }
         tokio::spawn(async move {
+            let _refresh_worker = refresh_worker;
             let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-http/routes/usage",
                 move || {
@@ -105,6 +110,7 @@ async fn costs(
                         &refresh_key,
                         &refresh_account,
                         &refresh_cancelled,
+                        &build_script,
                     )
                 },
             )
