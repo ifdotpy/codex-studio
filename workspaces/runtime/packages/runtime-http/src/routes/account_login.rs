@@ -342,7 +342,7 @@ async fn claude_profile(
         let driver = state
             .account_driver
             .as_ref()
-            .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
+            .ok_or_else(|| runtime_availability("account-driver/runtime"))?;
         let current = driver
             .claude_profile(account)
             .map_err(|error| match error {
@@ -466,6 +466,42 @@ mod tests {
         let error = run_mutation(state, |_| unreachable!())
             .await
             .expect_err("missing driver is a composition error");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
+            "Runtime unavailable: account-driver/runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_profile_requires_the_runtime_account_driver() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
+        let state = HttpState::new(
+            String::new(),
+            String::new(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            0,
+            None,
+            None,
+            None,
+        );
+        let result = super::claude_profile(
+            axum::extract::State(state),
+            super::ApiJson(super::ProfileRequest {
+                account_key: Some("account".into()),
+                options: None,
+                label: None,
+            }),
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("missing account driver is unavailable");
+        };
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(response.into_body(), 4096)
