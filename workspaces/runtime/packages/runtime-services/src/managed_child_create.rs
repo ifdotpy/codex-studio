@@ -33,7 +33,11 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         &'a self,
         _account_key: &'a str,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), ManagedCreationEnvironmentError>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<(), ManagedCreationEnvironmentError>>
+                + Send
+                + 'a,
+        >,
     > {
         Box::pin(async { Ok(()) })
     }

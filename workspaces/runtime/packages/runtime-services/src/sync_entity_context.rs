@@ -188,8 +188,9 @@ pub(crate) fn agent_view_context(
         )?
         && !exists_for_agent(transaction, "runtime_monitors", "json_extract(record,'$.agent')", id)?;
     let mut latest: Option<(f64, String)> = None;
-    let mut statement = transaction
-        .prepare_cached("SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1")?;
+    let mut statement = transaction.prepare_cached(
+        "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
+    )?;
     let rows = statement
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;

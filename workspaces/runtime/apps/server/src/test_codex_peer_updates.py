@@ -298,7 +298,7 @@ class PeerUpdates(unittest.TestCase):
         # The offering app passes its own check; the archive breaks the seal on the way.
         original = updates._make_export
 
-        def broken_export(root: Path, app: Path, build: dict[str, Any], export: str, run: Any) -> None:
+        def broken_export(root: Path, app: Path, build: dict[str, Any], export: str, run: updates.Runner) -> None:
             def run_and_break(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
                 if Path(argv[0]).name == 'ditto' and argv[1:2] == ['-c']:
                     (app / 'Contents' / 'BAD_SIGNATURE').write_text('')

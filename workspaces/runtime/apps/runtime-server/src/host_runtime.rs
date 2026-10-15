@@ -584,10 +584,7 @@ pub(crate) fn codex_launch(
 #[allow(clippy::items_after_test_module, clippy::unwrap_used)]
 mod install_root_tests {
     use super::{AccountDriver, CLAUDE_BRIDGE_RELATIVE, HttpState, InstallRoot};
-    use std::{
-        fs,
-        path::PathBuf,
-    };
+    use std::{fs, path::PathBuf};
     use studio_runtime_store::RuntimeStore;
 
     #[test]

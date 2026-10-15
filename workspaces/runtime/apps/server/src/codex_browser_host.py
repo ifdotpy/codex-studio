@@ -208,7 +208,8 @@ class HostGuest:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise BridgeError("invalid_request", "The request must be an object")
-            identity = request.get("id") if isinstance(request.get("id"), str) else ""
+            request_identity: object = request.get("id")
+            identity = request_identity if isinstance(request_identity, str) else ""
             method = request.get("method")
             params = request.get("params", {})
             if not identity or not isinstance(method, str) or not isinstance(params, dict):

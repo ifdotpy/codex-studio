@@ -25,7 +25,10 @@ pub struct ManagedToolRuntime {
 impl ManagedToolRuntime {
     #[cfg(test)]
     pub(crate) fn from_ports_for_test(ports: ManagedToolRuntimePorts) -> Arc<Self> {
-        Arc::new(Self { ports, creation_environment: None })
+        Arc::new(Self {
+            ports,
+            creation_environment: None,
+        })
     }
 
     pub fn new(
@@ -73,7 +76,10 @@ impl ManagedToolRuntime {
         })
     }
 
-    pub(crate) async fn wait_for_catalog(&self, account_key: &str) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+    pub(crate) async fn wait_for_catalog(
+        &self,
+        account_key: &str,
+    ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
         match &self.creation_environment {
             Some(environment) => environment.wait_for_catalog(account_key).await,
             None => Ok(()),
