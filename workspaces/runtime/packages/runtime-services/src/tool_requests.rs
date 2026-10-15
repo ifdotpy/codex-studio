@@ -157,7 +157,7 @@ fn execute_with_payload_recovery(
             record["finished"] = json!(now);
             record["result"] = json!({"success":false,"contentItems":[{"type":"inputText","text":json!({"requestId":record["id"],"stage":"cancelled","outcome":"not_applied","cancelRequested":true,"message":"Cancelled before execution"}).to_string()}]});
         }
-        save(tx, &record, &actor)?;
+        save(tx, &record, &actor, payload_root)?;
     }
     if !cancel {
         if !terminal(&record)
@@ -226,14 +226,32 @@ fn refresh(
     payload_recovery: bool,
     payload_root: Option<&std::path::Path>,
 ) -> Result<(), ToolRequestError> {
+    let has_record_payload = truthy(record.get("_payloadBlobs"));
     if !specific && terminal(record) {
+        if payload_recovery
+            && has_record_payload
+            && matches!(
+                text(record, "tool"),
+                "orchestration_spawn" | "orchestration_review"
+            )
+            && record
+                .get("agentIds")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+            *record = crate::payload_blobs::resolve_record(root, record)?;
+        }
         populate_spawned_agent_ids(record);
         return Ok(());
     }
-    if !payload_recovery && truthy(record.get("_payloadBlobs")) {
+    if !payload_recovery && has_record_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    let has_record_payload = truthy(record.get("_payloadBlobs"));
+    if payload_recovery && has_record_payload {
+        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        *record = crate::payload_blobs::resolve_record(root, record)?;
+    }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
     let has_saved_payload = saved
         .as_ref()
@@ -264,28 +282,10 @@ fn refresh(
         }
         let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
         result = crate::payload_blobs::resolve_record(root, &result)?;
-    } else if has_record_payload {
-        if !payload_recovery {
-            return Err(ToolRequestError::RequiresDependency(PAYLOAD));
-        }
-        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
-        let resolved_record = crate::payload_blobs::resolve_record(root, record)?;
-        if !has_saved_result {
-            result = resolved_record
-                .get("result")
-                .filter(|result| result.is_object())
-                .cloned()
-                .ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
-        }
     }
     // Python's specific `tool_result` lookup expires saved results before it
     // settles them. Inline results on the request row are settled as stored;
     // their returned copy is expired by the HTTP route afterwards.
-    let expire_saved_result = specific
-        && has_saved_result
-        && result["serverOutputExpiresAt"]
-            .as_f64()
-            .is_some_and(|expiry| now >= expiry);
     if specific && has_saved_result {
         // Python resolves the durable payload and applies output expiry before
         // it passes the result to finish_tool_request (codex_tool_requests.py:301-307, 512-520).
@@ -293,13 +293,10 @@ fn refresh(
     }
     let committed = operation_result(tx, text(record, "id"))?.is_some();
     if lifecycle::settle(record, &result, committed)? {
-        // Keep the durable preview/reference intact; only the complete result
-        // above is settlement evidence. The HTTP route restores it for output.
-        if expire_saved_result {
-            record["result"] = result;
-        } else if let Some(persisted_result) = persisted_result {
-            record["result"] = persisted_result;
-        }
+        // Store the same recovered value used for settlement. This keeps an
+        // unchanged externalized unknown result from comparing unequal on the
+        // next poll, and lets save() create a fresh reference for this value.
+        record["result"] = result;
         record["updated"] = json!(now);
         if record.get("timing").is_none() {
             record["timing"] = json!({});
@@ -315,7 +312,7 @@ fn refresh(
         ) {
             populate_spawned_agent_ids(record);
         }
-        save(tx, record, actor)?;
+        save(tx, record, actor, payload_root)?;
     }
     Ok(())
 }
@@ -427,13 +424,28 @@ fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestErr
 fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {
     records::get(tx, "runtime_operation_receipts", id).map_err(Into::into)
 }
-fn save(tx: &Transaction<'_>, record: &Value, actor: &Value) -> Result<(), ToolRequestError> {
-    let id = text(record, "id");
-    records::validate(TABLE, id, record.clone())?;
-    reconcile_effect(tx, "tool_requests", record, actor)?;
+fn save(
+    tx: &Transaction<'_>,
+    record: &Value,
+    actor: &Value,
+    payload_root: Option<&std::path::Path>,
+) -> Result<(), ToolRequestError> {
+    let decision = payload_root
+        .map(|root| crate::payload_blobs::decide_externalize(TABLE, record).map(|d| (root, d)))
+        .transpose()?;
+    let persisted = decision
+        .as_ref()
+        .map(|(_, decision)| &decision.record)
+        .unwrap_or(record);
+    let id = text(persisted, "id");
+    records::validate(TABLE, id, persisted.clone())?;
+    if let Some((root, decision)) = decision.as_ref() {
+        crate::payload_blobs::write_blobs(root, &decision.writes)?;
+    }
+    reconcile_effect(tx, "tool_requests", persisted, actor)?;
     tx.execute(
         "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
-        params![record.to_string(), id],
+        params![persisted.to_string(), id],
     )?;
     Ok(())
 }

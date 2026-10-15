@@ -8,6 +8,7 @@ import time
 import json
 import sqlite3
 import sys
+import uuid
 import importlib.util
 import unittest
 from contextlib import closing
@@ -495,6 +496,99 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "DELETE FROM runtime_payload_refs WHERE record_id=? AND table_name IN (?,?)",
                         (identity, "runtime_tool_requests", "runtime_tool_results"),
                     )
+
+    def test_adopting_saved_result_replaces_stale_payload_reference(self):
+        identity = "saved-result-replaces-payload"
+        old_result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps({"outcome": "unknown", "detail": "old-" * 20_000})},
+        ]}
+        new_result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps({"outcome": "unknown", "detail": "new-result"})},
+        ]}
+        write_receipts(
+            self.backend,
+            [receipt(identity, self.lead_id, stage="queued", outcome="pending",
+                     tool="orchestration_servers", result=old_result)],
+            saved_results={identity: new_result},
+        )
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+            headers=self.headers(),
+        )
+
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["result"], new_result)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            raw = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+        from codex_payloads import resolve_record
+        stored = json.loads(raw)
+        resolved = resolve_record(self.backend.state, stored)
+        self.assertEqual(resolved["result"], new_result)
+        self.assertNotIn("result", stored.get("_payloadBlobs", {}))
+
+    def test_spawned_ids_are_extracted_from_full_externalized_result(self):
+        identity = "spawned-ids-full-payload"
+        child_id = str(uuid.uuid4())
+        result = {"success": True, "contentItems": [{
+            "type": "inputText",
+            "text": json.dumps({"agents": [{"id": child_id}], "detail": "large-" * 20_000}),
+        }]}
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="queued", outcome="pending",
+            tool="orchestration_spawn", result=result,
+        )])
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+            headers=self.headers(),
+        )
+
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertIn(child_id, response.json()["agentIds"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = json.loads(database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0])
+        self.assertIn(child_id, stored["agentIds"])
+
+    def test_unchanged_externalized_unknown_result_does_not_rewrite_receipt(self):
+        identity = "stable-externalized-unknown"
+        result = {"success": True, "contentItems": [{
+            "type": "inputText",
+            "text": json.dumps({"outcome": "unknown", "detail": "large-" * 20_000}),
+        }]}
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="failed", outcome="unknown",
+            tool="orchestration_servers", result=result,
+        )])
+        path = "/api/tool-requests?" + urlencode({"agent": self.lead_id})
+
+        first = self.backend.request("GET", path, headers=self.headers())
+        self.assertEqual(first.status, 200, first.body[:1000])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            before = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+            refs_before = database.execute(
+                "SELECT table_name,record_id,field,sha256 FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+
+        second = self.backend.request("GET", path, headers=self.headers())
+        self.assertEqual(second.status, 200, second.body[:1000])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            after = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+            refs_after = database.execute(
+                "SELECT table_name,record_id,field,sha256 FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+        self.assertEqual(after, before)
+        self.assertEqual(refs_after, refs_before)
 
     def test_saved_expired_result_list_settles_original_applied_evidence(self):
         record=receipt("saved-expired-list",self.lead_id,stage="queued",outcome="pending",

@@ -192,8 +192,11 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt",
     }),
     "sync_entities": frozenset({
-        # Only preparation and activity bookkeeping is normalized. Settings,
-        # status, identity, and workspace paths remain observable.
+        # startAttempt is admitted by the asynchronous scheduler after a
+        # dispatch tick (codex_runtime.py:7188-7196); runtime_agents remains
+        # compared separately so request-visible agent state stays observable.
+        "payload.value.startAttempt",
+        # Only preparation and activity bookkeeping is otherwise normalized.
         "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
         "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
         "payload.value.worktreePreparation",
