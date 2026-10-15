@@ -2022,6 +2022,37 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertEqual(observed["passed"], 3)
             self.assertEqual(len(observed["tests"]), 2)
 
+    def test_consumer_timeout_is_recorded_and_leaves_active_test_unreported(self) -> None:
+        relative = "workspaces/runtime/apps/server/tests/fixture-timeout.py"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log = root / "consumer.log"
+            log.write_text(
+                "test_completed (__main__.Example.test_completed) ... ok\n"
+                "test_active (__main__.Example.test_active) ... \n"
+                "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+                "Test outcomes: {\"error\":0,\"failed\":0,\"passed\":1,\"skipped\":0}\n"
+                f"FAIL {relative}: timed out after 120s\n"
+            )
+            process = SimpleNamespace(
+                stdout=json.dumps({
+                    "status": "failed", "passed": 1, "failed": 1,
+                    "skipped": 0, "exitCode": 1, "logPath": str(log),
+                }),
+                stderr="", returncode=1,
+            )
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                observed = ledger.run_suite(ledger.TESTS / "fixture-timeout.py", {}, root, [], {})
+
+        self.assertEqual(observed["status"], "failed")
+        self.assertEqual(observed["passed"], 1)
+        self.assertEqual(observed["failed"], 1)
+        self.assertEqual(
+            [case["status"] for case in observed["tests"]],
+            ["ok", "unreported"],
+        )
+        self.assertEqual(observed["diagnostic"], "runner timed out after 120s")
+
     def test_consumer_reconciles_status_after_interleaved_warning(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

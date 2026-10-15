@@ -2834,7 +2834,20 @@ def run_suite(
         log_text,
     )
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
-    if not ran_summaries or suite_summary is None:
+    runner_timeout = re.search(
+        rf"^FAIL {re.escape(relative)}: timed out after ([0-9]+(?:\.[0-9]+)?)s$",
+        log_text,
+        re.MULTILINE,
+    )
+    timed_out_without_unittest_summary = (
+        not ran_summaries
+        and runner_timeout is not None
+        and process.returncode != 0
+        and result.get("status") != "passed"
+        and suite_summary is not None
+        and int(suite_summary.group(2)) > 0
+    )
+    if suite_summary is None or (not ran_summaries and not timed_out_without_unittest_summary):
         raise RuntimeError(f"consumer result summary missing in {relative}")
     suite_counts = {
         "passed": int(suite_summary.group(1)),
@@ -2855,9 +2868,17 @@ def run_suite(
         name: expected_test_counts[name] - observed_test_counts[name]
         for name in expected_test_counts
     }
+    timed_out_tests_remain_unreported = (
+        timed_out_without_unittest_summary
+        and bool(unreported)
+        and not any(missing_counts.values())
+    )
     if (
         any(count < 0 for count in missing_counts.values())
-        or sum(missing_counts.values()) != len(unreported)
+        or (
+            sum(missing_counts.values()) != len(unreported)
+            and not timed_out_tests_remain_unreported
+        )
         or sum(count > 0 for count in missing_counts.values()) > 1
     ):
         raise RuntimeError(
@@ -2865,11 +2886,12 @@ def run_suite(
             f"unreported test statuses cannot be reconciled: missing={missing_counts}, "
             f"unreported={[case['testId'] for case in unreported]}"
         )
-    for status, count in missing_counts.items():
-        if count:
-            for case in unreported:
-                case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
-            break
+    if not timed_out_tests_remain_unreported:
+        for status, count in missing_counts.items():
+            if count:
+                for case in unreported:
+                    case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
+                break
     observed_counts = {
         "passed": sum(case["status"] == "ok" for case in cases),
         "failed": sum(case["status"] in {"fail", "error"} for case in cases),
@@ -2879,7 +2901,10 @@ def run_suite(
         name: observed_counts[name] + suite_counts[name] for name in suite_counts
     }
     if (
-        sum(observed_counts.values()) != ran_count
+        (
+            not timed_out_without_unittest_summary
+            and sum(observed_counts.values()) != ran_count
+        )
         or expected_reported_counts != reported_counts
     ):
         raise RuntimeError(
@@ -2956,6 +2981,8 @@ def run_suite(
         "requests": requests,
         "unattributedRequests": unattributed,
         **({"diagnostic": result["diagnostic"]} if "diagnostic" in result else {}),
+        **({"diagnostic": f"runner timed out after {runner_timeout.group(1)}s"}
+           if timed_out_without_unittest_summary else {}),
     }
 
 
