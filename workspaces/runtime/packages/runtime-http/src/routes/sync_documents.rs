@@ -627,7 +627,6 @@ fn pull_entities(
                     collection,
                     id,
                     deleted,
-                    validators,
                 )
             },
         )?;
@@ -643,7 +642,6 @@ fn pull_entities(
                     collection,
                     id,
                     deleted,
-                    validators,
                 )
             },
         )?;
@@ -777,18 +775,9 @@ fn validate_generated<T: serde::Serialize>(
     serde_json::to_value(response).is_ok_and(|value| validators.validate_stored(schema, &value))
 }
 
-fn validate_entity_envelope(
-    payload: &Value,
-    collection: &str,
-    id: &str,
-    deleted: bool,
-    _validators: &crate::validation::Registry,
-) -> bool {
-    let mut payload = payload.clone();
-    matches!(
-        studio_runtime_schema::normalize_sync_entity_payload(collection, id, deleted, &mut payload,),
-        Ok(None)
-    )
+fn validate_entity_envelope(payload: &Value, collection: &str, id: &str, deleted: bool) -> bool {
+    studio_runtime_schema::validate_sync_entity_payload_strict(collection, id, deleted, payload)
+        .unwrap_or(false)
 }
 
 fn map_sync_store_error(error: StoreError) -> ApiError {
@@ -849,6 +838,7 @@ mod vault_maintenance_tests {
     use super::{
         ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS, SyncPullResponseBody,
         capture_project_vault_snapshot, pull_with_maintenance, pull_with_maintenance_interleaved,
+        validate_entity_envelope,
     };
     use axum::response::IntoResponse;
     use serde_json::{Value, json};
@@ -856,6 +846,47 @@ mod vault_maintenance_tests {
 
     fn response_value(response: &SyncPullResponseBody) -> Value {
         serde_json::to_value(response).expect("generated sync response serializes")
+    }
+
+    #[test]
+    fn projection_write_validation_rejects_extra_envelope_and_branch_fields() {
+        let valid = json!({
+            "collection":"task",
+            "id":"task-1",
+            "value":{"id":"task-1"}
+        });
+        assert!(validate_entity_envelope(&valid, "task", "task-1", false));
+        let tombstone = json!({
+            "collection":"task",
+            "id":"task-1",
+            "value":{}
+        });
+        assert!(validate_entity_envelope(&tombstone, "task", "task-1", true));
+
+        let extra_envelope = json!({
+            "collection":"task",
+            "id":"task-1",
+            "value":{"id":"task-1"},
+            "legacyEnvelopeField":true
+        });
+        assert!(!validate_entity_envelope(
+            &extra_envelope,
+            "task",
+            "task-1",
+            false
+        ));
+
+        let extra_branch_field = json!({
+            "collection":"task",
+            "id":"task-1",
+            "value":{"id":"task-1","legacyEntityField":true}
+        });
+        assert!(!validate_entity_envelope(
+            &extra_branch_field,
+            "task",
+            "task-1",
+            false
+        ));
     }
 
     #[test]

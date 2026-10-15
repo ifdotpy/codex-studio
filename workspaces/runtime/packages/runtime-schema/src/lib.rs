@@ -484,13 +484,7 @@ pub fn normalize_sync_entity_payload(
     deleted: bool,
     payload: &mut Value,
 ) -> SchemaResult<Option<(String, String)>> {
-    let Some(object) = payload.as_object_mut() else {
-        return Ok(Some((String::new(), "type".to_owned())));
-    };
-    if object.get("collection").and_then(Value::as_str) != Some(collection)
-        || object.get("id").and_then(Value::as_str) != Some(id)
-        || !object.get("value").is_some_and(Value::is_object)
-    {
+    if !sync_entity_envelope_matches(collection, id, payload) {
         return Ok(Some((String::new(), "identity".to_owned())));
     }
 
@@ -499,6 +493,9 @@ pub fn normalize_sync_entity_payload(
             "/collection".to_owned(),
             "unknownCollection".to_owned(),
         )));
+    };
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(Some((String::new(), "identity".to_owned())));
     };
     object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
 
@@ -509,6 +506,43 @@ pub fn normalize_sync_entity_payload(
 
     strip_stored_extra_fields(&schema, payload)?;
     first_error("SyncEntityPayload", payload)
+}
+
+/// Validate a sync entity that is about to be written without normalizing it.
+///
+/// Projection candidates must already match the exact envelope and strict live
+/// entity schema; only persisted historical rows may use extra-field stripping.
+pub fn validate_sync_entity_payload_strict(
+    collection: &str,
+    id: &str,
+    deleted: bool,
+    payload: &Value,
+) -> SchemaResult<bool> {
+    if !sync_entity_envelope_matches(collection, id, payload) {
+        return Ok(false);
+    }
+    let Some(object) = payload.as_object() else {
+        return Ok(false);
+    };
+    if object.len() != 3 || sync_entity_branch(collection)?.is_none() {
+        return Ok(false);
+    }
+    if deleted {
+        return Ok(object
+            .get("value")
+            .and_then(Value::as_object)
+            .is_some_and(serde_json::Map::is_empty));
+    }
+    Ok(first_error("SyncEntityPayload", payload)?.is_none())
+}
+
+fn sync_entity_envelope_matches(collection: &str, id: &str, payload: &Value) -> bool {
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    object.get("collection").and_then(Value::as_str) == Some(collection)
+        && object.get("id").and_then(Value::as_str) == Some(id)
+        && object.get("value").is_some_and(Value::is_object)
 }
 
 fn sync_entity_branch(collection: &str) -> SchemaResult<Option<String>> {
