@@ -421,6 +421,28 @@ pub(super) fn submitted(
                 json!({"call":call,"request":store::record(request)}),
             )?;
         } else {
+            // The replay read and this admission are separate transactions. Two
+            // concurrent callers can both observe a miss, then race to persist
+            // the same operation key with different call identities. Validate
+            // the winner's durable intent, but refuse the loser at the request
+            // boundary instead of treating the expected race as corrupt store
+            // data and terminating the account worker.
+            if let Some(prior) = store::receipt(tx, &call.key(), "submitted")? {
+                let prior_call: Call = serde_json::from_value(prior["call"].clone())
+                    .map_err(|_| WorkerError::Capacity)?;
+                let prior_request = store::decode(&prior["request"])?;
+                let key = call.key();
+                if prior_call.key() != key
+                    || prior_request.ticket.id
+                        != studio_runtime_providers::RequestId::String(key.clone())
+                    || prior_request.ticket.generation != prior_call.scope.generation
+                    || prior_request.ticket.method.as_str() != prior_call.method
+                    || prior_request.operation_id.0 != key
+                {
+                    return Err(WorkerError::Capacity);
+                }
+                return Ok(Err(PortError::Identity));
+            }
             store::save(
                 tx,
                 &call.key(),
@@ -525,5 +547,74 @@ mod replay_identity_tests {
         let mut changed = prior;
         changed.params["threadId"] = json!("thread-2");
         assert!(!same_replay_identity(&call(), &changed));
+    }
+
+    #[test]
+    fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent() {
+        let state = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(state.path())).unwrap();
+        let first = Call {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection-1".into(),
+                generation: 1,
+            },
+            operation: "import:fixture:read".into(),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: "thread/read".into(),
+            params: json!({"threadId":"source-thread","includeTurns":false}),
+        };
+        let conflicting = Call {
+            params: json!({"threadId":"other-source-thread","includeTurns":false}),
+            ..first.clone()
+        };
+        let recovered = |call: &Call| {
+            let id = call.key();
+            RecoveredRequest {
+                ticket: RequestTicket {
+                    id: studio_runtime_providers::RequestId::String(id.clone()),
+                    generation: call.scope.generation,
+                    method: Method::ThreadRead,
+                },
+                operation_id: studio_runtime_process::OperationId(id),
+                thread_id: call.params["threadId"].as_str().map(str::to_owned),
+                lightweight: true,
+                deadline_ms: 60_000,
+                unknown: true,
+                remote_id: None,
+            }
+        };
+
+        // Model the valid interleaving: both reads finish before either
+        // transaction commits the submitted intent.
+        assert!(matches!(
+            replay(&store, &first).unwrap().unwrap(),
+            Replay::Miss
+        ));
+        assert!(matches!(
+            replay(&store, &conflicting).unwrap().unwrap(),
+            Replay::Miss
+        ));
+        assert_eq!(
+            submitted(&store, &first, &recovered(&first), None).unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            submitted(&store, &conflicting, &recovered(&conflicting), None).unwrap(),
+            Err(PortError::Identity)
+        );
+
+        // The first durable identity remains replayable; the losing identity
+        // cannot replace it or advance into a provider submission.
+        assert!(matches!(
+            replay(&store, &first).unwrap().unwrap(),
+            Replay::Return(_)
+        ));
+        assert!(matches!(
+            replay(&store, &conflicting).unwrap(),
+            Err(PortError::Identity)
+        ));
     }
 }

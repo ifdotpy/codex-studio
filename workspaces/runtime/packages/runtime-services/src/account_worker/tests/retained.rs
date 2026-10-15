@@ -318,6 +318,75 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut first = request(&state, &port, "import:fixture:read");
+    first.actor = None;
+    let mut conflicting = first.clone();
+    conflicting.params["threadId"] = json!("other-source-thread");
+
+    // Make both valid callers compete for the same durable operation identity.
+    let start = Arc::new(tokio::sync::Barrier::new(3));
+    let first_start = Arc::clone(&start);
+    let first_port = port.clone();
+    let first_task = tokio::spawn(async move {
+        first_start.wait().await;
+        first_port.request(first).await
+    });
+    let conflicting_start = Arc::clone(&start);
+    let conflicting_port = port.clone();
+    let conflicting_task = tokio::spawn(async move {
+        conflicting_start.wait().await;
+        conflicting_port.request(conflicting).await
+    });
+    start.wait().await;
+
+    let write = peer.write("thread/read").await;
+    let source_thread = write["params"]["threadId"].as_str().unwrap();
+    peer.reply(&write, json!({"thread":{"id":source_thread}}))
+        .await;
+    let outcomes = [first_task.await.unwrap(), conflicting_task.await.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Ok(receipt) if matches!(receipt.result, RequestResult::Reply(_))))
+            .count(),
+        1,
+        "one source identity must be accepted"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Err(PortError::Identity)))
+            .count(),
+        1,
+        "the conflicting source identity must be refused"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the refused call is never sent"
+    );
+
+    // The identity conflict belongs to one caller; the account owner remains
+    // available to service another retained request on the same session.
+    let health_port = port.clone();
+    let health_request = request(&state, &port, "post-conflict-health-check");
+    let health = tokio::spawn(async move { health_port.request(health_request).await });
+    let health_write = peer.write("thread/read").await;
+    peer.reply(&health_write, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    assert!(matches!(
+        health.await.unwrap().unwrap().result,
+        RequestResult::Reply(_)
+    ));
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     let state = State::new().await;
     let mut peer = Peer::new();
