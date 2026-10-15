@@ -69,7 +69,10 @@ async fn claude_turn_freezes_exact_input_before_native_write() {
         record["startAttempt"]["claudeInputRequest"]["input"],
         start["params"]["input"]
     );
-    assert_eq!(record["startAttempt"]["connectionId"], "1");
+    assert_eq!(
+        record["startAttempt"]["connectionId"],
+        worker.scope.connection
+    );
     assert!(start["params"]["dynamicTools"].is_array());
     assert!(start["params"].get("cyberAccessProgram").is_none());
     peer.accepted(&start).await;

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
 use studio_runtime_store::{
-    NotificationDispatchRepository, RuntimeStore, StoreError, SyncDocumentsRepository, Transaction,
-    sha256_hex,
+    MonitorRecord, NotificationDispatchRepository, RuntimeStore, StoreError,
+    SyncDocumentsRepository, Table, Transaction, sha256_hex,
 };
 use thiserror::Error;
 
@@ -272,6 +272,7 @@ pub fn dispatch_notification_with_effects(
     let mut before = None;
     let mut fresh = false;
     let mut post_commit = NotificationPublicationBatch::default();
+    let mut command_output_monitor_present = None;
     let result = in_savepoint(transaction, || {
         let outcome = (|| {
             if !observed_at.is_finite()
@@ -364,6 +365,21 @@ pub fn dispatch_notification_with_effects(
             }
             validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
             before = Some(agent.clone());
+            if kind == "command/exec/outputDelta" {
+                command_output_monitor_present = Some(
+                    if let Some(process_id) = params
+                        .get("processId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    {
+                        Table::<MonitorRecord>::new(transaction)
+                            .get(&process_id.to_owned())?
+                            .is_some_and(|monitor| monitor.value()["status"] == "running")
+                    } else {
+                        false
+                    },
+                );
+            }
             if matches!(
                 kind.as_str(),
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
@@ -632,6 +648,10 @@ pub fn dispatch_notification_with_effects(
                 observed_at,
                 &outcome,
             );
+            if command_output_monitor_present == Some(false) {
+                current
+                    .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
+            }
             if matches!(
                 kind.as_str(),
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"

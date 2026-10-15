@@ -434,9 +434,11 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
 
     let mut replacement_peer = Peer::new();
     let mut replacement = replacement_peer.worker(state.bridge.clone()).await;
-    let replayed = replacement
-        .retained_session()
-        .request(call)
+    let replacement_port = replacement.retained_session();
+    let mut replay_call = call;
+    replay_call.scope = replacement_port.scope().clone();
+    let replayed = replacement_port
+        .request(replay_call)
         .await
         .expect("saved retained request is replayed");
     assert_eq!(replayed.result, RequestResult::Unknown);
@@ -1397,13 +1399,11 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     // Same generation replay has the same operation receipt but no committed cursor.
     let peer = Peer::new();
     let mut replacement = peer.worker(state.bridge.clone()).await;
+    let replacement_port = replacement.retained_session();
+    let mut replay_call = call;
+    replay_call.scope = replacement_port.scope().clone();
     assert_eq!(
-        replacement
-            .retained_session()
-            .request(call)
-            .await
-            .unwrap()
-            .result,
+        replacement_port.request(replay_call).await.unwrap().result,
         RequestResult::Unknown
     );
     replacement.shutdown().await.unwrap();
