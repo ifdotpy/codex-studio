@@ -1504,6 +1504,8 @@ mod tests {
         preflight_method: &'static str,
         calls: Mutex<Vec<(String, Option<String>)>>,
         project_id: Mutex<Option<String>>,
+        begin_conflict: bool,
+        existing_project: bool,
     }
 
     impl UploadPreflightGuest {
@@ -1513,7 +1515,19 @@ mod tests {
                 preflight_method,
                 calls: Mutex::new(Vec::new()),
                 project_id: Mutex::new(None),
+                begin_conflict: false,
+                existing_project: false,
             }
+        }
+
+        fn with_begin_conflict(mut self) -> Self {
+            self.begin_conflict = true;
+            self
+        }
+
+        fn with_existing_project(mut self) -> Self {
+            self.existing_project = true;
+            self
         }
     }
 
@@ -1531,6 +1545,14 @@ mod tests {
                 .unwrap()
                 .push((method.to_owned(), request_id.map(str::to_owned)));
             match method {
+                "upload.begin" if self.begin_conflict => Err(GuestError::Rejected {
+                    code: Some("id_conflict".into()),
+                    detail: None,
+                    uncertain: false,
+                }),
+                "project.ensure" if self.existing_project => Ok(serde_json::json!({
+                    "projectId":params["projectId"],"stateId":"existing-state"
+                })),
                 "project.ensure" => Err(GuestError::Rejected {
                     code: Some("not_found".into()),
                     detail: None,
@@ -1560,6 +1582,32 @@ mod tests {
                 _ => Ok(Value::Null),
             }
         }
+    }
+
+    #[test]
+    fn upload_identity_conflict_reuses_the_existing_guest_project() {
+        let archive_file = tempfile::NamedTempFile::new().expect("archive fixture");
+        let archive = VmProjectArchive {
+            file: archive_file,
+            bytes: 0,
+            sha256: "fixture-hash".into(),
+        };
+        let guest = UploadPreflightGuest::new("")
+            .with_begin_conflict()
+            .with_existing_project();
+        let intent = serde_json::json!({
+            "projectId":"stable-project", "operation":"stable-operation",
+            "uploadId":"stable-operation", "root":"/projects/stable"
+        });
+        let result = Preparation::upload_vm_project(&guest, &intent, &archive)
+            .ok()
+            .expect("reuse existing project after upload identity conflict");
+        assert_eq!(result["projectId"], "stable-project");
+        let calls = guest.calls.lock().expect("guest calls");
+        assert_eq!(
+            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
+            ["upload.begin", "project.ensure"]
+        );
     }
 
     #[test]

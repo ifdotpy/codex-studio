@@ -861,7 +861,7 @@ mod native_review_preflight_tests {
             atomic::{AtomicUsize, Ordering},
         },
     };
-    use studio_runtime_services::vm_preparation::{self, Preparation, VmProjectArchive};
+    use studio_runtime_services::vm_preparation;
     use studio_runtime_services::{
         account_session_runtime::{
             AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
@@ -1025,8 +1025,6 @@ mod native_review_preflight_tests {
         result: Value,
         uncertain: bool,
         intent_store: Option<Arc<RuntimeStore>>,
-        existing_project: bool,
-        begin_conflict: bool,
     }
 
     struct NotificationSink;
@@ -1052,8 +1050,6 @@ mod native_review_preflight_tests {
                 result,
                 uncertain: false,
                 intent_store: None,
-                existing_project: false,
-                begin_conflict: false,
             }
         }
 
@@ -1063,23 +1059,11 @@ mod native_review_preflight_tests {
                 result,
                 uncertain: true,
                 intent_store: None,
-                existing_project: false,
-                begin_conflict: false,
             }
         }
 
         fn with_intent_store(mut self, store: Arc<RuntimeStore>) -> Self {
             self.intent_store = Some(store);
-            self
-        }
-
-        fn with_existing_project(mut self) -> Self {
-            self.existing_project = true;
-            self
-        }
-
-        fn with_begin_conflict(mut self) -> Self {
-            self.begin_conflict = true;
             self
         }
     }
@@ -1117,15 +1101,6 @@ mod native_review_preflight_tests {
                     assert!(intent["requestId"].as_str().is_some());
                     assert!(intent["source"].as_str().is_some());
                 }
-                if self.begin_conflict {
-                    return Err(
-                        studio_runtime_services::linux_vm_guest::GuestError::Rejected {
-                            code: Some("id_conflict".into()),
-                            detail: None,
-                            uncertain: false,
-                        },
-                    );
-                }
             }
             if self.uncertain && method == "line.bind" {
                 return Err(
@@ -1136,11 +1111,6 @@ mod native_review_preflight_tests {
                 );
             }
             if method == "project.ensure" {
-                if self.existing_project {
-                    return Ok(
-                        serde_json::json!({"projectId":params["projectId"],"stateId":"existing-state"}),
-                    );
-                }
                 return Err(
                     studio_runtime_services::linux_vm_guest::GuestError::Rejected {
                         code: Some("not_found".into()),
@@ -1225,31 +1195,6 @@ mod native_review_preflight_tests {
         assert_eq!(
             vm_guest_state_dir(root.path(), Some(root.path().join("custom-vm"))),
             root.path().join("custom-vm")
-        );
-    }
-
-    #[test]
-    fn upload_identity_conflict_reuses_the_existing_guest_project() {
-        let archive_file = tempfile::NamedTempFile::new().expect("archive fixture");
-        let archive = VmProjectArchive {
-            file: archive_file,
-            bytes: 0,
-            sha256: "fixture-hash".into(),
-        };
-        let guest = GuestSpy::new(Value::Null)
-            .with_begin_conflict()
-            .with_existing_project();
-        let intent = json!({
-            "projectId":"stable-project", "operation":"stable-operation",
-            "uploadId":"stable-operation", "root":"/projects/stable"
-        });
-        let result = Preparation::upload_vm_project(&guest, &intent, &archive)
-            .expect("reuse existing project after upload identity conflict");
-        assert_eq!(result["projectId"], "stable-project");
-        let calls = guest.calls.lock().expect("guest calls");
-        assert_eq!(
-            calls.iter().map(|call| call.0.as_str()).collect::<Vec<_>>(),
-            ["upload.begin", "project.ensure"]
         );
     }
 
