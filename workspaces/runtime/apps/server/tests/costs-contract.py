@@ -93,17 +93,17 @@ class CostsTests(unittest.TestCase):
                 "120.0",
                 120,
             ),
-            "COST_SCAN_TIMEOUT": (
+            "COST_SCAN_TIMEOUT_SECONDS": (
                 COST_SCAN_TIMEOUT_SECONDS,
                 "Duration::from_secs(900)",
                 900,
             ),
-            "COST_SCANNER_BUILD_TIMEOUT": (
+            "COST_SCANNER_BUILD_TIMEOUT_SECONDS": (
                 COST_SCANNER_BUILD_TIMEOUT_SECONDS,
                 "Duration::from_secs(120)",
                 120,
             ),
-            "COST_SCAN_OUTPUT_LIMIT": (
+            "COST_SCAN_OUTPUT_LIMIT_BYTES": (
                 COST_SCAN_OUTPUT_LIMIT_BYTES,
                 "32 * 1024 * 1024",
                 32 * 1024 * 1024,

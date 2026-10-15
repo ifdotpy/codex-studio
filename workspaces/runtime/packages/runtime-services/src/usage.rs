@@ -15,13 +15,13 @@ use thiserror::Error;
 const COST_REFRESH_SECONDS: f64 = 120.0;
 const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
 const COST_SCAN_HISTORY_DAYS: i64 = 30;
-const COST_SCAN_OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
-const COST_SCANNER_BUILD_TIMEOUT: Duration = Duration::from_secs(120);
+const COST_SCAN_OUTPUT_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+const COST_SCANNER_BUILD_TIMEOUT_SECONDS: Duration = Duration::from_secs(120);
 const COST_SCANNER_BUILD_SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../apps/server/src/cost-scanner/build.py"
 );
-const COST_SCAN_TIMEOUT: Duration = Duration::from_secs(900);
+const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
 static CODEX_SCAN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -322,7 +322,7 @@ fn refresh_lock_active(path: &Path) -> bool {
     SystemTime::now()
         .duration_since(modified)
         .unwrap_or_default()
-        < COST_SCAN_TIMEOUT
+        < COST_SCAN_TIMEOUT_SECONDS
 }
 
 fn claim_refresh_lock(path: &Path) -> Result<Option<File>, UsageError> {
@@ -517,8 +517,8 @@ fn scan_codex_sessions(
         .arg(&executable);
     let build_output = run_cost_command(
         build,
-        COST_SCANNER_BUILD_TIMEOUT,
-        COST_SCAN_OUTPUT_LIMIT,
+        COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+        COST_SCAN_OUTPUT_LIMIT_BYTES,
         Some(64 * 1024),
     )
     .map_err(|_| UsageError::ScannerPrepare)?;
@@ -534,7 +534,12 @@ fn scan_codex_sessions(
         .arg(scanner_cache)
         .env("CODEX_HOME", home)
         .stderr(Stdio::null());
-    let output = run_cost_command(command, COST_SCAN_TIMEOUT, COST_SCAN_OUTPUT_LIMIT, None)?;
+    let output = run_cost_command(
+        command,
+        COST_SCAN_TIMEOUT_SECONDS,
+        COST_SCAN_OUTPUT_LIMIT_BYTES,
+        None,
+    )?;
     if !output.status.success() {
         return Err(UsageError::ScannerFailed(output.status.code().unwrap_or(1)));
     }
@@ -547,7 +552,7 @@ fn scan_codex_sessions(
 }
 
 fn acquire_codex_scan_lock() -> Result<MutexGuard<'static, ()>, UsageError> {
-    acquire_codex_scan_lock_for(COST_SCAN_TIMEOUT)
+    acquire_codex_scan_lock_for(COST_SCAN_TIMEOUT_SECONDS)
 }
 
 fn acquire_codex_scan_lock_for(timeout: Duration) -> Result<MutexGuard<'static, ()>, UsageError> {
@@ -856,7 +861,7 @@ fn cost_value(value: Option<&Value>) -> Value {
 }
 
 fn check_scan_timeout(started: Instant) -> Result<(), UsageError> {
-    if started.elapsed() >= COST_SCAN_TIMEOUT {
+    if started.elapsed() >= COST_SCAN_TIMEOUT_SECONDS {
         Err(UsageError::Scan)
     } else {
         Ok(())
