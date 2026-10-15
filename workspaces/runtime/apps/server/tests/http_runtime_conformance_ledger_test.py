@@ -140,7 +140,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
-            "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
+            "questionDelete", "providerQuestion", "answerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
             "liveTerminal",
@@ -159,7 +159,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "404", "501"})
+                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "403", "404", "501"})
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
@@ -190,8 +190,55 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 self.assertEqual(spec["primary"]["expected"], "2xx")
                 refusals = spec.get("additional", [])
                 self.assertTrue(refusals)
-                self.assertTrue(all(case["expected"] == "501" for case in refusals))
-                self.assertTrue(all(case.get("expected_error") for case in refusals))
+                if operation == ("POST", "/api/federation"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertFalse(refusals[0].get("expected_error"))
+                else:
+                    self.assertTrue(all(case["expected"] == "501" for case in refusals))
+                    self.assertTrue(all(case.get("expected_error") for case in refusals))
+
+    def test_disabled_signed_federation_probes_expect_python_gate_before_headers(self) -> None:
+        for path in (
+            "/api/federation/v1/message",
+            "/api/federation/v1/pair",
+            "/api/federation/v1/pull",
+            "/api/federation/v1/status",
+        ):
+            with self.subTest(path=path):
+                probe = ledger.PROBE_CASES[("POST", path)]["primary"]
+                self.assertEqual(probe["expected"], "403")
+                self.assertNotIn("headers", probe)
+
+    def test_answer_probe_covers_the_implemented_async_question_flow(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/answer")]["primary"]
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(probe["body"]["id"], "$answerQuestion")
+        self.assertEqual(
+            probe["body"]["answers"],
+            {"value": {"answers": ["Ledger answer"]}},
+        )
+        self.assertNotIn("expected_error", probe)
+
+    def test_answer_probe_preserves_the_later_defer_question(self) -> None:
+        identifiers = {
+            "question": "ledger-probe-question",
+            "answerQuestion": "ledger-probe-answer-question",
+        }
+        answer_path, answer_body, _ = ledger.valid_probe(
+            "POST", "/api/answer", identifiers,
+            ledger.PROBE_CASES[("POST", "/api/answer")]["primary"],
+        )
+        defer_path, defer_body, _ = ledger.valid_probe(
+            "POST", "/api/questions/defer", identifiers,
+            ledger.PROBE_CASES[("POST", "/api/questions/defer")]["primary"],
+        )
+        self.assertEqual(answer_path, "/api/answer")
+        self.assertEqual(answer_body["id"], "ledger-probe-answer-question")
+        self.assertEqual(defer_path, "/api/questions/defer")
+        self.assertEqual(defer_body["id"], "ledger-probe-question")
+        self.assertNotEqual(answer_body["id"], defer_body["id"])
 
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}

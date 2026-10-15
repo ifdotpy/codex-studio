@@ -113,13 +113,6 @@ async fn signed_post(
     action: federation_effects::FederationAction,
 ) -> Result<Json<Value>, ApiError> {
     let (parts, body) = request.into_parts();
-    let peer_id = single_header(&parts.headers, "x-studio-federation-state")?;
-    let timestamp = single_header(&parts.headers, "x-studio-federation-time")?
-        .parse::<i64>()
-        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "Invalid federation timestamp"))?;
-    let nonce = single_header(&parts.headers, "x-studio-federation-nonce")?;
-    let signature = single_header(&parts.headers, "x-studio-federation-signature")?;
-    let observed_user = optional_single_header(&parts.headers, "tailscale-user-login")?;
     let raw = to_bytes(
         body,
         studio_runtime_services::federation_limits::FEDERATION_BODY_LIMIT,
@@ -127,6 +120,22 @@ async fn signed_post(
     .await
     .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid federation request body"))?;
     let store = state.store.ok_or_else(ApiError::internal)?;
+    let gate_store = store.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/federation-enabled",
+        move || federation_effects::ensure_enabled(&gate_store),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_signed_error)?;
+
+    let peer_id = single_header(&parts.headers, "x-studio-federation-state")?;
+    let timestamp = single_header(&parts.headers, "x-studio-federation-time")?
+        .parse::<i64>()
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "Invalid federation timestamp"))?;
+    let nonce = single_header(&parts.headers, "x-studio-federation-nonce")?;
+    let signature = single_header(&parts.headers, "x-studio-federation-signature")?;
+    let observed_user = optional_single_header(&parts.headers, "tailscale-user-login")?;
     let origin = federation_effects::OriginObservation::from_trusted_serve(observed_user);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

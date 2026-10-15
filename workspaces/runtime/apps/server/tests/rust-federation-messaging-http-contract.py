@@ -81,6 +81,36 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json()["result"]["protocol"], 1)
 
+    def test_disabled_federation_refuses_before_signed_header_parsing(self):
+        probes = (
+            ("message", {"protocol": 1, "envelope": {
+                "protocol": 1, "senderServer": "ledger-server", "id": "ledger-message",
+                "kind": "chat-message", "room": "ledger-room", "payload": {},
+                "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce",
+                "signature": "ledger-signature",
+            }}),
+            ("pair", {
+                "protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token",
+                "stateId": "fixture-state", "label": "Ledger",
+                "origin": "https://ledger.example", "publicKey": "fixture-key",
+            }),
+            ("pull", {"protocol": 1, "acks": []}),
+            ("status", {"protocol": 1}),
+        )
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            database.execute("INSERT OR REPLACE INTO runtime_federation_settings VALUES('global',?)",
+                             ('{"enabled":false}',))
+        try:
+            for action, body in probes:
+                response = self.backend.request(
+                    "POST", f"/api/federation/v1/{action}", body=body,
+                )
+                self.assertEqual(response.status, 403, response.body[:1000])
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                database.execute("INSERT OR REPLACE INTO runtime_federation_settings VALUES('global',?)",
+                                 ('{"enabled":true}',))
+
     def test_invitation_stores_python_compatible_private_key_without_returning_it(self):
         from codex_federation import _sign, _verify
 
