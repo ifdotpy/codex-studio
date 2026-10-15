@@ -6,6 +6,7 @@ import json
 import os
 from contextlib import closing
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1100,12 +1101,17 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             codex_home = root / "codex"
             for directory in (state, cwd, home, codex_home):
                 directory.mkdir()
+            node = os.environ.get("CODEX_NODE") or shutil.which("node")
+            if node is None:
+                self.skipTest("synthetic Runtime identity setup requires the local Node crypto helper")
             namespace = "copyprobe-ledger-test-"
             environment = {
                 "HOME": str(home),
                 "CODEX_HOME": str(codex_home),
                 "CODEX_AGENTS_STATE_DIR": str(state),
                 "CODEX_CANVAS_CWD": str(cwd),
+                "CODEX_NODE": node,
+                "PATH": "",
                 "XDG_CONFIG_HOME": str(root / "config"),
                 "XDG_DATA_HOME": str(root / "data"),
                 "XDG_CACHE_HOME": str(root / "cache"),
