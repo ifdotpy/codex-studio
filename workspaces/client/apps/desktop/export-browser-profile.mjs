@@ -91,8 +91,6 @@ export async function exportBrowserProfile(emitChunk) {
       void completed.catch(() => {});
       const pending = names.map((name) => {
         const store = transaction.objectStore(name);
-        if (store.autoIncrement)
-          throw new Error(`Cannot preserve the key generator of ${name}`);
         return {
           name,
           keyPath: store.keyPath,

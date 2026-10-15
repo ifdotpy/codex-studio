@@ -39,15 +39,17 @@ Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
 without maintaining a second suite inventory.
 
-| Tier or purpose     | What it runs                                                                                                                              | Just command                               |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Fast                | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
-| Fast browser smoke  | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
-| Heavy server        | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
-| Heavy browser       | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
-| All heavy           | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
-| Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
-| Load-class          | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
+| Tier or purpose          | What it runs                                                                                                                              | Just command                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Fast                     | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
+| Fast browser smoke       | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
+| Heavy server             | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
+| Heavy browser            | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
+| All heavy                | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
+| Other server opt-in      | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
+| Native profile migration | Isolated Electron profile round trip with hidden windows; manual heavy run                                                                | `just test-native-profile-migration`       |
+| Native WebView           | Rust host build and isolated hidden WebView scenarios; manual heavy run                                                                   | `just test-native-webview`                 |
+| Load-class               | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
 
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Default nextest runs

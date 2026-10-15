@@ -151,6 +151,12 @@ async function main() {
         await window.webContents.debugger.sendCommand("Runtime.addBinding", {
           name: "studioExportChunk",
         });
+        let failTransfer;
+        const transferFailed = new Promise((_, reject) => {
+          failTransfer = reject;
+        });
+        // Observe failures that arrive while the source document is loading.
+        void transferFailed.catch(() => {});
         window.webContents.debugger.on(
           "message",
           async (_event, method, params, sessionId) => {
@@ -211,9 +217,17 @@ async function main() {
                   expression: `window.__studioExportReplies.get(${JSON.stringify(requestId)})?.(${JSON.stringify(result)})`,
                   contextId: params.executionContextId,
                 },
-                sessionId,
+                // Electron reports the root session as an empty string, but
+                // sendCommand accepts only an omitted id for that session.
+                sessionId || undefined,
               )
-              .catch(() => {});
+              .then((response) => {
+                if (response.exceptionDetails)
+                  throw new Error(
+                    "The profile reader rejected a chunk acknowledgement.",
+                  );
+              })
+              .catch(failTransfer);
           },
         );
         await window.loadURL((contexts[origin] || origin) + "/");
@@ -246,7 +260,9 @@ async function main() {
         await window.webContents.debugger.sendCommand("Runtime.addBinding", {
           name: "studioExportChunk",
         });
-        const snapshot = await source.executeJavaScript(`(async () => {
+        const snapshot = await Promise.race([
+          transferFailed,
+          source.executeJavaScript(`(async () => {
           window.__studioExportReplies = new Map();
           const parentOrigin = ${JSON.stringify(contexts[origin] || null)};
           if (parentOrigin) addEventListener('message', event => {
@@ -270,7 +286,8 @@ async function main() {
             else window.studioExportChunk(payload);
           });
           return (${exportBrowserProfile.toString()})(emit);
-        })()`);
+        })()`),
+        ]);
         if (contexts[origin]) snapshot.topLevelOrigin = contexts[origin];
         snapshots.push(snapshot);
         console.error("Export source complete");
