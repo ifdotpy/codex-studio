@@ -29,6 +29,8 @@ pub(super) fn is_vm_codex_refresh_request(frame: &Frame) -> bool {
 pub(super) async fn vm_codex_refresh_response(
     account: &str,
     emitting_actor: Option<&str>,
+    actor_epoch: Option<i64>,
+    generation: u64,
     frame: &Frame,
     resolver: Option<
         std::sync::Arc<dyn crate::account_worker::preparation::VmProviderLaunchResolver>,
@@ -53,9 +55,12 @@ pub(super) async fn vm_codex_refresh_response(
         })),
         fields: Default::default(),
     };
-    if emitting_actor.is_none_or(str::is_empty) {
+    let Some(emitting_actor) = emitting_actor.filter(|actor| !actor.is_empty()) else {
         return Some(failed());
-    }
+    };
+    let Some(actor_epoch) = actor_epoch.filter(|epoch| *epoch >= 0) else {
+        return Some(failed());
+    };
     let Some(previous_account_id) = params
         .and_then(|params| params.get("previousAccountId"))
         .and_then(Value::as_str)
@@ -67,7 +72,13 @@ pub(super) async fn vm_codex_refresh_response(
         return Some(failed());
     };
     let result = resolver
-        .refresh_codex(account.to_owned(), previous_account_id.to_owned())
+        .refresh_codex(
+            account.to_owned(),
+            previous_account_id.to_owned(),
+            emitting_actor.to_owned(),
+            actor_epoch,
+            generation,
+        )
         .await;
     let Ok(payload) = result else {
         return Some(failed());
@@ -447,13 +458,19 @@ mod vm_auth_tests {
             &self,
             account: String,
             previous_account_id: String,
+            actor_id: String,
+            actor_epoch: i64,
+            generation: u64,
         ) -> VmProviderAuthFuture<'_> {
             let calls = Arc::clone(&self.calls);
             Box::pin(async move {
                 calls
                     .lock()
                     .map_err(|_| crate::account_worker::WorkerError::TaskFailed)?
-                    .push((account, previous_account_id.clone()));
+                    .push((
+                        format!("{account}:{actor_id}:{actor_epoch}:{generation}"),
+                        previous_account_id.clone(),
+                    ));
                 Ok(json!({
                     "accessToken":"fresh-fixture-token",
                     "chatgptAccountId":previous_account_id,
@@ -484,6 +501,8 @@ mod vm_auth_tests {
         let response = vm_codex_refresh_response(
             "account-key",
             Some("vm-agent"),
+            Some(3),
+            7,
             &refresh_request(),
             Some(resolver),
         )
@@ -502,7 +521,7 @@ mod vm_auth_tests {
         );
         assert_eq!(
             *calls.lock().expect("read refresh calls"),
-            vec![("account-key".into(), "fixture-account".into())]
+            vec![("account-key:vm-agent:3:7".into(), "fixture-account".into())]
         );
     }
 
@@ -512,10 +531,16 @@ mod vm_auth_tests {
         let resolver: Arc<dyn VmProviderLaunchResolver> = Arc::new(Resolver {
             calls: Arc::clone(&calls),
         });
-        let response =
-            vm_codex_refresh_response("account-key", None, &refresh_request(), Some(resolver))
-                .await
-                .expect("failure response");
+        let response = vm_codex_refresh_response(
+            "account-key",
+            None,
+            None,
+            7,
+            &refresh_request(),
+            Some(resolver),
+        )
+        .await
+        .expect("failure response");
         let Frame::Response {
             id,
             body: ResponseBody::Error(error),
@@ -526,6 +551,32 @@ mod vm_auth_tests {
         };
         assert_eq!(id, RequestId::Number(41));
         assert_eq!(error["code"], -32000);
+        assert!(calls.lock().expect("read refresh calls").is_empty());
+    }
+
+    #[tokio::test]
+    async fn vm_codex_refresh_without_a_captured_actor_epoch_fails_closed() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let resolver: Arc<dyn VmProviderLaunchResolver> = Arc::new(Resolver {
+            calls: Arc::clone(&calls),
+        });
+        let response = vm_codex_refresh_response(
+            "account-key",
+            Some("vm-agent"),
+            None,
+            7,
+            &refresh_request(),
+            Some(resolver),
+        )
+        .await
+        .expect("failed response for stale actor");
+        assert!(matches!(
+            response,
+            Frame::Response {
+                body: ResponseBody::Error(_),
+                ..
+            }
+        ));
         assert!(calls.lock().expect("read refresh calls").is_empty());
     }
 }

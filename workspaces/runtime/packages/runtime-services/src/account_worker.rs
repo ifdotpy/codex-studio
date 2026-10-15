@@ -526,6 +526,7 @@ pub async fn start_account_worker_with_publication_sink(
         vm_events,
         vm_event_tx,
         vm_sessions: BTreeMap::new(),
+        vm_incarnation_counter: 0,
         resolving_vm_actors: BTreeSet::new(),
         vm_event_forwarders: Vec::new(),
         vm_request_waiters: BTreeMap::new(),
@@ -644,9 +645,10 @@ struct Worker {
     control: SessionControl,
     session: SessionHandle,
     events: mpsc::Receiver<SessionEvent>,
-    vm_events: mpsc::Receiver<(String, i64, SessionEvent)>,
-    vm_event_tx: mpsc::Sender<(String, i64, SessionEvent)>,
+    vm_events: mpsc::Receiver<(String, i64, u64, SessionEvent)>,
+    vm_event_tx: mpsc::Sender<(String, i64, u64, SessionEvent)>,
     vm_sessions: BTreeMap<String, ActorProviderSession>,
+    vm_incarnation_counter: u64,
     resolving_vm_actors: BTreeSet<String>,
     vm_event_forwarders: Vec<JoinHandle<()>>,
     vm_request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
@@ -682,7 +684,9 @@ struct Worker {
 struct ActorProviderSession {
     session: SessionHandle,
     epoch: i64,
+    incarnation: u64,
     control: SessionControl,
+    launch_request: preparation::VmProviderLaunchRequest,
     bootstrap: Option<Value>,
 }
 impl Worker {
@@ -731,10 +735,10 @@ impl Worker {
                 tokio::select! {
                     _joined = &mut forwarder => break,
                     event = self.vm_events.recv() => match event {
-                        Some((agent_id, actor_epoch, event)) => {
+                        Some((agent_id, actor_epoch, actor_incarnation, event)) => {
                             let closing = self.closing;
                             self.closing = false;
-                            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch)).await {
+                            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch), Some(actor_incarnation)).await {
                                 vm_cleanup_error.get_or_insert(error);
                             }
                             self.closing = closing;
@@ -744,10 +748,10 @@ impl Worker {
                 }
             }
         }
-        while let Ok((agent_id, actor_epoch, event)) = self.vm_events.try_recv() {
+        while let Ok((agent_id, actor_epoch, actor_incarnation, event)) = self.vm_events.try_recv() {
             let closing = self.closing;
             self.closing = false;
-            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch)).await {
+            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch), Some(actor_incarnation)).await {
                 vm_cleanup_error.get_or_insert(error);
             }
             self.closing = closing;
@@ -901,7 +905,7 @@ impl Worker {
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
                 vm_event = self.vm_events.recv() => match vm_event {
-                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await?,
+                    Some((agent_id, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch), Some(actor_incarnation)).await?,
                     None => return Ok(()),
                 },
                 _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
@@ -1000,7 +1004,7 @@ impl Worker {
                 result = &mut future => return result.map_err(Into::into),
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
                 vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
-                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await?,
+                    Some((agent_id, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch), Some(actor_incarnation)).await?,
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
@@ -1038,7 +1042,7 @@ impl Worker {
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
-                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await
+                    Some((agent_id, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch), Some(actor_incarnation)).await
                         .map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
                     None => { self.closing=true; self.control.cancel(); }
                 },
@@ -1158,6 +1162,21 @@ impl Worker {
             if completed {
                 self.wake(agent, epoch).await?;
             }
+        }
+        let actors = self
+            .vm_sessions
+            .values()
+            .map(|session| session.launch_request.clone())
+            .filter(|request| request.provider == "claude" && request.account_key == self.account)
+            .collect::<Vec<_>>();
+        if !actors.is_empty()
+            && let Some(resolver) = self.resources.vm_provider_launch.clone()
+        {
+            // This is one account-worker sweep, sharing the existing Claude
+            // auth probe cadence; the host resolver reads credentials once and
+            // fans the result out to the active actor profiles.
+            self.drive(resolver.refresh_claude_credentials(actors))
+                .await?;
         }
         Ok(())
     }
@@ -1478,6 +1497,8 @@ impl Worker {
         let intent_cwd = intent.cwd.clone();
         let account_key = intent.account_key.clone();
         let provider = intent.provider.clone();
+        let intent_epoch = intent.epoch;
+        let generation = self.generation.0;
         let launch_request = self
             .db("vm_launch_request", move |store| {
                 let connection = store.read()?;
@@ -1488,6 +1509,17 @@ impl Worker {
                 };
                 if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
                     return Ok(None);
+                }
+                if !crate::linux_vm_provider::vm_actor_matches(
+                    &connection,
+                    &record.id.0,
+                    intent_epoch,
+                    &account_key,
+                    Some(&provider),
+                )? {
+                    return Err(WorkerError::PreparationRefused(
+                        "vm-agent/identity-changed".into(),
+                    ));
                 }
                 let cwd = record
                     .extra
@@ -1505,6 +1537,7 @@ impl Worker {
                 Ok(Some(preparation::VmProviderLaunchRequest {
                     agent_id: record.id.0,
                     epoch: record.epoch,
+                    generation,
                     account_key,
                     provider,
                     cwd: cwd.to_owned(),
@@ -1538,6 +1571,24 @@ impl Worker {
             let resolved = self.drive(resolver.resolve(request.clone())).await;
             self.resolving_vm_actors.remove(&request.agent_id);
             let resolved = resolved?;
+            let actor = request.agent_id.clone();
+            let expected = request.clone();
+            self.db("vm_launch_revalidate", move |store| {
+                let connection = store.read()?;
+                if !crate::linux_vm_provider::vm_actor_matches(
+                    &connection,
+                    &actor,
+                    expected.epoch,
+                    &expected.account_key,
+                    Some(&expected.provider),
+                )? {
+                    return Err(WorkerError::PreparationRefused(
+                        "vm-agent/identity-changed".into(),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
             let recovery_agent = request.agent_id.clone();
             let recovery_account = self.account.clone();
             let generation = self.generation.0;
@@ -1554,9 +1605,13 @@ impl Worker {
             let factory = Arc::new(crate::linux_vm_provider::GuestProviderTaskFactory::new(
                 Arc::clone(&self.bridge.store),
                 guest,
-                request.agent_id.clone(),
-                request.epoch,
-                resolved.provider.clone(),
+                crate::linux_vm_provider::GuestProviderIdentity {
+                    agent_id: request.agent_id.clone(),
+                    epoch: request.epoch,
+                    generation: request.generation,
+                    account_key: request.account_key.clone(),
+                    provider: resolved.provider.clone(),
+                },
                 resolved.profile.clone(),
             ));
             let generation = self.generation;
@@ -1591,12 +1646,17 @@ impl Worker {
             }
             let control = session.control.clone();
             let mut events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
+            self.vm_incarnation_counter = self
+                .vm_incarnation_counter
+                .checked_add(1)
+                .ok_or(WorkerError::TaskFailed)?;
+            let actor_incarnation = self.vm_incarnation_counter;
             let actor = request.agent_id.clone();
             let actor_epoch = request.epoch;
             let sender = self.vm_event_tx.clone();
             let forwarder = tokio::spawn(async move {
                 while let Some(event) = events.recv().await {
-                    if sender.send((actor.clone(), actor_epoch, event)).await.is_err() {
+                    if sender.send((actor.clone(), actor_epoch, actor_incarnation, event)).await.is_err() {
                         break;
                     }
                 }
@@ -1607,7 +1667,9 @@ impl Worker {
                 ActorProviderSession {
                     session,
                     epoch: request.epoch,
+                    incarnation: actor_incarnation,
                     control,
+                    launch_request: request.clone(),
                     bootstrap: resolved.bootstrap,
                 },
             );
@@ -1624,7 +1686,7 @@ impl Worker {
                 _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
                 changed = status.changed() => changed.map_err(|_| WorkerError::Closed)?,
                 event = self.vm_events.recv() => match event {
-                    Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?,
+                    Some((actor, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&actor), Some(actor_epoch), Some(actor_incarnation)).await?,
                     None => return Err(WorkerError::Closed),
                 },
                 command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
@@ -1689,7 +1751,7 @@ impl Worker {
                 _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
                 response = &mut response => break response.map_err(|_| WorkerError::CallbackUnknown)?,
                 event = self.vm_events.recv() => match event {
-                    Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?,
+                    Some((actor, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&actor), Some(actor_epoch), Some(actor_incarnation)).await?,
                     None => return Err(WorkerError::Closed),
                 },
                 event = self.events.recv() => self.event(event.ok_or(WorkerError::Closed)?).await?,
@@ -1810,6 +1872,7 @@ impl Worker {
         event: SessionEvent,
         actor_id: Option<&str>,
         source_epoch: Option<i64>,
+        source_incarnation: Option<u64>,
     ) -> Result<(), WorkerError> {
         let Some(actor_id) = actor_id else {
             return Ok(());
@@ -1817,10 +1880,12 @@ impl Worker {
         let Some(source_epoch) = source_epoch else {
             return Ok(());
         };
-        let Some(current_epoch) = self.vm_sessions.get(actor_id).map(|session| session.epoch) else {
+        let Some(session) = self.vm_sessions.get(actor_id) else {
             return Ok(());
         };
-        if current_epoch != source_epoch {
+        if session.epoch != source_epoch
+            || Some(session.incarnation) != source_incarnation
+        {
             return Ok(());
         }
         match self
@@ -1919,6 +1984,21 @@ impl Worker {
                 _ => None,
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
+            if let Some(actor) = actor_id.as_deref() {
+                match (ticket, pending.as_ref()) {
+                    (Some(_), Some(pending))
+                        if pending.intent.agent_id == actor
+                            && Some(pending.intent.epoch) == actor_epoch
+                            && pending.intent.account_key == self.account => {}
+                    (Some(_), None) => continue,
+                    (None, _) => continue,
+                    _ => {
+                        return Err(WorkerError::PreparationRefused(
+                            "account-worker/vm-notification-actor-changed".into(),
+                        ));
+                    }
+                }
+            }
             let id = ticket.map(|t| t.id.clone());
             // Pending bookkeeping and transport request IDs can change when a
             // journal lane retires a ticket. Keep the crash witness stable.
@@ -2204,6 +2284,12 @@ impl Worker {
         {
             let account = self.account.clone();
             let actor = actor_id.map(str::to_owned);
+            let actor_epoch = actor.as_ref().and_then(|actor| {
+                self.vm_sessions
+                    .get(actor)
+                    .map(|session| session.launch_request.epoch)
+            });
+            let generation = self.generation.0;
             let frame = frame.clone();
             let resolver = self.resources.vm_provider_launch.clone();
             if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
@@ -2215,6 +2301,8 @@ impl Worker {
                 let response = callback::vm_codex_refresh_response(
                     &account,
                     actor.as_deref(),
+                    actor_epoch,
+                    generation,
                     &frame,
                     resolver,
                 )
@@ -2310,12 +2398,49 @@ impl Worker {
         frame: Frame,
         actor_id: Option<String>,
     ) -> Result<(), WorkerError> {
+        if let Some(actor) = actor_id.as_deref() {
+            let expected = self
+                .vm_sessions
+                .get(actor)
+                .map(|session| session.launch_request.clone())
+                .ok_or(WorkerError::StaleVmActor)?;
+            if expected.epoch != self.vm_sessions.get(actor).map(|session| session.epoch).unwrap_or(-1)
+                || expected.account_key != self.account
+                || expected.generation != self.generation.0
+            {
+                self.retire_vm_actor(actor);
+                return Ok(());
+            }
+            let actor = actor.to_owned();
+            let account = expected.account_key.clone();
+            let epoch = expected.epoch;
+            let provider = expected.provider.clone();
+            if !self
+                .db("vm_callback_revalidate", move |store| {
+                    let connection = store.read()?;
+                    crate::linux_vm_provider::vm_actor_matches(
+                        &connection,
+                        &actor,
+                        epoch,
+                        &account,
+                        Some(&provider),
+                    )
+                    .map_err(WorkerError::from)
+                })
+                .await?
+            {
+                if let Some(actor) = actor_id.as_deref() {
+                    self.retire_vm_actor(actor);
+                }
+                return Ok(());
+            }
+        }
         while self.control_status(actor_id.as_deref())? != InitializationStatus::Ready {
             tokio::select! { biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; return Ok(()); },
                 event = self.events.recv(), if actor_id.is_none() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },
                 event = self.vm_events.recv(), if actor_id.is_some() => {
-                    match event { Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?, None => return Err(WorkerError::Closed) }
+                    match event { Some((actor, actor_epoch, actor_incarnation, event)) => self.event_from(event, Some(&actor), Some(actor_epoch), Some(actor_incarnation)).await?, None => return Err(WorkerError::Closed) }
                 },
                 command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
                     Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
@@ -2355,6 +2480,41 @@ impl Worker {
         }
         if self.callbacks.len() >= MAX_PENDING_RESPONSES {
             return Err(WorkerError::Capacity);
+        }
+        // A callback may have waited while this actor was resolving. Fence it
+        // again immediately before the provider response can leave the host.
+        if let Some(actor) = actor_id.as_deref() {
+            let expected = self
+                .vm_sessions
+                .get(actor)
+                .map(|session| session.launch_request.clone())
+                .ok_or_else(|| {
+                    WorkerError::PreparationRefused(
+                        "account-worker/vm-notification-actor-changed".into(),
+                    )
+                })?;
+            if expected.generation != self.generation.0 {
+                return Err(WorkerError::PreparationRefused(
+                    "account-worker/vm-notification-actor-changed".into(),
+                ));
+            }
+            let actor = actor.to_owned();
+            self.db("vm_callback_submit_revalidate", move |store| {
+                let connection = store.read()?;
+                if !crate::linux_vm_provider::vm_actor_matches(
+                    &connection,
+                    &actor,
+                    expected.epoch,
+                    &expected.account_key,
+                    Some(&expected.provider),
+                )? {
+                    return Err(WorkerError::PreparationRefused(
+                        "account-worker/vm-notification-actor-changed".into(),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
         }
         self.callbacks.insert(operation.clone(), (cursor, actor_id));
         if let Err(error) = self.drive(control.submit_frame(prepared)).await {

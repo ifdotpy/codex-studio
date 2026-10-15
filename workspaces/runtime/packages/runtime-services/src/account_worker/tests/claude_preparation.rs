@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(unix)]
-fn claude_resources(state: &State) -> preparation::PreparationResources {
+pub(super) fn claude_resources(state: &State) -> preparation::PreparationResources {
     let mut resources = super::test_resources().unwrap();
     let home = state.root.join("claude-home");
     let registry = state.root.join("accounts/registry.json");

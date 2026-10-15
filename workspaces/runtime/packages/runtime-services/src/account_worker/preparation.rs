@@ -11,7 +11,7 @@ pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
 pub use snapshot::{
     PreparationResources, VmProviderAuthFuture, VmProviderLaunch, VmProviderLaunchFuture,
-    VmProviderLaunchRequest, VmProviderLaunchResolver,
+    VmProviderLaunchRequest, VmProviderLaunchResolver, VmProviderRefreshFuture,
 };
 
 fn refusal(reason: String) -> WorkerError {

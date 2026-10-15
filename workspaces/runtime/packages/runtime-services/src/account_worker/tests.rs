@@ -2950,6 +2950,7 @@ struct VmTurnGuestState {
     uncertain_start_once: bool,
     codex_refresh_on_start: bool,
     stops: Vec<Value>,
+    credential_documents: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -3018,6 +3019,11 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                     "acknowledged":0,"pid":42,"resumed":false,
                     "initResult":{"capabilities":{}},"state":"running"
                 }))
+            }
+            "credentials.put" => {
+                state.credential_documents.push(params["files"][0].clone());
+                self.changed.notify_one();
+                Ok(json!({"files":[{"path":params["files"][0]["path"],"bytes":64}]}))
             }
             "provider.rpc" => match params["action"].as_str().unwrap_or("") {
                 "next" => Ok(json!({"event":state.events.pop_front()})),
@@ -3089,12 +3095,104 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
         &self,
         _account_key: String,
         previous_account_id: String,
+        _actor_id: String,
+        _actor_epoch: i64,
+        _generation: u64,
     ) -> preparation::VmProviderAuthFuture<'_> {
         Box::pin(async move {
             Ok(json!({
                 "accessToken":"fake-fresh-access-token",
                 "chatgptAccountId":previous_account_id
             }))
+        })
+    }
+}
+
+struct VmClaudeRefreshResolver {
+    store: Arc<RuntimeStore>,
+    guest: Arc<VmTurnGuest>,
+    refreshes: std::sync::atomic::AtomicUsize,
+    refreshed: tokio::sync::Notify,
+}
+
+impl VmClaudeRefreshResolver {
+    fn credential_path(account_key: &str) -> String {
+        use sha2::Digest as _;
+        let digest = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(account_key.as_bytes()));
+        format!(
+            ".claude/studio-accounts/{}/.credentials.json",
+            &digest[..32]
+        )
+    }
+
+    async fn copy_version(
+        &self,
+        request: &preparation::VmProviderLaunchRequest,
+        version: usize,
+    ) -> Result<(), WorkerError> {
+        let document =
+            format!("{{\"claudeAiOauth\":{{\"accessToken\":\"fake-claude-{version}\"}}}}");
+        crate::linux_vm_provider::copy_guest_credentials(
+            Arc::clone(&self.store),
+            self.guest.clone(),
+            crate::linux_vm_provider::GuestCredentialTarget {
+                agent_id: &request.agent_id,
+                actor_epoch: request.epoch,
+                provider: "claude",
+                account_key: &request.account_key,
+                relative_path: &Self::credential_path(&request.account_key),
+            },
+            document.as_bytes(),
+        )
+        .await
+        .map_err(|_| WorkerError::PreparationPending("test/vm-credentials".into()))?;
+        Ok(())
+    }
+}
+
+impl preparation::VmProviderLaunchResolver for VmClaudeRefreshResolver {
+    fn resolve(
+        &self,
+        request: preparation::VmProviderLaunchRequest,
+    ) -> preparation::VmProviderLaunchFuture<'_> {
+        Box::pin(async move {
+            self.copy_version(&request, 0).await?;
+            let profile = Self::credential_path(&request.account_key)
+                .trim_end_matches("/.credentials.json")
+                .to_owned();
+            Ok(preparation::VmProviderLaunch {
+                provider: "claude".into(),
+                profile: profile.clone(),
+                launch: ProviderLaunchSpec::new(
+                    vec!["claude".into()],
+                    BTreeMap::from([
+                        (
+                            "CLAUDE_CONFIG_DIR".into(),
+                            format!("{}/{profile}", request.guest_home),
+                        ),
+                        ("STUDIO_CLAUDE_BIN".into(), "claude".into()),
+                    ]),
+                    PathBuf::from(request.cwd),
+                ),
+                bootstrap: None,
+            })
+        })
+    }
+
+    fn refresh_claude_credentials(
+        &self,
+        actors: Vec<preparation::VmProviderLaunchRequest>,
+    ) -> preparation::VmProviderRefreshFuture<'_> {
+        Box::pin(async move {
+            let version = self
+                .refreshes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            for actor in &actors {
+                self.copy_version(actor, version).await?;
+            }
+            self.refreshed.notify_one();
+            Ok(())
         })
     }
 }
@@ -3179,6 +3277,164 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
         guest_state.stops.is_empty(),
         "worker cancellation detaches the transport"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(start_paused = true)]
+async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("provider".into(), json!("claude"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("claudeOptions".into(), json!({}));
+                record.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture becomes Claude VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    let resolver = Arc::new(VmClaudeRefreshResolver {
+        store: Arc::clone(&state.bridge.store),
+        guest: guest.clone(),
+        refreshes: std::sync::atomic::AtomicUsize::new(0),
+        refreshed: tokio::sync::Notify::new(),
+    });
+    let mut resources = claude_preparation::claude_resources(&state);
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(resolver.clone());
+    let mut peer = Peer::new();
+    peer.claude = true;
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.expect("account worker ready");
+    }
+    state.wake(&worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.changed.notified();
+            let started = {
+                let state = guest.state.lock().unwrap();
+                state.starts == 1
+                    && state
+                        .writes
+                        .iter()
+                        .any(|write| write["method"] == "turn/start")
+                    && state.acknowledged >= 3
+            };
+            if started {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("Claude VM turn remains attached");
+
+    let refreshed = resolver.refreshed.notified();
+    tokio::time::advance(crate::claude_auth_runtime::PROBE_INTERVAL).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), refreshed)
+        .await
+        .expect("account-level Claude refresh sweep runs");
+    {
+        let state_after = guest.state.lock().unwrap();
+        assert_eq!(
+            state_after.starts, 1,
+            "credential sync does not restart the guest"
+        );
+        let copied = state_after
+            .credential_documents
+            .iter()
+            .map(|file| {
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    file["data"].as_str().unwrap(),
+                )
+                .expect("credential fixture is base64");
+                serde_json::from_slice::<Value>(&bytes).expect("credential fixture is JSON")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            copied
+                .iter()
+                .any(|document| { document["claudeAiOauth"]["accessToken"] == "fake-claude-1" })
+        );
+    }
+    worker.shutdown().await.expect("worker shuts down");
+}
+
+#[test]
+fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let vm_actor = AgentRecord::from_value(json!({
+        "id":"vm-actor","rootId":"vm-actor","epoch":4,"status":"running",
+        "provider":"codex","accountKey":"default","executionMode":"vm",
+        "threadId":"vm-thread","autoWake":true,"inFlight":true,"turnEpoch":4
+    }))
+    .unwrap();
+    let sibling = AgentRecord::from_value(json!({
+        "id":"sibling","rootId":"sibling","epoch":7,"status":"running",
+        "provider":"codex","accountKey":"default","executionMode":"host",
+        "threadId":"sibling-thread","autoWake":true,"inFlight":true,"turnEpoch":7,
+        "startAttempt":{"id":"sibling-attempt","epoch":7,"submitted":true,
+            "accountKey":"default","threadId":"sibling-thread","turnId":"sibling-turn",
+            "connectionGeneration":31,"requestTicket":"sibling-ticket",
+            "executionOutcome":"unknown","events":[]}
+    }))
+    .unwrap();
+    store
+        .transaction(|tx| {
+            AgentRepository::put(tx, &vm_actor)?;
+            AgentRepository::put(tx, &sibling)?;
+            Ok(())
+        })
+        .unwrap();
+    let frame = Frame::Notification(studio_runtime_providers::NotificationFrame {
+        method: Method::TurnCompleted,
+        params: Some(json!({
+            "threadId":"sibling-thread",
+            "turn":{"id":"sibling-turn","status":"completed"}
+        })),
+        fields: Default::default(),
+    });
+    let entry = JournalEntry {
+        received_at_ms: 1,
+        cursor: EventCursor(1),
+        generation: Generation(31),
+        payload: JournalPayload::Frame(frame),
+    };
+    store::journal(
+        &store,
+        "default",
+        "default:vm:vm-actor",
+        &NotificationStreamBuffer::default(),
+        &entry,
+        Some(("vm-actor", 4)),
+    )
+    .unwrap();
+    let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from("sibling"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.status, studio_runtime_store::AgentStatus::Running);
+    assert_eq!(saved.extra["startAttempt"]["executionOutcome"], "unknown");
+    assert_eq!(saved.extra["inFlight"], true);
 }
 
 #[tokio::test]

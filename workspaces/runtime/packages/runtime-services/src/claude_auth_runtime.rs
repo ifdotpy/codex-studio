@@ -20,6 +20,8 @@ use studio_runtime_store::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// Shared account-level Claude auth maintenance cadence, in seconds. It drives
+/// retained auth probes and the active VM credential profile sweep.
 pub const PROBE_INTERVAL: Duration = Duration::from_secs(crate::continuation::POLL_SECONDS as u64);
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(180);
 const TABLE: ContinuationTable = ContinuationTable::Usage;

@@ -464,12 +464,27 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 )
                 .await
                 .map_err(|_| WorkerError::TaskFailed)??;
+            if provider != request.provider {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-agent/provider-changed".into(),
+                ));
+            }
+            validate_vm_actor_scope(
+                Arc::clone(&self.store),
+                self.account_session.clone(),
+                &request,
+            )
+            .await?;
             studio_runtime_services::linux_vm_provider::copy_guest_credentials(
                 Arc::clone(&self.store),
                 Arc::clone(&self.guest),
-                &request.agent_id,
-                &request.account_key,
-                &credential_path,
+                studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
+                    agent_id: &request.agent_id,
+                    actor_epoch: request.epoch,
+                    provider: &provider,
+                    account_key: &request.account_key,
+                    relative_path: &credential_path,
+                },
                 &credential_document,
             )
             .await
@@ -489,9 +504,13 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         &self,
         account_key: String,
         previous_account_id: String,
+        actor_id: String,
+        actor_epoch: i64,
+        generation: u64,
     ) -> studio_runtime_services::account_worker::preparation::VmProviderAuthFuture<'_> {
         let accounts = Arc::clone(&self.accounts);
         let account_session = self.account_session.clone();
+        let store = Arc::clone(&self.store);
         Box::pin(async move {
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-server/vm-codex-refresh",
@@ -499,8 +518,12 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                     refresh_vm_codex_token(
                         &accounts,
                         account_session.as_deref(),
+                        &store,
                         &account_key,
                         &previous_account_id,
+                        &actor_id,
+                        actor_epoch,
+                        generation,
                     )
                 },
             )
@@ -508,6 +531,132 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
             .map_err(|_| WorkerError::TaskFailed)?
         })
     }
+
+    fn refresh_claude_credentials(
+        &self,
+        actors: Vec<studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest>,
+    ) -> studio_runtime_services::account_worker::preparation::VmProviderRefreshFuture<'_> {
+        Box::pin(async move {
+            let Some(first) = actors.first().cloned() else {
+                return Ok(());
+            };
+            if actors.iter().any(|actor| {
+                actor.provider != "claude"
+                    || actor.account_key != first.account_key
+                    || actor.agent_id.is_empty()
+                    || actor.epoch < 0
+            }) {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-credentials/actor-scope".into(),
+                ));
+            }
+            let accounts = Arc::clone(&self.accounts);
+            let store = Arc::clone(&self.store);
+            let account_session = self.account_session.clone();
+            let claude_bridge_dir = self.claude_bridge_dir.clone();
+            let actors_for_resolution = actors.clone();
+            let (credential_path, credential_document, active_actors) =
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/vm-claude-refresh",
+                    move || {
+                        let (_, _, _, path, document, _) = resolve_vm_launch_inputs(
+                            &accounts,
+                            account_session.as_deref(),
+                            &claude_bridge_dir,
+                            first,
+                        )?;
+                        let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
+                        let mut active = Vec::new();
+                        for actor in actors_for_resolution {
+                            if !studio_runtime_services::linux_vm_provider::vm_actor_matches(
+                                &connection,
+                                &actor.agent_id,
+                                actor.epoch,
+                                &actor.account_key,
+                                Some("claude"),
+                            )
+                            .map_err(|_| WorkerError::TaskFailed)?
+                            {
+                                continue;
+                            }
+                            active.push(actor);
+                        }
+                        Ok::<_, WorkerError>((path, document, active))
+                    },
+                )
+                .await
+                .map_err(|_| WorkerError::TaskFailed)??;
+            for actor in active_actors {
+                validate_vm_actor_scope(
+                    Arc::clone(&self.store),
+                    self.account_session.clone(),
+                    &actor,
+                )
+                .await?;
+                // A replaced actor cannot receive an old epoch's profile: the
+                // worker only supplies currently attached requests and the
+                // receipt identity is scoped to agent + account + digest.
+                studio_runtime_services::linux_vm_provider::copy_guest_credentials(
+                    Arc::clone(&self.store),
+                    Arc::clone(&self.guest),
+                    studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
+                        agent_id: &actor.agent_id,
+                        actor_epoch: actor.epoch,
+                        provider: "claude",
+                        account_key: &actor.account_key,
+                        relative_path: &credential_path,
+                    },
+                    &credential_document,
+                )
+                .await
+                .map_err(|error| {
+                    WorkerError::PreparationPending(format!("vm-credentials/{error}"))
+                })?;
+            }
+            Ok(())
+        })
+    }
+}
+
+async fn validate_vm_actor_scope(
+    store: Arc<RuntimeStore>,
+    account_session: Option<
+        Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
+    request: &studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
+) -> Result<(), WorkerError> {
+    let request = request.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/vm-actor-fence",
+        move || {
+            if !account_session
+                .as_deref()
+                .and_then(|session| session.current_scope(&request.account_key))
+                .is_some_and(|scope| scope.generation == request.generation)
+            {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-agent/account-generation-changed".into(),
+                ));
+            }
+            let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
+            if !studio_runtime_services::linux_vm_provider::vm_actor_matches(
+                &connection,
+                &request.agent_id,
+                request.epoch,
+                &request.account_key,
+                Some(&request.provider),
+            )
+            .map_err(|_| WorkerError::TaskFailed)?
+            {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-agent/identity-changed".into(),
+                ));
+            }
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
 }
 
 /// This follows Python's `codex_linux_workspaces.py:83-104`: provider comes
@@ -889,9 +1038,34 @@ fn refresh_vm_codex_token(
     account_session: Option<
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
+    store: &RuntimeStore,
     account_key: &str,
     previous_account_id: &str,
+    actor_id: &str,
+    actor_epoch: i64,
+    generation: u64,
 ) -> Result<Value, WorkerError> {
+    let scope_is_current = || {
+        account_session
+            .and_then(|session| session.current_scope(account_key))
+            .is_some_and(|scope| scope.generation == generation)
+    };
+    let actor_is_current = || -> Result<bool, WorkerError> {
+        let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
+        studio_runtime_services::linux_vm_provider::vm_actor_matches(
+            &connection,
+            actor_id,
+            actor_epoch,
+            account_key,
+            Some("codex"),
+        )
+        .map_err(|_| WorkerError::TaskFailed)
+    };
+    if !scope_is_current() || !actor_is_current()? {
+        return Err(WorkerError::PreparationRefused(
+            "vm-auth/actor-changed".into(),
+        ));
+    }
     let snapshot = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
@@ -918,6 +1092,11 @@ fn refresh_vm_codex_token(
     {
         return Err(WorkerError::PreparationRefused(
             "vm-auth/account-changed".into(),
+        ));
+    }
+    if !scope_is_current() || !actor_is_current()? {
+        return Err(WorkerError::PreparationRefused(
+            "vm-auth/actor-changed".into(),
         ));
     }
     Ok(serde_json::json!({
@@ -1207,6 +1386,7 @@ fn read_vm_claude_keychain(
     Ok(Some(output))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn vm_claude_keychain_service(config_dir: Option<&str>) -> String {
     let mut service = "Claude Code-credentials".to_owned();
     if let Some(config_dir) = config_dir {

@@ -15,6 +15,7 @@ use studio_runtime_store::{AgentRecord, Transaction};
 pub struct VmProviderLaunchRequest {
     pub agent_id: String,
     pub epoch: i64,
+    pub generation: u64,
     pub account_key: String,
     pub provider: String,
     pub cwd: String,
@@ -46,6 +47,9 @@ pub trait VmProviderLaunchResolver: Send + Sync {
         &self,
         _account_key: String,
         _previous_account_id: String,
+        _actor_id: String,
+        _actor_epoch: i64,
+        _generation: u64,
     ) -> VmProviderAuthFuture<'_> {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
@@ -53,10 +57,22 @@ pub trait VmProviderLaunchResolver: Send + Sync {
             ))
         })
     }
+
+    /// Refresh the shared host Claude profile once, then copy it to every
+    /// currently attached actor in the account worker's fenced sweep.
+    fn refresh_claude_credentials(
+        &self,
+        _actors: Vec<VmProviderLaunchRequest>,
+    ) -> VmProviderRefreshFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub type VmProviderAuthFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Value, WorkerError>> + Send + 'a>>;
+
+pub type VmProviderRefreshFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send + 'a>>;
 
 #[derive(Clone)]
 pub struct PreparationResources {

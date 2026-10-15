@@ -28,7 +28,9 @@ use studio_runtime_process::{
     },
 };
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
-use studio_runtime_store::{EventWriteRepository, RuntimeStore, StoreError};
+use studio_runtime_store::{
+    AgentId, AgentRepository, EventWriteRepository, RuntimeStore, StoreError,
+};
 use thiserror::Error;
 
 const START_RECEIPT_PREFIX: &str = "linux-vm-provider-start:";
@@ -39,6 +41,60 @@ const EVENT_PAYLOAD_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const EVENT_CHUNK_MAX_BYTES: u64 = 1024 * 1024;
 const CREDENTIAL_RECEIPT_PREFIX: &str = "linux-vm-credential-copy:";
 pub const MAX_GUEST_CREDENTIAL_BYTES: usize = 1024 * 1024;
+
+/// One owner for the durable actor binding shared by VM journal, credential,
+/// and launch paths. The account connection generation is fenced separately by
+/// its retained-session scope.
+pub fn vm_actor_matches(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    epoch: i64,
+    account_key: &str,
+    provider: Option<&str>,
+) -> std::result::Result<bool, StoreError> {
+    let Some(record) = AgentRepository::get(connection, &AgentId::from(agent_id))? else {
+        return Ok(false);
+    };
+    Ok(record.epoch == epoch
+        && record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && provider.is_none_or(|provider| {
+            record
+                .extra
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex")
+                == provider
+        })
+        && record
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            == account_key
+        && !record
+            .extra
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null()))
+}
+
+/// Actor-scoped destination for an allow-listed credential document copy.
+#[derive(Clone, Copy)]
+pub struct GuestCredentialTarget<'a> {
+    pub agent_id: &'a str,
+    pub actor_epoch: i64,
+    pub provider: &'a str,
+    pub account_key: &'a str,
+    pub relative_path: &'a str,
+}
+
+#[derive(Clone)]
+pub struct GuestProviderIdentity {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub generation: u64,
+    pub account_key: String,
+    pub provider: String,
+}
 
 pub type Result<T> = std::result::Result<T, GuestProviderError>;
 
@@ -129,9 +185,7 @@ pub struct GuestProviderSession {
 pub struct GuestProviderTaskFactory {
     store: Arc<RuntimeStore>,
     guest: Arc<dyn GuestRpc>,
-    agent_id: String,
-    epoch: i64,
-    provider: String,
+    identity: GuestProviderIdentity,
     profile: String,
 }
 
@@ -139,17 +193,13 @@ impl GuestProviderTaskFactory {
     pub fn new(
         store: Arc<RuntimeStore>,
         guest: Arc<dyn GuestRpc>,
-        agent_id: impl Into<String>,
-        epoch: i64,
-        provider: impl Into<String>,
+        identity: GuestProviderIdentity,
         profile: impl Into<String>,
     ) -> Self {
         Self {
             store,
             guest,
-            agent_id: agent_id.into(),
-            epoch,
-            provider: provider.into(),
+            identity,
             profile: profile.into(),
         }
     }
@@ -163,7 +213,8 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
         shutdown: Shutdown,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
-            if handle != ProviderHandle::for_account(&self.agent_id)
+            if handle != ProviderHandle::for_account(&self.identity.agent_id)
+                || options.expected_generation != Some(Generation(self.identity.generation))
                 || options.launch.command.is_empty()
                 || options.launch.retained_response_ids.len()
                     > studio_runtime_process::provider_seam::MAX_PENDING_RESPONSES
@@ -173,9 +224,7 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
             let session = GuestProviderSession::open(
                 self.store.clone(),
                 self.guest.clone(),
-                self.agent_id.clone(),
-                self.epoch,
-                self.provider.clone(),
+                self.identity.clone(),
                 self.profile.clone(),
                 options.launch.clone(),
             )
@@ -187,7 +236,7 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
             let generation = options
                 .expected_generation
                 .unwrap_or(Generation(session.info.generation));
-            let handle = ProviderHandle::for_account(&self.agent_id);
+            let handle = ProviderHandle::for_account(&self.identity.agent_id);
             let (commands, inbox) = tokio::sync::mpsc::channel(LANE_CAPACITY);
             let (outbox, journal) = tokio::sync::mpsc::channel(LANE_CAPACITY);
             let (state, status) = tokio::sync::watch::channel(AttachmentStatus {
@@ -293,7 +342,9 @@ async fn run_guest_attachment(
                             }
                             CommandReceipt::Written { remote_id, duplicate: false }
                         }
-                        Ok(_) => CommandReceipt::NotSent,
+                        // A successful but malformed guest reply does not
+                        // prove that the provider write was rejected.
+                        Ok(_) => CommandReceipt::Unknown,
                         Err(GuestProviderError::Unknown) => CommandReceipt::Unknown,
                         Err(_) => CommandReceipt::NotSent,
                     };
@@ -401,22 +452,36 @@ impl GuestProviderSession {
     pub async fn open(
         store: Arc<RuntimeStore>,
         guest: Arc<dyn GuestRpc>,
-        agent_id: impl Into<String>,
-        epoch: i64,
-        provider: impl Into<String>,
+        identity: GuestProviderIdentity,
         profile: impl Into<String>,
         launch: ProviderLaunchSpec,
     ) -> Result<Self> {
-        let agent_id = agent_id.into();
-        let provider = provider.into();
+        let GuestProviderIdentity {
+            agent_id,
+            epoch,
+            generation: _,
+            account_key,
+            provider,
+        } = identity;
         let profile = profile.into();
         let params = start_params(&agent_id, &provider, &profile, &launch)?;
         let fingerprint = fingerprint(&params)?;
         let (identity, dispatch) = tokio::task::spawn_blocking({
             let store = store.clone();
             let agent_id = agent_id.clone();
+            let account_key = account_key.clone();
+            let provider = provider.clone();
             let fingerprint = fingerprint.clone();
-            move || reserve_start(&store, &agent_id, epoch, &fingerprint)
+            move || {
+                reserve_start(
+                    &store,
+                    &agent_id,
+                    epoch,
+                    &account_key,
+                    &provider,
+                    &fingerprint,
+                )
+            }
         })
         .await
         .map_err(|_| GuestProviderError::Task)??;
@@ -743,17 +808,18 @@ impl GuestProviderSession {
 pub async fn copy_guest_credentials(
     store: Arc<RuntimeStore>,
     guest: Arc<dyn GuestRpc>,
-    agent_id: &str,
-    account_key: &str,
-    relative_path: &str,
+    target: GuestCredentialTarget<'_>,
     credential_document: &[u8],
 ) -> Result<String> {
-    if agent_id.is_empty()
-        || account_key.is_empty()
-        || relative_path.is_empty()
-        || relative_path.starts_with('/')
-        || relative_path.contains(['\\', '\0'])
-        || relative_path
+    if target.agent_id.is_empty()
+        || target.actor_epoch < 0
+        || (target.provider != "codex" && target.provider != "claude")
+        || target.account_key.is_empty()
+        || target.relative_path.is_empty()
+        || target.relative_path.starts_with('/')
+        || target.relative_path.contains(['\\', '\0'])
+        || target
+            .relative_path
             .split('/')
             .any(|part| part == ".." || part == "." || part.is_empty())
         || credential_document.len() > MAX_GUEST_CREDENTIAL_BYTES
@@ -762,9 +828,9 @@ pub async fn copy_guest_credentials(
     }
     let digest = hex_digest(credential_document);
     let request_material = serde_json::to_vec(&json!({
-        "agentId": agent_id,
-        "accountKey": account_key,
-        "path": relative_path,
+        "agentId": target.agent_id,
+        "accountKey": target.account_key,
+        "path": target.relative_path,
         "digest": digest,
     }))?;
     let signature = hex_digest(&request_material);
@@ -773,8 +839,21 @@ pub async fn copy_guest_credentials(
     let reserve_id = receipt_id.clone();
     let reserve_signature = signature.clone();
     let reserve_store = Arc::clone(&store);
+    let reserve_agent = target.agent_id.to_owned();
+    let reserve_account = target.account_key.to_owned();
+    let reserve_provider = target.provider.to_owned();
+    let actor_epoch = target.actor_epoch;
     let dispatch = tokio::task::spawn_blocking(move || {
         reserve_store.transaction(|tx| {
+            if !vm_actor_matches(
+                tx,
+                &reserve_agent,
+                actor_epoch,
+                &reserve_account,
+                Some(&reserve_provider),
+            )? {
+                return Ok(None);
+            }
             match EventWriteRepository::receipt(tx, &reserve_id)? {
                 Some(saved) if saved.signature != reserve_signature => {
                     return Err(StoreError::InvalidStoredObject {
@@ -782,8 +861,8 @@ pub async fn copy_guest_credentials(
                         id: reserve_id,
                     });
                 }
-                Some(saved) if saved.result == "complete" => return Ok(false),
-                Some(_) => return Ok(true),
+                Some(saved) if saved.result == "complete" => return Ok(Some(false)),
+                Some(_) => return Ok(Some(true)),
                 None => EventWriteRepository::put_receipt(
                     tx,
                     &reserve_id,
@@ -791,17 +870,40 @@ pub async fn copy_guest_credentials(
                     "pending",
                 )?,
             }
-            Ok(true)
+            Ok(Some(true))
         })
     })
     .await
     .map_err(|_| GuestProviderError::Task)??;
+    let dispatch = match dispatch {
+        Some(dispatch) => dispatch,
+        None => return Err(GuestProviderError::Refused),
+    };
     if !dispatch {
         return Ok(digest);
     }
+    let dispatch_store = Arc::clone(&store);
+    let dispatch_agent = target.agent_id.to_owned();
+    let dispatch_account = target.account_key.to_owned();
+    let dispatch_provider = target.provider.to_owned();
+    let still_current = tokio::task::spawn_blocking(move || {
+        let connection = dispatch_store.read()?;
+        vm_actor_matches(
+            &connection,
+            &dispatch_agent,
+            actor_epoch,
+            &dispatch_account,
+            Some(&dispatch_provider),
+        )
+    })
+    .await
+    .map_err(|_| GuestProviderError::Task)??;
+    if !still_current {
+        return Err(GuestProviderError::Refused);
+    }
     let params = json!({
         "files": [{
-            "path": relative_path,
+            "path": target.relative_path,
             "data": base64::engine::general_purpose::STANDARD.encode(credential_document),
         }]
     });
@@ -898,6 +1000,8 @@ fn reserve_start(
     store: &RuntimeStore,
     agent_id: &str,
     epoch: i64,
+    account_key: &str,
+    provider: &str,
     fingerprint: &str,
 ) -> Result<(StartIdentity, bool)> {
     if epoch < 0 || agent_id.is_empty() || fingerprint.len() != 64 {
@@ -906,6 +1010,9 @@ fn reserve_start(
     let receipt_id = format!("{START_RECEIPT_PREFIX}{agent_id}:{epoch}");
     let signature = format!("agent={agent_id};epoch={epoch};launch={fingerprint}");
     store.transaction_with(|tx| -> Result<(StartIdentity, bool)> {
+        if !vm_actor_matches(tx, agent_id, epoch, account_key, Some(provider))? {
+            return Err(GuestProviderError::Refused);
+        }
         if let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? {
             if saved.signature != signature {
                 return Err(StoreError::InvalidStoredObject {
@@ -1112,6 +1219,7 @@ mod tests {
         credential_puts: Mutex<Vec<(Option<String>, Value)>>,
         uncertain_start_once: Mutex<bool>,
         definite_start_failure_once: Mutex<bool>,
+        malformed_write_once: Mutex<bool>,
         start_ids: Mutex<Vec<Option<String>>>,
     }
 
@@ -1125,6 +1233,7 @@ mod tests {
                 credential_puts: Mutex::new(Vec::new()),
                 uncertain_start_once: Mutex::new(uncertain_start_once),
                 definite_start_failure_once: Mutex::new(false),
+                malformed_write_once: Mutex::new(false),
                 start_ids: Mutex::new(Vec::new()),
             }
         }
@@ -1182,6 +1291,11 @@ mod tests {
                     "next" => Ok(json!({"event":null})),
                     "write" => {
                         *self.writes.lock().unwrap() += 1;
+                        let mut malformed = self.malformed_write_once.lock().unwrap();
+                        if *malformed {
+                            *malformed = false;
+                            return Ok(json!({"accepted":"yes"}));
+                        }
                         Ok(json!({"accepted":true,"operationId":params["operationId"]}))
                     }
                     "operationStatus" => {
@@ -1231,6 +1345,18 @@ mod tests {
     fn open_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        store
+            .transaction(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(json!({
+                        "id":"agent-1","rootId":"agent-1","epoch":9,"status":"running",
+                        "provider":"codex","accountKey":"default","executionMode":"vm"
+                    }))?,
+                )?;
+                Ok(())
+            })
+            .unwrap();
         (directory, store)
     }
 
@@ -1241,9 +1367,13 @@ mod tests {
         GuestProviderSession::open(
             store,
             guest,
-            "agent-1",
-            9,
-            "codex",
+            GuestProviderIdentity {
+                agent_id: "agent-1".into(),
+                epoch: 9,
+                generation: 3,
+                account_key: "default".into(),
+                provider: "codex".into(),
+            },
             "profiles/default",
             launch(),
         )
@@ -1254,7 +1384,7 @@ mod tests {
     async fn lifecycle_writes_and_acknowledges_only_after_durable_settlement() {
         let (_directory, store) = open_store();
         let guest = Arc::new(FakeGuest::new(false));
-        let mut session = open_session(store, guest.clone()).await.unwrap();
+        let session = open_session(store, guest.clone()).await.unwrap();
         assert_eq!(session.info().generation, 3);
         let event = session.next().await.unwrap().unwrap();
         assert_eq!(event.kind, "stdout");
@@ -1320,7 +1450,7 @@ mod tests {
     async fn failed_settlement_does_not_ack_guest_event() {
         let (_directory, store) = open_store();
         let guest = Arc::new(FakeGuest::new(false));
-        let mut session = open_session(store, guest.clone()).await.unwrap();
+        let session = open_session(store, guest.clone()).await.unwrap();
         let event = session.next().await.unwrap().unwrap();
         let result = session
             .settle_then_ack(&event, || Err::<(), _>(GuestProviderError::Unknown))
@@ -1334,13 +1464,29 @@ mod tests {
     async fn credential_copy_receipt_contains_no_secret_material() {
         let (_directory, store) = open_store();
         let guest = Arc::new(FakeGuest::new(false));
+        store
+            .transaction(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(json!({
+                        "id":"agent-1","rootId":"agent-1","epoch":9,"status":"running",
+                        "provider":"claude","accountKey":"account-1","executionMode":"vm"
+                    }))?,
+                )?;
+                Ok(())
+            })
+            .unwrap();
         let secret = b"{\"accessToken\":\"private-token\"}";
         let digest = copy_guest_credentials(
             store.clone(),
             guest.clone(),
-            "agent-1",
-            "account-1",
-            ".claude/studio-accounts/key/.credentials.json",
+            GuestCredentialTarget {
+                agent_id: "agent-1",
+                actor_epoch: 9,
+                provider: "claude",
+                account_key: "account-1",
+                relative_path: ".claude/studio-accounts/key/.credentials.json",
+            },
             secret,
         )
         .await
@@ -1379,9 +1525,13 @@ mod tests {
         let factory = GuestProviderTaskFactory::new(
             store,
             guest.clone(),
-            "agent-1",
-            9,
-            "codex",
+            GuestProviderIdentity {
+                agent_id: "agent-1".into(),
+                epoch: 9,
+                generation: 3,
+                account_key: "default".into(),
+                provider: "codex".into(),
+            },
             "profiles/default",
         );
         let handle = ProviderHandle::for_account("agent-1");
@@ -1452,5 +1602,53 @@ mod tests {
             .unwrap();
         assert_eq!(exit.cleanup_error, None);
         assert!(guest.stops.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_successful_guest_write_reply_remains_unknown() {
+        let (_directory, store) = open_store();
+        let guest = Arc::new(FakeGuest::new(false));
+        *guest.malformed_write_once.lock().unwrap() = true;
+        let factory = GuestProviderTaskFactory::new(
+            store,
+            guest.clone(),
+            GuestProviderIdentity {
+                agent_id: "agent-1".into(),
+                epoch: 9,
+                generation: 3,
+                account_key: "default".into(),
+                provider: "codex".into(),
+            },
+            "profiles/default",
+        );
+        let mut attachment = factory
+            .open(
+                ProviderHandle::for_account("agent-1"),
+                OpenOptions {
+                    clock: SessionClock::default(),
+                    launch: launch(),
+                    expected_generation: Some(Generation(3)),
+                },
+                Shutdown::default(),
+            )
+            .await
+            .unwrap();
+        let request = Frame::Request(RequestFrame {
+            id: RequestId::Number(41),
+            method: Method::Initialize,
+            params: Some(json!({})),
+            fields: Default::default(),
+        });
+        let write = PreparedWrite::new(OperationId("malformed-write".into()), &request).unwrap();
+        let (command, receipt) = AdapterCommand::write(write);
+        attachment.commands.send(command).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(3), receipt.receive())
+                .await
+                .unwrap(),
+            CommandReceipt::Unknown
+        ));
+        assert_eq!(*guest.writes.lock().unwrap(), 1);
+        let _exit = attachment.shutdown().await;
     }
 }

@@ -25,6 +25,14 @@ pub const PROBE_RESULT_MAX_BYTES: usize = 32 * 1024;
 /// Python stores at most this many characters in a command monitor's error/tail.
 pub const EXIT_RECEIPT_MAX_ERROR_BYTES: usize = 12_000;
 
+pub struct JournalEventScope<'a> {
+    pub account: &'a str,
+    pub cursor_scope: &'a str,
+    pub generation: u64,
+    pub cursor: u64,
+    pub expected_agent: Option<&'a str>,
+}
+
 /// Append `command/exec/outputDelta` while the provider notification receipt is
 /// still in its caller's transaction. A full queue aborts that transaction, so
 /// the account worker retains the exact journal entry and retries it later.
@@ -37,17 +45,23 @@ pub fn enqueue_output_in_transaction(
     params: &Value,
 ) -> Result<bool, NotificationDispatchError> {
     enqueue_output_with_scope_in_transaction(
-        tx, process_id, account, account, generation, cursor, params,
+        tx,
+        process_id,
+        JournalEventScope {
+            account,
+            cursor_scope: account,
+            generation,
+            cursor,
+            expected_agent: None,
+        },
+        params,
     )
 }
 
 pub fn enqueue_output_with_scope_in_transaction(
     tx: &Transaction<'_>,
     process_id: &str,
-    account: &str,
-    cursor_scope: &str,
-    generation: u64,
-    cursor: u64,
+    scope: JournalEventScope<'_>,
     params: &Value,
 ) -> Result<bool, NotificationDispatchError> {
     let Some((record, _)) = Table::<MonitorRecord>::new(tx).get_with_raw(&process_id.to_owned())?
@@ -56,9 +70,12 @@ pub fn enqueue_output_with_scope_in_transaction(
     };
     let mut record = record.value().clone();
     if record["status"] != "running"
-        || record["operation"]["accountKey"].as_str() != Some(account)
+        || record["operation"]["accountKey"].as_str() != Some(scope.account)
         || record["operation"]["agent"].as_str() != record["agent"].as_str()
         || record["operation"]["epoch"] != record["epoch"]
+        || scope
+            .expected_agent
+            .is_some_and(|agent| record["agent"].as_str() != Some(agent))
     {
         return Ok(false);
     }
@@ -76,7 +93,10 @@ pub fn enqueue_output_with_scope_in_transaction(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let key = format!("{cursor_scope}:{generation}:{cursor}");
+    let key = format!(
+        "{}:{}:{}",
+        scope.cursor_scope, scope.generation, scope.cursor
+    );
     if let Some(existing) = queue.iter().find(|item| item["cursor"] == key) {
         if existing["deltaBase64"] == encoded {
             return Ok(true);
