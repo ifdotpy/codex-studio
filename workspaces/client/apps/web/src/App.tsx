@@ -1,5 +1,6 @@
 import {
   useServerApi,
+  useServerChatCreations,
   useServerResources,
   useServerAccountLimits,
   useServerOutbox,
@@ -50,11 +51,7 @@ import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
-import {
-  pendingChatCreations,
-  saveChatCreation,
-  confirmChatCreation,
-} from "./chatCreation";
+
 import {
   ActionIcon,
   Button,
@@ -232,6 +229,8 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const { pendingChatCreations, saveChatCreation, confirmChatCreation } =
+    useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
   const { watchResourceChanges } = useServerResources();
   const watchResourceReads = useServerResourceReads();

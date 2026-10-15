@@ -1,3 +1,7 @@
+import * as defaultLocalDrafts from "../sync/localDraft";
+import { serverStorageEventKey } from "./storage";
+import * as defaultChatCreations from "../chatCreation";
+import { serverLocalStorage } from "./storage";
 import * as defaultFileActions from "../fileActions";
 import * as defaultFileDialogs from "../native/fileDialogs";
 import { watchResourceReads } from "../components/watchResourceReads";
@@ -70,3 +74,15 @@ export const useServerFileDialogs = () =>
 
 export const useServerFileActions = () =>
   useServerServices()?.fileActions ?? defaultFileActions;
+
+export const useServerStorage = () =>
+  useServerServices()?.storage ?? serverLocalStorage;
+
+export const useServerChatCreations = () =>
+  useServerServices()?.chatCreations ?? defaultChatCreations;
+
+export const useServerLocalDrafts = () =>
+  useServerServices()?.localDrafts ?? defaultLocalDrafts;
+
+export const useServerStorageEventKey = () =>
+  useServerServices()?.storageEventKey ?? serverStorageEventKey;

@@ -1,4 +1,4 @@
-import { serverStorageName } from "./environment";
+import { serverViewId } from "./environment";
 
 type StorageWriteObserver = (
   key: string,
@@ -54,8 +54,10 @@ export function scopedStorage(
     },
   };
 }
-const namespace = serverStorageName("");
-const prefix = namespace ? namespace + ":" : "";
+// Prefix for browser records owned by one server; local records keep their old keys.
+export const serverStoragePrefix = (owner: string | null) =>
+  owner && owner !== "local" ? `:server:${owner}:` : "";
+const prefix = serverStoragePrefix(serverViewId);
 export const serverLocalStorage = scopedStorage(
   () => globalThis.localStorage,
   prefix,
@@ -65,10 +67,12 @@ export const serverSessionStorage = scopedStorage(
   () => globalThis.sessionStorage,
   prefix,
 );
-export function serverStorageEventKey(event: StorageEvent) {
-  return event.key === null
-    ? null
-    : event.key.startsWith(prefix)
-      ? event.key.slice(prefix.length)
-      : undefined;
+export function createStorageEventKey(prefix: string) {
+  return (event: Pick<StorageEvent, "key">) =>
+    event.key === null
+      ? null
+      : event.key.startsWith(prefix)
+        ? event.key.slice(prefix.length)
+        : undefined;
 }
+export const serverStorageEventKey = createStorageEventKey(prefix);

@@ -1,3 +1,10 @@
+import {
+  createLocalDraftStorage,
+  LOCAL_DRAFT_DATABASE_NAME,
+} from "../sync/localDraft";
+import { storageNameForServer } from "./environment";
+import { serverStoragePrefix, createStorageEventKey } from "./storage";
+import { createChatCreationStore } from "../chatCreation";
 import { createFileActions } from "../fileActions";
 import { createFileDialogs } from "../native/fileDialogs";
 import { watchResourceReads } from "../components/watchResourceReads";
@@ -133,6 +140,14 @@ export function createServerServices(server: StudioServer) {
   }
   return {
     owner: transport.owner,
+    chatCreations: createChatCreationStore(storage),
+    localDrafts: createLocalDraftStorage(
+      storage,
+      storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),
+    ),
+    storageEventKey: createStorageEventKey(
+      serverStoragePrefix(transport.owner.id),
+    ),
     fileDialogs: createFileDialogs(transport.owner.id),
     fileActions: createFileActions(transport.owner.id),
     accountLimits,

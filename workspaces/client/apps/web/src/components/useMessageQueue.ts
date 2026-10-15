@@ -1,10 +1,12 @@
-import { useServerApi } from "../servers/ServerServicesContext";
-import { serverStorageEventKey } from "../servers/storage";
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import {
+  useServerApi,
+  useServerStorage,
+  useServerLocalDrafts,
+  useServerStorageEventKey,
+} from "../servers/ServerServicesContext";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, errorText } from "../api";
 import type { QueueItemDto, QueueView } from "../api";
-import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
@@ -34,7 +36,7 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
-function readQueueRequest(key: string): unknown {
+function readStoredQueueRequest(localStorage: Storage, key: string): unknown {
   let stored: string | null;
   try {
     stored = localStorage.getItem(key);
@@ -83,6 +85,13 @@ export function useMessageQueue(p: {
 }) {
   const watchResourceReads = useServerResourceReads();
   const { get, syncPost } = useServerApi();
+  const storage = useServerStorage();
+  const { updateLocalDraft } = useServerLocalDrafts();
+  const serverStorageEventKey = useServerStorageEventKey();
+  const readQueueRequest = useCallback(
+    (key: string) => readStoredQueueRequest(storage, key),
+    [storage],
+  );
 
   const key = `studio-queue-change:${p.scope}:${p.id}`;
   const currentKey = useRef(key);
@@ -184,7 +193,7 @@ export function useMessageQueue(p: {
       window.removeEventListener("storage", changed);
       stop();
     };
-  }, [key]);
+  }, [key, readQueueRequest, serverStorageEventKey]);
   const execute = async (request: QueueMutation) => {
     if (locks.current.has(key))
       throw new Error("Wait for the current queue change.");

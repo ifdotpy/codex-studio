@@ -1,5 +1,7 @@
-import { useServerApi } from "./servers/ServerServicesContext";
-import { serverLocalStorage as localStorage } from "./servers/storage";
+import {
+  useServerApi,
+  useServerStorage,
+} from "./servers/ServerServicesContext";
 import { useState } from "react";
 import { ApiError } from "./api";
 import type { PostBody } from "./api";
@@ -50,6 +52,7 @@ export function useNativeAction(
   notify: (text: string) => void,
 ) {
   const { post } = useServerApi();
+  const localStorage = useServerStorage();
 
   const [, changed] = useState(0);
   const [active, setActive] = useState(false);

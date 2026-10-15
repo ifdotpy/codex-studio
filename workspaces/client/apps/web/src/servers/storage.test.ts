@@ -1,5 +1,11 @@
+import { createChatCreationStore } from "../chatCreation";
+import { createLocalDraftStorage } from "../sync/localDraft";
 import { expect, it } from "vitest";
-import { scopedStorage } from "./storage";
+import {
+  scopedStorage,
+  serverStoragePrefix,
+  createStorageEventKey,
+} from "./storage";
 function memoryStorage(): Storage {
   const rows = new Map<string, string>();
   return {
@@ -41,4 +47,36 @@ it("preserves the local installation's existing storage identity", () => {
   expect(local.getItem("codex-sync-workspace")).toBe("cached-workspace");
   local.setItem("draft", "text");
   expect(raw.getItem("draft")).toBe("text");
+});
+
+it("keeps requests and synchronous drafts with their owner despite matching keys and request IDs", () => {
+  const raw = memoryStorage();
+  const storage = (owner: string) =>
+    scopedStorage(() => raw, serverStoragePrefix(owner));
+  const a = createChatCreationStore(storage("a"));
+  const b = createChatCreationStore(storage("b"));
+  a.saveChatCreation("same-key", { id: "same-request", project: "a" });
+  b.saveChatCreation("same-key", { id: "same-request", project: "b" });
+  b.confirmChatCreation("same-key", "same-request");
+  expect(a.pendingChatCreations("same-key")).toEqual([
+    { id: "same-request", project: "a" },
+  ]);
+  expect(b.pendingChatCreations("same-key")).toEqual([]);
+  const draftsA = createLocalDraftStorage(storage("a"), "db-a");
+  const draftsB = createLocalDraftStorage(storage("b"), "db-b");
+  draftsA.writeLocalDraft("same-key", { request_id: "a" });
+  draftsB.writeLocalDraft("same-key", { request_id: "b" });
+  draftsB.writeLocalDraft("same-key", null);
+  expect(storage("a").getItem("same-key")).toBe('{"request_id":"a"}');
+  expect(storage("b").getItem("same-key")).toBeNull();
+});
+
+it("routes storage events only to the matching server namespace", () => {
+  const a = createStorageEventKey(serverStoragePrefix("a"));
+  const b = createStorageEventKey(serverStoragePrefix("b"));
+  const event = { key: serverStoragePrefix("a") + "request" };
+  expect(a(event)).toBe("request");
+  expect(b(event)).toBeUndefined();
+  expect(a({ key: null })).toBeNull();
+  expect(serverStoragePrefix("local")).toBe("");
 });
