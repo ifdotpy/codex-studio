@@ -14,6 +14,8 @@ use crate::router::HttpState;
 const MESSAGE_SEND_DEPENDENCIES: [Dependency; 4] = [
     Dependency::new("capacity-retry/store"),
     Dependency::new("federation-driver/rooms"),
+    Dependency::new("payload-store/uploads"),
+    Dependency::new("workspace-policy/message-admission"),
 ];
 
 #[derive(serde::Deserialize)]
@@ -353,6 +355,8 @@ inventory::submit! {
             "capacity-retry/store",
             "event-driver/message-send",
             "federation-driver/rooms",
+            "payload-store/uploads",
+            "workspace-policy/message-admission",
         ],
     }
 }
