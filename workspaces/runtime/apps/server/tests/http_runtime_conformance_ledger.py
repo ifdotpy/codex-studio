@@ -532,7 +532,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/rename"): {
         "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename", "request_id": "ledger-rename"}, "fixture_mutations": {"agent_name": "HTTP ledger probe rename"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "provider generated title", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/title-generation", "assert_no_write": True}],
+        "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "503", "expected_error": "Title provider session is unavailable", "assert_no_write": True}],
     },
     ("POST", "/api/accounts/claude/add"): {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},

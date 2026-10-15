@@ -36,19 +36,28 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         account_key: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>,
-    > {
+    >{
         Box::pin(async move {
-            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             use studio_runtime_services::provider_callbacks::ManagedCreationAccountRead;
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             let identity = DriverManagedAccountRead(self.accounts.as_ref())
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref()) else {
+            let (Some(home), Some(provider)) =
+                (account.home.as_deref(), account.provider.as_deref())
+            else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
-            match self.catalog.service.wait_for_admission_catalog(account_key, home, provider).await {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+            match self
+                .catalog
+                .service
+                .wait_for_admission_catalog(account_key, home, provider)
+                .await
+            {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -556,8 +565,6 @@ pub(crate) fn routes() -> RouteGroup {
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const RENAME_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("provider-session/title-generation")];
     const AGENT_DEPENDENCIES: [Dependency; 5] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("provider-session/model-list"),
@@ -587,11 +594,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&LEAD_DEPENDENCIES),
             create_lead,
         ),
-        post(
-            "/api/rename",
-            OperationStatus::partial(&RENAME_DEPENDENCIES),
-            rename,
-        ),
+        post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }
 
@@ -831,15 +834,135 @@ async fn rename(
 ) -> Result<axum::response::Response, ApiError> {
     let name = body.name.flatten();
     if name.is_none() {
-        let _request_id = body
+        let request_id = body
             .request_id
             .flatten()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires provider-session/title-generation",
-        ));
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let provider = state.title_request.clone().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Title provider session is unavailable",
+            )
+        })?;
+        let driver = state.account_driver.clone();
+        let catalog = state.model_catalog.clone();
+        if let Some(driver) = driver {
+            let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/agents_create/rename",
+                move || driver.snapshot().map(|snapshot| snapshot.accounts),
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(|_| ApiError::internal())?;
+            catalog.retain_accounts(&accounts);
+        }
+        let agent_id = body.id.clone();
+        let account_catalog = catalog.clone();
+        let account_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agents_create/rename",
+            move || {
+                let connection = store.read().map_err(|_| ApiError::internal())?;
+                let agent =
+                    studio_runtime_store::WorkspaceViewsRepository::agent(&connection, &agent_id)
+                        .map_err(|_| ApiError::internal())?
+                        .ok_or_else(|| {
+                            ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
+                        })?;
+                let record = agent.value();
+                let account = record
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default");
+                let provider = record
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex");
+                let Some((home, catalog_provider)) = account_catalog.account_profile(account)
+                else {
+                    return Err(ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Model catalog is unavailable for this account",
+                    ));
+                };
+                if catalog_provider != provider {
+                    return Err(ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Provider account changed; reload the conversation",
+                    ));
+                }
+                Ok((account.to_owned(), provider.to_owned(), home))
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        let (account, provider_name, home) = account_snapshot;
+        let models = match catalog
+            .model_list_port()
+            .list(
+                &account,
+                &provider_name,
+                serde_json::json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
+            )
+            .await
+        {
+            Ok(models) => models,
+            Err(_) => {
+                // Starting the refresh is bounded and coalesced by the catalog owner.
+                let _ = catalog.read(&account, &home, &provider_name, false).await;
+                return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "Model catalog is pending or unavailable"));
+            }
+        };
+        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+        let result = studio_runtime_services::title_generation::generate(
+            store,
+            provider.as_ref(),
+            &body.id,
+            &models,
+            &request_id,
+            std::time::SystemTime::now()
+                + studio_runtime_services::title_generation::REQUEST_TIMEOUT,
+        )
+        .await
+        .map_err(|error| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+        let (title, status, error) = match result {
+            studio_runtime_services::title_generation::TitleResult::Applied { title } => {
+                state.event_wake.notify_one();
+                (Some(title), "applied", None)
+            }
+            studio_runtime_services::title_generation::TitleResult::HeldUnknown => {
+                (None, "pending", None)
+            }
+            studio_runtime_services::title_generation::TitleResult::RetryableNotSent => (
+                None,
+                "failed",
+                Some("The title request could not start. Try /rename again."),
+            ),
+            studio_runtime_services::title_generation::TitleResult::Discarded
+            | studio_runtime_services::title_generation::TitleResult::Skipped => (
+                None,
+                "failed",
+                Some("The title could not be generated. Try /rename again."),
+            ),
+        };
+        let response = serde_json::json!({
+            "id": body.id,
+            "name": title,
+            "request_id": request_id,
+            "status": status,
+            "error": error,
+        });
+        let mut response = Json(super::generated_json::<generated::RenameResponse>(
+            response,
+        )?)
+        .into_response();
+        if status != "applied" {
+            response
+                .extensions_mut()
+                .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+        }
+        return Ok(response);
     }
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/agents_create/rename",
@@ -895,19 +1018,16 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     let implemented_but_unavailable = matches!(
         &error,
-        OperationError::Create(
-            MutationError::CapabilityUnavailable(
-                "account-driver/unavailable" | "provider-session/title-generation"
-            ) | MutationError::TitleGenerationUnavailable
-        )
+        OperationError::Create(MutationError::CapabilityUnavailable(
+            "account-driver/unavailable"
+        ))
     );
     if implemented_but_unavailable {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
     }
     let status = match &error {
         OperationError::Unavailable(_)
-        | OperationError::Create(MutationError::CapabilityUnavailable(_))
-        | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
+        | OperationError::Create(MutationError::CapabilityUnavailable(_)) => {
             StatusCode::NOT_IMPLEMENTED
         }
         OperationError::Internal
@@ -935,7 +1055,6 @@ inventory::submit! {
             "cross-server-driver/local-identity",
             "cross-server-driver/project-binding",
             "provider-session/model-list",
-            "provider-session/title-generation",
             "project-driver/folder-selection",
             "worker-driver/settings-catalog",
             "workspace-state/image-workspace",

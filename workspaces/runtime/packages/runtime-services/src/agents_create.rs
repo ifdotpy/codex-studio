@@ -40,8 +40,6 @@ pub enum MutationError {
     IdentityChanged,
     #[error("Internal server error")]
     Internal,
-    #[error("Not implemented: requires provider-session/title-generation")]
-    TitleGenerationUnavailable,
     #[error("The team changed. Reload before saving")]
     Stale,
     #[error("Switch this chat to another account before disabling its current account")]
@@ -622,7 +620,7 @@ fn rename(
     }
     let Some(name) = name else {
         return Err(if request_id.is_some() {
-            RenameError::TitleGenerationUnavailable
+            RenameError::InvalidCreation("name")
         } else {
             RenameError::RequestIdRequired
         });

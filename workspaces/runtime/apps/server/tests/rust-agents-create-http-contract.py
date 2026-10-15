@@ -964,7 +964,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
         )
 
-    def test_smart_title_reports_named_501_without_writing(self):
+    def test_smart_title_requires_a_provider_session_without_writing(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("the Python reference backend implements live title generation")
         before = rename_state(self.backend.state, self.agent_id, "smart-title-id")
@@ -974,11 +974,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json(),
-            {"error": "Not implemented: requires provider-session/title-generation"},
-        )
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertEqual(
             rename_state(self.backend.state, self.agent_id, "smart-title-id"), before
         )
