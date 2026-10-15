@@ -28,6 +28,10 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum TitleError {
+    #[error("Unknown managed agent")]
+    AgentNotFound,
+    #[error("This conversation was deleted")]
+    DeletedAgent,
     #[error("No title model is available for this account")]
     NoModel,
     #[error("The chat model is unavailable for this account")]
@@ -95,6 +99,96 @@ pub enum TitleResult {
     Discarded,
     RetryableNotSent,
     HeldUnknown,
+}
+
+/// Persist Python-compatible admission before catalog refresh or provider work.
+/// A pending receipt is durable before the caller starts its background finisher.
+pub fn admit_python_request(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<(Value, bool), TitleError> {
+    if request_id.is_empty() || request_id.len() > 200 {
+        return Err(TitleError::Conflict);
+    }
+    let signature = python_rename_signature(agent_id);
+    let pending = json!({"id":agent_id,"request_id":request_id,"status":"pending"});
+    store.transaction_with(|tx| {
+        let raw_agent: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(raw_agent) = raw_agent else {
+            return Err(TitleError::AgentNotFound);
+        };
+        let agent: Value = serde_json::from_str(&raw_agent).map_err(StoreError::from)?;
+        if agent.get("deletedAt").is_some_and(truthy) {
+            return Err(TitleError::DeletedAgent);
+        }
+        if let Some((saved_signature, raw_result)) = tx
+            .query_row(
+                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                [request_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            if saved_signature != signature {
+                return Err(TitleError::Conflict);
+            }
+            let saved: Value = serde_json::from_str(&raw_result)
+                .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+            let start = saved.get("status").and_then(Value::as_str) == Some("pending");
+            return Ok((saved, start));
+        }
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+            params![request_id, signature, pending.to_string()],
+        )?;
+        Ok((pending, true))
+    })
+}
+
+/// Settle a pre-provider catalog failure as Python's asynchronous `_finish` does.
+pub fn settle_catalog_failure(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<(), TitleError> {
+    let signature = python_rename_signature(agent_id);
+    let failed = json!({
+        "id":agent_id,
+        "request_id":request_id,
+        "status":"failed",
+        "error":"The title could not be generated. Try /rename again."
+    });
+    store.transaction_with(|tx| {
+        let Some((saved_signature, raw_result)) = tx
+            .query_row(
+                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                [request_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        else {
+            return Err(TitleError::Conflict);
+        };
+        if saved_signature != signature {
+            return Ok(());
+        }
+        let saved: Value = serde_json::from_str(&raw_result)
+            .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+        if saved.get("status").and_then(Value::as_str) == Some("pending") {
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
+                params![failed.to_string(), request_id, signature],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +387,30 @@ pub async fn generate(
     request_id: &str,
     deadline: SystemTime,
 ) -> Result<TitleResult, TitleError> {
+    generate_inner(store, port, agent_id, catalog, request_id, deadline, false).await
+}
+
+/// Complete work previously admitted by `admit_python_request`.
+pub async fn generate_admitted(
+    store: &RuntimeStore,
+    port: &dyn TitleRequestPort,
+    agent_id: &str,
+    catalog: &Value,
+    request_id: &str,
+    deadline: SystemTime,
+) -> Result<TitleResult, TitleError> {
+    generate_inner(store, port, agent_id, catalog, request_id, deadline, true).await
+}
+
+async fn generate_inner(
+    store: &RuntimeStore,
+    port: &dyn TitleRequestPort,
+    agent_id: &str,
+    catalog: &Value,
+    request_id: &str,
+    deadline: SystemTime,
+    admitted: bool,
+) -> Result<TitleResult, TitleError> {
     if request_id.is_empty() || request_id.len() > 200 {
         return Err(TitleError::Conflict);
     }
@@ -312,23 +430,40 @@ pub async fn generate(
         {
             let result: Value = serde_json::from_str(&raw_result)
                 .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
-            if saved_signature == python_rename_signature(agent_id) {
-                let saved = result
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .filter(|_| {
-                        result.get("id").and_then(Value::as_str) == Some(agent_id)
-                            && result.get("request_id").and_then(Value::as_str) == Some(request_id)
-                            && result.get("status").and_then(Value::as_str) == Some("applied")
-                    })
-                    .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                return Ok(Admission::Held(TitleResult::Applied {
-                    title: saved.to_owned(),
-                }));
-            }
-            if saved_signature != fingerprint {
+            let python_signature = saved_signature == python_rename_signature(agent_id);
+            if python_signature
+                && result.get("id").and_then(Value::as_str) == Some(agent_id)
+                && result.get("request_id").and_then(Value::as_str) == Some(request_id)
+            {
+                match result.get("status").and_then(Value::as_str) {
+                    Some("applied") => {
+                        let saved = result
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
+                        return Ok(Admission::Held(TitleResult::Applied {
+                            title: saved.to_owned(),
+                        }));
+                    }
+                    Some("failed") => return Ok(Admission::Held(TitleResult::Skipped)),
+                    Some("pending") if admitted => {
+                        tx.execute(
+                            "UPDATE runtime_operation_receipts SET signature=?1,result=?2 WHERE id=?3",
+                            params![fingerprint, intent_text, request_id],
+                        )?;
+                    }
+                    Some("pending") => {
+                        return Ok(Admission::Held(TitleResult::HeldUnknown));
+                    }
+                    _ => return Err(invalid("runtime_operation_receipts", request_id)),
+                }
+            } else if saved_signature != fingerprint {
                 return Err(TitleError::Conflict);
             }
+            if python_signature && admitted {
+                // The prior branch converted the durable Python admission into this
+                // service's in-flight receipt; proceed with its verified snapshot.
+            } else {
             match result.get("state").and_then(Value::as_str) {
                 Some("unknown" | "pending") => {
                     return Ok(Admission::Held(TitleResult::HeldUnknown));
@@ -359,6 +494,7 @@ pub async fn generate(
                     )?;
                 }
                 _ => return Err(invalid("runtime_operation_receipts", request_id)),
+            }
             }
         }
 

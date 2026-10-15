@@ -14,7 +14,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 use studio_runtime_services::title_generation::{
-    TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, generate,
+    TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
+    generate, settle_catalog_failure,
 };
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
@@ -232,6 +233,40 @@ fn persisted_snapshot(store: &RuntimeStore) -> Value {
         .collect::<Result<Vec<_>, _>>()
         .expect("receipt values");
     json!({"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events,"projection":projection,"receipts":receipts})
+}
+
+#[test]
+fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
+    let (_root, store) = fixture();
+    let before = persisted_snapshot(&store);
+    let (pending, start) =
+        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("admit title");
+    assert!(start);
+    assert_eq!(pending["status"], "pending");
+
+    settle_catalog_failure(&store, "title-agent", "catalog-unavailable")
+        .expect("settle unavailable catalog");
+    let connection = store.read().expect("read settled title");
+    let result: String = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='catalog-unavailable'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("durable failure receipt");
+    let result: Value = serde_json::from_str(&result).expect("failure receipt JSON");
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["request_id"], "catalog-unavailable");
+
+    let after = persisted_snapshot(&store);
+    assert_eq!(after["agent"], before["agent"]);
+    assert_eq!(after["events"], before["events"]);
+    assert_eq!(after["projection"], before["projection"]);
+    let (replayed, retry) =
+        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("replay");
+    assert!(!retry);
+    assert_eq!(replayed["status"], "failed");
+    assert_eq!(persisted_snapshot(&store), after);
 }
 
 fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
