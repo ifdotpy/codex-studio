@@ -1,8 +1,9 @@
 """Standard-library validator for the analytics context window contract."""
 import math
+from typing import TypeGuard
 
 
-def is_context_window(value: object) -> bool:
+def is_context_window(value: object) -> TypeGuard[int | float | None]:
     """Return whether a decoded value matches nonnegative-number-or-null."""
     if value is None:
         return True

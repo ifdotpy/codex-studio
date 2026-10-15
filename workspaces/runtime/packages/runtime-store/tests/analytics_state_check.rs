@@ -71,9 +71,12 @@ fn malformed_importer_and_unknown_history_rows_still_fail_validation() {
     let importer = report_for(root.path(), "analytics_history_importer");
     assert_eq!(importer.row_count, 1);
     assert_eq!(importer.rejected_count, 1);
-    assert!(importer.failures.iter().any(|failure| {
-        failure.keyword == "anyOf" && failure.count == 1
-    }));
+    assert!(
+        importer
+            .failures
+            .iter()
+            .any(|failure| { failure.keyword == "anyOf" && failure.count == 1 })
+    );
 
     let history = report_for(root.path(), "analytics_history");
     assert_eq!(history.row_count, 1);
