@@ -248,11 +248,8 @@ pub(crate) async fn boundary(
                     return ApiError::validation(errors.location).into_response();
                 }
             }
-        } else if method != Method::GET
-            && has_operation(None, &path)
-            && !has_operation(Some(method.as_str()), &path)
-        {
-            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+        } else if has_operation(None, &path) && !has_operation(Some(method.as_str()), &path) {
+            return crate::error::method_not_allowed_response(&path);
         }
     }
 

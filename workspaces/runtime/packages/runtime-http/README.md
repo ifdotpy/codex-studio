@@ -179,7 +179,7 @@ document spells them as integers or as integral decimals. The check covers
 request bodies and parameters; free-form `JsonValue` stays opaque, and response
 fields such as the deliberate 64-bit aliases and `FileInfo.size` are outside its
 scope. Production startup compiles registered route operations only. The
-all-authority compile test in the fast tier checks all 160 documented operations.
+all-authority compile test in the fast tier checks all 154 documented operations.
 
 Run the shared corpus differential with the prepared Python interpreter using
 `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/http_runtime_extractor_differential.py`.

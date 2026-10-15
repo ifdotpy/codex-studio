@@ -1,6 +1,14 @@
 {
   "sourceCommit": "51d376b7",
   "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json",
+  "acceptedOperationRemovals": [
+    "GET /api/federation",
+    "GET /api/federation/v1/message",
+    "GET /api/federation/v1/pair",
+    "GET /api/federation/v1/pull",
+    "GET /api/federation/v1/status",
+    "GET /api/multi-server/v1/pair"
+  ],
   "acceptedLoosenings": [
     {
       "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",

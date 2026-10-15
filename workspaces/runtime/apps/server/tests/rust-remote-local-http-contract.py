@@ -118,18 +118,19 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.json()["rooms"][0]["id"], "room-a")
         self.assertEqual(response.json()["queued"], 1)
 
-    def test_federation_documented_get_counterparts_remain_404(self) -> None:
+    def test_retired_federation_and_pair_get_routes_are_method_not_allowed(self) -> None:
         for path in (
             "/api/federation",
             "/api/federation/v1/message",
             "/api/federation/v1/pair",
             "/api/federation/v1/pull",
             "/api/federation/v1/status",
+            "/api/multi-server/v1/pair",
         ):
             with self.subTest(path=path):
                 response = self.backend.request("GET", path, headers=self.headers())
-                self.assertEqual(response.status, 404, response.body[:1000])
-                self.assertEqual(response.json(), {"error": "Not found"})
+                self.assertEqual(response.status, 405, response.body[:1000])
+                self.assertEqual(response.headers.get("allow"), "POST")
 
     def test_federation_disable_is_a_local_state_write(self) -> None:
         response = self.backend.request(

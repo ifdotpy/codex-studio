@@ -1,7 +1,7 @@
-//! Federation database projections and the documented 404 counterparts.
+//! Federation database projections and signed peer HTTP routes.
 
 use super::extractors::ApiJson;
-use super::manifest::{OperationStatus, RouteGroup, get, post};
+use super::manifest::{OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::body::{Body, to_bytes};
 use axum::extract::State;
@@ -15,46 +15,21 @@ use crate::router::HttpState;
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get(
-            "/api/federation",
-            OperationStatus::Implemented,
-            no_get_counterpart,
-        ),
         post("/api/federation", OperationStatus::Implemented, manage),
-        get(
-            "/api/federation/v1/message",
-            OperationStatus::Implemented,
-            no_get_counterpart,
-        ),
         post(
             "/api/federation/v1/message",
             OperationStatus::Implemented,
             message,
-        ),
-        get(
-            "/api/federation/v1/pair",
-            OperationStatus::Implemented,
-            no_get_counterpart,
         ),
         post(
             "/api/federation/v1/pair",
             OperationStatus::Implemented,
             pair,
         ),
-        get(
-            "/api/federation/v1/pull",
-            OperationStatus::Implemented,
-            no_get_counterpart,
-        ),
         post(
             "/api/federation/v1/pull",
             OperationStatus::Implemented,
             pull,
-        ),
-        get(
-            "/api/federation/v1/status",
-            OperationStatus::Implemented,
-            no_get_counterpart,
         ),
         post(
             "/api/federation/v1/status",
@@ -62,10 +37,6 @@ pub(crate) fn routes() -> RouteGroup {
             signed_status,
         ),
     ])
-}
-
-async fn no_get_counterpart() -> Result<Json<Value>, ApiError> {
-    Err(ApiError::new(StatusCode::NOT_FOUND, "Not found"))
 }
 
 async fn message(

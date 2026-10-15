@@ -171,8 +171,6 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertIn(response.status, (400, 422), response.body[:1000])
         self.assertNotIn(b"Not implemented", response.body)
-        self.assertEqual(self.backend.request("GET", "/api/federation/v1/message").status, 404)
-
     def test_signed_message_and_pair_routes_accept_fake_peer_requests(self):
         room_id = "federated:fake-room-invite"
         now = int(time.time())
@@ -243,7 +241,5 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
         self.assertIsNotNone(stored_peer)
         self.assertEqual(json.loads(stored_peer[0])["publicKey"], self.remote["publicKey"])
         self.assertEqual(json.loads(stored_invite[0])["usedBy"], pair_peer_id)
-
-
 if __name__ == "__main__":
     unittest.main()

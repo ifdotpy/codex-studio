@@ -66986,46 +66986,6 @@
       }
     },
     "/api/federation": {
-      "get": {
-        "operationId": "no_get_counterpart_api_federation_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "No Get Counterpart"
-      },
       "post": {
         "operationId": "manage_federation_api_federation_post",
         "requestBody": {
@@ -67202,46 +67162,6 @@
       }
     },
     "/api/federation/v1/message": {
-      "get": {
-        "operationId": "no_get_counterpart_api_federation_v1_message_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "No Get Counterpart"
-      },
       "post": {
         "operationId": "message_api_federation_v1_message_post",
         "requestBody": {
@@ -67367,46 +67287,6 @@
       }
     },
     "/api/federation/v1/pair": {
-      "get": {
-        "operationId": "no_get_counterpart_api_federation_v1_pair_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "No Get Counterpart"
-      },
       "post": {
         "operationId": "pair_api_federation_v1_pair_post",
         "requestBody": {
@@ -67532,46 +67412,6 @@
       }
     },
     "/api/federation/v1/pull": {
-      "get": {
-        "operationId": "no_get_counterpart_api_federation_v1_pull_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "No Get Counterpart"
-      },
       "post": {
         "operationId": "pull_api_federation_v1_pull_post",
         "requestBody": {
@@ -67697,46 +67537,6 @@
       }
     },
     "/api/federation/v1/status": {
-      "get": {
-        "operationId": "no_get_counterpart_api_federation_v1_status_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "No Get Counterpart"
-      },
       "post": {
         "operationId": "status_api_federation_v1_status_post",
         "requestBody": {
@@ -70914,31 +70714,6 @@
       }
     },
     "/api/multi-server/v1/pair": {
-      "get": {
-        "operationId": "no_pair_get_api_multi_server_v1_pair_get",
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/ApiError400"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "No Pair Get",
-        "tags": [
-          "server access"
-        ]
-      },
       "post": {
         "operationId": "pair_api_multi_server_v1_pair_post",
         "requestBody": {

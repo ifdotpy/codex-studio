@@ -66,11 +66,6 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             rename,
         ),
-        get(
-            "/api/multi-server/v1/pair",
-            OperationStatus::Implemented,
-            no_pair_get,
-        ),
         post(
             "/api/multi-server/v1/pair",
             OperationStatus::Implemented,
@@ -781,10 +776,6 @@ async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError>
         StatusCode::FORBIDDEN,
         "Renaming requires a signed paired-server request",
     ))
-}
-
-async fn no_pair_get() -> Result<Json<Value>, ApiError> {
-    Err(ApiError::new(StatusCode::NOT_FOUND, "Not found"))
 }
 
 async fn pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {

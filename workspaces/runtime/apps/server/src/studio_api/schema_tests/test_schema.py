@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import ast
-import unittest
+import copy
 import json
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
@@ -554,15 +555,39 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(manifest["sourcePath"], "workspaces/runtime/packages/runtime-http/openapi.json")
         baseline_document = manifest["document"]
         self.assertIsInstance(baseline_document, dict)
-        baseline = constraint_snapshot(baseline_document)
         committed_document = json.loads(
             (REPOSITORY_ROOT / manifest["sourcePath"]).read_text(encoding="utf-8")
         )
+        methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+        def operation_keys(document: dict[str, object]) -> set[str]:
+            paths = document.get("paths", {})
+            assert isinstance(paths, dict)
+            return {
+                f"{method.upper()} {path}"
+                for path, path_item in paths.items()
+                if isinstance(path_item, dict)
+                for method in path_item
+                if method in methods
+            }
+
+        expected_removals = set(manifest.get("acceptedOperationRemovals", []))
+        self.assertEqual(
+            operation_keys(baseline_document) - operation_keys(committed_document),
+            expected_removals,
+        )
+        self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), set())
+        reviewed_baseline = copy.deepcopy(baseline_document)
+        paths = reviewed_baseline["paths"]
+        for operation in expected_removals:
+            method, path = operation.split(" ", 1)
+            paths[path].pop(method.lower())
+        baseline = constraint_snapshot(reviewed_baseline)
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
-        # WAL checkpoint telemetry intentionally adds nullable diagnostic fields.
-        # Keep the historical baseline while requiring every other constraint to
-        # remain unchanged.
+        # These six GET operations were permanent 404 tombstones. Compare the
+        # historical constraints after the exact reviewed removals, while WAL
+        # telemetry retains its separately reviewed nullable diagnostic fields.
         self.assertEqual(loosenings, manifest.get("acceptedLoosenings", []))
         self.assertEqual(
             {(item["pointer"], item["constraint"]) for item in loosenings},

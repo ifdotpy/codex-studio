@@ -1,11 +1,11 @@
 {
   "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 160,
+    "implemented": 154,
     "named_dependencies": 0,
     "not_registered": 0,
     "partial": 0,
-    "total": 160
+    "total": 154
   },
   "lifecycle_dependencies": {
     "direct provider launch": {
@@ -82,31 +82,6 @@
     },
     {
       "dependencies": [],
-      "operation": "GET /api/federation",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
-      "operation": "GET /api/federation/v1/message",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
-      "operation": "GET /api/federation/v1/pair",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
-      "operation": "GET /api/federation/v1/pull",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
-      "operation": "GET /api/federation/v1/status",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
       "operation": "GET /api/file",
       "status": "implemented"
     },
@@ -163,11 +138,6 @@
     {
       "dependencies": [],
       "operation": "GET /api/multi-server/v1/identity",
-      "status": "implemented"
-    },
-    {
-      "dependencies": [],
-      "operation": "GET /api/multi-server/v1/pair",
       "status": "implemented"
     },
     {

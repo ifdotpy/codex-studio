@@ -831,8 +831,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_get"];
+    get?: never;
     put?: never;
     /** Manage Federation */
     post: operations["manage_federation_api_federation_post"];
@@ -849,8 +848,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_message_get"];
+    get?: never;
     put?: never;
     /** Message */
     post: operations["message_api_federation_v1_message_post"];
@@ -867,8 +865,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_pair_get"];
+    get?: never;
     put?: never;
     /** Pair */
     post: operations["pair_api_federation_v1_pair_post"];
@@ -885,8 +882,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_pull_get"];
+    get?: never;
     put?: never;
     /** Pull */
     post: operations["pull_api_federation_v1_pull_post"];
@@ -903,8 +899,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_status_get"];
+    get?: never;
     put?: never;
     /** Status */
     post: operations["status_api_federation_v1_status_post"];
@@ -1271,8 +1266,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Pair Get */
-    get: operations["no_pair_get_api_multi_server_v1_pair_get"];
+    get?: never;
     put?: never;
     /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
@@ -29717,30 +29711,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  no_get_counterpart_api_federation_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   manage_federation_api_federation_post: {
     parameters: {
       query?: never;
@@ -29817,30 +29787,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  no_get_counterpart_api_federation_v1_message_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   message_api_federation_v1_message_post: {
     parameters: {
       query?: never;
@@ -29902,30 +29848,6 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  no_get_counterpart_api_federation_v1_pair_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -29995,30 +29917,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  no_get_counterpart_api_federation_v1_pull_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   pull_api_federation_v1_pull_post: {
     parameters: {
       query?: never;
@@ -30080,30 +29978,6 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  no_get_counterpart_api_federation_v1_status_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -31978,28 +31852,6 @@ export interface operations {
       };
       /** @description Gateway Timeout */
       504: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  no_pair_get_api_multi_server_v1_pair_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: {
         headers: {
           [name: string]: unknown;
         };

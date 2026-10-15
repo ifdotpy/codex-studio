@@ -825,8 +825,8 @@ async fn dispatch(request: Request<Body>) -> Response {
         )
         .is_some()
     });
-    if documented_path && method != "GET" {
-        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+    if documented_path {
+        return crate::error::method_not_allowed_response(&path);
     }
     error_response(StatusCode::NOT_FOUND, "Not found")
 }

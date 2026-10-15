@@ -587,15 +587,14 @@ class FederationRouterTests(unittest.TestCase):
         self.assertTrue(expected <= routes)
         schema = self.client.get("/openapi.json").json()
         for path in ("/api/federation", *FEDERATION_PATHS):
-            self.assertIn("get", schema["paths"][path])
-            self.assertIn("404", schema["paths"][path]["get"]["responses"])
+            self.assertNotIn("get", schema["paths"][path])
 
-    def test_get_counterparts_keep_the_existing_not_found_response(self) -> None:
+    def test_unsupported_gets_use_method_not_allowed(self) -> None:
         for path in ("/api/federation", *FEDERATION_PATHS):
             with self.subTest(path=path):
                 response = self.client.get(path)
-                self.assertEqual(404, response.status_code)
-                self.assertEqual({"error": "Not found"}, response.json())
+                self.assertEqual(405, response.status_code)
+        # Signed POST behavior remains covered by the positive-operation test.
 
     def test_openapi_documents_typed_signed_bodies(self) -> None:
         schema = self.client.get("/openapi.json").json()
