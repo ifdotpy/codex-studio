@@ -27,6 +27,20 @@ pub struct VmProjectArchive {
     pub sha256: String,
 }
 
+struct VmProjectUploadError {
+    proven_not_sent: bool,
+    detail: String,
+}
+
+impl From<crate::linux_vm_guest::GuestError> for VmProjectUploadError {
+    fn from(error: crate::linux_vm_guest::GuestError) -> Self {
+        Self {
+            proven_not_sent: false,
+            detail: error.to_string(),
+        }
+    }
+}
+
 pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
     let source = fs::canonicalize(source)?;
     if !source.is_dir() {
@@ -937,11 +951,8 @@ impl Preparation<'_> {
                 match Self::upload_vm_project(guest, import, archive) {
                     Ok(imported) => imported,
                     Err(error) => {
-                        let not_sent = matches!(
-                            &error,
-                            crate::linux_vm_guest::GuestError::SpacePreflight { .. }
-                        );
-                        let detail = error.to_string();
+                        let not_sent = error.proven_not_sent;
+                        let detail = error.detail;
                         let agent_id = request.agent.clone();
                         let operation = ticket.operation.clone();
                         self.store.transaction_with_error(|tx| {
@@ -1123,11 +1134,11 @@ impl Preparation<'_> {
         Ok(())
     }
 
-    pub fn upload_vm_project(
+    fn upload_vm_project(
         guest: &dyn GuestRpc,
         intent: &Value,
         archive: &VmProjectArchive,
-    ) -> Result<Value, crate::linux_vm_guest::GuestError> {
+    ) -> Result<Value, VmProjectUploadError> {
         use crate::linux_vm_guest::GuestError;
 
         let field = |name| {
@@ -1151,8 +1162,14 @@ impl Preparation<'_> {
             Some(&format!("{operation}:begin")),
             short_timeout,
         ) {
+            if matches!(&error, GuestError::SpacePreflight { .. }) {
+                return Err(VmProjectUploadError {
+                    proven_not_sent: true,
+                    detail: error.to_string(),
+                });
+            }
             if error.code() != Some("id_conflict") {
-                return Err(error);
+                return Err(error.into());
             }
             let existing = guest.call(
                 "project.ensure",
@@ -1163,7 +1180,7 @@ impl Preparation<'_> {
             if existing.get("projectId").and_then(Value::as_str) == Some(project_id) {
                 return Ok(existing);
             }
-            return Err(GuestError::InvalidRequest);
+            return Err(GuestError::InvalidRequest.into());
         }
         let mut reader = File::open(archive.file.path()).map_err(|_| GuestError::InvalidRequest)?;
         let mut chunk = vec![0u8; VM_UPLOAD_CHUNK_BYTES];
@@ -1203,7 +1220,7 @@ impl Preparation<'_> {
             Duration::from_secs(1810),
         )?;
         if project.get("projectId").and_then(Value::as_str) != Some(project_id) {
-            return Err(GuestError::InvalidRequest);
+            return Err(GuestError::InvalidRequest.into());
         }
         Ok(project)
     }
@@ -1449,14 +1466,16 @@ mod tests {
 
     struct UploadPreflightGuest {
         preflight_once: AtomicBool,
+        preflight_method: &'static str,
         calls: Mutex<Vec<(String, Option<String>)>>,
         project_id: Mutex<Option<String>>,
     }
 
     impl UploadPreflightGuest {
-        fn new() -> Self {
+        fn new(preflight_method: &'static str) -> Self {
             Self {
                 preflight_once: AtomicBool::new(true),
+                preflight_method,
                 calls: Mutex::new(Vec::new()),
                 project_id: Mutex::new(None),
             }
@@ -1482,7 +1501,10 @@ mod tests {
                     detail: None,
                     uncertain: false,
                 }),
-                "upload.begin" if self.preflight_once.swap(false, Ordering::SeqCst) => {
+                method
+                    if method == self.preflight_method
+                        && self.preflight_once.swap(false, Ordering::SeqCst) =>
+                {
                     Err(GuestError::SpacePreflight {
                         message: "insufficient guest space".into(),
                     })
@@ -1531,7 +1553,7 @@ mod tests {
         store
             .transaction(|tx| AgentRepository::put(tx, &agent))
             .unwrap();
-        let guest = UploadPreflightGuest::new();
+        let guest = UploadPreflightGuest::new("upload.begin");
 
         assert!(matches!(
             prepare_lead(&store, &guest, "vm-lead", "attempt-1", "turn:attempt-1", 1),
@@ -1574,6 +1596,71 @@ mod tests {
             saved["startAttempt"]["vmWorkspacePreparation"]["phase"],
             "completed"
         );
+    }
+
+    #[test]
+    fn upload_commit_preflight_is_unknown_after_begin_and_chunk_effects() {
+        let directory = tempfile::tempdir().expect("fixture operation succeeds");
+        let source = directory.path().join("project");
+        fs::create_dir(&source).expect("create project directory");
+        fs::write(source.join("main.py"), "print('hello')\n").expect("write project file");
+        let state = directory.path().join("state");
+        fs::create_dir(&state).expect("create state directory");
+        let store = RuntimeStore::open(Some(&state)).expect("open test store");
+        let agent = AgentRecord::from_value(serde_json::json!({
+            "id":"vm-lead", "rootId":"vm-lead", "epoch":1, "status":"starting",
+            "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
+            "cwd":source, "hostProjectPath":source, "projectId":"project-1",
+            "startAttempt":{"id":"attempt-1"}
+        }))
+        .expect("valid test agent");
+        store
+            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .expect("insert test agent");
+        let guest = UploadPreflightGuest::new("upload.commit");
+
+        assert!(matches!(
+            prepare_lead(&store, &guest, "vm-lead", "attempt-1", "turn:attempt-1", 1),
+            Err(NativeError::Unknown)
+        ));
+        {
+            let connection = store.read().expect("open test store read");
+            let saved = AgentRepository::get(&connection, &agent.id)
+                .expect("read test agent")
+                .expect("test agent exists")
+                .value();
+            assert_eq!(
+                saved["startAttempt"]["vmWorkspacePreparation"]["phase"],
+                "unknown"
+            );
+            assert_eq!(
+                saved["startAttempt"]["vmWorkspacePreparation"]["projectImport"]["phase"],
+                "unknown"
+            );
+        }
+
+        let first_calls = guest.calls.lock().expect("read guest calls").clone();
+        assert!(
+            first_calls
+                .iter()
+                .any(|(method, _)| method == "upload.begin")
+        );
+        assert!(
+            first_calls
+                .iter()
+                .any(|(method, _)| method == "upload.chunk")
+        );
+        assert!(
+            first_calls
+                .iter()
+                .any(|(method, _)| method == "upload.commit")
+        );
+
+        assert!(matches!(
+            prepare_lead(&store, &guest, "vm-lead", "attempt-1", "turn:attempt-1", 1),
+            Err(NativeError::Unknown)
+        ));
+        assert_eq!(*guest.calls.lock().unwrap(), first_calls);
     }
 
     #[test]
