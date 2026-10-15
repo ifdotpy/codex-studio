@@ -188,6 +188,10 @@ finally:
     runtime.close()
 """
     python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON", sys.executable)
+    if getattr(backend, "copy_mode", False):
+        namespace = backend.fixture_namespace
+        for marker in ("analytics-", "population-", "chart-", "fallback", "ambiguous"):
+            script = script.replace(marker, namespace + marker)
     subprocess.run([python, "-B", "-c", script], cwd=backend.cwd,
                    env=backend._environment(), check=True, timeout=30)
 

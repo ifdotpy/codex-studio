@@ -8,11 +8,13 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import urllib.parse
 import urllib.request
 from urllib.error import HTTPError
@@ -31,6 +33,70 @@ HARNESS = TESTS / "http_backend_harness.py"
 JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
+COPY_MARKER = ".codex-studio-rehearsal-copy"
+COPY_MARKER_CONTENT = "sqlite-online-backup-copy-v1\n"
+
+
+def validate_copy_state_root(
+    value: Path,
+    *,
+    live_state_root: Path | None = None,
+    configured_state_root: str | None = None,
+) -> Path:
+    """Require a marked SQLite copy outside every known live state location."""
+    root = Path(value).expanduser().resolve(strict=True)
+    protected_roots = [
+        (Path.home() / ".local/state/codex-agents").resolve(),
+    ]
+    if live_state_root is not None:
+        protected_roots.append(Path(live_state_root).expanduser().resolve())
+    if configured_state_root:
+        protected_roots.append(Path(configured_state_root).expanduser().resolve())
+    for protected in protected_roots:
+        if root == protected or protected in root.parents:
+            raise ValueError(f"refusing live state directory or descendant: {root}")
+    if not root.is_dir():
+        raise ValueError("copy state root must be a directory")
+    marker = root / COPY_MARKER
+    if (not marker.is_file() or marker.is_symlink()
+            or marker.read_text(encoding="utf-8") != COPY_MARKER_CONTENT):
+        raise ValueError(f"copy state root lacks the {COPY_MARKER} marker")
+    for name in ("canvas.sqlite3", "analytics.sqlite3"):
+        database = root / name
+        if not database.is_file() or database.is_symlink():
+            raise ValueError(f"copy state root requires a regular {name}")
+    allowed = {COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"}
+    unexpected = sorted(path.name for path in root.iterdir() if path.name not in allowed)
+    if unexpected:
+        raise ValueError(
+            "copy state root must contain only its marker and SQLite databases; "
+            f"unexpected entries: {', '.join(unexpected)}"
+        )
+    return root
+
+
+def validate_ephemeral_backend_command(command: str) -> list[str]:
+    """Reject fixed ports before the backend process can be spawned."""
+    values = shlex.split(command)
+    if not values:
+        raise ValueError("Rust backend command must not be empty")
+    ports: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--port":
+            if index + 1 >= len(values):
+                raise ValueError("--port requires a value")
+            index += 1
+            ports.append(values[index])
+        elif value.startswith("--port="):
+            ports.append(value.split("=", 1)[1])
+        index += 1
+    if any(port != "0" for port in ports):
+        raise ValueError("copy-state ledger requires an OS-assigned ephemeral port; port 4620 is forbidden")
+    if len(ports) > 1:
+        raise ValueError("copy-state ledger accepts at most one --port 0")
+    return values
 
 # These tests stop at an operation whose manifest still names the missing
 # service. Each exclusion is tied to that operation so it becomes stale when
@@ -928,22 +994,23 @@ def ensure_operation_probe_cases(
 
 def seed_python_probe_state(backend: Any) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
-    agent_id = "ledger-probe-agent"
-    image_agent_id = "ledger-probe-image-agent"
-    task_id = "ledger-probe-task"
-    active_command_id = "ledger-probe-active-command"
-    work_id = "ledger-probe-work"
-    complaint_id = "ledger-probe-complaint"
-    room_id = "ledger-probe-room"
-    checkpoint_id = "ledger-probe-checkpoint"
-    item_id = "ledger-probe-item"
-    monitor_id = "ledger-probe-monitor"
-    terminal_id = "ledger-probe-terminal"
-    active_rule_id = "ledger-probe-active-rule"
+    prefix = backend.fixture_namespace or "ledger-"
+    agent_id = f"{prefix}probe-agent"
+    image_agent_id = f"{prefix}probe-image-agent"
+    task_id = f"{prefix}probe-task"
+    active_command_id = f"{prefix}probe-active-command"
+    work_id = f"{prefix}probe-work"
+    complaint_id = f"{prefix}probe-complaint"
+    room_id = f"{prefix}probe-room"
+    checkpoint_id = f"{prefix}probe-checkpoint"
+    item_id = f"{prefix}probe-item"
+    monitor_id = f"{prefix}probe-monitor"
+    terminal_id = f"{prefix}probe-terminal"
+    active_rule_id = f"{prefix}probe-active-rule"
     active_monitor_id = f"rule:{active_rule_id}:1"
-    chat_id = "55555555-5555-4555-8555-555555555555"
-    message_id = "66666666-6666-4666-8666-666666666666"
-    file_path = "ledger-probe.txt"
+    chat_id = str(uuid.uuid4()) if backend.copy_mode else "55555555-5555-4555-8555-555555555555"
+    message_id = str(uuid.uuid4()) if backend.copy_mode else "66666666-6666-4666-8666-666666666666"
+    file_path = f"{prefix}probe.txt"
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
 import os, subprocess, sys, time
@@ -1151,6 +1218,7 @@ try:
 finally:
     runtime.close()
 """
+    seed = seed.replace("ledger-", prefix).replace('"default"', repr(backend.account_key))
     python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
     subprocess.run(
         [python, "-B", "-c", seed],
@@ -1168,7 +1236,7 @@ finally:
         f"{progress_metadata.st_size}"
     )
     terminal_identifiers = json.loads(
-        (backend.state / "ledger-probe-identifiers.json").read_text(encoding="utf-8")
+        (backend.state / f"{prefix}probe-identifiers.json").read_text(encoding="utf-8")
     )
     terminal_id = terminal_identifiers["terminal"]
     return {
@@ -1185,25 +1253,25 @@ finally:
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
-        "question": "ledger-probe-question",
-        "questionDelete": "ledger-probe-question",
-        "answerQuestion": "ledger-probe-answer-question",
-        "providerQuestion": "ledger-probe-provider-question",
-        "voiceRecord": "ledger-probe-voice-record",
-        "voiceEndedSession": "ledger-probe-voice-ended",
-        "voiceActiveSession": "ledger-probe-voice-active",
-        "approvalRequest": "ledger-probe-monitor-approval",
+        "question": f"{prefix}probe-question",
+        "questionDelete": f"{prefix}probe-question",
+        "answerQuestion": f"{prefix}probe-answer-question",
+        "providerQuestion": f"{prefix}probe-provider-question",
+        "voiceRecord": f"{prefix}probe-voice-record",
+        "voiceEndedSession": f"{prefix}probe-voice-ended",
+        "voiceActiveSession": f"{prefix}probe-voice-active",
+        "approvalRequest": f"{prefix}probe-monitor-approval",
         "schemaHash": backend.schema_hash,
-        "analyticsAgent": "analytics-contract-agent",
+        "analyticsAgent": f"{prefix}analytics-contract-agent",
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
         "layoutRevision": layout_revision,
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
-        "claudeAccount": "claude-ledger",
-        "toolReceipt": "ledger-tool-receipt",
-        "toolCancel": "ledger-tool-cancel",
+        "claudeAccount": f"{prefix}claude-ledger",
+        "toolReceipt": f"{prefix}tool-receipt",
+        "toolCancel": f"{prefix}tool-cancel",
     }
 
 
@@ -1249,6 +1317,10 @@ def valid_probe(
         name: str(resolve_probe_value(value, identifiers))
         for name, value in header_overrides.items()
     }
+    if identifiers is not None:
+        path = namespace_probe_constants(path, identifiers)
+        body = namespace_probe_constants(body, identifiers)
+        headers = namespace_probe_constants(headers, identifiers)
     return path, body, headers
 
 
@@ -1261,6 +1333,28 @@ def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
         return [resolve_probe_value(item, identifiers) for item in value]
     if isinstance(value, dict):
         return {key: resolve_probe_value(item, identifiers) for key, item in value.items()}
+    return value
+
+
+def namespace_probe_constants(value: Any, identifiers: dict[str, str]) -> Any:
+    """Keep static request literals unique when probes target a real-data copy."""
+    if "_fixturePrefix" not in identifiers:
+        return value
+    prefix = identifiers["_fixturePrefix"]
+    account_key = identifiers["_accountKey"]
+    literal_ids = identifiers["_literalIds"]
+    if isinstance(value, str):
+        if value == "default":
+            return account_key
+        if value in literal_ids:
+            return literal_ids[value]
+        if "ledger-" in value:
+            return value.replace("ledger-", prefix)
+        return value
+    if isinstance(value, list):
+        return [namespace_probe_constants(item, identifiers) for item in value]
+    if isinstance(value, dict):
+        return {key: namespace_probe_constants(item, identifiers) for key, item in value.items()}
     return value
 
 
@@ -1312,6 +1406,8 @@ def probe_fixture_state(
                 )
         if "remove_identity" in mutations:
             path = backend.state / "multi-server" / "identity.json"
+            if not path.is_file():
+                raise RuntimeError("seeded synthetic federation identity is missing")
             identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
             path.unlink()
         if mutations.get("activate_native_command"):
@@ -1331,7 +1427,9 @@ def probe_fixture_state(
                     (json.dumps(changed), command_id),
                 )
         if mutations.get("stale_session_cost_cache"):
-            cache_files = sorted((backend.state / "session-costs").glob("cost-*.json"))
+            cache_files = sorted((backend.state / "session-costs").glob(
+                f"cost-{identifiers['analyticsAgent']}*.json"
+            ))
             if not cache_files:
                 raise RuntimeError("seeded session-cost cache is missing")
             path = cache_files[0]
@@ -1346,7 +1444,9 @@ def probe_fixture_state(
                         monitor_id: raw
                         for monitor_id, raw in connection.execute(
                             "SELECT id,record FROM runtime_monitors WHERE "
-                            "json_extract(record,'$.status') IN ('running','starting','approval')"
+                            "id LIKE ? AND "
+                            "json_extract(record,'$.status') IN ('running','starting','approval')",
+                            (f"{backend.fixture_namespace}%" if backend.copy_mode else "%",),
                         )
                     }
                     for monitor_id, raw in workspace_monitors.items():
@@ -1420,6 +1520,8 @@ def probe_operations(
     manifest: dict[tuple[str, str], dict[str, Any]],
     planned_assertions: dict[str, set[str]],
     successful_assertions: dict[str, set[str]],
+    *,
+    state_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess, HttpResult
@@ -1428,8 +1530,27 @@ def probe_operations(
         prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
-        backend = BackendProcess(scratch, claude_bin=None)
+        backend = BackendProcess(scratch, claude_bin=None, state_root=state_root)
         try:
+            backend.copy_mode = state_root is not None
+            backend.fixture_namespace = (
+                f"copyprobe-{uuid.uuid4().hex}-" if backend.copy_mode else ""
+            )
+            backend.account_key = (
+                f"{backend.fixture_namespace}account-default" if backend.copy_mode else "default"
+            )
+            uuid_re = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
+            probe_strings = collect_probe_strings(PROBE_CASES)
+            probe_strings.add("88888888-8888-4888-8888-888888888880")
+            backend.fixture_uuid_values = {
+                value: str(uuid.uuid4())
+                for value in (probe_strings if backend.copy_mode else set())
+                if uuid_re.fullmatch(value) and set(value.replace("-", "")) != {"0"}
+            }
+            backend.fixture_login_id = backend.fixture_uuid_values.get(
+                "88888888-8888-4888-8888-888888888880",
+                str(uuid.uuid4()) if backend.copy_mode else "88888888-8888-4888-8888-888888888880",
+            )
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             seed_catalog_state(backend)
             codex_login_id = seed_codex_login(backend)
@@ -1443,6 +1564,10 @@ def probe_operations(
             analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend)
             identifiers["codexLogin"] = codex_login_id
+            if backend.copy_mode:
+                identifiers["_fixturePrefix"] = backend.fixture_namespace
+                identifiers["_accountKey"] = backend.account_key
+                identifiers["_literalIds"] = backend.fixture_uuid_values
             backend.start()
             token = backend.session["token"]
             rows = []
@@ -1529,6 +1654,7 @@ def probe_operations(
                         if (backend.state / relative).is_file() else None
                         for relative in file_paths
                     }
+                    request_started = time.monotonic()
                     with probe_fixture_state(backend, identifiers, probe_case):
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
@@ -1604,6 +1730,7 @@ def probe_operations(
                         "expected": expected,
                         "expectedMatches": expected_matches,
                         "body": response_body,
+                        "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
                         "noWrite": no_write,
                         **({"reason": probe_case["reason"]} if "reason" in probe_case else {}),
@@ -1662,31 +1789,54 @@ def probe_operations(
                     "probeCases": observations,
                     "httpAssertions": sorted(planned_assertions.get(operation_key, set())),
                     "observedSuccessfulAssertions": sorted(successful_assertions.get(operation_key, set())),
+                    **({"copyDisposition": copy_probe_disposition(observations)} if state_root else {}),
                 })
             return rows
         finally:
             backend.close()
 
 
+def collect_probe_strings(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return set().union(*(collect_probe_strings(item) for item in value)) if value else set()
+    if isinstance(value, dict):
+        return set().union(*(collect_probe_strings(item) for item in value.values())) if value else set()
+    return set()
+
+
+def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
+    if any(case.get("unverified") or case.get("expected") is None for case in observations):
+        return "unverified"
+    if all(case.get("expectedMatches") and 200 <= case.get("status", 0) < 300 for case in observations):
+        return "pass"
+    return "refused"
+
+
 def seed_catalog_state(backend: Any) -> None:
     accounts = backend.state / "accounts"
+    if accounts.exists():
+        raise RuntimeError("ledger fixture refuses to overwrite a copied accounts directory")
     accounts.mkdir(parents=True)
+    account_key = getattr(backend, "account_key", "default")
+    fixture_namespace = backend.fixture_namespace if backend.copy_mode else ""
     (accounts / "registry.json").write_text(json.dumps({
         "version": 1,
-        "defaultAccountKey": "default",
+        "defaultAccountKey": account_key,
         "accounts": {
-            "default": {
-                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+            account_key: {
+                "id": account_key, "home": str(backend.codex_home), "label": "Codex",
                 "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
                 "status": "ready",
             },
-            "disconnected": {
-                "id": "disconnected", "home": str(backend.root / "missing-account"),
+            f"{fixture_namespace}disconnected": {
+                "id": f"{fixture_namespace}disconnected", "home": str(backend.root / "missing-account"),
                 "label": "Disconnected", "source": "ledger fixture", "provider": "codex",
                 "accountId": "stale-id", "status": "ready", "disconnected": True,
             },
-            "claude-ledger": {
-                "id": "claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
+            f"{fixture_namespace}claude-ledger": {
+                "id": f"{fixture_namespace}claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
                 "source": "ledger fixture", "provider": "claude", "accountId": "claude:ledger",
                 "status": "ready",
             },
@@ -1709,9 +1859,10 @@ def seed_catalog_state(backend: Any) -> None:
 
 
 def seed_codex_login(backend: Any) -> str:
-    """Create a pending local login for the fake-provider cancel probe."""
-    login_id = "88888888-8888-4888-8888-888888888880"
-    account_key = "ledger-pending-login"
+    """Create the pending local login through AccountStore's Python writer."""
+    login_id = backend.fixture_login_id
+    account_prefix = backend.fixture_namespace or "ledger-"
+    account_key = f"{account_prefix}pending-login"
     profile = backend.state / "accounts" / account_key
     profile.mkdir(parents=True, exist_ok=True)
     source = ROOT / "workspaces/runtime/apps/server/src"
@@ -1730,7 +1881,7 @@ store.data["accounts"][{account_key!r}] = {{
     "id": {account_key!r}, "home": {str(profile)!r}, "label": "Pending login fixture",
     "source": "ledger fixture", "provider": "codex", "accountId": None,
     "email": None, "plan": None, "status": "signedOut",
-    "_credentialIdentity": None, "duplicateOf": "default",
+    "_credentialIdentity": None, "duplicateOf": {backend.account_key!r},
 }}
 store.data["logins"][{login_id!r}] = {{
     "requestId": {login_id!r}, "accountKey": {account_key!r}, "status": "pending",
@@ -2113,10 +2264,32 @@ def classify_observation(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_LEDGER)
+    parser.add_argument(
+        "--state-root", type=Path,
+        help=f"run operation probes on a marked backup copy (requires {COPY_MARKER})",
+    )
+    parser.add_argument(
+        "--live-state-root", type=Path,
+        help="known live state root to refuse as an operation-probe target",
+    )
     options = parser.parse_args()
     command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
     if not command:
         parser.error("STUDIO_HTTP_BACKEND_COMMAND must name the Rust server executable")
+
+    copy_state_root = None
+    if options.state_root is not None:
+        try:
+            copy_state_root = validate_copy_state_root(
+                options.state_root,
+                live_state_root=options.live_state_root,
+                configured_state_root=os.environ.get("CODEX_AGENTS_STATE_DIR"),
+            )
+            backend_command = validate_ephemeral_backend_command(command)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        command = shlex.join(backend_command)
+        os.environ["STUDIO_HTTP_BACKEND_COMMAND"] = command
 
     environment = os.environ.copy()
     differential = subprocess.run(
@@ -2176,7 +2349,9 @@ def main() -> int:
         for event in suite.get("requests", []):
             if event.get("operation") and event.get("assertion") in passing and 200 <= event["status"] < 300:
                 successful_assertions[event["operation"]].add(event["assertion"])
-    operations_result = probe_operations(manifest, planned_assertions, successful_assertions)
+    operations_result = probe_operations(
+        manifest, planned_assertions, successful_assertions, state_root=copy_state_root,
+    )
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -2222,8 +2397,14 @@ def main() -> int:
         ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
+        **({
+            "copyPass": sum(row.get("copyDisposition") == "pass" for row in operations_result),
+            "copyRefused": sum(row.get("copyDisposition") == "refused" for row in operations_result),
+            "copyUnverified": sum(row.get("copyDisposition") == "unverified" for row in operations_result),
+        } if copy_state_root else {}),
     }
     ledger = {
+        "probeMode": "marked-copy" if copy_state_root else "seeded-scratch",
         "schemaHash": schema_match.group(1),
         "operations": operations_result,
         "suites": suites,

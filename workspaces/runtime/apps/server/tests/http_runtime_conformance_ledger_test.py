@@ -78,6 +78,95 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertNotIn("STUDIO_HTTP_BACKEND_COMMAND", run.call_args.kwargs["env"])
             self.assertNotIn("STUDIO_HTTP_LEDGER_TRACE", run.call_args.kwargs["env"])
 
+    def test_copy_state_root_rejects_live_paths_and_requires_marked_database_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            copy = root / "copy"
+            copy.mkdir()
+            (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            for name in ("canvas.sqlite3", "analytics.sqlite3"):
+                (copy / name).touch()
+
+            self.assertEqual(ledger.validate_copy_state_root(copy), copy.resolve())
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            nested = copy / "nested"
+            nested.mkdir()
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(nested, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, configured_state_root=str(copy))
+
+            unexpected = copy / "accounts"
+            unexpected.mkdir()
+            with self.assertRaisesRegex(ValueError, "unexpected entries"):
+                ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_home_state_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch) / "home"
+            copy = home / ".local/state/codex-agents/rehearsal"
+            copy.mkdir(parents=True)
+            (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            for name in ("canvas.sqlite3", "analytics.sqlite3"):
+                (copy / name).touch()
+            with patch.object(Path, "home", return_value=home):
+                with self.assertRaisesRegex(ValueError, "live state"):
+                    ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_missing_marker_and_database_files(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            with self.assertRaisesRegex(ValueError, "marker"):
+                ledger.validate_copy_state_root(root)
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            with self.assertRaisesRegex(ValueError, "canvas.sqlite3"):
+                ledger.validate_copy_state_root(root)
+            (root / "canvas.sqlite3").touch()
+            with self.assertRaisesRegex(ValueError, "analytics.sqlite3"):
+                ledger.validate_copy_state_root(root)
+
+    def test_copy_backend_command_requires_ephemeral_port(self) -> None:
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server --port 0"),
+            ["/tmp/studio-runtime-server", "--port", "0"],
+        )
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server"),
+            ["/tmp/studio-runtime-server"],
+        )
+        for command in (
+            "/tmp/studio-runtime-server --port 4620",
+            "/tmp/studio-runtime-server --port=4620",
+            "/tmp/studio-runtime-server --port 4635",
+            "/tmp/studio-runtime-server --port 0 --port 0",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(ValueError):
+                    ledger.validate_ephemeral_backend_command(command)
+
+    def test_copy_probe_constants_are_namespaced_away_from_existing_rows(self) -> None:
+        identifiers = {
+            "_fixturePrefix": "copyprobe-unique-",
+            "_accountKey": "copyprobe-unique-account",
+            "_literalIds": {"60606060-6060-4060-8060-606060606060": "new-request-id"},
+        }
+        value = {
+            "id": "ledger-probe-agent",
+            "account_key": "default",
+            "request_id": "60606060-6060-4060-8060-606060606060",
+        }
+        self.assertEqual(
+            ledger.namespace_probe_constants(value, identifiers),
+            {
+                "id": "copyprobe-unique-probe-agent",
+                "account_key": "copyprobe-unique-account",
+                "request_id": "new-request-id",
+            },
+        )
+
     def test_provider_turn_refusals_are_keyed_to_the_undeclared_dependency(self) -> None:
         boundary = "workspaces/runtime/apps/server/tests/http-boundary-contract.py"
         protocol = "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py"
