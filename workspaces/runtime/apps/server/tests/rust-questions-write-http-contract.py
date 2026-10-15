@@ -209,6 +209,14 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ).fetchall()
         return request, tuple(events)
 
+    def _question_request_snapshot(self, request_id: str):
+        """Read the exact durable question request row for defer replay."""
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            return database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?", (request_id,),
+            ).fetchone()
+
     def _unchanged_error(self, path, body, status, error):
         before = no_write_snapshot(self.backend.state)
         response = self._post(path, body)
@@ -245,11 +253,15 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(deferred.json()["id"], "questions-write-defer")
         self.assertEqual(deferred.json()["status"], "pending")
         self.assertTrue(deferred.json()["deferred"])
-        before_replay = self._async_answer_snapshot()
-        self.assertEqual(self._post(
+        before_replay = self._question_request_snapshot("questions-write-defer")
+        replay = self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
-        ).status, 200)
-        self.assertEqual(self._async_answer_snapshot(), before_replay)
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json(), deferred.json())
+        self.assertEqual(
+            self._question_request_snapshot("questions-write-defer"), before_replay,
+        )
 
     def test_async_question_answer_queues_one_durable_followup_and_replays(self) -> None:
         request = {

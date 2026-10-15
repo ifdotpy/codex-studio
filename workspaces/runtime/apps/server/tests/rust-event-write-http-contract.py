@@ -231,7 +231,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(response.status, 400, response.body[:1000])
             self.assertEqual(
-                self._plan_annotation_write_snapshot(self.agent_id, note_body["id"]),
+                self._plan_annotation_write_snapshot(self.agent_id),
                 committed,
             )
 
