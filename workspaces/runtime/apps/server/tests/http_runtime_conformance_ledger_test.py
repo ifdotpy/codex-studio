@@ -159,7 +159,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "404", "501"})
+                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "403", "404", "501"})
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
@@ -190,8 +190,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 self.assertEqual(spec["primary"]["expected"], "2xx")
                 refusals = spec.get("additional", [])
                 self.assertTrue(refusals)
-                self.assertTrue(all(case["expected"] == "501" for case in refusals))
-                self.assertTrue(all(case.get("expected_error") for case in refusals))
+                if operation == ("POST", "/api/federation"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertFalse(refusals[0].get("expected_error"))
+                else:
+                    self.assertTrue(all(case["expected"] == "501" for case in refusals))
+                    self.assertTrue(all(case.get("expected_error") for case in refusals))
 
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
