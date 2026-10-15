@@ -408,6 +408,7 @@ class RuntimeLockOperation(ContractModel):
 class LockMetricSummary(ContractModel):
     p50: float
     p95: float
+    p99: float
     max: float
     samples: SafeInt
 
@@ -442,6 +443,7 @@ class SqliteMetric(ContractModel):
     longestTransactionMs: float
     p50TransactionMs: float | None = None
     p95TransactionMs: float | None = None
+    p99TransactionMs: float | None = None
     sites: dict[str, SqliteMetric] = Field(default_factory=dict)
 
 
@@ -564,6 +566,35 @@ class WalTelemetry(ContractModel):
     analytics: WalCheckpoint | None
 
 
+class SqliteWaitQuantiles(ContractModel):
+    samples: SafeInt
+    p50Ms: float | None
+    p95Ms: float | None
+    p99Ms: float | None
+    maxMs: float
+
+
+class SqliteAdmissionMetric(ContractModel):
+    operations: SafeInt
+    waits: SafeInt
+    activeWaiters: SafeInt
+    peakWaiters: SafeInt
+    openedConnections: SafeInt
+    waitMs: SqliteWaitQuantiles
+
+
+class SqliteStoreAdmission(ContractModel):
+    reads: SqliteAdmissionMetric
+    writes: SqliteAdmissionMetric
+
+
+class SqliteProfileMetric(ContractModel):
+    count: SafeInt
+    p50Ms: float | None
+    p95Ms: float | None
+    p99Ms: float | None
+
+
 class SqliteContention(ContractModel):
     transaction: SqliteMetric | None = None
     writeWait: SqliteMetric | None = None
@@ -572,6 +603,9 @@ class SqliteContention(ContractModel):
     activeTransactionScan: SqliteActiveScan
     slowTransactions: SqliteHistory
     walTelemetry: WalTelemetry | None = None
+    storeAdmission: SqliteStoreAdmission
+    sqlProfile: dict[str, SqliteProfileMetric]
+    commitProfile: dict[str, SqliteProfileMetric]
 
 
 class NativeCodexAccount(ContractModel):
@@ -923,8 +957,12 @@ class BlockingPoolGroupMetrics(ContractModel):
     count: SafeInt
     queueWaitAvgMs: float
     queueWaitMaxMs: float
+    queueWaitP95Ms: float
+    queueWaitP99Ms: float
     closureAvgMs: float
     closureMaxMs: float
+    closureP95Ms: float
+    closureP99Ms: float
 
 
 class BlockingPoolMetrics(ContractModel):

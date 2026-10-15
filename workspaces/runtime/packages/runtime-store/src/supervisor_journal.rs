@@ -131,7 +131,7 @@ impl SupervisorJournal {
         action: impl FnOnce(
             &Transaction<'_>,
             &HashMap<String, u64>,
-        ) -> Result<(T, Option<(String, i64)>)>,
+        ) -> Result<(T, Option<(String, Option<i64>)>)>,
     ) -> Result<T> {
         let mut db = self.lock()?;
         let mut buffered = self
@@ -142,11 +142,15 @@ impl SupervisorJournal {
         let (result, delta) = action(&tx, &buffered)?;
         tx.commit()?;
         if let Some((handle, delta)) = delta {
-            let current = buffered.entry(handle).or_default();
-            if delta >= 0 {
-                *current = current.saturating_add(delta as u64);
+            if let Some(delta) = delta {
+                let current = buffered.entry(handle).or_default();
+                if delta >= 0 {
+                    *current = current.saturating_add(delta as u64);
+                } else {
+                    *current = current.saturating_sub(delta.unsigned_abs());
+                }
             } else {
-                *current = current.saturating_sub(delta.unsigned_abs());
+                buffered.remove(&handle);
             }
         }
         Ok(result)
@@ -273,7 +277,7 @@ impl SupervisorJournal {
             }
             Ok((
                 AppendResult::Saved,
-                Some((handle.to_owned(), raw.len() as i64)),
+                Some((handle.to_owned(), Some(raw.len() as i64))),
             ))
         })
     }
@@ -293,7 +297,7 @@ impl SupervisorJournal {
                 "UPDATE handles SET acknowledged=? WHERE id=?",
                 params![sql(cursor)?, handle],
             )?;
-            Ok(((), Some((handle.to_owned(), -reclaimed))))
+            Ok(((), Some((handle.to_owned(), Some(-reclaimed)))))
         })
     }
     pub fn events(&self, handle: &str, cursor: u64, one: bool) -> Result<Value> {
@@ -314,7 +318,7 @@ impl SupervisorJournal {
         exited: bool,
         readers_done: bool,
     ) -> Result<()> {
-        self.transaction(|tx, buffered| {
+        self.transaction(|tx, _buffered| {
             snapshot(tx, handle)?.retire(handle, generation, exited, readers_done)?;
             for table in [
                 "events",
@@ -325,13 +329,7 @@ impl SupervisorJournal {
                 tx.execute(&format!("DELETE FROM {table} WHERE handle=?"), [handle])?;
             }
             tx.execute("DELETE FROM handles WHERE id=?", [handle])?;
-            Ok((
-                (),
-                Some((
-                    handle.to_owned(),
-                    -(buffered.get(handle).copied().unwrap_or_default() as i64),
-                )),
-            ))
+            Ok(((), Some((handle.to_owned(), None))))
         })
     }
     pub fn close(&self, handle: &str, reason: &str, now: f64) -> Result<()> {
@@ -424,6 +422,59 @@ pub fn launch_signature(
 impl JournalError {
     pub fn retryable(&self) -> bool {
         matches!(self, Self::Sqlite(rusqlite::Error::SqliteFailure(e,_)) if matches!(e.code,rusqlite::ErrorCode::DiskFull|rusqlite::ErrorCode::DatabaseBusy|rusqlite::ErrorCode::DatabaseLocked|rusqlite::ErrorCode::SystemIoFailure))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retiring_handle_drops_its_buffered_cache_entry() {
+        let root = tempfile::tempdir().expect("temporary supervisor journal root");
+        let journal = SupervisorJournal::open(root.path()).expect("open journal");
+        journal
+            .reserve("server-command:fixture", "signature", 1.0)
+            .expect("reserve handle");
+        let generation = journal
+            .opened("server-command:fixture", "signature", 41, "start")
+            .expect("open child handle");
+        assert_eq!(generation, 1);
+        assert_eq!(
+            journal
+                .append(
+                    "server-command:fixture",
+                    generation,
+                    1,
+                    "stdout",
+                    &json!({"text": "buffered"}),
+                )
+                .expect("append output"),
+            AppendResult::Saved
+        );
+        journal
+            .ack("server-command:fixture", 1)
+            .expect("ack output");
+        assert_eq!(
+            journal
+                .buffered_by_handle
+                .lock()
+                .expect("cache lock")
+                .get("server-command:fixture"),
+            Some(&0)
+        );
+
+        journal
+            .retire("server-command:fixture", generation, true, true)
+            .expect("retire completed handle");
+
+        assert!(
+            !journal
+                .buffered_by_handle
+                .lock()
+                .expect("cache lock")
+                .contains_key("server-command:fixture")
+        );
     }
 }
 

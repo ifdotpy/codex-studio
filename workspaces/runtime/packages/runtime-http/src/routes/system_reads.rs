@@ -500,7 +500,7 @@ mod diagnostics_http_tests {
             directory.path().display().to_string(),
             4321,
             None,
-            Some(store),
+            Some(Arc::clone(&store)),
             None,
         )
         .with_diagnostics_provider(provider.clone())
@@ -598,7 +598,7 @@ mod diagnostics_http_tests {
             directory.path().display().to_string(),
             4321,
             None,
-            Some(store),
+            Some(Arc::clone(&store)),
             None,
         );
         // HttpState creates the operational log as part of setup; take the

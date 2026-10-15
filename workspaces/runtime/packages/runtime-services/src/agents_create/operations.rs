@@ -1963,7 +1963,12 @@ mod tests {
     }
 
     fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
-        let connection = store.read().expect("snapshot connection");
+        // The controlled interleaving validator runs while the operation's
+        // pooled read lease is live. Observe its committed writer transaction
+        // through an independent test connection instead of checking out a
+        // nested pooled lease.
+        let connection = rusqlite::Connection::open(store.root().join("canvas.sqlite3"))
+            .expect("snapshot connection");
         let mut tables = connection
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .expect("tables");

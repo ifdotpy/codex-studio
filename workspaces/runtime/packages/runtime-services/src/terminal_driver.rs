@@ -1646,6 +1646,7 @@ mod tests {
                 .expect("reserved");
             assert_eq!(receipt.1, uncertain.to_string());
         }
+        drop(connection);
 
         let before_send = serde_json::json!({"action":"input","id":id,"text":"not-sent","request_id":"input-before-send"});
         let signature = receipt_signature(&before_send);
@@ -2192,15 +2193,13 @@ mod tests {
 
         assert!(driver.apply_notification(notification.clone()).is_err());
         let connection = state.store.as_ref().expect("store").read().expect("read");
+        let cursor = TerminalsRepository::event_cursor(&connection, &id).expect("cursor");
+        drop(connection);
+        assert_eq!(cursor, None);
         assert_eq!(
             output(state.store.as_ref().expect("store"), &id, 0).expect("output")["text"],
             ""
         );
-        assert_eq!(
-            TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
-            None
-        );
-        drop(connection);
 
         database
             .execute_batch("DROP TRIGGER fail_terminal_cursor;")

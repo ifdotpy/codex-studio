@@ -385,7 +385,7 @@ pub fn sqlite_contention() -> Value {
         "writeWait": null,
         "lockError": null,
         "walTelemetry": null,
-        "storeAdmission": null,
+        "storeAdmission": empty_store_admission(),
         "sqlProfile": {},
         "commitProfile": {},
     });
@@ -439,6 +439,14 @@ pub fn sqlite_contention() -> Value {
         });
     });
     result
+}
+
+fn empty_store_admission() -> Value {
+    let empty = StoreAdmissionSamples::default();
+    json!({
+        "reads": admission_metric(&empty),
+        "writes": admission_metric(&empty),
+    })
 }
 
 fn wal_telemetry_from_state(state: &SqliteState) -> Value {
@@ -558,6 +566,21 @@ mod tests {
         assert_eq!(telemetry["canvas"]["walSizeBytes"], 4096);
         assert_eq!(telemetry["canvas"]["checkpointedFrames"], 12);
         assert!(telemetry["analytics"].is_null());
+    }
+
+    #[test]
+    fn empty_contention_fallback_keeps_store_admission_typed() {
+        let admission = empty_store_admission();
+        for side in ["reads", "writes"] {
+            assert_eq!(admission[side]["operations"], 0);
+            assert_eq!(admission[side]["waits"], 0);
+            assert_eq!(admission[side]["openedConnections"], 0);
+            assert_eq!(admission[side]["waitMs"]["samples"], 0);
+            assert!(admission[side]["waitMs"]["p50Ms"].is_null());
+            assert!(admission[side]["waitMs"]["p95Ms"].is_null());
+            assert!(admission[side]["waitMs"]["p99Ms"].is_null());
+            assert_eq!(admission[side]["waitMs"]["maxMs"], 0.0);
+        }
     }
 
     #[test]

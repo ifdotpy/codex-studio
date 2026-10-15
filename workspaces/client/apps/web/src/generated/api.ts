@@ -7749,6 +7749,10 @@ export interface components {
       closureAvgMs: number;
       /** Closuremaxms */
       closureMaxMs: number;
+      /** Closurep95Ms */
+      closureP95Ms: number;
+      /** Closurep99Ms */
+      closureP99Ms: number;
       /** Count */
       count: number;
       /** Group */
@@ -7757,6 +7761,10 @@ export interface components {
       queueWaitAvgMs: number;
       /** Queuewaitmaxms */
       queueWaitMaxMs: number;
+      /** Queuewaitp95Ms */
+      queueWaitP95Ms: number;
+      /** Queuewaitp99Ms */
+      queueWaitP99Ms: number;
     };
     /** BlockingPoolMetrics */
     BlockingPoolMetrics: {
@@ -13599,6 +13607,8 @@ export interface components {
       p50: number;
       /** P95 */
       p95: number;
+      /** P99 */
+      p99: number;
       /** Samples */
       samples: number;
     };
@@ -21113,14 +21123,37 @@ export interface components {
       /** Threads */
       threads: components["schemas"]["SqliteThread"][];
     };
+    /** SqliteAdmissionMetric */
+    SqliteAdmissionMetric: {
+      /** Activewaiters */
+      activeWaiters: number;
+      /** Openedconnections */
+      openedConnections: number;
+      /** Operations */
+      operations: number;
+      /** Peakwaiters */
+      peakWaiters: number;
+      waitMs: components["schemas"]["SqliteWaitQuantiles"];
+      /** Waits */
+      waits: number;
+    };
     /** SqliteContention */
     SqliteContention: {
       /** Activetransactions */
       activeTransactions: components["schemas"]["SqliteActiveTransaction"][];
       activeTransactionScan: components["schemas"]["SqliteActiveScan"];
+      /** Commitprofile */
+      commitProfile: {
+        [key: string]: components["schemas"]["SqliteProfileMetric"];
+      };
       /** @default null */
       lockError?: components["schemas"]["SqliteMetric"] | null;
       slowTransactions: components["schemas"]["SqliteHistory"];
+      /** Sqlprofile */
+      sqlProfile: {
+        [key: string]: components["schemas"]["SqliteProfileMetric"];
+      };
+      storeAdmission: components["schemas"]["SqliteStoreAdmission"];
       /** @default null */
       transaction?: components["schemas"]["SqliteMetric"] | null;
       /** @default null */
@@ -21198,6 +21231,11 @@ export interface components {
        */
       p95TransactionMs?: null | number;
       /**
+       * P99Transactionms
+       * @default null
+       */
+      p99TransactionMs?: null | number;
+      /**
        * Sites
        * @default {}
        */
@@ -21220,6 +21258,17 @@ export interface components {
       /** Frames */
       frames: components["schemas"]["SqliteFrame"][];
     };
+    /** SqliteProfileMetric */
+    SqliteProfileMetric: {
+      /** Count */
+      count: number;
+      /** P50Ms */
+      p50Ms: null | number;
+      /** P95Ms */
+      p95Ms: null | number;
+      /** P99Ms */
+      p99Ms: null | number;
+    };
     /**
      * SqliteStatement
      * @enum {string}
@@ -21236,6 +21285,11 @@ export interface components {
       | "WITH"
       | "SAVEPOINT"
       | "other";
+    /** SqliteStoreAdmission */
+    SqliteStoreAdmission: {
+      reads: components["schemas"]["SqliteAdmissionMetric"];
+      writes: components["schemas"]["SqliteAdmissionMetric"];
+    };
     /** SqliteThread */
     SqliteThread: {
       /** Frames */
@@ -21299,6 +21353,19 @@ export interface components {
      * @enum {string}
      */
     SqliteTransactionState: "active" | "committed" | "rolledBack" | "ended";
+    /** SqliteWaitQuantiles */
+    SqliteWaitQuantiles: {
+      /** Maxms */
+      maxMs: number;
+      /** P50Ms */
+      p50Ms: null | number;
+      /** P95Ms */
+      p95Ms: null | number;
+      /** P99Ms */
+      p99Ms: null | number;
+      /** Samples */
+      samples: number;
+    };
     /** StartActionIdentityRecordResponse */
     StartActionIdentityRecordResponse: {
       /**

@@ -36,11 +36,14 @@ pub use repositories::remote_transport::{
 };
 pub use repositories::system_reads;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -251,6 +254,8 @@ pub enum StoreError {
     RecordContract(&'static str),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
+    #[error("nested read checkout from the same runtime store is not supported")]
+    NestedRead,
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -308,10 +313,16 @@ struct ReadConnectionPoolState {
     opened: usize,
 }
 
+thread_local! {
+    static ACTIVE_READ_POOLS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
 /// A checked-out read-only canvas connection returned to its bounded pool on drop.
 pub struct ReadConnection {
     connection: Option<Connection>,
     pool: Arc<ReadConnectionPool>,
+    pool_id: usize,
+    _thread_bound: PhantomData<Rc<()>>,
 }
 
 impl Deref for ReadConnection {
@@ -334,6 +345,9 @@ impl DerefMut for ReadConnection {
 
 impl Drop for ReadConnection {
     fn drop(&mut self) {
+        ACTIVE_READ_POOLS.with(|active| {
+            active.borrow_mut().remove(&self.pool_id);
+        });
         let Some(connection) = self.connection.take() else {
             return;
         };
@@ -359,6 +373,10 @@ impl ReadConnectionPool {
     }
 
     fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+        let pool_id = Arc::as_ptr(self) as usize;
+        if ACTIVE_READ_POOLS.with(|active| active.borrow().contains(&pool_id)) {
+            return Err(StoreError::NestedRead);
+        }
         let started = Instant::now();
         let mut waiting = false;
         let mut state = self.state.lock().map_err(|_| StoreError::WriterPoisoned)?;
@@ -374,9 +392,14 @@ impl ReadConnectionPool {
                     peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
                     opened_connections: state.opened,
                 });
+                ACTIVE_READ_POOLS.with(|active| {
+                    active.borrow_mut().insert(pool_id);
+                });
                 return Ok(ReadConnection {
                     connection: Some(connection),
                     pool: Arc::clone(self),
+                    pool_id,
+                    _thread_bound: PhantomData,
                 });
             }
             if state.opened < READ_CONNECTION_POOL_CAPACITY {
@@ -409,9 +432,16 @@ impl ReadConnectionPool {
                     peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
                     opened_connections,
                 });
+                if result.is_ok() {
+                    ACTIVE_READ_POOLS.with(|active| {
+                        active.borrow_mut().insert(pool_id);
+                    });
+                }
                 return result.map(|connection| ReadConnection {
                     connection: Some(connection),
                     pool: Arc::clone(self),
+                    pool_id,
+                    _thread_bound: PhantomData,
                 });
             }
             if !waiting {
@@ -1017,6 +1047,7 @@ fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
 #[cfg(test)]
 mod read_pool_tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
     fn sequential_reads_reuse_a_bounded_connection() {
@@ -1051,6 +1082,92 @@ mod read_pool_tests {
 
         assert_eq!(store.read_pool.opened_count(), 1);
         assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+    }
+
+    #[test]
+    fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let canvas_path = directory.path().join("canvas.sqlite3");
+        Connection::open(&canvas_path).expect("canvas database");
+        let store = Arc::new(RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
+            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
+        });
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (start_nested_tx, start_nested_rx) = mpsc::channel();
+        let mut start_nested_rx = Some(start_nested_rx);
+        let (nested_result_tx, nested_result_rx) = mpsc::sync_channel(1);
+        let mut release_senders = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY);
+
+        std::thread::scope(|scope| {
+            for index in 0..READ_CONNECTION_POOL_CAPACITY {
+                let store = Arc::clone(&store);
+                let ready_tx = ready_tx.clone();
+                let start_nested_rx = if index == 0 {
+                    start_nested_rx.take()
+                } else {
+                    None
+                };
+                let nested_result_tx = nested_result_tx.clone();
+                let (release_tx, release_rx) = mpsc::channel();
+                release_senders.push(release_tx);
+                scope.spawn(move || {
+                    let _reader = store.read().expect("acquire pool connection");
+                    ready_tx.send(()).expect("report read connection ready");
+                    if let Some(start_nested_rx) = start_nested_rx {
+                        start_nested_rx.recv().expect("start nested checkout");
+                        let nested_is_refused = matches!(store.read(), Err(StoreError::NestedRead));
+                        nested_result_tx
+                            .send(nested_is_refused)
+                            .expect("report nested checkout result");
+                    }
+                    release_rx.recv().expect("release read connection");
+                });
+            }
+
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                ready_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("all pool connections are checked out");
+            }
+            assert_eq!(
+                store.read_pool.opened_count(),
+                READ_CONNECTION_POOL_CAPACITY
+            );
+            start_nested_tx.send(()).expect("request nested checkout");
+            let immediate_result = nested_result_rx.recv_timeout(Duration::from_secs(2));
+
+            // If nested checkout regresses to waiting, release the other leases
+            // so the test can report the wrong result instead of hanging.
+            for release in release_senders.iter().skip(1) {
+                release.send(()).expect("release other read connection");
+            }
+            let nested_result = match immediate_result {
+                Ok(result) => Some(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    nested_result_rx.recv_timeout(Duration::from_secs(5)).ok()
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
+            };
+            release_senders[0]
+                .send(())
+                .expect("release nested-read worker");
+            assert!(
+                immediate_result.is_ok() && nested_result == Some(true),
+                "nested read must be refused before waiting for another pool connection"
+            );
+        });
     }
 }
 
