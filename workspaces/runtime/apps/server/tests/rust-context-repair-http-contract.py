@@ -15,6 +15,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write_snapshot
 from runtime_test_environment import make_runtime
+from studio_api.models import MAX_SAFE_INTEGER
 
 
 class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -59,11 +60,41 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             event = db.execute("SELECT * FROM runtime_events WHERE id='repair-uncertain'").fetchone()
             return {key: agent.get(key) for key in ("threadId", "contextRepair", "contextRepairHistory", "contextRepairWait")}, event
 
+    def no_op_agent_snapshot(self, agent_id):
+        # The mutation-sync envelope can carry unrelated concurrent workspace
+        # projection changes. Keep this proof scoped to the record and projection
+        # that context repair owns for the requested agent.
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            record = db.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+            ).fetchone()
+            projection = db.execute(
+                "SELECT seq,hash,payload,deleted FROM sync_entities "
+                "WHERE collection='agent' AND id=?",
+                (agent_id,),
+            ).fetchone()
+            return record, projection
+
     def test_noop_reads_python_written_agent(self):
         for kind in ("empty", "claude"):
-            response = self.post({"id": self.ids[kind]})
+            agent_id = self.ids[kind]
+            before = self.no_op_agent_snapshot(agent_id)
+            response = self.post({"id": agent_id})
             self.assertEqual(response.status, 200, response.body)
-            self.assertEqual(response.json(), {"id": self.ids[kind], "repair": None})
+            body = response.json()
+            sync_fields = {"_syncEntities", "_syncEntitiesAfter"}
+            self.assertEqual(set(body) - sync_fields, {"id", "repair"})
+            self.assertEqual(body["id"], agent_id)
+            self.assertIsNone(body["repair"])
+            if "_syncEntities" in body:
+                self.assertIsInstance(body["_syncEntities"], list)
+            if "_syncEntitiesAfter" in body:
+                self.assertIn("_syncEntities", body)
+                sync_after = body["_syncEntitiesAfter"]
+                self.assertIs(type(sync_after), int)
+                self.assertGreaterEqual(sync_after, 0)
+                self.assertLessEqual(sync_after, MAX_SAFE_INTEGER)
+            self.assertEqual(self.no_op_agent_snapshot(agent_id), before)
 
     def test_unresolved_native_receipt_is_not_replayed(self):
         response = self.post({"id": self.ids["held"]})
