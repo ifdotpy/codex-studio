@@ -1106,11 +1106,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 node = shutil.which(configured_node) if configured_node else None
                 if node is None:
                     self.fail("configured CODEX_NODE must resolve to an executable")
-                node = os.path.abspath(node)
             else:
                 node = shutil.which("node")
                 if node is None:
                     self.skipTest("synthetic Runtime identity setup requires the local Node crypto helper")
+            node = os.path.abspath(node)
             namespace = "copyprobe-ledger-test-"
             environment = {
                 "HOME": str(home),
