@@ -351,6 +351,8 @@ pub struct AccountHandle {
     finished: watch::Receiver<bool>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
+    #[cfg(test)]
+    session_control: SessionControl,
 }
 impl AccountHandle {
     pub fn completion_signal(&self) -> watch::Receiver<bool> {
@@ -362,6 +364,12 @@ impl AccountHandle {
             commands: self.commands.clone(),
             stop: self.stop.clone(),
         }
+    }
+    #[cfg(test)]
+    async fn session_journal_barrier(
+        &self,
+    ) -> Result<studio_runtime_process::EventCursor, SessionTaskError> {
+        self.session_control.journal_barrier().await
     }
     pub fn try_radio_interrupt(
         &self,
@@ -593,6 +601,8 @@ pub async fn start_account_worker_with_publication_sink(
     let (finished_tx, finished) = watch::channel(false);
     #[cfg(test)]
     let faults = bridge.faults.clone();
+    #[cfg(test)]
+    let session_control = worker.control.clone();
     let task = tokio::spawn(async move {
         let run = worker.run();
         tokio::pin!(run);
@@ -621,6 +631,8 @@ pub async fn start_account_worker_with_publication_sink(
         finished,
         #[cfg(test)]
         faults: bridge.faults.clone(),
+        #[cfg(test)]
+        session_control,
     })
 }
 

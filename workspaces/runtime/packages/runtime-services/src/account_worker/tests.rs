@@ -2250,6 +2250,14 @@ async fn consecutive_journal_events_share_one_store_transaction() {
             .frame(json!({"method":"test/batch","params":{"n":n}}))
             .await;
     }
+    let delivered = worker
+        .session_journal_barrier()
+        .await
+        .expect("provider journal prefix is forwarded to the account event queue");
+    assert_eq!(
+        delivered.0, last,
+        "all four events must be queued before the first event is released"
+    );
     state
         .bridge
         .faults
