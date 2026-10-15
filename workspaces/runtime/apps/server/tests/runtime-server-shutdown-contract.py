@@ -12,11 +12,11 @@ import subprocess
 import sys
 import unittest
 import uuid
-from runtime_test_environment import make_runtime
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from runtime_test_environment import make_runtime
 from http_backend_harness import BackendProcess
 
 HERE = Path(__file__).resolve().parent
