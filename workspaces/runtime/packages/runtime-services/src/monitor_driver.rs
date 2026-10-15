@@ -202,6 +202,9 @@ pub fn cancel(
                 if let Some(error) = &error {
                     dispatch["error"] = json!(error.chars().take(12000).collect::<String>());
                     response["error"] = dispatch["error"].clone();
+                    if status == "unknown" {
+                        decision.record["error"] = dispatch["error"].clone();
+                    }
                 }
                 decision.record["cancelDispatch"] = dispatch;
                 monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
