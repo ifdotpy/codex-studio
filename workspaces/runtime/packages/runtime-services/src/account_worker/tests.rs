@@ -921,7 +921,12 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         "held row bytes remain untouched"
     );
     let held: Value = serde_json::from_str(&stored_record).expect("original JSON row");
-    let message = diagnostic.as_str();
+    let receipt_result: Value =
+        serde_json::from_str(&diagnostic).expect("held result remains valid JSON");
+    assert_eq!(receipt_result["held"], true);
+    let message = receipt_result["diagnostic"]
+        .as_str()
+        .expect("diagnostic text");
     assert!(
         message.contains(&format!("runtime_agents/{bad_id}")),
         "{message}"

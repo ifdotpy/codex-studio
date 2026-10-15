@@ -650,7 +650,7 @@ fn pull_entities(
             },
         )?;
     }
-    let page = SyncDocumentsRepository::pull_entities(
+    let mut page = SyncDocumentsRepository::pull_entities(
         transaction,
         after,
         limit,
@@ -675,54 +675,103 @@ fn pull_entities(
         }
         return Ok(SyncPullResponseBody::Reset(response));
     }
-    let mut documents = Vec::with_capacity(page.rows.len());
-    for row in &page.rows {
-        let Some(raw) = row.payload.as_deref() else {
-            continue;
-        };
-        let Ok(mut payload) = serde_json::from_str::<Value>(raw) else {
-            continue;
-        };
-        let Some(schema) = entity_payload_schema(&row.collection) else {
-            continue;
-        };
-        if !readable_entity_envelope(&payload, &row.collection, &row.id) {
-            continue;
-        }
-        if row.deleted {
-            if let Some(object) = payload.as_object_mut() {
-                object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
-                object.insert("value".to_owned(), json!({}));
-            }
-        } else {
-            if let Some(object) = payload.as_object_mut() {
-                object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
-            } else {
+    let initial_high = page.initial_high;
+    let max_sequence = page.max_sequence;
+    let page_limit = usize::try_from(limit.clamp(
+        1,
+        studio_runtime_schema::shared_values::SYNC_ENTITY_PAGE_LIMIT,
+    ))
+    .unwrap_or(1);
+    let mut documents = Vec::with_capacity(page_limit);
+    let mut seen_sequences = std::collections::HashSet::new();
+    let mut checkpoint = after;
+    let mut scan_after = after;
+    loop {
+        let raw_count = page.rows.len();
+        let mut reached_limit = false;
+        for row in &page.rows {
+            checkpoint = row.sequence;
+            if !seen_sequences.insert(row.sequence) {
                 continue;
             }
-            validators.strip_stored_extra_fields(schema, &mut payload);
+            let Some(raw) = row.payload.as_deref() else {
+                continue;
+            };
+            let Ok(mut payload) = serde_json::from_str::<Value>(raw) else {
+                continue;
+            };
+            let Some(schema) = entity_payload_schema(&row.collection) else {
+                continue;
+            };
+            if !readable_entity_envelope(&payload, &row.collection, &row.id) {
+                continue;
+            }
+            if row.deleted {
+                if let Some(object) = payload.as_object_mut() {
+                    object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
+                    object.insert("value".to_owned(), json!({}));
+                }
+            } else {
+                if let Some(object) = payload.as_object_mut() {
+                    object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
+                } else {
+                    continue;
+                }
+                validators.strip_stored_extra_fields(schema, &mut payload);
+            }
+            let Ok(payload) = serde_json::to_string(&payload) else {
+                continue;
+            };
+            documents.push(crate::generated::SyncDocument {
+                id: format!("entity:{}:{}", row.collection, row.id),
+                payload,
+                seq: row.sequence,
+                deleted: row.deleted,
+            });
+            if documents.len() == page_limit {
+                reached_limit = true;
+                break;
+            }
         }
-        let Ok(payload) = serde_json::to_string(&payload) else {
-            continue;
-        };
-        documents.push(crate::generated::SyncDocument {
-            id: format!("entity:{}:{}", row.collection, row.id),
-            payload,
-            seq: row.sequence,
-            deleted: row.deleted,
-        });
+        if reached_limit {
+            break;
+        }
+        if raw_count < page_limit {
+            checkpoint = page.checkpoint;
+            break;
+        }
+        let next_after = page.rows.last().map_or(checkpoint, |row| row.sequence);
+        if next_after <= scan_after {
+            checkpoint = max_sequence;
+            break;
+        }
+        scan_after = next_after;
+        page = SyncDocumentsRepository::pull_entities(
+            transaction,
+            next_after,
+            limit,
+            false,
+            0,
+            reset_support,
+            None,
+        )?;
+        if page.rows.is_empty() {
+            checkpoint = page.checkpoint;
+            break;
+        }
+        checkpoint = next_after;
     }
     let response = crate::generated::SyncPullResponse {
         sync_entities: None,
         sync_entities_after: None,
         checkpoint: crate::generated::SyncCheckpoint {
-            seq: page.checkpoint,
+            seq: checkpoint,
         },
         documents,
         floor: None,
         generation,
-        initial_high: Some(Some(page.initial_high)),
-        max_seq: Some(Some(page.max_sequence)),
+        initial_high: Some(Some(initial_high)),
+        max_seq: Some(Some(max_sequence)),
         reset: None,
         workspace_id,
     };

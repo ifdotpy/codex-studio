@@ -96,13 +96,15 @@ pub(super) fn recover(
         retire_generations(tx, account, generation.0)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
-        let mut statement = tx.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.startAttempt') IS NULL AND COALESCE(json_extract(record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2")?;
+        let mut statement = tx.prepare("SELECT a.id FROM runtime_agents a WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.startAttempt') IS NULL AND COALESCE(json_extract(a.record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(a.record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h WHERE h.id=(?3 || a.id) AND h.signature=?4)")?;
         let ids = statement
             .query_map(
                 params![
                     account,
                     i64::try_from(generation.0)
-                        .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?
+                        .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?,
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -439,7 +441,8 @@ pub(super) fn hold_invalid_agent_record(
                     studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
                 ),
                 studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                diagnostic
+                serde_json::to_string(&serde_json::json!({"held": true, "diagnostic": diagnostic}))
+                    .map_err(StoreError::from)?
             ],
         )?;
         Ok(())

@@ -581,26 +581,44 @@ with canvas.connect() as db:
         import sqlite3
 
         backend = self.backend
+        rust_backend_configured = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         database_path = backend.state / "canvas.sqlite3"
         headers = self._common_headers()
         synthetic_preference = False
+        inserted_ids = [f"invalid-page-fill-{index:03d}" for index in range(501)]
         with sqlite3.connect(database_path) as database:
             row = database.execute(
-                "SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+                "SELECT seq,payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
             ).fetchone()
             synthetic_preference = row is None
-            original_preference = row[0] if row else None
+            original_sequence, original_preference = row if row else (None, None)
             if row is None:
                 database.execute(
                     "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
                     "VALUES('uiPreferences','user',(SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities),?,?,0)",
                     ("test-fixture", '{"collection":"uiPreferences","id":"user","value":{"fields":{}}}'),
                 )
-            broken_sequence = database.execute(
-                "SELECT seq FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+            maximum_sequence = database.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_entities"
             ).fetchone()[0]
+            broken_sequence = maximum_sequence + 1
             database.execute(
-                "UPDATE sync_entities SET payload='[]' WHERE collection='uiPreferences' AND id='user'"
+                "UPDATE sync_entities SET seq=?,payload='[]' "
+                "WHERE collection='uiPreferences' AND id='user'",
+                (broken_sequence,),
+            )
+            database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,0)",
+                [
+                    (
+                        "workspace",
+                        entity_id,
+                        broken_sequence + offset + 1,
+                        "test-fixture",
+                        json.dumps({"collection": "workspace", "id": entity_id, "value": {}}),
+                    )
+                    for offset, entity_id in enumerate(inserted_ids)
+                ],
             )
         try:
             broken = backend.request(
@@ -613,16 +631,27 @@ with canvas.connect() as db:
                 {document["id"] for document in broken.json()["documents"]},
             )
             self.assertGreaterEqual(broken.json()["checkpoint"]["seq"], broken_sequence)
+            if rust_backend_configured:
+                documents = broken.json()["documents"]
+                self.assertEqual(len(documents), 500)
+                self.assertTrue(
+                    any(item["id"].startswith("entity:workspace:invalid-page-fill-") for item in documents),
+                    "the page is filled from the rows after the unreadable entity",
+                )
         finally:
             with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "DELETE FROM sync_entities WHERE collection='workspace' AND id LIKE 'invalid-page-fill-%'"
+                )
                 if synthetic_preference:
                     database.execute(
                         "DELETE FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
                     )
                 else:
                     database.execute(
-                        "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
-                        (original_preference,),
+                        "UPDATE sync_entities SET seq=?,payload=? "
+                        "WHERE collection='uiPreferences' AND id='user'",
+                        (original_sequence, original_preference),
                     )
 
     def test_invalid_agent_source_projection_is_skipped(self) -> None:

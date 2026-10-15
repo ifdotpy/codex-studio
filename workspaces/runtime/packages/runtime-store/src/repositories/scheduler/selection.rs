@@ -11,7 +11,8 @@ impl SchedulerRepository {
         account_limit: usize,
         agent_limit: usize,
     ) -> StoreResult<BTreeMap<String, Vec<(String, i64, Option<String>)>>> {
-        const TARGETS: &str = "WITH targets AS (
+        let targets = format!(
+            "WITH targets AS (
  SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
  json_type(a.record,'$.accountKey') account_type,
  json_extract(a.record,'$.epoch') epoch,
@@ -39,12 +40,17 @@ impl SchedulerRepository {
       NOT IN ('finished','continued','reattached','input_restored')))) recovery
  FROM runtime_agents a WHERE json_extract(a.record,'$.deletedAt') IS NULL
  AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
- AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0)
-";
+ AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
+ AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h
+   WHERE h.id='{}' || a.id AND h.signature='{}'))
+",
+            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+        );
         let invalid: Option<String> = connection
             .query_row(
                 &format!(
-                    "{TARGETS} SELECT id FROM targets WHERE (pending OR recovery)
+                    "{targets} SELECT id FROM targets WHERE (pending OR recovery)
         AND (account='' OR account_type NOT IN ('null','text')) LIMIT 1"
                 ),
                 [],
@@ -59,7 +65,7 @@ impl SchedulerRepository {
         }
 
         let mut account_statement = connection.prepare_cached(&format!(
-            "{TARGETS} SELECT DISTINCT account FROM targets
+            "{targets} SELECT DISTINCT account FROM targets
              WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
         ))?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
@@ -75,7 +81,7 @@ impl SchedulerRepository {
         }
 
         let mut agent_statement = connection.prepare_cached(&format!(
-            "{TARGETS} SELECT id,epoch,workspace_mode FROM targets
+            "{targets} SELECT id,epoch,workspace_mode FROM targets
              WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
         ))?;
         let mut result = BTreeMap::new();
