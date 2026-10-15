@@ -286,19 +286,41 @@ impl LineDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, CodecError> {
         self.buffer.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
+        let mut consumed = 0;
+        let mut decode_error = None;
+        while let Some(relative_end) = self.buffer[consumed..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let end = consumed + relative_end;
             if end > MAX_FRAME_BYTES {
-                self.buffer.drain(..=end);
-                return Err(CodecError::FrameTooLarge {
+                consumed = end + 1;
+                decode_error = Some(CodecError::FrameTooLarge {
                     limit: MAX_FRAME_BYTES,
                 });
+                break;
             }
-            let mut line = self.buffer.drain(..=end).collect::<Vec<_>>();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
+            let start = consumed;
+            consumed = end + 1;
+            let mut line_end = end;
+            if line_end > start && self.buffer[line_end - 1] == b'\r' {
+                line_end -= 1;
             }
-            frames.push(decode_frame(&line)?);
+            match decode_frame(&self.buffer[start..line_end]) {
+                Ok(frame) => frames.push(frame),
+                Err(error) => {
+                    decode_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if consumed > 0 {
+            let remaining = self.buffer.len() - consumed;
+            self.buffer.copy_within(consumed.., 0);
+            self.buffer.truncate(remaining);
+        }
+        if let Some(error) = decode_error {
+            return Err(error);
         }
         if self.buffer.len() > MAX_FRAME_BYTES {
             return Err(CodecError::FrameTooLarge {

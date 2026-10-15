@@ -159,6 +159,26 @@ fn decoder_reports_malformed_oversized_and_truncated_frames() {
 }
 
 #[test]
+fn line_decoder_compacts_once_and_keeps_tail_after_frame_error() {
+    let following = encode_line(&method(Method::TurnStarted, None, Some(json!({"id":"t"}))))
+        .expect("following frame encodes");
+    let mut input = b"{nope}\r\n".to_vec();
+    input.extend_from_slice(&following);
+    let mut decoder = LineDecoder::new();
+
+    assert!(matches!(
+        decoder.push(&input),
+        Err(CodecError::MalformedJson(_))
+    ));
+    assert_eq!(decoder.push(&[]).expect("tail remains decodable"), vec![method(
+        Method::TurnStarted,
+        None,
+        Some(json!({"id":"t"}))
+    )]);
+    decoder.finish().expect("tail fully consumed");
+}
+
+#[test]
 fn journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes() {
     let raw = b"provider diagnostic, not JSON\r\n".to_vec();
     let decoded = decode_journal_entry(41, 9, raw.clone());
