@@ -1,3 +1,4 @@
+import { useScreenEnvironment } from "../servers/ScreenContext";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
 import {
@@ -17,12 +18,7 @@ import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
-import {
-  isClassicServerView,
-  isServerView,
-  serverParentOrigin,
-  serverViewId,
-} from "../servers/environment";
+import { serverParentOrigin } from "../servers/environment";
 
 type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
@@ -30,11 +26,6 @@ const running = (status: string) =>
   ["running", "starting", "approval"].includes(status);
 // In the combined window the shell draws the closed bar under its sidebar and makes room
 // for the open panel across the whole window (docs: servers.css "Terminal under the sidebar").
-const shellTerminal =
-  isServerView &&
-  !isClassicServerView &&
-  typeof window !== "undefined" &&
-  window.parent !== window;
 const inputUncertaintyNotice =
   "Previous input delivery is uncertain. Check the terminal output before you enter it again. Buffered input was not sent.";
 
@@ -47,6 +38,15 @@ export default function TerminalDock({
   agent?: Agent;
   notify: (message: string) => void;
 }) {
+  const {
+    screen,
+    postToShell,
+    hasShell,
+    isServerView,
+    isClassicServerView,
+    serverViewId,
+  } = useScreenEnvironment();
+  const shellTerminal = isServerView && !isClassicServerView && hasShell;
   const watchResourceReads = useServerResourceReads();
   const { get, post, save, saved } = useServerApi();
 
@@ -189,7 +189,7 @@ export default function TerminalDock({
     : 38;
   useEffect(() => {
     if (!shellTerminal) return;
-    window.parent.postMessage(
+    postToShell(
       {
         kind: "studio-server-terminal",
         serverId: serverViewId,
@@ -203,6 +203,11 @@ export default function TerminalDock({
     );
   }, [opened, shownHeight, entries.length, activeCount, !!agent]);
   useEffect(() => {
+    if (screen)
+      return screen.bindTerminal((operation) => {
+        if (operation === "toggle") setOpened((value) => !value);
+        else void createRef.current();
+      });
     if (!shellTerminal) return;
     const command = (event: Event) => {
       const operation = (event as CustomEvent<string>).detail;
@@ -211,7 +216,7 @@ export default function TerminalDock({
     };
     window.addEventListener("studio-terminal-command", command);
     return () => window.removeEventListener("studio-terminal-command", command);
-  }, []);
+  }, [screen, shellTerminal]);
   const action = async <
     Path extends "/api/terminals/rename" | "/api/terminals/close",
   >(

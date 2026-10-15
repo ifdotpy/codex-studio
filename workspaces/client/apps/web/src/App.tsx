@@ -1,3 +1,4 @@
+import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
   useServerChatCreations,
@@ -20,13 +21,7 @@ import { useServerSettings } from "./servers/ServerSettingsContext";
 import "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
-import {
-  serverViewId,
-  isServerView,
-  isClassicServerView,
-  isRemoteServerView,
-  serverParentOrigin,
-} from "./servers/environment";
+import { serverParentOrigin } from "./servers/environment";
 import { serverStorageEventKey } from "./servers/storage";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
@@ -229,6 +224,15 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const {
+    screen,
+    postToShell,
+    hasShell,
+    serverViewId,
+    isServerView,
+    isClassicServerView,
+    isRemoteServerView,
+  } = useScreenEnvironment();
   const { removeAllSendingMessages } = useSendingMessageRemoval();
   const { pendingChatCreations, saveChatCreation, confirmChatCreation } =
     useServerChatCreations();
@@ -337,12 +341,12 @@ export default function App() {
     if (!studioSettingsOpen) return;
     if (
       serverViewId &&
-      window.parent !== window &&
+      hasShell &&
       (studioSettingsTab === "accounts" || studioSettingsTab === "servers") &&
       !externalFrameAccountDialog.current
     ) {
       setStudioSettingsOpen(false);
-      window.parent.postMessage(
+      postToShell(
         {
           kind: "studio-server-open-settings",
           serverId: serverViewId,
@@ -364,8 +368,8 @@ export default function App() {
     const changed = accountModalOpenRef.current !== opened;
     accountModalOpenRef.current = opened;
     setAccountModalOpen(opened);
-    if (changed && serverViewId && window.parent !== window)
-      window.parent.postMessage(
+    if (changed && serverViewId && hasShell)
+      postToShell(
         {
           kind: "studio-server-account-dialog",
           serverId: serverViewId,
@@ -415,7 +419,10 @@ export default function App() {
     }
   }, []);
   const preferenceBridge = useMemo(
-    () => (isServerView ? createUiPreferenceBridge(localStorage) : undefined),
+    () =>
+      isServerView && !screen
+        ? createUiPreferenceBridge(localStorage)
+        : undefined,
     [],
   );
   const receiveUiPreferences = useCallback(
@@ -453,7 +460,7 @@ export default function App() {
         if (value.theme !== colorScheme) setColorScheme(value.theme);
         window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
-          window.parent.postMessage(
+          postToShell(
             { kind: "studio-server-preferences", preferences: value },
             serverParentOrigin,
           );
@@ -490,10 +497,7 @@ export default function App() {
   }, []);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
-      window.parent.postMessage(
-        { kind: "studio-server-toggle-sidebar" },
-        serverParentOrigin,
-      );
+      postToShell({ kind: "studio-server-toggle-sidebar" }, serverParentOrigin);
       return;
     }
     if (mobileClient) {
@@ -1318,10 +1322,7 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         if (isServerView) {
-          window.parent.postMessage(
-            { kind: "studio-server-search" },
-            serverParentOrigin,
-          );
+          postToShell({ kind: "studio-server-search" }, serverParentOrigin);
           return;
         }
         setSidebar(false);
@@ -1363,8 +1364,8 @@ export default function App() {
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
-    if (!retryId && !settings && isServerView && window.parent !== window) {
-      window.parent.postMessage(
+    if (!retryId && !settings && isServerView && hasShell) {
+      postToShell(
         {
           kind: "studio-open-new-chat",
           serverId: serverViewId,
@@ -1437,8 +1438,8 @@ export default function App() {
                     binding,
                     chosenSettings,
                   );
-                else if (window.parent !== window)
-                  window.parent.postMessage(
+                else if (hasShell)
+                  postToShell(
                     {
                       kind: "studio-project-new-chat",
                       settings: chosenSettings,
@@ -2363,10 +2364,7 @@ export default function App() {
           collapsed={sidebarCollapsed}
           onSearch={() => {
             if (isServerView) {
-              window.parent.postMessage(
-                { kind: "studio-server-search" },
-                serverParentOrigin,
-              );
+              postToShell({ kind: "studio-server-search" }, serverParentOrigin);
               return;
             }
             setSidebar(false);
@@ -2536,7 +2534,7 @@ export default function App() {
                     onClick={() => {
                       if (section === "search") {
                         if (isServerView)
-                          window.parent.postMessage(
+                          postToShell(
                             { kind: "studio-server-search" },
                             serverParentOrigin,
                           );

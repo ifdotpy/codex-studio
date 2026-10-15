@@ -1,3 +1,4 @@
+import { useScreenChannel } from "./ScreenContext";
 import { useServerApi, useServerResources } from "./ServerServicesContext";
 import {
   parseStudioPreferences,
@@ -28,7 +29,8 @@ export function useServerFrame(
   accounts: ServerAccount[],
   creating = false,
 ) {
-  const { get } = useServerApi();
+  const screen = useScreenChannel();
+  const { get, saved } = useServerApi();
   const { watchResourceConnection } = useServerResources();
 
   const handler = useRef(run);
@@ -36,7 +38,70 @@ export function useServerFrame(
   const latest = useRef({ data, opened, error, unread, creating });
   latest.current = { data, opened, error, unread, creating };
   useEffect(() => {
-    if (!serverViewId || window.parent === window) return;
+    if (!screen) return;
+    const unbind = screen.bind(async (command) => {
+      if (command.action === "search") {
+        try {
+          const value = await get("/api/search", {
+            query: { q: command.query },
+          });
+          screen.publish({
+            kind: "studio-server-search-results",
+            requestId: command.requestId,
+            results: value.results,
+          });
+        } catch (failure) {
+          screen.publish({
+            kind: "studio-server-search-results",
+            requestId: command.requestId,
+            results: [],
+            error: errorText(failure),
+          });
+        }
+      } else await handler.current(command);
+    });
+    const stop = watchResourceConnection((status) =>
+      screen.publish({ kind: "studio-server-status", status }),
+    );
+    return () => {
+      unbind();
+      stop();
+    };
+  }, [screen, get, watchResourceConnection]);
+  useEffect(() => {
+    if (!screen) return;
+    screen.publish({
+      kind: "studio-server-navigation",
+      navigation: {
+        ...navigationSnapshot(
+          data,
+          opened,
+          error,
+          unread,
+          data ? desktopAlerts(data) : [],
+          saved,
+        ),
+        creating,
+      },
+    });
+  }, [screen, data, opened, error, [...unread].join(":"), creating, saved]);
+  useEffect(() => {
+    screen?.publish({
+      kind: "studio-server-accounts",
+      accounts: accounts.map(
+        ({ provider, email, plan, status, label, isDefault }) => ({
+          provider,
+          email,
+          plan,
+          status,
+          label,
+          isDefault,
+        }),
+      ),
+    });
+  }, [screen, accounts]);
+  useEffect(() => {
+    if (screen || !serverViewId || window.parent === window) return;
     const receive = (event: MessageEvent) => {
       if (
         !event.data ||
@@ -184,7 +249,7 @@ export function useServerFrame(
     };
   }, []);
   useEffect(() => {
-    if (!serverViewId || window.parent === window) return;
+    if (screen || !serverViewId || window.parent === window) return;
     const publish = () =>
       window.parent.postMessage(
         {
@@ -228,7 +293,7 @@ export function useServerFrame(
     };
   }, [data, opened, error, [...unread].join(":"), creating]);
   useEffect(() => {
-    if (!serverViewId || window.parent === window) return;
+    if (screen || !serverViewId || window.parent === window) return;
     const safeAccounts = accounts.map((account) => ({
       provider: account.provider,
       email: account.email,

@@ -105,6 +105,7 @@ export function navigationSnapshot(
   error: string,
   unread = new Set<string>(),
   alerts: DesktopAlert[] = [],
+  readSaved: typeof saved = saved,
 ): ServerNavigation {
   const projects = new Map<string, ServerNavigation["projects"][number]>();
   const indicators = data
@@ -114,7 +115,7 @@ export function navigationSnapshot(
     if (project.path)
       projects.set(project.path, {
         id: project.id,
-        compact: saved<Record<string, boolean>>(
+        compact: readSaved<Record<string, boolean>>(
           `codex-project-compact:${data?.stateDir}`,
           {},
         )[project.path],
