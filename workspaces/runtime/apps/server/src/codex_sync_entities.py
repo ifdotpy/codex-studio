@@ -8,6 +8,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, cast, get_args
 
 from pydantic import AfterValidator, BaseModel, TypeAdapter, ValidationError
+from pydantic_core import ErrorDetails
 
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
@@ -58,7 +59,7 @@ def entity_tombstone_prune_due(count: int) -> bool:
     return count > limit + min(ENTITY_TOMBSTONE_PRUNE_BATCH, limit // 20)
 
 
-_DTO_MODELS = {
+_DTO_MODELS: dict[str, type[BaseModel]] = {
     "agent": AgentEntityDto,
     "room": RoomEntityDto,
     "task": TaskEntityDto,
@@ -77,7 +78,7 @@ _DTO_MODELS = {
 }
 AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
 COLLECTION_FIELDS = {
-    name: frozenset(model.model_fields)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_fields dynamically
+    name: frozenset(model.model_fields)
     for name, model in _DTO_MODELS.items()
     if name != "agent"
 }
@@ -235,7 +236,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             }
     while True:
         try:
-            validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
+            validated = model.model_validate(result)
             break
         except Exception as error:
             error_reader = getattr(error, "errors", None)
@@ -299,7 +300,7 @@ def _drop_error_path(value: Any, path: tuple[object, ...]) -> None:
         _drop_error_path(value[head], tuple(tail))
 
 
-def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], ...]:
+def _contract_extra_paths(error: ValidationError) -> tuple[tuple[int | str, ...], ...]:
     # Pydantic inserts the selected model name into errors produced by an
     # untagged nested union (for example, ``nativeStatus.AgentNativeStatus``).
     # Only those union-branch labels are metadata; the remaining path is the
@@ -337,7 +338,7 @@ def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], .
             if get_args(argument) or contract_model(argument)
         )
     errors = error.errors()
-    union_groups: dict[tuple[object, ...], dict[str, list[dict[str, Any]]]] = {}
+    union_groups: dict[tuple[int | str, ...], dict[str, list[ErrorDetails]]] = {}
     for item in errors:
         location = tuple(item.get("loc", ()))
         for index, part in enumerate(location):
@@ -345,7 +346,7 @@ def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], .
                 prefix = location[:index]
                 union_groups.setdefault(prefix, {}).setdefault(part, []).append(item)
 
-    selected_branches: dict[tuple[object, ...], str] = {}
+    selected_branches: dict[tuple[int | str, ...], str] = {}
     for prefix, branches in union_groups.items():
         selected_branches[prefix] = min(
             branches,
@@ -356,7 +357,7 @@ def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], .
             ),
         )
 
-    paths: set[tuple[object, ...]] = set()
+    paths: set[tuple[int | str, ...]] = set()
     for item in errors:
         if item.get("type") != "extra_forbidden":
             continue
@@ -408,7 +409,7 @@ def response_entity_payload_fail_open(
         selected_model = ChatEntityDto if deleted else _DTO_MODELS[envelope["collection"]]
         try:
             selected_model.model_validate(candidate["value"])
-            paths = ()
+            paths: tuple[tuple[int | str, ...], ...] = ()
         except ValidationError as selected_error:
             paths = _contract_extra_paths(selected_error)
         if deleted:
