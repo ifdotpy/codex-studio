@@ -663,10 +663,12 @@ with canvas.connect() as db:
         invalid_id = "sync-invalid-agent-root"
         tombstone_id = "sync-valid-agent-tombstone"
         with sqlite3.connect(database_path) as database:
-            actor = json.loads(database.execute(
-                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,),
-            ).fetchone()[0])
-            actor.update(id=invalid_id, rootId=42)
+            actor = {
+                "id": invalid_id,
+                "rootId": 42,
+                "epoch": 1,
+                "status": "idle",
+            }
             sequence = database.execute(
                 "SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities",
             ).fetchone()[0]
@@ -701,7 +703,7 @@ with canvas.connect() as db:
                 document for document in documents
                 if document["id"] == f"entity:agent:{tombstone_id}"
             )
-            self.assertTrue(tombstone["deleted"])
+            self.assertTrue(tombstone["_deleted"])
             self.assertEqual(response.json()["checkpoint"]["seq"], sequence + 1)
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
