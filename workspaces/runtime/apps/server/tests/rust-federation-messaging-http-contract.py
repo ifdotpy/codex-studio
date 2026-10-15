@@ -16,13 +16,20 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_federation import _crypto, _request_bytes, _sign
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend
 
 
 class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with patch.dict("os.environ", {"CODEX_CANVAS_PUBLIC_ORIGIN": "https://studio.ts.net"}):
+        original_environment = BackendProcess._environment
+
+        def fixture_environment(backend):
+            environment = original_environment(backend)
+            environment["CODEX_CANVAS_PUBLIC_ORIGIN"] = "https://studio.ts.net"
+            return environment
+
+        with patch.object(BackendProcess, "_environment", fixture_environment):
             cls.backend = start_contract_backend(cls)
         cls.local = _crypto("generate")
         cls.remote = _crypto("generate")
@@ -57,6 +64,13 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-Federation-Signature": signature,
         }
 
+    def local_headers(self):
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
     def test_signed_status_and_pull_return_protocol_responses(self):
         for action, body in (("status", {"protocol": 1}),
                              ("pull", {"protocol": 1, "acks": []})):
@@ -65,7 +79,7 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
                 headers=self.headers(action, body, f"fake-peer-{action}-nonce-12345"),
             )
             self.assertEqual(response.status, 200, response.body[:1000])
-            self.assertEqual(response.json()["protocol"], 1)
+            self.assertEqual(response.json()["result"]["protocol"], 1)
 
     def test_invitation_stores_python_compatible_private_key_without_returning_it(self):
         from codex_federation import _sign, _verify
@@ -75,7 +89,7 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
                              ('{"enabled":true}',))
         response = self.backend.request("POST", "/api/federation", body={
             "action": "create_invite", "label": "Python compatible key",
-        })
+        }, headers=self.local_headers())
         self.assertEqual(response.status, 200, response.body[:1000])
         invitation = response.json()["invitation"]
         self.assertEqual(invitation["origin"], "https://studio.ts.net")
@@ -99,7 +113,27 @@ class FederationMessagingHTTP(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers("message", message, "fake-peer-message-nonce-12345"),
         )
         self.assertIn(response.status, (400, 422), response.body[:1000])
-        pair = {"protocol": 1}
+        token = "fixture-pair-token"
+        invite_id = "33333333-3333-4333-8333-333333333333"
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            database.execute("INSERT OR REPLACE INTO runtime_federation_invites VALUES(?,?)", (
+                invite_id,
+                json.dumps({"id": invite_id, "tokenHash": hashlib.sha256(token.encode()).hexdigest(),
+                            "created": time.time(), "expires": int(time.time()) + 900,
+                            "status": "open", "expectedUser": None}),
+            ))
+        pair = {
+            "protocol": 1,
+            "inviteId": invite_id,
+            "token": token,
+            "stateId": self.peer_id,
+            "label": "Fake peer",
+            "origin": "https://peer.ts.net",
+            "publicKey": self.remote["publicKey"],
+            "tailscaleUser": None,
+            "tailscaleStatus": "unavailable",
+            "unexpected": True,
+        }
         response = self.backend.request(
             "POST", "/api/federation/v1/pair", body=pair,
             headers=self.headers("pair", pair, "fake-peer-pair-nonce-12345"),

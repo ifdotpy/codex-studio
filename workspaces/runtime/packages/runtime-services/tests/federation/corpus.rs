@@ -640,11 +640,14 @@ struct PeerTransport<'a> {
 impl delivery::FederationTransport for PeerTransport<'_> {
     fn exchange(
         &mut self,
+        _store: &RuntimeStore,
+        _server_id: &str,
+        _public_key: &str,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
         budget: &delivery::PassBudget<'_>,
-    ) -> transport::RemoteTransportResult<Vec<u8>> {
+    ) -> transport::RemoteTransportResult<delivery::FederationTransportResponse> {
         assert!(budget.remaining().expect("active budget") <= Duration::from_secs(8));
         self.deadlines.push(budget.deadline());
         assert!(url.starts_with("https://127.0.0.1/"));
@@ -700,7 +703,10 @@ impl delivery::FederationTransport for PeerTransport<'_> {
             self.lose_once = false;
             return Err(transport::RemoteTransportError::ExchangeUnknown);
         }
-        Ok(serde_json::to_vec(&response).expect("fixture operation"))
+        Ok(delivery::FederationTransportResponse {
+            body: serde_json::to_vec(&response).expect("fixture operation"),
+            link_advert: None,
+        })
     }
 }
 fn lost_push_response(corpus: &Corpus) {

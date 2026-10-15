@@ -44,28 +44,41 @@ impl<'a> PassBudget<'a> {
 pub trait FederationTransport {
     fn exchange(
         &mut self,
+        store: &RuntimeStore,
+        server_id: &str,
+        public_key: &str,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
         budget: &PassBudget<'_>,
-    ) -> transport::RemoteTransportResult<Vec<u8>>;
+    ) -> transport::RemoteTransportResult<FederationTransportResponse>;
 }
+
+pub struct FederationTransportResponse {
+    pub body: Vec<u8>,
+    pub link_advert: Option<String>,
+}
+
 pub struct HttpsFederationTransport;
 impl FederationTransport for HttpsFederationTransport {
     fn exchange(
         &mut self,
+        store: &RuntimeStore,
+        server_id: &str,
+        public_key: &str,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
         budget: &PassBudget<'_>,
-    ) -> transport::RemoteTransportResult<Vec<u8>> {
+    ) -> transport::RemoteTransportResult<FederationTransportResponse> {
         let headers = headers
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
-        // Blocking HTTPS observes cancellation before/after I/O; its in-flight
-        // cancellation latency is bounded by the remaining absolute pass budget.
-        let response = transport::SignedHttpClient::exchange(
+        let response = transport::exchange_paired_request(
+            store,
+            server_id,
+            public_key,
             "POST",
             url,
             &headers,
@@ -77,7 +90,12 @@ impl FederationTransport for HttpsFederationTransport {
         if response.status != 200 {
             return Err(transport::RemoteTransportError::InvalidResponse);
         }
-        Ok(response.body)
+        let link_advert = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+            .map(|(_, value)| value.clone());
+        Ok(FederationTransportResponse { body: response.body, link_advert })
     }
 }
 
@@ -149,6 +167,7 @@ pub fn pair_peer(
     let deadline = Instant::now() + PASS_TIMEOUT;
     let budget = PassBudget::new(deadline, cancelled);
     let response = request(
+        store,
         transport,
         &peer,
         &identity,
@@ -200,6 +219,7 @@ pub fn pair_peer(
     })
 }
 fn request(
+    store: &RuntimeStore,
     transport: &mut impl FederationTransport,
     peer: &core::Peer,
     identity: &RemoteIdentity,
@@ -220,17 +240,27 @@ fn request(
         now,
     )?;
     budget.remaining()?;
-    let response = transport.exchange(&url, &headers, &body, budget)?;
+    let response = transport.exchange(
+        store,
+        &peer.state_id,
+        &peer.public_key,
+        &url,
+        &headers,
+        &body,
+        budget,
+    )?;
     budget.remaining()?;
-    if response.len() > transport::MAX_REQUEST_BYTES {
+    if response.body.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("response.size"));
     }
-    Ok(transport::verify_federation_response(
-        &response,
+    let verified = transport::verify_federation_response(
+        &response.body,
         &peer.public_key,
         Some(&peer.state_id),
         now,
-    )?)
+    )?;
+    transport::learn_paired_request_link(store, &peer.state_id, response.link_advert.as_deref());
+    Ok(verified)
 }
 
 /// One bounded pass for an approved peer; the runtime timer owns scheduling/cancellation
@@ -295,6 +325,7 @@ pub(crate) fn pump_peer_until(
             Ok(())
         })?;
         let result = request(
+            store,
             transport,
             &peer,
             &identity,
@@ -370,6 +401,7 @@ pub(crate) fn pump_peer_until(
         )
     })?;
     let response = request(
+        store,
         transport,
         &peer,
         &identity,
