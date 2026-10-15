@@ -1966,6 +1966,8 @@ def apply_probe_expectations(
     cases: list[tuple[str, dict[str, Any]]],
     observations: list[dict[str, Any]],
 ) -> str:
+    if classification == "unexpected":
+        return classification
     declared_case_failed = any(
         case.get("expected") is not None
         and not case.get("unverified")

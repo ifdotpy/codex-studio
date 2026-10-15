@@ -518,6 +518,13 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             ledger.apply_probe_expectations("implemented", cases, observations),
             "unexpected",
         )
+        self.assertEqual(
+            ledger.apply_probe_expectations("unexpected", cases, [
+                {"status": 200, "expectedMatches": True},
+                {"status": 400, "expectedMatches": False},
+            ]),
+            "unexpected",
+        )
         observations[0] = {"status": 503, "expectedMatches": False}
         observations[1] = {"status": 400, "expectedMatches": False}
         self.assertEqual(
