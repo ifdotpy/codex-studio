@@ -652,7 +652,7 @@ mod tests {
         TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub,
     };
     use crate::notification_dispatch::{
-        NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity,
+        NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
     };
     use serde_json::json;
 
@@ -664,9 +664,9 @@ mod tests {
         turn: &str,
     ) -> NotificationPostCommit {
         NotificationPostCommit::TokenRateUsage(NotificationObservation {
-            agent: Some(json!({"id":agent_id,"rootId":agent_id,"turnId":turn})),
+            agent: Some(SharedJson::new(json!({"id":agent_id,"rootId":agent_id,"turnId":turn}))),
             method: "turn/started".into(),
-            params: json!({"turnId":turn}),
+            params: SharedJson::new(json!({"turnId":turn})),
             delivery: ProviderDeliveryIdentity {
                 provider_handle: provider.into(),
                 generation,
@@ -743,9 +743,9 @@ mod tests {
             ..super::ProjectedAgent::default()
         };
         let observation = |method: &str, at: f64| super::NotificationObservation {
-            agent: Some(json!({"id":"agent","inFlight":true,"turnId":"turn"})),
+            agent: Some(SharedJson::new(json!({"id":"agent","inFlight":true,"turnId":"turn"}))),
             method: method.into(),
-            params: json!({"turnId":"turn","item":{"id":"tool","type":"functionCall"}}),
+            params: SharedJson::new(json!({"turnId":"turn","item":{"id":"tool","type":"functionCall"}})),
             delivery: crate::notification_dispatch::ProviderDeliveryIdentity {
                 provider_handle: "provider".into(),
                 generation: 1,

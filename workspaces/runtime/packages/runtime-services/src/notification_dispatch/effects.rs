@@ -3,6 +3,84 @@ use super::{DispatchOutcome, NotificationDispatchError, ProviderDeliveryIdentity
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use studio_runtime_store::Transaction;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
+/// JSON payload shared by immutable publication observations. Serialization is
+/// transparent so durable journal records retain the same shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedJson(Arc<Value>);
+
+impl SharedJson {
+    pub fn new(value: Value) -> Self {
+        Self(Arc::new(value))
+    }
+
+    pub fn agent_projection(agent: &Value) -> Self {
+        let mut projection = serde_json::Map::new();
+        for field in [
+            "id",
+            "name",
+            "rootId",
+            "parentId",
+            "accountKey",
+            "accountHistory",
+            "provider",
+            "threadId",
+            "epoch",
+            "turnId",
+            "inFlight",
+            "model",
+            "effort",
+            "fastMode",
+            "daybreakEnabled",
+            "cyberAccessProgram",
+            "cwd",
+            "deletedAt",
+        ] {
+            if let Some(value) = agent.get(field) {
+                projection.insert(field.to_owned(), value.clone());
+            }
+        }
+        Self::new(Value::Object(projection))
+    }
+
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Deref for SharedJson {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SharedJson {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl Serialize for SharedJson {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SharedJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Value::deserialize(deserializer).map(Self::new)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum NotificationDependency {
@@ -59,9 +137,9 @@ impl NotificationDependency {
 /// before committing, and drains the journal after commit.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NotificationObservation {
-    pub agent: Option<Value>,
+    pub agent: Option<SharedJson>,
     pub method: String,
-    pub params: Value,
+    pub params: SharedJson,
     pub delivery: ProviderDeliveryIdentity,
     pub observed_at: f64,
     pub provider_at: f64,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::notification_dispatch::{
     NotificationObservation, NotificationPostCommit, NotificationPublicationBatch,
-    ProviderDeliveryIdentity,
+    ProviderDeliveryIdentity, SharedJson,
 };
 use crate::notification_runtime_effects::{
     NotificationPostCommitSink, RuntimeNotificationPostCommitSink,
@@ -15,9 +15,9 @@ static TEMPLATE: std::sync::OnceLock<(PathBuf, Value)> = std::sync::OnceLock::ne
 
 fn publication_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateStream(NotificationObservation {
-        agent: Some(rate_agent()),
+        agent: Some(SharedJson::new(rate_agent())),
         method: "item/agentMessage/delta".into(),
-        params: json!({"threadId":"thread","turnId":"turn","delta":"sample"}),
+        params: SharedJson::new(json!({"threadId":"thread","turnId":"turn","delta":"sample"})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
             generation: 7,
@@ -38,9 +38,9 @@ fn rate_agent() -> Value {
 fn analytics_effect(cursor: u64, method: &str, params: Value) -> NotificationPostCommit {
     NotificationPostCommit::Analytics {
         observation: NotificationObservation {
-            agent: Some(rate_agent()),
+            agent: Some(SharedJson::new(rate_agent())),
             method: method.into(),
-            params,
+            params: SharedJson::new(params),
             delivery: ProviderDeliveryIdentity {
                 provider_handle: "account:default".into(),
                 generation: 7,
@@ -55,12 +55,12 @@ fn analytics_effect(cursor: u64, method: &str, params: Value) -> NotificationPos
 
 fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateUsage(NotificationObservation {
-        agent: Some(rate_agent()),
+        agent: Some(SharedJson::new(rate_agent())),
         method: "thread/tokenUsage/updated".into(),
-        params: json!({"turnId":"turn","tokenUsage":{
+        params: SharedJson::new(json!({"turnId":"turn","tokenUsage":{
             "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
             "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
-        }}),
+        }})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
             generation: 7,
@@ -73,9 +73,9 @@ fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
 
 fn token_rate_association_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateAssociation(NotificationObservation {
-        agent: Some(rate_agent()),
+        agent: Some(SharedJson::new(rate_agent())),
         method: "item/started".into(),
-        params: json!({"threadId":"thread","turnId":"turn","item":{"id":"item","type":"commandExecution"}}),
+        params: SharedJson::new(json!({"threadId":"thread","turnId":"turn","item":{"id":"item","type":"commandExecution"}})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
             generation: 7,
@@ -88,9 +88,9 @@ fn token_rate_association_effect(cursor: u64) -> NotificationPostCommit {
 
 fn token_rate_started_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateUsage(NotificationObservation {
-        agent: Some(rate_agent()),
+        agent: Some(SharedJson::new(rate_agent())),
         method: "turn/started".into(),
-        params: json!({"turnId":"turn"}),
+        params: SharedJson::new(json!({"turnId":"turn"})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
             generation: 7,
@@ -935,9 +935,9 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
     };
     let effect = NotificationPostCommit::AnalyticsStream {
         observation: NotificationObservation {
-            agent: Some(agent),
+            agent: Some(SharedJson::new(agent)),
             method: "item/agentMessage/delta".into(),
-            params: combined,
+            params: SharedJson::new(combined),
             delivery: ProviderDeliveryIdentity {
                 provider_handle: "account:default".into(),
                 generation: 7,

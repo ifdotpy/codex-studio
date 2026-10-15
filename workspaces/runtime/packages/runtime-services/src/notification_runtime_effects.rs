@@ -3,7 +3,7 @@
 use crate::budget::CaptureSource;
 use crate::notification_dispatch::{
     DispatchOutcome, NotificationDispatchError, NotificationEffects, NotificationObservation,
-    NotificationPostCommit, ProviderDeliveryIdentity,
+    NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -63,10 +63,13 @@ impl NotificationEffects for RuntimeNotificationEffects {
         outcome: &DispatchOutcome,
     ) -> Vec<NotificationPostCommit> {
         let method = frame["method"].as_str().unwrap_or_default();
-        let observation = |agent: Option<&Value>| NotificationObservation {
+        let params = SharedJson::new(frame["params"].clone());
+        let before_observation = before.map(SharedJson::agent_projection);
+        let after_observation = after.map(SharedJson::agent_projection);
+        let observation = |agent: Option<&SharedJson>| NotificationObservation {
             agent: agent.cloned(),
             method: method.into(),
-            params: frame["params"].clone(),
+            params: params.clone(),
             delivery: identity.clone(),
             observed_at: at,
             provider_at: event_time(frame).filter(|time| *time != 0.0).unwrap_or(at),
@@ -77,12 +80,12 @@ impl NotificationEffects for RuntimeNotificationEffects {
             "item/agentMessage/delta" | "item/reasoning/textDelta"
         ) {
             result.push(NotificationPostCommit::TokenRateStream(observation(
-                before.or(after),
+                before_observation.as_ref().or(after_observation.as_ref()),
             )));
         }
         if method == "provider/generationStarted" && matches!(outcome, DispatchOutcome::Written) {
             result.push(NotificationPostCommit::TokenRateStream(observation(
-                before.or(after),
+                before_observation.as_ref().or(after_observation.as_ref()),
             )));
         }
         let Some(before) = before else {
@@ -112,12 +115,15 @@ impl NotificationEffects for RuntimeNotificationEffects {
             .then(|| after.and_then(|agent| agent["tokensUsed"].as_u64()))
             .flatten();
         // Python captures the budget before freezing analytics arguments.
-        let mut analytics_agent = before.clone();
+        let mut analytics_agent = SharedJson::agent_projection(before);
         if captured.is_some()
             && let Some(after) = after
         {
-            analytics_agent["tokensUsed"] = after["tokensUsed"].clone();
-            analytics_agent["tokenUsageAccounting"] = after["tokenUsageAccounting"].clone();
+            for field in ["tokensUsed", "tokenUsageAccounting"] {
+                if let Some(value) = after.get(field) {
+                    analytics_agent[field] = value.clone();
+                }
+            }
         }
         result.push(NotificationPostCommit::Analytics {
             observation: observation(Some(&analytics_agent)),
@@ -127,7 +133,9 @@ impl NotificationEffects for RuntimeNotificationEffects {
             method,
             "turn/started" | "turn/completed" | "thread/tokenUsage/updated"
         ) {
-            result.push(NotificationPostCommit::TokenRateUsage(observation(after)));
+            result.push(NotificationPostCommit::TokenRateUsage(observation(
+                after_observation.as_ref(),
+            )));
         }
         if matches!(outcome, DispatchOutcome::Written)
             && matches!(
@@ -136,7 +144,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
             )
         {
             result.push(NotificationPostCommit::TokenRateAssociation(observation(
-                after,
+                after_observation.as_ref(),
             )));
         }
         result
@@ -280,13 +288,12 @@ impl RuntimeNotificationPostCommitSink {
             .agent
             .as_ref()
             .ok_or(NotificationDispatchError::InvalidNotification)?;
-        let prepared = crate::analytics_capture::PreparedCapture::event(
+        let prepared = crate::analytics_capture::PreparedCapture::notification_event(
             agent,
             &observation.method,
             &observation.params,
             observation.observed_at,
             observation.observed_at,
-            crate::analytics_capture::CaptureSource::Live,
         )
         .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))?;
         let kind = match effect {
@@ -348,4 +355,55 @@ fn event_time(frame: &Value) -> Option<f64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observations_project_agents_and_share_immutable_params() {
+        let agent = serde_json::json!({
+            "id":"agent", "name":"Agent", "rootId":"root", "accountKey":"default",
+            "accountHistory":[], "provider":"codex", "threadId":"thread", "epoch":4,
+            "turnId":"turn", "inFlight":false, "model":"model", "effort":"high",
+            "fastMode":false, "daybreakEnabled":false, "cyberAccessProgram":false,
+            "cwd":"/workspace", "deletedAt":null, "unrelatedTranscript": "x".repeat(64 * 1024)
+        });
+        let frame = serde_json::json!({
+            "method":"turn/completed",
+            "params":{"threadId":"thread","turnId":"turn"}
+        });
+        let identity = ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 4,
+            cursor: 9,
+        };
+
+        let effects = RuntimeNotificationEffects.post_commit(
+            Some(&agent),
+            Some(&agent),
+            &frame,
+            &identity,
+            12.0,
+            &DispatchOutcome::Written,
+        );
+        let observations = effects
+            .iter()
+            .map(|effect| match effect {
+                NotificationPostCommit::Analytics { observation, .. }
+                | NotificationPostCommit::TokenRateUsage(observation) => observation,
+                _ => panic!("unexpected effect"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observations.len(), 2);
+        assert!(observations[0].params.shares_storage_with(&observations[1].params));
+        let analytics_agent = observations[0].agent.as_ref().expect("agent projection");
+        assert_eq!(analytics_agent["id"], "agent");
+        assert!(!analytics_agent.as_object().unwrap().contains_key("unrelatedTranscript"));
+        assert!(serde_json::to_value(&effects[0])
+            .expect("journal serialization")
+            .pointer("/observation/params/threadId")
+            .is_some());
+    }
 }

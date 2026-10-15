@@ -67,6 +67,27 @@ impl PreparedCapture {
         source: CaptureSource,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(agent)?;
+        Self::event_validated(agent, method, params, at, recorded_at, source)
+    }
+
+    pub(crate) fn notification_event(
+        agent: &Value,
+        method: &str,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+    ) -> Result<Self, CaptureError> {
+        Self::event_validated(agent, method, params, at, recorded_at, CaptureSource::Live)
+    }
+
+    fn event_validated(
+        agent: &Value,
+        method: &str,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, CaptureError> {
         if !params.is_object() {
             return Err(CaptureError::Invalid("/params"));
         }

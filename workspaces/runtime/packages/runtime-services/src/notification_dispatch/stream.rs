@@ -546,7 +546,7 @@ impl NotificationStreamBuffer {
             .retain(|sample_key| **sample_key != *key);
         if let Some(index) = self.indexes.analytics.get(key).copied() {
             let mut capture = self.analytics.remove(index).into_owned();
-            capture.observation.agent = Some(agent.clone());
+            capture.observation.agent = Some(super::SharedJson::agent_projection(agent));
             self.queue_effect(NotificationPostCommit::AnalyticsStream {
                 observation: capture.observation,
                 metrics: capture.metrics,

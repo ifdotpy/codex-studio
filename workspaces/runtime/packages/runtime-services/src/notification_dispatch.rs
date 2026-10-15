@@ -25,7 +25,7 @@ mod questions;
 mod snapshot;
 pub use effects::{
     NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
-    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
+    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics, SharedJson,
     RecoveredNotificationObservation, UnavailableNotificationEffects,
 };
 

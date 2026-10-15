@@ -22,7 +22,7 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
                 NotificationObservation {
                     agent: None,
                     method: key.method.clone(),
-                    params: params.clone(),
+                    params: SharedJson::new(params.clone()),
                     delivery: ProviderDeliveryIdentity {
                         provider_handle: "account:default".into(),
                         generation: 7,
