@@ -21,8 +21,11 @@ use studio_runtime_services::{
 use tokio::time::Instant;
 
 use super::extractors::ApiJson;
-use super::manifest::{OperationStatus, RouteGroup, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
 use crate::{error::ApiError, router::HttpState};
+
+const FORWARD_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("multi-server-runtime/orchestration")];
 
 struct SignedBrowserExchange {
     driver: Arc<OrchestrationDriver>,
