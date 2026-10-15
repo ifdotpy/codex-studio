@@ -643,7 +643,7 @@ impl State {
                 .bridge
                 .run(move |store| {
                     Ok(
-                        AgentRepository::get(&store.read()?, &AgentId::from(agent.as_str()))?
+                        AgentRepository::get(&*store.read()?, &AgentId::from(agent.as_str()))?
                             .expect("seed"),
                     )
                 })
@@ -2144,26 +2144,30 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
         },
     );
     observed.await.unwrap();
-    let before = state
-        .bridge
-        .faults
-        .count
-        .load(std::sync::atomic::Ordering::SeqCst);
     state.wake(&worker).await;
-    while state
-        .bridge
-        .faults
-        .count
-        .load(std::sync::atomic::Ordering::SeqCst)
-        == before
-    {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            state.bridge.faults.entered.notified(),
-        )
-        .await
-        .expect("setup barrier deadline");
-    }
+    let claim_identity = ("claim".to_owned(), 0, None);
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        loop {
+            if state
+                .bridge
+                .faults
+                .operations
+                .lock()
+                .unwrap()
+                .contains(&claim_identity)
+            {
+                break;
+            }
+            state.bridge.faults.entered.notified().await;
+        }
+    })
+    .await
+    .expect("claim operation reaches the writer-blocked store job");
+    assert_eq!(
+        state.bridge.slot.available_permits(),
+        0,
+        "the identified claim job holds the account slot while its writer is blocked"
+    );
     worker.cancel();
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
