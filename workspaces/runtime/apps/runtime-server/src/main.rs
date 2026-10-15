@@ -884,7 +884,8 @@ fn run_continuation_tick(
             .collect::<Result<Vec<_>, _>>()?;
     }
     drop(db);
-    let limits = account_state::limits_snapshots(&store.read()?)?
+    let limits_reader = store.read()?;
+    let limits = account_state::limits_snapshots(&limits_reader)?
         .snapshots
         .into_iter()
         .filter_map(|(account_key, value)| {
@@ -897,6 +898,7 @@ fn run_continuation_tick(
                 .map(|limits| (account_key, limits))
         })
         .collect::<BTreeMap<_, _>>();
+    drop(limits_reader);
     let mut changed = false;
     for agent_id in agents {
         let observations = limits.clone();

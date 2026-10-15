@@ -95,6 +95,7 @@ pub struct StoreBridge {
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
+    continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
@@ -111,6 +112,7 @@ impl StoreBridge {
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
+            continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
@@ -131,6 +133,18 @@ impl StoreBridge {
     }
     pub(crate) fn event_wake(&self) -> Arc<Notify> {
         self.event_wake
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub fn set_continuation_wake(&self, wake: Arc<Notify>) {
+        *self
+            .continuation_wake
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+    }
+    pub(crate) fn continuation_wake(&self) -> Arc<Notify> {
+        self.continuation_wake
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -1516,6 +1530,20 @@ impl Worker {
         effect: Option<Effect>,
     ) -> Result<(), WorkerError> {
         let cursor = entry.cursor;
+        let completed = match &entry.payload {
+            JournalPayload::Frame(Frame::Notification(frame)) => {
+                frame.method.as_str() == "turn/completed"
+            }
+            JournalPayload::Frame(Frame::UnknownMethod(frame))
+                if !frame.fields.contains_key("id") =>
+            {
+                frame.method.as_str() == "turn/completed"
+            }
+            _ => false,
+        };
+        if completed {
+            self.bridge.continuation_wake().notify_one();
+        }
         if let Some(effect) = effect {
             self.push(effect)?;
         }
