@@ -213,7 +213,7 @@ async fn update(
                     .map(RuleWriteResponse::Deleted)
             } else {
                 super::generated_json::<crate::generated::RuleRecordResponse>(result)
-                    .map(RuleWriteResponse::Record)
+                    .map(|value| RuleWriteResponse::Record(Box::new(value)))
             }
                 .map(|result| (result, cancel_ids))
             })
@@ -268,7 +268,7 @@ async fn update(
 #[serde(untagged)]
 enum RuleWriteResponse {
     Deleted(crate::generated::DeletedRuleReceipt),
-    Record(crate::generated::RuleRecordResponse),
+    Record(Box<crate::generated::RuleRecordResponse>),
 }
 
 fn rules_error(error: RulesError) -> ApiError {

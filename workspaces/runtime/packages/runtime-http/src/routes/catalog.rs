@@ -95,7 +95,7 @@ async fn limits(
                     ),
                 ));
             }
-            Err(error) => limit_error_snapshot(&state, &account_key, &error.to_string())?,
+            Err(error) => limit_error_snapshot(&state, account_key, &error.to_string())?,
         };
         return serde_json::from_value(response)
             .map(Json)

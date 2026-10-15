@@ -59,6 +59,11 @@ async fn delete(
     .await
 }
 
+type NativeActionPorts = (
+    Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
+);
+
 fn native_action_provider(
     store: &RuntimeStore,
     agent: &AgentRecord,
@@ -66,13 +71,7 @@ fn native_action_provider(
         Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
     configured_guest: Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
-) -> Result<
-    (
-        Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
-        Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
-    ),
-    ApiError,
-> {
+) -> Result<NativeActionPorts, ApiError> {
     if agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
         return host_port
             .map(|port| (port, configured_guest))
@@ -209,7 +208,7 @@ async fn native_action(
                     .iter()
                     .find(|row| row["id"] == account)
                     .and_then(|row| row["home"].as_str())
-                    .ok_or_else(|| ApiError::internal())?;
+                    .ok_or_else(ApiError::internal)?;
                 let mut resources = resources.as_ref().clone();
                 resources.account_home = provider_home.to_owned();
                 let resources = Arc::new(resources);
@@ -835,6 +834,7 @@ inventory::submit! {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod native_review_preflight_tests {
     use super::*;
     use base64::Engine;
@@ -1075,19 +1075,19 @@ mod native_review_preflight_tests {
                 params.clone(),
                 request_id.map(str::to_owned),
             ));
-            if method == "upload.begin" {
-                if let Some(store) = &self.intent_store {
-                    let connection = store.read().expect("read durable import intent");
-                    let agent = AgentRepository::get(&connection, &AgentId::from("vm-lead"))
-                        .expect("read VM lead")
-                        .expect("VM lead exists")
-                        .value();
-                    let intent = &agent["startAttempt"]["vmWorkspacePreparation"]["projectImport"];
-                    assert_eq!(intent["phase"], "uploading");
-                    assert!(intent["projectId"].as_str().is_some());
-                    assert!(intent["requestId"].as_str().is_some());
-                    assert!(intent["source"].as_str().is_some());
-                }
+            if method == "upload.begin"
+                && let Some(store) = &self.intent_store
+            {
+                let connection = store.read().expect("read durable import intent");
+                let agent = AgentRepository::get(&connection, &AgentId::from("vm-lead"))
+                    .expect("read VM lead")
+                    .expect("VM lead exists")
+                    .value();
+                let intent = &agent["startAttempt"]["vmWorkspacePreparation"]["projectImport"];
+                assert_eq!(intent["phase"], "uploading");
+                assert!(intent["projectId"].as_str().is_some());
+                assert!(intent["requestId"].as_str().is_some());
+                assert!(intent["source"].as_str().is_some());
             }
             if self.uncertain && method == "line.bind" {
                 return Err(

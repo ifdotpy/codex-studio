@@ -702,17 +702,16 @@ fn release_provider_ready_reservation(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
                 params![operation_id, operation.to_string()],
             )?;
-            if let Some(mut actor) = AgentRepository::get(tx, &AgentId::from(agent_id))? {
-                if actor
+            if let Some(mut actor) = AgentRepository::get(tx, &AgentId::from(agent_id))?
+                && actor
                     .extra
                     .get("workspaceReservationId")
                     .and_then(Value::as_str)
                     == Some(operation_id)
-                {
-                    actor.extra.remove("workspaceReservationId");
-                    actor.extra.insert("workspaceOperation".into(), Value::Null);
-                    AgentRepository::put(tx, &actor)?;
-                }
+            {
+                actor.extra.remove("workspaceReservationId");
+                actor.extra.insert("workspaceOperation".into(), Value::Null);
+                AgentRepository::put(tx, &actor)?;
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })

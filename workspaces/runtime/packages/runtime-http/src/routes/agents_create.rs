@@ -162,9 +162,8 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 || model == "sonnet"
                 || model == "opus"
                 || model == "haiku"
+                || account.provider.as_deref() == Some("claude")
             {
-                "anthropic"
-            } else if account.provider.as_deref() == Some("claude") {
                 "anthropic"
             } else {
                 "openai"
@@ -986,11 +985,10 @@ async fn create_lead_with_model(
             wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
         }
     }
-    if let Some(Some(review)) = body.review_defaults.as_ref() {
-        if let Some(model) = review.model.as_deref() {
-            wait_for_agent_catalog(&state, None, catalog_account.as_deref(), Some(model), true)
-                .await?;
-        }
+    if let Some(Some(review)) = body.review_defaults.as_ref()
+        && let Some(model) = review.model.as_deref()
+    {
+        wait_for_agent_catalog(&state, None, catalog_account.as_deref(), Some(model), true).await?;
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::lead(context, request)

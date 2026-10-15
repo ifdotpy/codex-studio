@@ -366,7 +366,7 @@ async fn write_project(
                     .map(ProjectWriteResponse::Sidebar)
             } else {
                 super::generated_json::<crate::generated::ProjectMutationRecord>(value)
-                    .map(ProjectWriteResponse::Mutation)
+                    .map(|value| ProjectWriteResponse::Mutation(Box::new(value)))
             }
         },
     )
@@ -508,24 +508,22 @@ fn local_project_registration(
         "requestId":operation_id});
     store
         .transaction_with(|tx| -> Result<(), ProjectsError> {
-            if physical_id != project_id {
-                if let Some((_, mut physical)) =
+            if physical_id != project_id
+                && let Some((_, mut physical)) =
                     studio_runtime_store::ProjectsRepository::get(tx, physical_id)?
-                {
-                    let mut aliases = physical
-                        .get("projectAliases")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
-                    aliases.retain(|alias| {
-                        alias.get("serverId").and_then(Value::as_str) != Some(local_server)
-                            || alias.get("projectId").and_then(Value::as_str)
-                                != Some(&project_id)
-                    });
-                    aliases.push(json!({"serverId":local_server,"projectId":project_id,"name":name}));
-                    physical["projectAliases"] = Value::Array(aliases);
-                    studio_runtime_store::ProjectsRepository::put_project(tx, &physical)?;
-                }
+            {
+                let mut aliases = physical
+                    .get("projectAliases")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                aliases.retain(|alias| {
+                    alias.get("serverId").and_then(Value::as_str) != Some(local_server)
+                        || alias.get("projectId").and_then(Value::as_str) != Some(&project_id)
+                });
+                aliases.push(json!({"serverId":local_server,"projectId":project_id,"name":name}));
+                physical["projectAliases"] = Value::Array(aliases);
+                studio_runtime_store::ProjectsRepository::put_project(tx, &physical)?;
             }
             let (_, mut logical) = studio_runtime_store::ProjectsRepository::get(tx, &project_id)?
                 .ok_or(ProjectsError::Invalid("project is unavailable"))?;
@@ -565,7 +563,7 @@ enum ProjectWriteResponse {
     RemoteRegistration(crate::generated::RemoteProjectRegistrationResponse),
     Removal(crate::generated::ProjectRemovalResponse),
     Sidebar(crate::generated::SidebarOrderResponse),
-    Mutation(crate::generated::ProjectMutationRecord),
+    Mutation(Box<crate::generated::ProjectMutationRecord>),
 }
 
 fn remote_project_write(

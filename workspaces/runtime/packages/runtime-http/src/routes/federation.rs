@@ -251,7 +251,7 @@ async fn manage(
             .await
             .map_err(|_| ApiError::internal())?
             .map_err(map_service_error)?;
-            return Ok(Json(result));
+            Ok(Json(result))
         }
         "status" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
