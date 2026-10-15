@@ -776,6 +776,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/project-secrets/remove"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "requestId": "ledger-remove-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
     ("POST", "/api/vault/setup/facts"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/vault/pull"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-pull", "to": "$projectPath"}, "replace_body": True, "expected": "2xx"}},
+    ("POST", "/api/vault/unlock"): {"primary": {"body": {"projectId": "ledger-project", "words": "fixture paper words"}, "replace_body": True, "expected": "2xx"}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
     },
@@ -1476,6 +1478,62 @@ finally:
     }
 
 
+def seed_vault_probe_fixture(backend: Any) -> Path:
+    """Install a disposable cached vault view and a closed fake Desk command."""
+    project_id = "ledger-project"
+    project = backend.vm_state / "layr-projects" / project_id
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "project.json").write_text(
+        json.dumps({"projectId": project_id, "source": str(backend.cwd)}),
+        encoding="utf-8",
+    )
+    (project / "vault.json").write_text(
+        json.dumps({"configured": True, "prefix": "ledger"}),
+        encoding="utf-8",
+    )
+    (project / "vault-site.json").write_text(
+        json.dumps({"site": "https://desk.example/"}),
+        encoding="utf-8",
+    )
+
+    fake_desk = backend.scratch_root / "fake-layr-desk"
+    fake_desk.write_text(
+        "\n".join([
+            "#!/bin/sh",
+            'case "$1" in',
+            "  unlock)",
+            '    [ "$#" -eq 7 ] && [ "$2" = --site ] && \\',
+            '      [ "$3" = https://desk.example/ ] && [ "$4" = --project ] && \\',
+            '      [ "$5" = ledger ] && [ "$6" = --paper-file ] && [ "$7" = - ] || exit 91',
+            '    IFS= read -r words || [ -n "$words" ]',
+            '    [ "$words" = \'fixture paper words\' ] || exit 92',
+            "    ;;",
+            "  service)",
+            '    [ "$2" = status ] && [ "$#" -eq 2 ] || exit 93',
+            '    printf \'%s\\n\' \'{"installed":false}\'',
+            "    ;;",
+            "  status)",
+            '    [ "$2" = --site ] && [ "$3" = https://desk.example/ ] && \\',
+            '      [ "$4" = --json ] && [ "$#" -eq 4 ] || exit 94',
+            '    printf \'%s\\n\' \'{"projects":[{"name":"ledger","unlocked":true}]}\'',
+            "    ;;",
+            "  pull)",
+            '    [ "$2" = --site ] && [ "$3" = https://desk.example/ ] && \\',
+            '      [ "$4" = --project ] && [ "$5" = ledger ] && \\',
+            '      [ "$6" = --to ] && [ -n "$7" ] && [ "$8" = --json ] && \\',
+            '      [ "$#" -eq 8 ] || exit 95',
+            '    printf \'%s\\n\' \'{"seq":7,"files":2,"bytes":1024}\'',
+            "    ;;",
+            "  *) exit 96 ;;",
+            "esac",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    fake_desk.chmod(0o700)
+    return fake_desk
+
+
 def analytics_probe_agent_identifier(backend: Any) -> str:
     """Return the analytics seed ID, isolated from copied user data."""
     prefix = backend.fixture_namespace if backend.copy_mode else ""
@@ -1799,7 +1857,16 @@ def probe_operations(
             analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend, python)
             identifiers["codexLogin"] = codex_login_id
-            backend.start()
+            fake_desk = seed_vault_probe_fixture(backend)
+            previous_desk = os.environ.get("STUDIO_LAYR_DESK_BIN")
+            os.environ["STUDIO_LAYR_DESK_BIN"] = str(fake_desk)
+            try:
+                backend.start()
+            finally:
+                if previous_desk is None:
+                    os.environ.pop("STUDIO_LAYR_DESK_BIN", None)
+                else:
+                    os.environ["STUDIO_LAYR_DESK_BIN"] = previous_desk
             token = backend.session["token"]
             rows = []
             for method, template in operations():

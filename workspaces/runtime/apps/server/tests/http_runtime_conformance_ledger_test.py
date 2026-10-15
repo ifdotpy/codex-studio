@@ -32,6 +32,72 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_vault_operation_probes_use_a_closed_local_fake_desk(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch_name:
+            scratch = Path(scratch_name)
+            backend = SimpleNamespace(
+                scratch_root=scratch,
+                vm_state=scratch / "vm-state",
+                cwd=scratch / "workspace",
+            )
+            backend.vm_state.mkdir()
+            backend.cwd.mkdir()
+            fake_desk = ledger.seed_vault_probe_fixture(backend)
+
+            project = backend.vm_state / "layr-projects" / "ledger-project"
+            self.assertEqual(
+                json.loads((project / "vault.json").read_text()),
+                {"configured": True, "prefix": "ledger"},
+            )
+            self.assertEqual(
+                json.loads((project / "vault-site.json").read_text()),
+                {"site": "https://desk.example/"},
+            )
+            self.assertTrue(fake_desk.is_relative_to(scratch))
+            self.assertEqual(fake_desk.stat().st_mode & 0o777, 0o700)
+
+            unlock = subprocess.run(
+                [str(fake_desk), "unlock", "--site", "https://desk.example/",
+                 "--project", "ledger", "--paper-file", "-"],
+                input=b"fixture paper words", capture_output=True, check=False,
+            )
+            self.assertEqual(unlock.returncode, 0, unlock.stderr)
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "service", "status"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"installed":false}\n',
+            )
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "status", "--site", "https://desk.example/", "--json"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"projects":[{"name":"ledger","unlocked":true}]}\n',
+            )
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "pull", "--site", "https://desk.example/",
+                     "--project", "ledger", "--to", str(scratch), "--json"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"seq":7,"files":2,"bytes":1024}\n',
+            )
+            rejected = subprocess.run(
+                [str(fake_desk), "provider-login"], capture_output=True, check=False,
+            )
+            self.assertEqual(rejected.returncode, 96)
+
+        self.assertEqual(
+            ledger.PROBE_CASES[("POST", "/api/vault/pull")]["primary"]["expected"],
+            "2xx",
+        )
+        self.assertEqual(
+            ledger.PROBE_CASES[("POST", "/api/vault/unlock")]["primary"]["expected"],
+            "2xx",
+        )
+
     def create_marked_copy(self, root: Path, *, with_agent: bool = True) -> Path:
         root.mkdir(parents=True, exist_ok=True)
         (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
