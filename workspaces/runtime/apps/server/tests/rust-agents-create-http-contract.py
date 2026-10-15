@@ -209,6 +209,9 @@ BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
     # oracle does not run that scheduler.
     "reviewArchiveAttempts", "reviewArchiveError", "reviewArchiveNextAt",
     "reviewArchiveScheduled",
+    # Native provider response callbacks mark the in-flight turn here
+    # (native_notifications/dispatch.py:advance_native_status).
+    "nativeResponseTurn",
     # Python's successful thread preparation callback records these even when
     # the provider reply omits them (codex_runtime.py:6477-6478).
     "approvalPolicy", "profile", "sandbox",
@@ -216,7 +219,7 @@ BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
 
 BACKGROUND_AGENT_FIELDS = BACKGROUND_CHILD_COMPLETION_FIELDS | frozenset({
     "status", "inFlight", "turnId", "turnEpoch", "events", "lastEvent",
-    "lastCompletedTurnError", "complaintMisses", "nativeResponseTurn", "worktree",
+    "lastCompletedTurnError", "complaintMisses", "worktree",
     "workspaceInGit", "canSend", "empty", "launcherAlive", "source",
     "nextTurnSettingsSupported", "readStateSupported",
 })
