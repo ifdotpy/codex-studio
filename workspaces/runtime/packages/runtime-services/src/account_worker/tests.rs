@@ -66,6 +66,10 @@ pub(super) struct Faults {
     pub(super) release_admission: tokio::sync::Notify,
     count: std::sync::atomic::AtomicUsize,
     pub(super) journal_count: std::sync::atomic::AtomicUsize,
+    pub(super) journal_transactions: std::sync::atomic::AtomicUsize,
+    pub(super) hold_journal_batch: std::sync::atomic::AtomicBool,
+    pub(super) journal_batch_ready: tokio::sync::Notify,
+    pub(super) release_journal_batch: tokio::sync::Notify,
     cycles: std::sync::atomic::AtomicUsize,
     cycled: tokio::sync::Notify,
     pause_at: std::sync::Mutex<Option<usize>>,
@@ -1839,6 +1843,72 @@ async fn acknowledged_journal_prefix_is_compacted() {
     }
     let rows = state.bridge.run(|store| Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?)).await.unwrap();
     assert_eq!(rows, 0);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn consecutive_journal_events_share_one_store_transaction() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state
+        .bridge
+        .faults
+        .hold_journal_batch
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let transactions_before = state
+        .bridge
+        .faults
+        .journal_transactions
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let committed_before = state
+        .bridge
+        .faults
+        .journal_count
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let first = peer
+        .frame(json!({"method":"test/batch","params":{"n":0}}))
+        .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.bridge.faults.journal_batch_ready.notified(),
+    )
+    .await
+    .expect("first journal pauses before collecting the available batch");
+    let mut last = first;
+    for n in 1..4 {
+        last = peer
+            .frame(json!({"method":"test/batch","params":{"n":n}}))
+            .await;
+    }
+    state
+        .bridge
+        .faults
+        .hold_journal_batch
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state.bridge.faults.release_journal_batch.notify_one();
+    peer.acknowledged(last).await;
+    let transactions_after = state
+        .bridge
+        .faults
+        .journal_transactions
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let committed_after = state
+        .bridge
+        .faults
+        .journal_count
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(transactions_after - transactions_before, 1);
+    assert_eq!(committed_after - committed_before, 4);
+    eprintln!(
+        "journal batch evidence: 4 events, {} transaction(s), {} committed entries",
+        transactions_after - transactions_before,
+        committed_after - committed_before
+    );
+    assert_eq!(
+        peer.acks.try_recv().map(|ack| ack.0),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
     worker.shutdown().await.unwrap();
 }
 

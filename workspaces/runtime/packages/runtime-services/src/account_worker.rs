@@ -46,6 +46,7 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
+const JOURNAL_BATCH_MAX: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1287,6 +1288,47 @@ impl Worker {
         Ok(())
     }
     async fn event(&mut self, event: SessionEvent) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        if event.outcomes.is_empty()
+            && event.journal.is_some()
+            && self
+                .bridge
+                .faults
+                .hold_journal_batch
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.bridge.faults.journal_batch_ready.notify_one();
+            self.bridge.faults.release_journal_batch.notified().await;
+        }
+        let mut ready = VecDeque::from([event]);
+        while let Some(event) = ready.pop_front() {
+            if event.outcomes.is_empty() && event.journal.is_some() {
+                let mut entries = vec![event.journal.expect("checked journal")];
+                while entries.len() < JOURNAL_BATCH_MAX {
+                    let next = ready.pop_front().or_else(|| self.events.try_recv().ok());
+                    let Some(next) = next else { break };
+                    if next.outcomes.is_empty() {
+                        if let Some(entry) = next.journal {
+                            entries.push(entry);
+                        } else {
+                            ready.push_front(next);
+                            break;
+                        }
+                    } else {
+                        ready.push_front(next);
+                        break;
+                    }
+                }
+                self.journal_batch(entries).await?;
+                self.complete_retained().await?;
+            } else {
+                self.event_one(event).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn event_one(&mut self, event: SessionEvent) -> Result<(), WorkerError> {
         let reclassify = !event.outcomes.is_empty();
         for outcome in event.outcomes {
             if let SessionOutcome::Write {
@@ -1394,32 +1436,50 @@ impl Worker {
         Ok(())
     }
     async fn journal(&mut self, entry: JournalEntry) -> Result<(), WorkerError> {
-        let cursor = entry.cursor;
+        self.journal_batch(vec![entry]).await
+    }
+    async fn journal_batch(&mut self, entries: Vec<JournalEntry>) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .journal_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
-        let (entry, previous, committed) = self
+        let (previous, committed) = self
             .db("journal", move |store| {
-                let result = store::journal(store, &account, &streams, &entry);
-                Ok((entry, streams, result))
+                let result = store::journal_batch(store, &account, &streams, entries);
+                Ok((streams, result))
             })
             .await?;
         self.streams = previous;
-        let Some((streams, effect)) = committed? else {
-            if self.deferred.len() == MAX_UNSETTLED {
-                return Err(WorkerError::Capacity);
-            }
-            self.deferred.push_back(entry);
-            return Ok(());
+        let Some((streams, committed, deferred)) = committed? else {
+            return Err(WorkerError::TaskFailed);
         };
+        if self.deferred.len().saturating_add(deferred.len()) > MAX_UNSETTLED {
+            return Err(WorkerError::Capacity);
+        }
+        self.deferred.extend(deferred);
         #[cfg(test)]
         self.bridge
             .faults
             .journal_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            .fetch_add(committed.len(), std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
         self.arm_flush();
         self.schedule_publication_drain();
         self.drain_publications().await?;
+        for (entry, effect) in committed {
+            self.journal_committed(entry, effect).await?;
+        }
+        Ok(())
+    }
+    async fn journal_committed(
+        &mut self,
+        entry: JournalEntry,
+        effect: Option<Effect>,
+    ) -> Result<(), WorkerError> {
+        let cursor = entry.cursor;
         if let Some(effect) = effect {
             self.push(effect)?;
         }

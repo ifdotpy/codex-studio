@@ -722,12 +722,57 @@ fn uncertain(
     }
     Ok(())
 }
-pub(super) fn journal(
+pub(super) fn journal_batch(
     store: &RuntimeStore,
     account: &str,
     streams: &NotificationStreamBuffer,
+    entries: Vec<JournalEntry>,
+) -> Result<
+    Option<(
+        NotificationStreamBuffer,
+        Vec<(JournalEntry, Option<Effect>)>,
+        Vec<JournalEntry>,
+    )>,
+    WorkerError,
+> {
+    if entries.is_empty() {
+        return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
+    }
+    let publication = crate::notification_dispatch::PublicationContext::load(store)?;
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        let mut next = streams.clone();
+        let mut committed = Vec::with_capacity(entries.len());
+        let mut deferred = Vec::new();
+        let mut persist_snapshot = false;
+        let mut entries = entries.into_iter();
+        while let Some(entry) = entries.next() {
+            match journal_one(tx, account, &publication, &next, &entry)? {
+                Some((updated, effect, changed)) => {
+                    next = updated;
+                    persist_snapshot |= changed;
+                    committed.push((entry, effect));
+                }
+                None => {
+                    deferred.push(entry);
+                    deferred.extend(entries);
+                    break;
+                }
+            }
+        }
+        if persist_snapshot {
+            persist_streams(tx, account, &next)?;
+        }
+        Ok(Some((next, committed, deferred)))
+    })
+}
+
+fn journal_one(
+    tx: &rusqlite::Transaction<'_>,
+    account: &str,
+    publication: &crate::notification_dispatch::PublicationContext,
+    streams: &NotificationStreamBuffer,
     entry: &JournalEntry,
-) -> Result<Option<(NotificationStreamBuffer, Option<Effect>)>, WorkerError> {
+) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
     let operation = format!(
         "journal:{account}:{}:{}",
         entry.generation.0, entry.cursor.0
@@ -741,239 +786,232 @@ pub(super) fn journal(
         JournalPayload::Exit(value) => json!({"exit":value}),
         JournalPayload::Other { kind, payload } => json!({"kind":kind,"payload":payload}),
     };
-    let publication = crate::notification_dispatch::PublicationContext::load(store)?;
     let digest = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
-    scheduler::lifecycle_transaction_with(store, |tx| {
-        if entry.cursor.0 <= checkpoint(tx, account, entry.generation.0)? {
-            return Ok(Some((streams.clone(), None)));
+    if entry.cursor.0 <= checkpoint(tx, account, entry.generation.0)? {
+        return Ok(Some((streams.clone(), None, false)));
+    }
+    if let Some(old) = receipt(tx, &operation, "settled")? {
+        if old["digest"] != digest {
+            return Err(invalid(&operation));
         }
-        if let Some(old) = receipt(tx, &operation, "settled")? {
-            if old["digest"] != digest {
-                return Err(invalid(&operation));
-            }
-            if old["committed"] == true {
-                return Ok(Some((streams.clone(), None)));
-            }
+        if old["committed"] == true {
+            return Ok(Some((streams.clone(), None, false)));
         }
-        replace(
-            tx,
-            &operation,
-            "settled",
-            json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
-        )?;
-        let mut next = streams.clone();
-        let mut effect = None;
-        let mut publications = Vec::new();
-        if let JournalPayload::Frame(frame) = &entry.payload {
-            let notice = match frame {
-                Frame::Notification(f) => {
-                    Some((f.method.as_str(), f.params.as_ref().unwrap_or(&Value::Null)))
-                }
-                Frame::UnknownMethod(f) if !f.fields.contains_key("id") => Some((
-                    f.method.as_str(),
-                    f.fields.get("params").unwrap_or(&Value::Null),
-                )),
-                _ => None,
-            };
-            if let Some(("command/exec/outputDelta", params)) = notice {
-                if let Some(process_id) = params
-                    .get("processId")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                {
-                    crate::monitor_event_queue::enqueue_output_in_transaction(
-                        tx,
-                        process_id,
-                        account,
-                        entry.generation.0,
-                        entry.cursor.0,
-                        params,
-                    )?;
-                }
+    }
+    replace(
+        tx,
+        &operation,
+        "settled",
+        json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
+    )?;
+    let mut next = streams.clone();
+    let mut effect = None;
+    let mut publications = Vec::new();
+    if let JournalPayload::Frame(frame) = &entry.payload {
+        let notice = match frame {
+            Frame::Notification(f) => {
+                Some((f.method.as_str(), f.params.as_ref().unwrap_or(&Value::Null)))
             }
-            if let Some((method, params)) = notice
-                && let Some(thread) = params["threadId"].as_str()
+            Frame::UnknownMethod(f) if !f.fields.contains_key("id") => Some((
+                f.method.as_str(),
+                f.fields.get("params").unwrap_or(&Value::Null),
+            )),
+            _ => None,
+        };
+        if let Some(("command/exec/outputDelta", params)) = notice {
+            if let Some(process_id) = params
+                .get("processId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
             {
-                let turn = params["turn"]["id"]
-                    .as_str()
-                    .or_else(|| params["turnId"].as_str());
-                let (_, attempt) = SchedulerRepository::find_attempt_for_thread(
+                crate::monitor_event_queue::enqueue_output_in_transaction(
                     tx,
+                    process_id,
                     account,
                     entry.generation.0,
-                    thread,
-                    turn,
+                    entry.cursor.0,
+                    params,
                 )?;
-                let attempt = match attempt {
-                    Some(attempt) => Some(attempt),
-                    None if method == "turn/completed" => {
-                        crate::context_repair::source_terminal_attempt(
-                            tx,
-                            account,
-                            entry.generation.0,
-                            params,
-                        )
-                        .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
-                            scope: "runtime_context_terminal_receipts".into(),
-                            id: thread.to_owned(),
-                        })?
-                        .map(|identity| (identity, true))
-                    }
-                    None => None,
-                };
-                if let Some((identity, bound)) = attempt {
-                    match method {
-                        "turn/started" => {
-                            if let Some(turn) = turn
-                                && let Some(interrupt) =
-                                    SchedulerRepository::observe_started(tx, &identity, turn)?
-                            {
-                                let agent = NotificationDispatchRepository::agent_record(
-                                    tx,
-                                    &identity.agent_id,
-                                )?
-                                .ok_or_else(|| invalid(&identity.agent_id))?;
-                                let frame = json!({"method":method,"params":params});
-                                let delivery = ProviderDeliveryIdentity {
-                                    provider_handle: ProviderHandle::for_account(account)
-                                        .as_str()
-                                        .into(),
-                                    generation: entry.generation.0,
-                                    cursor: entry.cursor.0,
-                                };
-                                next.queue_effects(
-                                    crate::notification_runtime_effects::RuntimeNotificationEffects
-                                        .post_commit(
-                                            Some(&agent),
-                                            Some(&agent),
-                                            &frame,
-                                            &delivery,
-                                            now(),
-                                            &crate::notification_dispatch::DispatchOutcome::Written,
-                                        ),
-                                );
-                                publications.push(next.take_post_commit()?);
-                                if interrupt {
-                                    effect = Some(Effect::Interrupt {
-                                        agent: identity.agent_id,
-                                        thread: thread.into(),
-                                        turn: turn.into(),
-                                    });
-                                }
-                            }
-                        }
-                        "turn/completed" => {
-                            if !bound {
-                                return Ok(None);
-                            }
-                            next = flush_notification_streams(
-                                tx,
-                                &identity.agent_id,
-                                &publication,
-                                streams,
-                                now(),
-                            )?
-                            .unwrap_or_else(|| streams.clone());
-                            publications.push(next.take_post_commit()?);
-                            let agent_before = NotificationDispatchRepository::agent_record(
+            }
+        }
+        if let Some((method, params)) = notice
+            && let Some(thread) = params["threadId"].as_str()
+        {
+            let turn = params["turn"]["id"]
+                .as_str()
+                .or_else(|| params["turnId"].as_str());
+            let (_, attempt) = SchedulerRepository::find_attempt_for_thread(
+                tx,
+                account,
+                entry.generation.0,
+                thread,
+                turn,
+            )?;
+            let attempt = match attempt {
+                Some(attempt) => Some(attempt),
+                None if method == "turn/completed" => {
+                    crate::context_repair::source_terminal_attempt(
+                        tx,
+                        account,
+                        entry.generation.0,
+                        params,
+                    )
+                    .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                        scope: "runtime_context_terminal_receipts".into(),
+                        id: thread.to_owned(),
+                    })?
+                    .map(|identity| (identity, true))
+                }
+                None => None,
+            };
+            if let Some((identity, bound)) = attempt {
+                match method {
+                    "turn/started" => {
+                        if let Some(turn) = turn
+                            && let Some(interrupt) =
+                                SchedulerRepository::observe_started(tx, &identity, turn)?
+                        {
+                            let agent = NotificationDispatchRepository::agent_record(
                                 tx,
                                 &identity.agent_id,
                             )?
                             .ok_or_else(|| invalid(&identity.agent_id))?;
-                            if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
-                                let agent_after = NotificationDispatchRepository::agent_record(
-                                    tx,
-                                    &identity.agent_id,
-                                )?
-                                .ok_or_else(|| invalid(&identity.agent_id))?;
-                                let frame = json!({"method":method,"params":params});
-                                let delivery = ProviderDeliveryIdentity {
-                                    provider_handle: ProviderHandle::for_account(account)
-                                        .as_str()
-                                        .into(),
-                                    generation: entry.generation.0,
-                                    cursor: entry.cursor.0,
-                                };
-                                next.queue_effects(
-                                    crate::notification_runtime_effects::RuntimeNotificationEffects
-                                        .post_commit(
-                                            Some(&agent_before),
-                                            Some(&agent_after),
-                                            &frame,
-                                            &delivery,
-                                            now(),
-                                            &crate::notification_dispatch::DispatchOutcome::Written,
-                                        ),
-                                );
-                                publications.push(next.take_post_commit()?);
-                                crate::notification_dispatch::prune_inactive_streams(
-                                    tx,
-                                    &mut next,
-                                    now(),
-                                    false,
-                                )?;
-                                effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
+                            let frame = json!({"method":method,"params":params});
+                            let delivery = ProviderDeliveryIdentity {
+                                provider_handle: ProviderHandle::for_account(account)
+                                    .as_str()
+                                    .into(),
+                                generation: entry.generation.0,
+                                cursor: entry.cursor.0,
+                            };
+                            next.queue_effects(
+                                crate::notification_runtime_effects::RuntimeNotificationEffects
+                                    .post_commit(
+                                        Some(&agent),
+                                        Some(&agent),
+                                        &frame,
+                                        &delivery,
+                                        now(),
+                                        &crate::notification_dispatch::DispatchOutcome::Written,
+                                    ),
+                            );
+                            publications.push(next.take_post_commit()?);
+                            if interrupt {
+                                effect = Some(Effect::Interrupt {
+                                    agent: identity.agent_id,
+                                    thread: thread.into(),
+                                    turn: turn.into(),
+                                });
                             }
                         }
-                        _ => {
-                            let dispatched = dispatch_notification_with_effects(
+                    }
+                    "turn/completed" => {
+                        if !bound {
+                            return Ok(None);
+                        }
+                        next = flush_notification_streams(
+                            tx,
+                            &identity.agent_id,
+                            &publication,
+                            streams,
+                            now(),
+                        )?
+                        .unwrap_or_else(|| streams.clone());
+                        publications.push(next.take_post_commit()?);
+                        let agent_before =
+                            NotificationDispatchRepository::agent_record(tx, &identity.agent_id)?
+                                .ok_or_else(|| invalid(&identity.agent_id))?;
+                        if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                            let agent_after = NotificationDispatchRepository::agent_record(
+                                tx,
+                                &identity.agent_id,
+                            )?
+                            .ok_or_else(|| invalid(&identity.agent_id))?;
+                            let frame = json!({"method":method,"params":params});
+                            let delivery = ProviderDeliveryIdentity {
+                                provider_handle: ProviderHandle::for_account(account)
+                                    .as_str()
+                                    .into(),
+                                generation: entry.generation.0,
+                                cursor: entry.cursor.0,
+                            };
+                            next.queue_effects(
+                                crate::notification_runtime_effects::RuntimeNotificationEffects
+                                    .post_commit(
+                                        Some(&agent_before),
+                                        Some(&agent_after),
+                                        &frame,
+                                        &delivery,
+                                        now(),
+                                        &crate::notification_dispatch::DispatchOutcome::Written,
+                                    ),
+                            );
+                            publications.push(next.take_post_commit()?);
+                            crate::notification_dispatch::prune_inactive_streams(
+                                tx,
+                                &mut next,
+                                now(),
+                                false,
+                            )?;
+                            effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
+                        }
+                    }
+                    _ => {
+                        let dispatched = dispatch_notification_with_effects(
+                            tx,
+                            &identity.agent_id,
+                            &publication,
+                            streams,
+                            &ProviderDeliveryIdentity {
+                                provider_handle: ProviderHandle::for_account(account)
+                                    .as_str()
+                                    .into(),
+                                generation: entry.generation.0,
+                                cursor: entry.cursor.0,
+                            },
+                            frame,
+                            now(),
+                            &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                        )?;
+                        publications.push(dispatched.post_commit);
+                        let staged = dispatched.stream_update.unwrap_or_else(|| streams.clone());
+                        next = if staged.pending_bytes() >= STREAM_FLUSH_BYTES {
+                            let flushed = flush_notification_streams(
                                 tx,
                                 &identity.agent_id,
                                 &publication,
-                                streams,
-                                &ProviderDeliveryIdentity {
-                                    provider_handle: ProviderHandle::for_account(account)
-                                        .as_str()
-                                        .into(),
-                                    generation: entry.generation.0,
-                                    cursor: entry.cursor.0,
-                                },
-                                frame,
+                                &staged,
                                 now(),
-                                &crate::notification_runtime_effects::RuntimeNotificationEffects,
                             )?;
-                            publications.push(dispatched.post_commit);
-                            let staged =
-                                dispatched.stream_update.unwrap_or_else(|| streams.clone());
-                            next = if staged.pending_bytes() >= STREAM_FLUSH_BYTES {
-                                let flushed = flush_notification_streams(
-                                    tx,
-                                    &identity.agent_id,
-                                    &publication,
-                                    &staged,
-                                    now(),
-                                )?;
-                                if let Some(mut flushed) = flushed {
-                                    publications.push(flushed.take_post_commit()?);
-                                    flushed
-                                } else {
-                                    staged
-                                }
+                            if let Some(mut flushed) = flushed {
+                                publications.push(flushed.take_post_commit()?);
+                                flushed
                             } else {
                                 staged
-                            };
-                        }
+                            }
+                        } else {
+                            staged
+                        };
                     }
                 }
             }
         }
-        for batch in &publications {
-            persist_publication_batch(tx, account, batch)?;
-        }
-        if let Some(effect) = &effect {
-            persist_effect(tx, account, effect)?;
-        }
-        persist_streams(tx, account, &next)?;
-        let callback = matches!(&entry.payload, JournalPayload::Frame(frame) if super::callback::response(frame).is_some());
-        replace(
-            tx,
-            &operation,
-            "settled",
-            json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
-        )?;
-        compact(tx, account, entry.generation.0)?;
-        Ok(Some((next, effect)))
-    })
+    }
+    for batch in &publications {
+        persist_publication_batch(tx, account, batch)?;
+    }
+    if let Some(effect) = &effect {
+        persist_effect(tx, account, effect)?;
+    }
+    let callback = matches!(&entry.payload, JournalPayload::Frame(frame) if super::callback::response(frame).is_some());
+    replace(
+        tx,
+        &operation,
+        "settled",
+        json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
+    )?;
+    compact(tx, account, entry.generation.0)?;
+    Ok(Some((next, effect, true)))
 }
 pub(super) fn save_recovery(
     store: &RuntimeStore,
