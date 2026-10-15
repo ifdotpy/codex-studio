@@ -24,6 +24,17 @@ PROVIDER_RUNNER_SPEC.loader.exec_module(PROVIDER_RUNNER)
 
 
 class ReplayProtocol(unittest.TestCase):
+    def test_malformed_checkpoint_reply_is_boundary_only(self):
+        name = "checkpoint-restore-malformed-thread-start"
+        path = (SERVER_TESTS_ROOT / "fixtures" / "provider-replay" / f"{name}.json")
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertIs(fixture.get("boundaryOnly"), True)
+        self.assertEqual(
+            fixture["rpcReplies"]["thread/start"]["message"], {"result": {}}
+        )
+        self.assertNotIn(name, PROVIDER_RUNNER.replayable_fixture_names())
+
     def test_dispatch_keeps_ordinary_rpc_order_and_overlaps_turn_starts(self):
         first_started = threading.Event()
         second_started = threading.Event()

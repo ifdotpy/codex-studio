@@ -1,4 +1,6 @@
 {
+  "source": "malformed app-server thread/start reply used by the checkpoint restore boundary contract",
+  "boundaryOnly": true,
   "rpcReplies": {
     "thread/start": {
       "direction": "in",
