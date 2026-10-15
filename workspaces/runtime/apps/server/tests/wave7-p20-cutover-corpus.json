@@ -3,30 +3,6 @@
     {
       "closures": [
         {
-          "closes": "NEW macOS layr-desk adapter (out of scope)",
-          "kind": "external_or_scope",
-          "owner": "NEW macOS layr-desk adapter (out of scope)"
-        }
-      ],
-      "dependency": "macos-platform/layr-desk",
-      "operation_count": 2,
-      "operations": ["POST /api/vault/pull", "POST /api/vault/unlock"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R3",
-          "kind": "external_or_scope",
-          "owner": "R3"
-        }
-      ],
-      "dependency": "account-driver/reset-credit-redemption",
-      "operation_count": 1,
-      "operations": ["POST /api/limits/reset"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -108,10 +84,10 @@
     }
   ],
   "counts": {
-    "implemented": 155,
-    "named_dependencies": 8,
+    "implemented": 158,
+    "named_dependencies": 6,
     "not_registered": 0,
-    "partial": 5,
+    "partial": 2,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -643,9 +619,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-driver/reset-credit-redemption"],
+      "dependencies": [],
       "operation": "POST /api/limits/reset",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -849,9 +825,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["macos-platform/layr-desk"],
+      "dependencies": [],
       "operation": "POST /api/vault/pull",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -864,9 +840,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["macos-platform/layr-desk"],
+      "dependencies": [],
       "operation": "POST /api/vault/unlock",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

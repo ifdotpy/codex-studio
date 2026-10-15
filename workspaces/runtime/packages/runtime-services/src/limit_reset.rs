@@ -397,14 +397,18 @@ pub fn consume_reset(
 
 #[cfg(test)]
 mod tests {
-    use super::{Attempt, RESET_OPERATION_PREFIX, consume_reset, read_attempts, save_attempt};
+    use super::{
+        Attempt, RESET_OPERATION_PREFIX, RESET_REQUEST_LOCK, consume_reset, read_attempts,
+        save_attempt,
+    };
     use crate::account_session_runtime::{
         AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use serde_json::{Value, json};
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
     use studio_runtime_store::RuntimeStore;
 
@@ -420,6 +424,9 @@ mod tests {
         replies: Mutex<VecDeque<Reply>>,
         requests: Mutex<Vec<(String, Value)>>,
         reads: Mutex<usize>,
+        assert_reset_lock: bool,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
     }
 
     impl FakeProvider {
@@ -439,6 +446,9 @@ mod tests {
                 replies: Mutex::new(replies.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
                 reads: Mutex::new(0),
+                assert_reset_lock: false,
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
             }
         }
     }
@@ -460,6 +470,14 @@ mod tests {
             request: ProviderRequest,
         ) -> Result<SessionReceipt, AccountSessionError> {
             assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
+            let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+            if self.assert_reset_lock {
+                assert!(
+                    RESET_REQUEST_LOCK.try_lock().is_err(),
+                    "the reset serialization lock must cover provider I/O"
+                );
+            }
             self.requests
                 .lock()
                 .unwrap()
@@ -472,7 +490,10 @@ mod tests {
                 .unwrap_or(Reply::Unknown);
             let (certainty, result, ticket) = match reply {
                 Reply::NotSent => (RequestCertainty::NotSent, None, None),
-                Reply::Unknown => return Err(AccountSessionError::Unknown),
+                Reply::Unknown => {
+                    self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                    return Err(AccountSessionError::Unknown);
+                }
                 Reply::Outcome(outcome) => (
                     RequestCertainty::Written,
                     Some(ProviderResponse::Reply(json!({"outcome":outcome}))),
@@ -483,6 +504,7 @@ mod tests {
                     }),
                 ),
             };
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
             Ok(SessionReceipt {
                 scope: self.scope.clone(),
                 operation: request.operation,
@@ -533,6 +555,44 @@ mod tests {
 
         assert_eq!(first["outcome"], "uncertain");
         assert_eq!(retry["outcome"], "reset");
+        let calls = provider.requests.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
+    }
+
+    #[test]
+    fn concurrent_retries_keep_one_provider_call_in_flight_per_attempt() {
+        let (_root, store) = store();
+        let mut provider = FakeProvider::new([Reply::Unknown, Reply::Outcome("reset")]);
+        provider.assert_reset_lock = true;
+        let provider = Arc::new(provider);
+        let store = Arc::new(store);
+        let request_id = "11000000-0000-4000-8000-000000000016";
+        let start = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let provider = Arc::clone(&provider);
+            let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                consume_reset(&store, &*provider, &request(request_id)).unwrap()
+            }));
+        }
+        start.wait();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(
+            results
+                .iter()
+                .any(|result| result["outcome"] == "uncertain")
+        );
+        assert!(results.iter().any(|result| result["outcome"] == "reset"));
+        assert_eq!(provider.max_in_flight.load(Ordering::SeqCst), 1);
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0], calls[1]);
