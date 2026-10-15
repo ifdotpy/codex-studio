@@ -707,8 +707,6 @@ pub(crate) fn routes() -> RouteGroup {
     // Account-readiness refusal is kept as a runtime condition, not a missing
     // implementation: Python raises the same ValueError for cross-account
     // children in codex_runtime.py:4928-4930.
-    const LEAD_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("cross-server-driver/local-identity")];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
     RouteGroup::new(vec![
@@ -721,7 +719,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/leads",
-            OperationStatus::partial(&LEAD_DEPENDENCIES),
+            OperationStatus::Implemented,
             create_lead,
         ),
         post(
@@ -1908,7 +1906,6 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-            "cross-server-driver/local-identity",
             "provider-session/title-generation",
             "account-driver/unavailable",
             "provider-session/model-list",

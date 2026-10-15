@@ -206,11 +206,11 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"action": "create_invite", "label": "Disposable test"},
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("tailscale-identity", response.json()["error"])
-        else:
-            self.assertEqual(response.status, 400, response.body[:1000])
+        # Python refuses this request because Serve has no public origin in
+        # the isolated fixture. Rust follows the same request-level contract;
+        # tailscale identity support is not needed to report that refusal.
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("Configure Tailscale Serve", response.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_audit_reads_empty_local_state(self) -> None:
@@ -292,9 +292,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(no_write_snapshot(self.backend.state), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
-    def test_multi_server_invite_refusal_names_missing_dependencies_without_writes(self) -> None:
-        if not self.rust_backend:
-            self.skipTest("Python runtime owns the existing invite writer")
+    def test_multi_server_invite_refuses_without_serve_origin_or_writes(self) -> None:
         before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
@@ -302,8 +300,47 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"action": "create_invite", "requestId": "invite-a", "label": "Disposable test"},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertIn("multi-server-runtime/pairing", response.json()["error"])
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("Configure Tailscale Serve HTTPS", response.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_multi_server_accept_and_ui_invite_refuse_before_peer_io(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        accept = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={
+                "action": "accept_invite",
+                "requestId": "accept-without-serve",
+                "invitation": {
+                    "protocol": 1,
+                    "serverId": "fixture-server",
+                    "origin": "https://peer.example.ts.net",
+                    "label": "Fixture peer",
+                    "publicKey": "fixture-public-key",
+                    "tailscaleUser": "owner@example.test",
+                    "expires": 4102444800,
+                    "inviteId": "fixture-invite",
+                    "token": "fixture-token",
+                },
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(accept.status, 400, accept.body[:1000])
+        self.assertIn("Configure Tailscale Serve HTTPS", accept.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+        ui_invite = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={
+                "action": "ui_invite",
+                "serverId": "unpaired-fixture-server",
+                "requestId": "ui-invite-unpaired",
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(ui_invite.status, 403, ui_invite.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_pair_refusal_does_not_write_or_contact_another_server(self) -> None:

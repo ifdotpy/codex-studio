@@ -222,6 +222,60 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ).fetchone()
         self.assertEqual(entity, (1,))
 
+    def test_local_location_write_uses_durable_receiver_and_replays_read_only(self) -> None:
+        folder = self.backend.root / "project-local-location-write"
+        folder.mkdir()
+        registered = self.backend.request(
+            "POST", "/api/projects", body={"path": str(folder), "name": "Local location"},
+            headers=self.headers(),
+        )
+        self.assertEqual(registered.status, 200, registered.body[:1000])
+        project_id = registered.json()["id"]
+        body = {
+            "action": "add_location",
+            "project": project_id,
+            "server": "local",
+            "path": str(folder.resolve()),
+            "request_id": "local-project-location-write",
+        }
+        applied = self.backend.request("POST", "/api/projects", body=body, headers=self.headers())
+        self.assertEqual(applied.status, 200, applied.body[:1000])
+        self.assertEqual(applied.json().get("outcome"), "applied")
+        self.assertEqual(self._project_record(project_id)["locations"][0]["path"], str(folder.resolve()))
+        before_retry = no_write_snapshot(self.backend.state)
+        replay = self.backend.request("POST", "/api/projects", body=body, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        # Mutation sync deltas are scoped to the current request and appear on
+        # the first response only; compare the durable operation receipt.
+        without_sync = lambda value: {
+            key: item for key, item in value.items()
+            if key not in {"_syncEntities", "_syncEntitiesAfter"}
+        }
+        self.assertEqual(without_sync(replay.json()), without_sync(applied.json()))
+        self.assertEqual(no_write_snapshot(self.backend.state), before_retry)
+
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            record = self._project_record(project_id)
+            record["locations"].append({
+                "serverId": "fixture-remote-server",
+                "path": "/remote/project",
+                "projectId": "project:remote",
+            })
+            database.execute(
+                "UPDATE runtime_projects SET record=? WHERE id=?",
+                (json.dumps(record), project_id),
+            )
+        removed = self.backend.request("POST", "/api/projects", body={
+            "action": "remove_location",
+            "project": project_id,
+            "server": "local",
+            "request_id": "local-project-location-remove",
+        }, headers=self.headers())
+        self.assertEqual(removed.status, 200, removed.body[:1000])
+        self.assertEqual(removed.json().get("outcome"), "applied")
+        remaining = self._project_record(project_id)["locations"]
+        self.assertEqual([location["serverId"] for location in remaining], ["fixture-remote-server"])
+
     def test_invalid_registration_refuses_without_writing(self) -> None:
         before = self._project_count()
         response = self.backend.request(

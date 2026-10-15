@@ -32,8 +32,17 @@ pub fn manage_with_origin(
     body: &Value,
     public_origin: Option<&str>,
 ) -> Result<Value, FederationError> {
+    manage_with_origin_and_whoami(store, body, public_origin, None)
+}
+
+pub fn manage_with_origin_and_whoami(
+    store: &RuntimeStore,
+    body: &Value,
+    public_origin: Option<&str>,
+    whoami: Option<&Value>,
+) -> Result<Value, FederationError> {
     if body.get("action").and_then(Value::as_str) == Some("create_invite") {
-        return create_invitation(store, body, public_origin);
+        return create_invitation(store, body, public_origin, whoami);
     }
     if body.get("action").and_then(Value::as_str) == Some("accept_peer") {
         return accept_peer(store, body, public_origin);
@@ -92,6 +101,7 @@ fn create_invitation(
     store: &RuntimeStore,
     body: &Value,
     public_origin: Option<&str>,
+    whoami: Option<&Value>,
 ) -> Result<Value, FederationError> {
     let origin = public_origin
         .and_then(|value| crate::remote_transport::validate_federation_origin(value).ok())
@@ -158,6 +168,20 @@ fn create_invitation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase);
+    let tailscale_user = whoami
+        .and_then(|value| value.get("user"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let tailscale_status = if tailscale_user.is_some()
+        && whoami
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            == Some("verified")
+    {
+        "verified"
+    } else {
+        "unavailable"
+    };
     let record = json!({
         "id": invite_id,
         "tokenHash": studio_runtime_store::sha256_hex(token.as_bytes()),
@@ -168,8 +192,8 @@ fn create_invitation(
     });
     store.transaction_with(|tx| {
         tx.execute(
-            "UPDATE runtime_federation_identity SET record=json_set(record,'$.label',?1,'$.leadName',?2) WHERE id='local'",
-            rusqlite::params![label, lead_name],
+            "UPDATE runtime_federation_identity SET record=json_set(record,'$.label',?1,'$.leadName',?2,'$.tailscaleUser',?3,'$.tailscaleStatus',?4) WHERE id='local'",
+            rusqlite::params![label, lead_name, tailscale_user, tailscale_status],
         )?;
         tx.execute(
             "INSERT INTO runtime_federation_invites(id,record) VALUES(?1,?2)",
@@ -186,8 +210,8 @@ fn create_invitation(
         "leadName": lead_name,
         "origin": origin,
         "publicKey": identity.public_key_pem(),
-        "tailscaleUser": Value::Null,
-        "tailscaleStatus": "unavailable",
+        "tailscaleUser": tailscale_user,
+        "tailscaleStatus": tailscale_status,
         "expires": expires,
     });
     Ok(json!({
@@ -329,6 +353,49 @@ fn accept_peer(
         })?;
     }
     snapshot(store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manage_with_origin_and_whoami;
+    use serde_json::json;
+
+    #[test]
+    fn create_invite_uses_injected_tailscale_whoami_without_host_access() {
+        let root = tempfile::tempdir().expect("isolated federation state");
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .expect("runtime store opens");
+        manage_with_origin_and_whoami(
+            &store,
+            &json!({"action":"set_enabled","enabled":true}),
+            None,
+            None,
+        )
+        .expect("federation can be enabled locally");
+        let whoami = json!({"status":"verified","user":"owner@example.test","node":"node-1"});
+        let result = manage_with_origin_and_whoami(
+            &store,
+            &json!({"action":"create_invite","label":"Test server"}),
+            Some("https://studio.example.ts.net"),
+            Some(&whoami),
+        )
+        .expect("fake whoami invitation succeeds");
+        assert_eq!(result["invitation"]["tailscaleUser"], "owner@example.test");
+        assert_eq!(result["invitation"]["tailscaleStatus"], "verified");
+        let identity = store
+            .read_transaction(|tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_federation_identity WHERE id='local'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .expect("identity row reads");
+        let identity: serde_json::Value = serde_json::from_str(&identity).expect("identity JSON");
+        assert_eq!(identity["tailscaleUser"], "owner@example.test");
+        assert_eq!(identity["tailscaleStatus"], "verified");
+    }
 }
 
 fn local_lead_name(store: &RuntimeStore) -> Result<String, FederationError> {

@@ -5,6 +5,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_services::federation_credentials::CredentialError;
@@ -43,7 +44,11 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server",
-            OperationStatus::partial(MANAGEMENT_DEPENDENCIES),
+            if cfg!(unix) {
+                OperationStatus::Implemented
+            } else {
+                OperationStatus::partial(MANAGEMENT_DEPENDENCIES)
+            },
             manage,
         ),
         post(
@@ -133,7 +138,7 @@ async fn audit(
 async fn manage(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<crate::generated::AccessSnapshot>, ApiError> {
+) -> Result<Response, ApiError> {
     if !cfg!(unix) {
         return Err(unavailable_for(
             "POST",
@@ -145,6 +150,63 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if action == "create_invite" {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials;
+        let origin = state.public_origin;
+        let whoami = state.tailscale_whoami;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server/invite",
+            move || {
+                if origin.as_deref().is_none_or(str::is_empty) {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Configure Tailscale Serve HTTPS before pairing",
+                    ));
+                }
+                let identity = credentials
+                    .identity(&store, origin.as_deref())
+                    .map_err(map_credential_error)?;
+                let owner = whoami
+                    .and_then(|probe| probe())
+                    .and_then(|value| tailscale_login(&value))
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "The Tailscale owner identity is unavailable",
+                        )
+                    })?;
+                multi_server::create_invite(&store, &identity, &body, "local", Some(&owner))
+                    .map_err(map_service_error)
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(result).into_response());
+    }
+    if action == "accept_invite" {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials;
+        let origin = state.public_origin.clone();
+        let whoami = state.tailscale_whoami;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server/accept-invite",
+            move || accept_invite(&store, &credentials, origin.as_deref(), whoami, &body),
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(result).into_response());
+    }
+    if action == "ui_invite" {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server/ui-invite",
+            move || ui_invite(&store, &body),
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(result).into_response());
+    }
     if action == "discover"
         && let Some(origin) = state.public_origin.clone()
     {
@@ -166,9 +228,12 @@ async fn manage(
         )
         .await
         .map_err(|_| ApiError::internal())??;
-        return Ok(Json(super::generated_json::<
-            crate::generated::AccessSnapshot,
-        >(result)?));
+        return Ok(
+            Json(super::generated_json::<crate::generated::AccessSnapshot>(
+                result,
+            )?)
+            .into_response(),
+        );
     }
     if matches!(
         action,
@@ -232,15 +297,278 @@ async fn manage(
         )
         .await
         .map_err(|_| ApiError::internal())??;
-        return Ok(Json(super::generated_json::<
-            crate::generated::AccessSnapshot,
-        >(result)?));
+        return Ok(
+            Json(super::generated_json::<crate::generated::AccessSnapshot>(
+                result,
+            )?)
+            .into_response(),
+        );
     }
     Err(unavailable_for(
         "POST",
         "/api/multi-server",
         MANAGEMENT_DEPENDENCIES,
     ))
+}
+
+fn tailscale_login(value: &Value) -> Option<String> {
+    value
+        .get("ownerLogin")
+        .or_else(|| value.get("user"))
+        .or_else(|| {
+            value
+                .get("UserProfile")
+                .or_else(|| value.get("User"))
+                .and_then(|user| user.get("LoginName").or_else(|| user.get("Name")))
+        })?
+        .as_str()
+        .filter(|login| !login.trim().is_empty() && login.len() <= 254)
+        .map(|login| login.trim().to_ascii_lowercase())
+}
+
+fn accept_invite(
+    store: &studio_runtime_store::RuntimeStore,
+    credentials: &studio_runtime_services::federation_credentials::Credentials,
+    local_origin: Option<&str>,
+    whoami: Option<std::sync::Arc<dyn Fn() -> Option<Value> + Send + Sync>>,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    let invitation = body
+        .get("invitation")
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
+    let server_id = invitation["serverId"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
+    let origin = invitation["origin"]
+        .as_str()
+        .and_then(|value| remote_transport::validate_federation_origin(value).ok())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
+    let public_key = invitation["publicKey"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
+    if invitation["protocol"]
+        != studio_runtime_services::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The invitation is invalid",
+        ));
+    }
+    let request_id = body["requestId"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The invitation is invalid"))?;
+    let origin_local = local_origin
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Configure Tailscale Serve HTTPS before pairing",
+            )
+        })?;
+    let owner = whoami
+        .and_then(|probe| probe())
+        .and_then(|value| tailscale_login(&value))
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The Tailscale owner identity is unavailable",
+            )
+        })?;
+    let local = credentials
+        .identity(store, Some(origin_local))
+        .map_err(map_credential_error)?;
+    let local_id = local["serverId"].as_str().unwrap_or_default();
+    let local_label = local["label"].as_str().unwrap_or("Studio server");
+    let request_body = serde_json::json!({
+        "protocol": studio_runtime_services::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION,
+        "inviteId": invitation["inviteId"], "token": invitation["token"],
+        "clientId": local_id, "label": local_label, "kind": "server",
+        "publicKey": local["publicKey"], "origin": origin_local, "requestId": request_id,
+    });
+    let raw = remote_transport::canonical_json(&request_body)
+        .map_err(|_| ApiError::internal())?
+        .into_bytes();
+    let identity = remote_transport::load_multi_server_identity(store.root())
+        .map_err(|_| ApiError::internal())?;
+    let timestamp = unix_time_seconds()?;
+    let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
+    let url = format!("{origin}/api/multi-server/v1/pair");
+    let response = remote_transport::exchange_multi_server(
+        store,
+        &identity,
+        &MultiServerExchangeInput {
+            server_id,
+            method: "POST",
+            url: &url,
+            request_id,
+            timestamp,
+            nonce: &nonce,
+            body: &raw,
+            expected_public_key: public_key,
+            timeout: std::time::Duration::from_secs(15),
+        },
+        timestamp,
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The pairing outcome is unknown. Keep the request ID",
+        )
+    })?;
+    if response["paired"] != true
+        || response["serverId"] != server_id
+        || response["publicKey"] != public_key
+        || response["origin"] != origin
+        || response["clientId"] != local_id
+        || response["tailscaleUser"] != owner
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The paired server identity does not match the invitation",
+        ));
+    }
+    let now = timestamp as f64;
+    let prior = store
+        .read_transaction(|tx| {
+            tx.query_row(
+                "SELECT record FROM runtime_access_clients WHERE id=?1",
+                [server_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .map_err(ApiError::stored)?;
+    if let Some(prior) = prior {
+        let prior: Value = serde_json::from_str(&prior).map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Invalid stored object runtime_access_clients",
+            )
+        })?;
+        if prior["status"] != "paired" || prior["publicKey"] != public_key {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "The server identity is already registered or revoked",
+            ));
+        }
+    } else {
+        let record = serde_json::json!({"id":server_id,"clientId":server_id,"serverId":server_id,"kind":"server","origin":origin,"publicKey":public_key,"label":invitation["label"],"tailscaleUser":response["tailscaleUser"],"status":"paired","created":now,"lastAccess":null,"revoked":null});
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    rusqlite::params![server_id, record.to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_access_audit(client,actor,action,created) VALUES(?1,'local','accept_invite',?2)",
+                    rusqlite::params![server_id, now],
+                )?;
+                Ok(())
+            })
+            .map_err(ApiError::stored)?;
+    }
+    multi_server::snapshot(store, &local).map_err(map_service_error)
+}
+
+fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result<Value, ApiError> {
+    let server_id = body["serverId"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The server ID is invalid"))?;
+    let request_id = body["requestId"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The request ID is invalid"))?;
+    let peer: Value = store.read_transaction(|tx| {
+        tx.query_row("SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'", [server_id], |row| row.get::<_, String>(0))
+            .optional()?
+            .map(|raw| serde_json::from_str(&raw).map_err(|_| studio_runtime_store::StoreError::SchemaMismatch("invalid stored object runtime_access_clients".into())))
+            .transpose()
+            .map(|value| value.unwrap_or(Value::Null))
+    }).map_err(ApiError::stored)?;
+    if peer.is_null() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The server is not paired or is revoked",
+        ));
+    }
+    let origin = peer["origin"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The remote server identity is unavailable",
+            )
+        })?;
+    let public_key = peer["publicKey"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The remote server identity is unavailable",
+            )
+        })?;
+    let identity = remote_transport::load_multi_server_identity(store.root())
+        .map_err(|_| ApiError::internal())?;
+    let local_id = identity.id();
+    let key = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-ui-invite:{local_id}:{server_id}:{request_id}").as_bytes(),
+    )
+    .to_string();
+    let request_body = serde_json::json!({"action":"create_invite","requestId":key});
+    let raw = remote_transport::canonical_json(&request_body)
+        .map_err(|_| ApiError::internal())?
+        .into_bytes();
+    let timestamp = unix_time_seconds()?;
+    let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
+    let url = format!("{origin}/api/multi-server");
+    let result = remote_transport::exchange_multi_server(
+        store,
+        &identity,
+        &MultiServerExchangeInput {
+            server_id,
+            method: "POST",
+            url: &url,
+            request_id: &key,
+            timestamp,
+            nonce: &nonce,
+            body: &raw,
+            expected_public_key: public_key,
+            timeout: std::time::Duration::from_secs(15),
+        },
+        timestamp,
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The UI invitation outcome is unknown. Keep the request ID",
+        )
+    })?;
+    let invitation = &result["invitation"];
+    if invitation["serverId"] != server_id
+        || invitation["origin"] != origin
+        || invitation["publicKey"] != public_key
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The UI invitation does not match the paired server",
+        ));
+    }
+    Ok(result)
+}
+
+fn unix_time_seconds() -> Result<i64, ApiError> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal())?
+        .as_secs() as i64)
 }
 
 fn remote_set_server_name(
@@ -608,7 +936,61 @@ mod tests {
         .await
         .expect("fake discovery succeeds");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(response.0.settings.auto_pair, true);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .expect("small snapshot body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("snapshot JSON")["settings"]["autoPair"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn create_invite_uses_injected_tailscale_identity_without_host_access() {
+        let root = tempfile::tempdir().expect("isolated multi-server state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .expect("runtime store opens"),
+        );
+        let credentials =
+            Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().display().to_string(),
+            12345,
+            Some("https://local.example.ts.net".into()),
+            Some(Arc::clone(&store)),
+            None,
+        )
+        .with_credentials(credentials)
+        .with_tailscale_whoami(Arc::new(|| {
+            Some(serde_json::json!({"status":"verified","user":"owner@example.test"}))
+        }));
+        let response = manage(
+            State(state),
+            ApiJson(serde_json::json!({
+                "action":"create_invite",
+                "requestId":"fake-owner-invite",
+                "label":"Fixture server"
+            })),
+        )
+        .await
+        .expect("fake Tailscale identity creates an invite");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .expect("small invitation response");
+        let body: Value = serde_json::from_slice(&body).expect("invitation JSON");
+        assert_eq!(body["invitation"]["tailscaleUser"], "owner@example.test");
+        assert_eq!(body["invitation"]["label"], "Fixture server");
+        assert!(
+            !body["invitation"]["token"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
     }
 }
 
@@ -617,10 +999,6 @@ inventory::submit! {
         name: "multi_server",
         routes: Some(routes),
         dependencies: &[
-            "multi-server-runtime/orchestration",
-            "multi-server-runtime/pairing",
-            "remote-transport/owner-lookup",
-            "remote-transport/signed-server-requests",
             "remote-transport/tailscale-discovery",
             "server-credentials/platform-support",
         ],

@@ -1338,11 +1338,13 @@ impl OrchestrationDriver {
         now: i64,
         timeout: std::time::Duration,
     ) -> Result<ExchangeOutcome, AccessError> {
+        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        let is_local = !local_server.is_empty() && server == local_server;
         let envelope = Envelope::from_value(
             &json!({"requestId":request_id,"action":action,"payload":payload}),
         )?;
         let decision=self.store.transaction_with(|tx| {
-            require_paired(tx,server)?;
+            if !is_local { require_paired(tx,server)?; }
             if retired(tx,&envelope.key,"out",&envelope.fingerprint,Some(server))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
             let saved=outbox(tx,&envelope.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&envelope.fingerprint,Some(server),true,&envelope.action,now)?;
@@ -1355,9 +1357,15 @@ impl OrchestrationDriver {
             return Ok(result);
         }
         // The claim is committed before crossing the transport boundary.
-        let result = match self.transport.exchange(server, &envelope.value(), timeout) {
-            Ok(value) => ExchangeOutcome::from_value(&value, &envelope.key, now)
-                .unwrap_or(ExchangeOutcome::Unknown),
+        let exchange = if is_local {
+            self.receive(&local_server, &envelope.value(), now)
+        } else {
+            self.transport
+                .exchange(server, &envelope.value(), timeout)
+                .and_then(|value| ExchangeOutcome::from_value(&value, &envelope.key, now))
+        };
+        let result = match exchange {
+            Ok(value) => value,
             Err(_) => ExchangeOutcome::Unknown,
         };
         self.finish(
@@ -1377,6 +1385,8 @@ impl OrchestrationDriver {
         value: &Value,
         now: i64,
     ) -> Result<ExchangeOutcome, AccessError> {
+        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        let is_local = !local_server.is_empty() && principal == local_server;
         let envelope = Envelope::from_value(value)?;
         if !self.effects.supports(&envelope.action) {
             return Err(refused(
@@ -1387,7 +1397,7 @@ impl OrchestrationDriver {
         }
         let signature = envelope.incoming_signature(principal)?;
         let decision=self.store.transaction_with(|tx| {
-            require_paired(tx,principal)?;
+            if !is_local { require_paired(tx,principal)?; }
             if retired(tx,&envelope.key,"in",&signature,None)? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
             let saved=inbox(tx,&envelope.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&signature,None,false,&envelope.action,now)?;

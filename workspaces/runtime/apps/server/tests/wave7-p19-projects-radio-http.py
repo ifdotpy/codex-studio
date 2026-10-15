@@ -122,7 +122,11 @@ class HostProjectsRadio(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(env.json().get("workerEnvironment", "host"), "host")
         before = no_write_snapshot(self.backend.state)
         remote = self.backend.request("POST", "/api/projects", body=dict(action="register", path=str(path), server="remote", request_id="p19-remote"), headers=self.headers())
-        self.assertEqual(remote.status, 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 403, remote.body[:1000])
+        # Python resolves the unknown remote server as an unpaired-server
+        # refusal. The Rust route has the same contract when the fixture has
+        # no paired remote server.
+        self.assertEqual(remote.status, 403, remote.body[:1000])
+        self.assertEqual(remote.json().get("error"), "The server is not paired or is revoked")
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_04_project_account_base_sidebar_and_folder_operations(self):

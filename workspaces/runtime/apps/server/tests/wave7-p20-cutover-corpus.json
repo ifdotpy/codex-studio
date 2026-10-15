@@ -240,52 +240,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server-driver/local-identity",
-      "operation_count": 1,
-      "operations": ["POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server-driver/project-location-write",
-      "operation_count": 1,
-      "operations": ["POST /api/projects"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
           "closes": "Wave 7 P12 Completion/continuations",
           "kind": "open_task",
           "owner": "P12"
@@ -294,47 +248,6 @@
       "dependency": "event-driver/queue-mutations",
       "operation_count": 1,
       "operations": ["POST /api/capacity-retry"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        },
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        }
-      ],
-      "dependency": "federation-driver/rooms",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/orchestration",
-      "operation_count": 1,
-      "operations": ["POST /api/multi-server"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/pairing",
-      "operation_count": 1,
-      "operations": ["POST /api/multi-server"]
     },
     {
       "closures": [
@@ -359,42 +272,6 @@
       "dependency": "provider-session/title-generation",
       "operation_count": 1,
       "operations": ["POST /api/rename"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/owner-lookup",
-      "operation_count": 1,
-      "operations": ["POST /api/multi-server"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/signed-server-requests",
-      "operation_count": 1,
-      "operations": ["POST /api/multi-server"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/tailscale-identity",
-      "operation_count": 1,
-      "operations": ["POST /api/federation"]
     },
     {
       "closures": [
@@ -470,10 +347,10 @@
     }
   ],
   "counts": {
-    "implemented": 145,
-    "named_dependencies": 34,
+    "implemented": 149,
+    "named_dependencies": 25,
     "not_registered": 0,
-    "partial": 15,
+    "partial": 11,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -989,9 +866,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["remote-transport/tailscale-identity"],
+      "dependencies": [],
       "operation": "POST /api/federation",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1019,9 +896,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["cross-server-driver/local-identity"],
+      "dependencies": [],
       "operation": "POST /api/leads",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["account-driver/reset-credit-redemption"],
@@ -1046,8 +923,6 @@
     {
       "dependencies": [
         "capacity-retry/store",
-        "cross-server/remote-events",
-        "federation-driver/rooms",
         "payload-store/uploads",
         "workspace-policy/message-admission"
       ],
@@ -1065,14 +940,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "multi-server-runtime/orchestration",
-        "multi-server-runtime/pairing",
-        "remote-transport/owner-lookup",
-        "remote-transport/signed-server-requests"
-      ],
+      "dependencies": [],
       "operation": "POST /api/multi-server",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1135,9 +1005,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["cross-server-driver/project-location-write"],
+      "dependencies": [],
       "operation": "POST /api/projects",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

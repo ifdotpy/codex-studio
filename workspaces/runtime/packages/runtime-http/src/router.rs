@@ -4,6 +4,7 @@ use axum::http::{Request, StatusCode};
 use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,6 +86,7 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub(crate) server_discovery:
         Option<Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>>,
+    pub(crate) tailscale_whoami: Option<Arc<dyn Fn() -> Option<Value> + Send + Sync>>,
     pub(crate) project_secrets_guest:
         Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
     pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
@@ -231,6 +233,7 @@ impl HttpState {
             browser_host_local_forwarder,
             orchestration_driver,
             server_discovery: None,
+            tailscale_whoami: None,
             project_secrets_guest: None,
             vault_job_client: None,
             vault_host_command: None,
@@ -293,6 +296,15 @@ impl HttpState {
         discovery: Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>,
     ) -> Self {
         self.server_discovery = Some(discovery);
+        self
+    }
+
+    /// Attach the host Tailscale whoami probe used when creating federation invites.
+    pub fn with_tailscale_whoami(
+        mut self,
+        whoami: Arc<dyn Fn() -> Option<Value> + Send + Sync>,
+    ) -> Self {
+        self.tailscale_whoami = Some(whoami);
         self
     }
 

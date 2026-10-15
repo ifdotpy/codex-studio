@@ -455,6 +455,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "ServerIdentityResponse",
         "DiscoveryIdentity",
         "ServerOperationRequest",
+        "ServerOperationResponse",
         "AutoPairRequest",
         "DevicePairRequest",
         "AgentRecordResponse",
@@ -691,7 +692,7 @@ fn escape_pointer(value: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{initialize, registry_for_document, table_schema, validate};
+    use super::{first_error, initialize, registry_for_document, table_schema, validate};
 
     #[test]
     fn generated_agent_contracts_supply_runtime_capacity_values() {
@@ -953,5 +954,22 @@ mod tests {
     #[test]
     fn unknown_schema_names_are_configuration_errors() {
         assert!(validate("MissingRecordSchema", &json!({})).is_err());
+    }
+
+    #[test]
+    fn server_operation_response_schema_is_available_at_http_boundary() {
+        assert_eq!(
+            first_error(
+                "ServerOperationResponse",
+                &json!({"requestId":"request-1","outcome":"applied","value":{"ok":true}})
+            )
+            .expect("response schema is compiled"),
+            None
+        );
+        assert!(
+            first_error("ServerOperationResponse", &json!({"outcome":"applied"}))
+                .expect("response schema is compiled")
+                .is_some()
+        );
     }
 }

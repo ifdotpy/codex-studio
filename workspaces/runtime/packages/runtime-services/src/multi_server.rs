@@ -1,9 +1,13 @@
 //! Local multi-server access projections and state mutations.
 use crate::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ring::hmac;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{MultiServerRepository, RuntimeStore, StoreError};
 use thiserror::Error;
+
+const INVITATION_TTL_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Error)]
 pub enum MultiServerError {
@@ -91,6 +95,142 @@ pub fn manage(
         Ok(())
     })?;
     snapshot(store, identity)
+}
+
+/// Create a single-use signed pairing invitation. The token is deterministically
+/// recoverable from the saved invite and request ID, so an exact retry returns
+/// the same secret without replacing the durable invitation.
+pub fn create_invite(
+    store: &RuntimeStore,
+    identity: &Value,
+    body: &Value,
+    actor: &str,
+    tailscale_user: Option<&str>,
+) -> Result<Value, MultiServerError> {
+    let request_id = body
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|value| valid_identifier(value))
+        .ok_or_else(|| MultiServerError::Refused("Invalid request ID".into()))?;
+    let origin = identity
+        .get("origin")
+        .and_then(Value::as_str)
+        .and_then(|value| crate::remote_transport::validate_federation_origin(value).ok())
+        .ok_or_else(|| {
+            MultiServerError::Refused("Configure Tailscale Serve HTTPS before pairing".into())
+        })?;
+    let label = match body.get("label") {
+        None => "Studio server",
+        Some(Value::String(label)) => {
+            let label = label.trim();
+            if label.is_empty() || label.chars().count() > 80 {
+                return Err(MultiServerError::Refused(
+                    "Server label must be 1 to 80 characters".into(),
+                ));
+            }
+            label
+        }
+        Some(_) => {
+            return Err(MultiServerError::Refused(
+                "Server label must be 1 to 80 characters".into(),
+            ));
+        }
+    };
+    let tailscale_user = tailscale_user
+        .filter(|user| !user.is_empty() && user.len() <= 254)
+        .ok_or_else(|| {
+            MultiServerError::Refused("The Tailscale owner identity is unavailable".into())
+        })?;
+    let stored =
+        crate::remote_transport::read_multi_server_identity(store.root()).map_err(|_| {
+            MultiServerError::Refused("The local server credentials are unavailable".into())
+        })?;
+    let fingerprint = studio_runtime_store::sha256_hex(
+        crate::remote_transport::canonical_json(body)
+            .map_err(|_| MultiServerError::Refused("Invalid pairing request".into()))?
+            .as_bytes(),
+    );
+    let prior = store.read_transaction(|tx| {
+        let saved: Option<(String, String)> = tx
+            .query_row(
+                "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
+                [request_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        saved
+            .map(|(hash, raw)| {
+                let record: Value = serde_json::from_str(&raw).map_err(|_| {
+                    StoreError::SchemaMismatch(format!(
+                        "invalid stored object runtime_access_invites/{request_id}"
+                    ))
+                })?;
+                Ok((hash, record))
+            })
+            .transpose()
+    })?;
+    let invite = if let Some(invite) = prior {
+        if invite.0 != fingerprint {
+            return Err(MultiServerError::Conflict(
+                "The request ID has different content".into(),
+            ));
+        }
+        invite.1
+    } else {
+        let now = unix_time()?;
+        let invite_id = uuid::Uuid::new_v4().simple().to_string();
+        let token_data = format!("invite-v1\n{invite_id}\n{request_id}");
+        let token = URL_SAFE_NO_PAD.encode(
+            hmac::sign(
+                &hmac::Key::new(hmac::HMAC_SHA256, stored.private_key.as_bytes()),
+                token_data.as_bytes(),
+            )
+            .as_ref(),
+        );
+        let invite = json!({
+            "protocol": ACCESS_PROTOCOL_VERSION,
+            "inviteId": invite_id,
+            "serverId": identity["serverId"],
+            "label": label,
+            "origin": origin,
+            "publicKey": identity["publicKey"],
+            "tailscaleUser": tailscale_user,
+            "expires": now as i64 + INVITATION_TTL_SECONDS,
+            "created": now,
+            "status": "open",
+            "tokenHash": studio_runtime_store::sha256_hex(token.as_bytes()),
+        });
+        store.transaction_with(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_invites(id,request_id,hash,record) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![invite_id, request_id, fingerprint, invite.to_string()],
+            )?;
+            audit_write(tx, "local", actor, "create_invite")?;
+            Ok::<_, StoreError>(())
+        })?;
+        invite
+    };
+    let invite_id = invite["inviteId"].as_str().unwrap_or_default();
+    let token_data = format!("invite-v1\n{invite_id}\n{request_id}");
+    let token = URL_SAFE_NO_PAD.encode(
+        hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, stored.private_key.as_bytes()),
+            token_data.as_bytes(),
+        )
+        .as_ref(),
+    );
+    let invitation = json!({
+        "protocol": invite["protocol"], "inviteId": invite["inviteId"],
+        "serverId": invite["serverId"], "label": invite["label"],
+        "origin": invite["origin"], "publicKey": invite["publicKey"],
+        "tailscaleUser": invite["tailscaleUser"], "expires": invite["expires"],
+        "token": token,
+    });
+    Ok(json!({
+        "invitation": invitation,
+        "expires": invite["expires"],
+        "warning": "Share this invitation privately. It expires in 15 minutes and can be used once."
+    }))
 }
 
 fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Value>, StoreError> {
@@ -211,6 +351,119 @@ fn unix_time() -> Result<f64, StoreError> {
         .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
         .as_secs_f64())
 }
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
+}
 fn valid_alias(alias: &str) -> bool {
     !alias.is_empty() && alias.len() <= 3 && alias.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_invite;
+    use crate::federation_credentials::Credentials;
+    use serde_json::json;
+    use studio_runtime_store::RuntimeStore;
+
+    #[test]
+    fn invitation_uses_injected_owner_identity_and_exact_retry_is_stable() {
+        let root = tempfile::tempdir().expect("isolated multi-server state");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let credentials = Credentials::default();
+        let identity = credentials
+            .identity(&store, Some("https://studio.example.ts.net"))
+            .expect("fixture identity is created");
+        let request =
+            json!({"action":"create_invite","requestId":"invite-test","label":"Test server"});
+        let first = create_invite(
+            &store,
+            &identity,
+            &request,
+            "local",
+            Some("owner@example.test"),
+        )
+        .expect("fixture owner can create invitation");
+        let retry = create_invite(
+            &store,
+            &identity,
+            &request,
+            "local",
+            Some("owner@example.test"),
+        )
+        .expect("exact invitation retry reuses durable invite");
+        assert_eq!(first, retry);
+        assert_eq!(first["invitation"]["tailscaleUser"], "owner@example.test");
+        assert!(
+            !first["invitation"]["token"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let stored_token_hash = store
+            .read_transaction(|tx| {
+                tx.query_row(
+                    "SELECT record FROM runtime_access_invites WHERE request_id='invite-test'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .expect("stored invitation reads");
+        let stored_token_hash: serde_json::Value =
+            serde_json::from_str(&stored_token_hash).expect("stored invitation JSON");
+        assert_eq!(
+            stored_token_hash["tokenHash"],
+            studio_runtime_store::sha256_hex(
+                first["invitation"]["token"]
+                    .as_str()
+                    .expect("token")
+                    .as_bytes()
+            )
+        );
+        let conflict = json!({"action":"create_invite","requestId":"invite-test","label":"Other"});
+        assert!(
+            create_invite(
+                &store,
+                &identity,
+                &conflict,
+                "local",
+                Some("owner@example.test"),
+            )
+            .is_err()
+        );
+        let count = store
+            .read_transaction(|tx| {
+                tx.query_row("SELECT count(*) FROM runtime_access_invites", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .expect("invite count reads");
+        assert_eq!(count, 1);
+        let default_label = create_invite(
+            &store,
+            &identity,
+            &json!({"action":"create_invite","requestId":"invite-default-label"}),
+            "local",
+            Some("owner@example.test"),
+        )
+        .expect("Python default label is used when label is omitted");
+        assert_eq!(default_label["invitation"]["label"], "Studio server");
+        assert!(
+            create_invite(
+                &store,
+                &identity,
+                &json!({"action":"create_invite","requestId":"invite-null-label","label":null}),
+                "local",
+                Some("owner@example.test"),
+            )
+            .is_err()
+        );
+    }
 }

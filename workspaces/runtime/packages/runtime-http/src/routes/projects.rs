@@ -1,7 +1,7 @@
 //! HTTP adapters for projects, locations and peer teams.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -205,17 +205,10 @@ fn radio_create_error(error: CreateError) -> ProjectsError {
     }
 }
 
-const PROJECT_WRITE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(
-    "cross-server-driver/project-location-write",
-)];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/projects", OperationStatus::Implemented, list_projects),
-        post(
-            "/api/projects",
-            OperationStatus::partial(&PROJECT_WRITE_DEPENDENCIES),
-            write_project,
-        ),
+        post("/api/projects", OperationStatus::Implemented, write_project),
         get(
             "/api/project-locations",
             OperationStatus::Implemented,
@@ -312,7 +305,17 @@ async fn write_project(
             }
             return Ok(Json(ProjectWriteResponse::Remote(value)).into_response());
         }
-        if requested_server != "local" && local != requested_server {
+        let action = body
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("register");
+        // Project locations use the durable orchestration receipt path for a
+        // local destination too. The driver executes local envelopes through
+        // the same receiver used by paired servers, matching Python's
+        // MultiServerService.deliver local-server branch.
+        if (requested_server != "local" && local != requested_server)
+            || matches!(action, "add_location" | "remove_location")
+        {
             let driver = state.orchestration_driver.ok_or_else(|| {
                 ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -578,11 +581,6 @@ fn remote_project_write(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("register");
-    let server = body
-        .get("server")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A paired server is required"))?;
     let request_id = body
         .get("request_id")
         .and_then(Value::as_str)
@@ -597,6 +595,16 @@ fn remote_project_write(
                 "The local server identity is unavailable",
             )
         })?;
+    let requested_server = body
+        .get("server")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A paired server is required"))?;
+    let server = if requested_server == "local" {
+        local_server.as_str()
+    } else {
+        requested_server
+    };
     if server != local_server {
         let connection = store.read().map_err(ApiError::stored)?;
         let paired = connection
@@ -613,9 +621,10 @@ fn remote_project_write(
             ));
         }
     }
-    if !known_accounts
-        .iter()
-        .any(|account| account.get("id").and_then(Value::as_str) == Some(default_account))
+    if action == "register"
+        && !known_accounts
+            .iter()
+            .any(|account| account.get("id").and_then(Value::as_str) == Some(default_account))
     {
         return Err(ApiError::internal());
     }
@@ -1117,7 +1126,6 @@ inventory::submit! {
         name: "projects",
         routes: Some(routes),
         dependencies: &[
-            "cross-server-driver/project-location-write",
             "provider-session/model-list",
         ],
     }

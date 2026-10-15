@@ -1,7 +1,7 @@
 //! Federation database projections and the documented 404 counterparts.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::body::{Body, to_bytes};
 use axum::extract::State;
@@ -13,8 +13,6 @@ use studio_runtime_services::federation_effects;
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MANAGEMENT_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("remote-transport/tailscale-identity")];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -22,11 +20,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             no_get_counterpart,
         ),
-        post(
-            "/api/federation",
-            OperationStatus::partial(&MANAGEMENT_DEPENDENCIES),
-            manage,
-        ),
+        post("/api/federation", OperationStatus::Implemented, manage),
         get(
             "/api/federation/v1/message",
             OperationStatus::Implemented,
@@ -236,6 +230,29 @@ async fn manage(
         .unwrap_or_default()
         .to_owned();
     match action.as_str() {
+        "create_invite" => {
+            let store = state.store.clone().ok_or_else(ApiError::internal)?;
+            let whoami = state.tailscale_whoami.clone();
+            let invite_origin = origin.clone();
+            let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/federation-whoami",
+                move || {
+                    let observed = invite_origin
+                        .as_ref()
+                        .and_then(|_| whoami.and_then(|probe| probe()));
+                    federation::manage_with_origin_and_whoami(
+                        &store,
+                        &body,
+                        invite_origin.as_deref(),
+                        observed.as_ref(),
+                    )
+                },
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(map_service_error)?;
+            return Ok(Json(result));
+        }
         "status" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -250,8 +267,8 @@ async fn manage(
                 serde_json::to_value(snapshot).map_err(|_| ApiError::internal())?,
             ))
         }
-        "set_enabled" | "create_invite" | "approve_peer" | "revoke_peer" | "room_options"
-        | "create_room" | "approve_room" | "accept_peer" => {
+        "set_enabled" | "approve_peer" | "revoke_peer" | "room_options" | "create_room"
+        | "approve_room" | "accept_peer" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let queue_signal = matches!(action.as_str(), "create_room" | "approve_room");
             let wake = state.event_wake.clone();
@@ -273,13 +290,11 @@ async fn manage(
                 serde_json::to_value(snapshot).map_err(|_| ApiError::internal())?,
             ))
         }
-        _ => Err(unavailable_for(&MANAGEMENT_DEPENDENCIES)),
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Unknown federation action",
+        )),
     }
-}
-
-fn unavailable_for(dependencies: &'static [Dependency]) -> ApiError {
-    dependency_unavailable("POST", "/api/federation", dependencies)
-        .unwrap_or_else(|_| ApiError::internal())
 }
 
 fn map_service_error(error: FederationError) -> ApiError {
@@ -300,8 +315,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "federation",
         routes: Some(routes),
-        dependencies: &[
-            "remote-transport/tailscale-identity",
-        ],
+        dependencies: &[],
     }
 }
