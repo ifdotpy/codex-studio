@@ -31,10 +31,13 @@ pub(super) fn apply(
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
     if method == "command/exec/outputDelta" {
-        let process_id = p["processId"]
-            .as_str()
+        let Some(process_id) = p
+            .get("processId")
+            .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        else {
+            return Ok(Some(DispatchOutcome::Written));
+        };
         crate::monitor_event_queue::enqueue_output_in_transaction(
             tx,
             process_id,
