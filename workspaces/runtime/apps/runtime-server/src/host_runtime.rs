@@ -818,7 +818,6 @@ mod voice_composition_tests {
         provider_session_task::SessionTaskConfig,
     };
     use studio_runtime_store::RuntimeStore;
-    use tokio::sync::Notify;
     use tower::ServiceExt;
 
     struct WorkerSessionAdapter {
@@ -914,8 +913,6 @@ mod voice_composition_tests {
 
     struct VoiceFactory {
         stop_writes: Arc<AtomicUsize>,
-        unknown_stop_at: Option<usize>,
-        unknown_stop_written: Arc<Notify>,
     }
 
     impl ProviderTaskFactory for VoiceFactory {
@@ -942,8 +939,6 @@ mod voice_composition_tests {
             });
             let mut stop = shutdown.subscribe();
             let stop_writes = Arc::clone(&self.stop_writes);
-            let unknown_stop_at = self.unknown_stop_at;
-            let unknown_stop_written = Arc::clone(&self.unknown_stop_written);
             let task = tokio::spawn(async move {
                 let mut cursor = 0_u64;
                 loop {
@@ -984,11 +979,7 @@ mod voice_composition_tests {
                                 continue;
                             };
                             if method == "thread/realtime/stop" {
-                                let stop_number = stop_writes.fetch_add(1, Ordering::SeqCst) + 1;
-                                if unknown_stop_at == Some(stop_number) {
-                                    unknown_stop_written.notify_one();
-                                    continue;
-                                }
+                                stop_writes.fetch_add(1, Ordering::SeqCst);
                             }
                             let result = match method {
                                 "account/read" => json!({"account":{"type":"chatgpt"}}),
@@ -1138,8 +1129,6 @@ mod voice_composition_tests {
 
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
-            unknown_stop_at: Some(2),
-            unknown_stop_written: Arc::new(Notify::new()),
         });
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
@@ -1208,10 +1197,9 @@ mod voice_composition_tests {
             .unwrap();
         assert_eq!(delete_intent.sessions.len(), 2);
 
-        // Simulate a crash after the transaction commits but before its caller
-        // can issue the provider stops. A restarted worker sends the two saved
-        // operations once; the second request becomes Unknown when the worker
-        // is shut down before its provider response.
+        // Simulate a restart after the deletion transaction commits. Python
+        // marks sessions on the vanished connection lost and never sends their
+        // stop over a replacement session; Rust must settle both as Unknown.
         worker.shutdown().await.unwrap();
         let (mut post_delete_worker, post_delete_session, post_delete_callbacks) =
             start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
@@ -1223,30 +1211,21 @@ mod voice_composition_tests {
                     post_delete_callbacks,
                 ),
             );
-        let unknown_written = factory.unknown_stop_written.notified();
-        tokio::pin!(unknown_written);
-        let intent_for_delivery = delete_intent.clone();
-        let delivery = tokio::spawn(async move {
-            studio_runtime_services::voice::provider::end_deleted_sessions(
-                delete_provider,
-                intent_for_delivery.id,
-                intent_for_delivery.sessions,
-                2.0,
-            )
-            .await
-        });
-        unknown_written.await;
+        let receipts = studio_runtime_services::voice::provider::end_deleted_sessions(
+            delete_provider,
+            delete_intent.id.clone(),
+            delete_intent.sessions.clone(),
+            2.0,
+        )
+        .await
+        .unwrap();
         post_delete_worker.shutdown().await.unwrap();
-        let receipts = delivery.await.unwrap().unwrap();
         assert_eq!(receipts.len(), 2);
-        assert_eq!(
-            receipts[0].certainty,
-            studio_runtime_services::voice::runtime::VoiceWriteCertainty::Written
-        );
-        assert_eq!(
-            receipts[1].certainty,
-            studio_runtime_services::voice::runtime::VoiceWriteCertainty::Unknown
-        );
+        assert!(receipts.iter().all(|receipt| {
+            receipt.certainty
+                == studio_runtime_services::voice::runtime::VoiceWriteCertainty::Unknown
+        }));
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
 
         // Recovery replays the known receipt and retains Unknown without another
         // provider write, even after another worker restart.
@@ -1269,7 +1248,7 @@ mod voice_composition_tests {
         .await
         .unwrap();
         assert_eq!(replay, receipts);
-        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
         recovered_worker.shutdown().await.unwrap();
     }
 }

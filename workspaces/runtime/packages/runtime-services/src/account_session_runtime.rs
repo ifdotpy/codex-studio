@@ -703,6 +703,15 @@ impl AccountSessionPort for AccountSessionRuntime {
                 "Provider scope does not belong to the account",
             ));
         }
+        if expected_scope
+            .as_ref()
+            .is_some_and(|scope| session.current_scope(&account).as_ref() != Some(scope))
+        {
+            // A provider connection is process-local. Python settles work tied
+            // to a disconnected connection as interrupted/unknown instead of
+            // handing it to a replacement connection.
+            return Err(AccountSessionError::Unknown);
+        }
         let mut request = request;
         request.expected_scope = expected_scope.clone();
         match self.block_on_retained(async {
