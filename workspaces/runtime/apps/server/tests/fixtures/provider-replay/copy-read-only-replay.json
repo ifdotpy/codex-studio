@@ -1,0 +1,38 @@
+{
+  "source": "fail-closed provider fixture for the marked-copy HTTP read check",
+  "boundaryOnly": true,
+  "rpcReplies": {
+    "thread/start": {
+      "direction": "in", "responseFor": "thread/start", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "thread/resume": {
+      "direction": "in", "responseFor": "thread/resume", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "thread/name/set": {
+      "direction": "in", "responseFor": "thread/name/set", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "thread/metadata/update": {
+      "direction": "in", "responseFor": "thread/metadata/update", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "turn/start": {
+      "direction": "in", "responseFor": "turn/start", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "turn/steer": {
+      "direction": "in", "responseFor": "turn/steer", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "turn/interrupt": {
+      "direction": "in", "responseFor": "turn/interrupt", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    },
+    "command/exec": {
+      "direction": "in", "responseFor": "command/exec", "timestamp": 0,
+      "message": { "error": { "code": -32601, "message": "Provider writes are disabled in the copy-read fixture" } }
+    }
+  }
+}
