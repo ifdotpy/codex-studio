@@ -388,7 +388,9 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "observedSuccessfulAssertions": ["fixture::valid request succeeds"],
             "probeCases": [{
                 "expected": None, "expectedMatches": False,
-                "dispatched": False, "status": None,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "A named consumer test sends the successful request.",
+                "status": None,
             }],
         }])
         self.assertEqual(named_success["status"], "pass")
@@ -442,6 +444,151 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         }])
         self.assertEqual(malformed_record["status"], "pass")
         self.assertEqual(malformed_record["positiveOperations"], 1)
+
+    def test_router_junit_evidence_is_exact_revision_hash_and_test_bound(self) -> None:
+        recovery_class, recovery_name = ledger.ROUTER_POSITIVE_TESTS[
+            ("POST", "/api/connection-recovery")
+        ]
+        orchestration_class, orchestration_name = ledger.ROUTER_POSITIVE_TESTS[
+            ("POST", "/api/servers/orchestration")
+        ]
+        report = (
+            '<testsuites><testsuite>'
+            f'<testcase classname="{recovery_class}" name="{recovery_name}" />'
+            f'<testcase classname="{orchestration_class}" name="{orchestration_name}" />'
+            '</testsuite></testsuites>'
+        ).encode()
+        digest = ledger.hashlib.sha256(report).hexdigest()
+        metadata = {"revision": "exact-candidate", "junitSha256": digest}
+
+        passing = ledger.parse_router_test_evidence(metadata, report, "exact-candidate")
+        self.assertEqual(passing["status"], "pass")
+        self.assertEqual([item["status"] for item in passing["assertions"]], ["passed", "passed"])
+        with tempfile.TemporaryDirectory(prefix="router-junit-evidence-") as scratch:
+            root = Path(scratch)
+            (root / "junit.xml").write_bytes(report)
+            sidecar = root / "evidence.json"
+            sidecar.write_text(json.dumps({
+                **metadata,
+                "junitPath": "junit.xml",
+            }))
+            with patch.object(
+                ledger.subprocess, "run",
+                return_value=SimpleNamespace(stdout="exact-candidate\n"),
+            ):
+                loaded = ledger.load_router_test_evidence(sidecar)
+            self.assertEqual(loaded["status"], "pass")
+        self.assertEqual(ledger.load_router_test_evidence(None)["status"], "unverified")
+
+        stale_revision = ledger.parse_router_test_evidence(metadata, report, "different-candidate")
+        self.assertEqual(stale_revision["status"], "unverified")
+        wrong_hash = ledger.parse_router_test_evidence(
+            {**metadata, "junitSha256": "0" * 64}, report, "exact-candidate",
+        )
+        self.assertEqual(wrong_hash["status"], "unverified")
+        missing = ledger.parse_router_test_evidence(
+            {**metadata, "junitSha256": digest},
+            report.replace(
+                f'name="{orchestration_name}"'.encode(), b'name="other_test"'
+            ),
+            "exact-candidate",
+        )
+        self.assertEqual(missing["status"], "unverified")
+        # A JUnit skipped node must never count as a passing route witness.
+        skipped_report = (
+            '<testsuites><testsuite>'
+            f'<testcase classname="{recovery_class}" name="{recovery_name}" />'
+            f'<testcase classname="{orchestration_class}" name="{orchestration_name}"><skipped /></testcase>'
+            '</testsuite></testsuites>'
+        ).encode()
+        skipped = ledger.parse_router_test_evidence(
+            {"revision": "exact-candidate", "junitSha256": ledger.hashlib.sha256(skipped_report).hexdigest()},
+            skipped_report, "exact-candidate",
+        )
+        self.assertEqual(skipped["status"], "unverified")
+        failed_report = report.replace(
+            f'name="{orchestration_name}" />'.encode(),
+            f'name="{orchestration_name}"><failure /></testcase>'.encode(),
+        )
+        failed = ledger.parse_router_test_evidence(
+            {"revision": "exact-candidate", "junitSha256": ledger.hashlib.sha256(failed_report).hexdigest()},
+            failed_report, "exact-candidate",
+        )
+        self.assertEqual(failed["status"], "failed")
+
+    def test_consumer_only_probe_needs_named_success_and_keeps_copy_gate_independent(self) -> None:
+        operation = {"method": "POST", "path": "/api/action"}
+        case = ledger.PROBE_CASES[("POST", "/api/action")]["primary"]
+        self.assertFalse(case.get("dispatch", True))
+        self.assertTrue(case["consumer_only"])
+        observation = {
+            "expected": None, "expectedMatches": False, "dispatched": False,
+            "status": None, "consumerOnly": True,
+            "reason": "Existing fake-provider consumer tests send the successful request.",
+        }
+        without_consumer = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "probeCases": [observation],
+        }])
+        self.assertEqual(without_consumer["status"], "unverified")
+        anonymous_no_dispatch = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": ["fixture::some 2xx request"],
+            "probeCases": [{"expected": None, "dispatched": False, "status": None}],
+        }])
+        self.assertEqual(anonymous_no_dispatch["status"], "unverified")
+        with_consumer = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": [
+                "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py::"
+                "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread"
+            ],
+            "probeCases": [observation],
+        }])
+        self.assertEqual(with_consumer["status"], "pass")
+        route = ("POST", "/api/connection-recovery")
+        router_test = ledger.ROUTER_POSITIVE_TESTS[route]
+        router_only = ledger.api_fixture_evidence([{
+            "method": route[0], "path": route[1],
+            "implementation": "implemented", "classification": "unverified",
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "Rust router witness supplies the successful request.",
+                "status": None,
+            }],
+        }], {
+            "status": "pass",
+            "assertions": [{
+                "operation": f"{route[0]} {route[1]}",
+                "test": f"{router_test[0]}::{router_test[1]}",
+                "status": "passed",
+            }],
+        })
+        self.assertEqual(router_only["status"], "pass")
+        self.assertEqual(router_only["routerPositiveOperations"], 1)
+        missing_router = ledger.api_fixture_evidence([{
+            "method": route[0], "path": route[1],
+            "implementation": "implemented", "classification": "unverified",
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "Rust router witness supplies the successful request.",
+                "status": None,
+            }],
+        }])
+        self.assertEqual(missing_router["status"], "unverified")
+        self.assertEqual(
+            ledger.copied_data_evidence_status({"existingRowRead": True}),
+            "unverified",
+            "API success cannot stand in for copied-data validation and rollback",
+        )
 
     def test_copy_backend_command_requires_ephemeral_port(self) -> None:
         self.assertEqual(
@@ -564,8 +711,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    expected = probe_case.get("expected", "2xx")
-                    if probe_case.get("unverified"):
+                    expected = probe_case.get(
+                        "expected", None if probe_case.get("dispatch") is False else "2xx"
+                    )
+                    if probe_case.get("dispatch") is False:
+                        self.assertTrue(probe_case.get("consumer_only"))
+                        self.assertTrue(probe_case.get("reason"))
+                        self.assertIsNone(expected)
+                    elif probe_case.get("unverified"):
                         self.assertIsNone(expected)
                         self.assertTrue(probe_case.get("reason"))
                     else:
@@ -592,6 +745,9 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 spec = ledger.PROBE_CASES[operation]
                 self.assertEqual(spec["primary"]["expected"], "2xx")
                 refusals = spec.get("additional", [])
+                if operation == ("GET", "/api/changes"):
+                    self.assertEqual(refusals, [])
+                    continue
                 self.assertTrue(refusals)
                 if operation == ("POST", "/api/federation"):
                     self.assertEqual(len(refusals), 1)
@@ -602,10 +758,6 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     self.assertEqual(len(refusals), 1)
                     self.assertEqual(refusals[0]["expected"], "400")
                     self.assertIn("schema rejects attachment objects", refusals[0]["reason"])
-                elif operation == ("GET", "/api/changes"):
-                    self.assertEqual(len(refusals), 1)
-                    self.assertTrue(refusals[0]["unverified"])
-                    self.assertIn("Image", refusals[0]["reason"])
                 elif operation == ("POST", "/api/multi-server"):
                     self.assertEqual(len(refusals), 1)
                     self.assertEqual(refusals[0]["expected"], "400")
@@ -772,13 +924,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
 
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
-        changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
-        changes_path, _, _ = ledger.valid_probe(
-            "GET", "/api/changes", identifiers, changes,
-        )
+        changes = ledger.PROBE_CASES[("GET", "/api/changes")]["primary"]
+        changes_path, _, _ = ledger.valid_probe("GET", "/api/changes", identifiers, changes)
         self.assertEqual(changes_path, "/api/changes?agent=lead-agent")
-        self.assertEqual(changes["fixture_mutations"]["agent_execution_mode"], "vm")
-        self.assertIn("agent_record", changes["restore"])
+        self.assertNotIn("additional", ledger.PROBE_CASES[("GET", "/api/changes")])
 
         models = ledger.PROBE_CASES[("GET", "/api/models")]["additional"][0]
         models_path, _, _ = ledger.valid_probe("GET", "/api/models", identifiers, models)
@@ -885,7 +1034,8 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             ledger.UNDECLARED_PROVIDER_TURN_TESTS.get(suite, {}),
         )
         primary = ledger.PROBE_CASES[("POST", "/api/action")]["primary"]
-        self.assertTrue(primary["unverified"])
+        self.assertFalse(primary.get("dispatch", True))
+        self.assertTrue(primary["consumer_only"])
         self.assertIn("completed provider thread", primary["reason"])
 
     def test_analytics_seeder_namespaces_ids_in_synthetic_copy_mode(self) -> None:
@@ -1370,16 +1520,16 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
 
     def test_partial_operations_with_multiple_request_shapes_check_both_results(self) -> None:
         expected_cases = {
-            ("GET", "/api/file"): ["2xx", None],
-            ("GET", "/api/file-info"): ["2xx", None],
+            ("GET", "/api/file"): ["2xx"],
+            ("GET", "/api/file-info"): ["2xx"],
             ("GET", "/api/sync/pull"): ["2xx", "2xx"],
             ("POST", "/api/sync/drafts"): ["2xx", "400"],
             ("POST", "/api/rules"): ["2xx", "2xx"],
-            ("POST", "/api/agents"): ["2xx", None],
-            ("POST", "/api/leads"): ["2xx", None],
+            ("POST", "/api/agents"): ["2xx"],
+            ("POST", "/api/leads"): ["2xx"],
             ("POST", "/api/configure"): ["2xx", "400"],
             ("POST", "/api/conversation"): ["2xx", "400"],
-            ("POST", "/api/checkpoint"): ["2xx", None],
+            ("POST", "/api/checkpoint"): ["2xx", "400"],
             ("POST", "/api/checkpoint/preview"): ["2xx"],
             ("POST", "/api/voice/end"): ["2xx", "2xx"],
             ("POST", "/api/voice/speech"): ["2xx", "400"],

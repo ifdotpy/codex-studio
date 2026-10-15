@@ -18,6 +18,7 @@ import time
 import uuid
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from urllib.error import HTTPError
 from collections import defaultdict
 from typing import Any, Iterator
@@ -37,6 +38,20 @@ DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
 COPY_MARKER = ".codex-studio-rehearsal-copy"
 COPY_MARKER_CONTENT = "sqlite-online-backup-copy-v1\n"
+
+# These existing Rust router tests are the only valid positive fixtures for
+# operations whose session or signed-peer ports cannot be installed in the
+# process-backed Python HTTP fixture. Keep this map closed and exact.
+ROUTER_POSITIVE_TESTS: dict[tuple[str, str], tuple[str, str]] = {
+    ("POST", "/api/connection-recovery"): (
+        "studio-runtime-http::recovery_http",
+        "connection_recovery_http_returns_the_synchronous_worker_status",
+    ),
+    ("POST", "/api/servers/orchestration"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_remote_event_crosses_http_boundary_and_persists_once",
+    ),
+}
 
 
 def validate_copy_state_root(
@@ -255,8 +270,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                     "expected": "2xx"},
     },
     ("POST", "/api/connection-recovery"): {
-        "primary": {"body": {"id": "$agent"}, "expected": None, "unverified": True,
-                    "reason": "The HTTP process fixture cannot inject the retained account-session recovery port; route success is covered by its Rust router test."},
+        "primary": {"dispatch": False, "consumer_only": True,
+                    "reason": "Positive evidence comes from the exact-candidate Rust router test named in ROUTER_POSITIVE_TESTS."},
     },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
@@ -277,16 +292,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {
             "query": {"agent": "$agent"}, "query_omit": ["scope"], "expected": "2xx",
         },
-        "additional": [{
-            "name": "image execution dependency",
-            "query": {"agent": "$agent"},
-            "query_omit": ["scope"],
-            "fixture_mutations": {"agent_execution_mode": "vm"},
-            "restore": ["agent_record"],
-            "expected": None,
-            "unverified": True,
-            "reason": "Image-workspace change inspection has no process-backed positive fixture.",
-        }],
     },
     ("GET", "/api/federation"): {
         "primary": {
@@ -438,26 +443,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
             "expected": "2xx",
         },
-        "additional": [{
-            "name": "execution-backed workspace refusal",
-            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": None,
-            "unverified": True,
-            "reason": "The marked VM workspace lacks a process-backed image execution fixture.",
-        }],
     },
     ("GET", "/api/file-info"): {
         "primary": {
             "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
             "expected": "2xx",
         },
-        "additional": [{
-            "name": "execution-backed workspace refusal",
-            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": None,
-            "unverified": True,
-            "reason": "The marked VM workspace lacks a process-backed image execution fixture.",
-        }],
     },
     ("POST", "/api/monitor/cancel"): {
         "primary": {"body": {"id": "$monitor"}, "expected": "2xx"},
@@ -702,7 +693,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "409", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {"account_key": "ledger-missing-claude-account"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
-    ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": None, "unverified": True, "reason": "The deterministic fake-provider action fixture exercises successful review and compact requests; the generic seeded probe has no completed provider thread."}},
+    ("POST", "/api/action"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "Fake-provider review and compact consumer tests provide the named successful requests; the generic seeded agent has no completed provider thread."}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     # Python checks FederationService.enabled() at the start of route() before
@@ -717,7 +708,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "403", "expected_error": "Pairing requires a signed paired-server request", "reason": "Pairing requires a signed request and peer invitation fixture not present in the child backend.", "assert_no_write": True}},
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "2xx"}},
     ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "2xx"}},
-    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": None, "unverified": True, "reason": "Orchestration requires a signed event from a paired server; the child backend has no peer-signing fixture."}},
+    ("POST", "/api/servers/orchestration"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "Positive evidence comes from the exact-candidate signed Rust router test named in ROUTER_POSITIVE_TESTS."}},
     ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$liveTerminal"}, "expected": "2xx"}},
     ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
@@ -751,14 +742,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\r\n"}, "expected": "2xx"}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
-        "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": None, "unverified": True, "reason": "Worker assignment requires workspace-preparation, which the child backend fixture does not provide."}],
     },
     ("POST", "/api/assets"): {
         "primary": {"body": {"agent": "$agent", "name": "ledger.txt", "base64": "bGVkZ2Vy"}, "expected": "2xx"},
     },
     ("POST", "/api/checkpoint"): {
         "primary": {"name": "native workspace checkpoint", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"},
-        "additional": [{"name": "image execution checkpoint", "body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": None, "unverified": True, "reason": "The marked VM workspace has no process-backed image execution fixture."}],
+        "additional": [{"name": "image workspace checkpoint refusal", "body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "400", "expected_error": "Studio Git checkpoints are unavailable for image workspaces", "assert_no_write": True, "reason": "Image workspaces explicitly refuse Studio Git checkpoints without writing state."}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
@@ -780,7 +770,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
-        "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": None, "unverified": True, "reason": "Selecting an explicit provider model needs a seeded provider model catalog, not present in the child backend fixture."}],
     },
     ("POST", "/api/voice/approval_speech"): {
         "primary": {"body": {"agent": "$agent", "request_id": "$approvalRequest"}, "replace_body": True, "expected": "2xx"},
@@ -926,6 +915,126 @@ def appendix_http_assertions(
     return witnesses
 
 
+def parse_router_test_evidence(
+    metadata: dict[str, Any], junit_bytes: bytes, current_revision: str,
+) -> dict[str, Any]:
+    """Accept only the fixed router witnesses from a hashed, exact-revision JUnit report."""
+    revision = metadata.get("revision")
+    expected_hash = metadata.get("junitSha256")
+    observed_hash = hashlib.sha256(junit_bytes).hexdigest()
+    entries: list[dict[str, Any]] = []
+
+    def unresolved(reason: str) -> dict[str, Any]:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "revision": revision if isinstance(revision, str) else None,
+            "junitSha256": observed_hash,
+            "assertions": [
+                {"operation": f"{method} {path}", "test": f"{classname}::{name}",
+                 "status": "unverified", "reason": reason}
+                for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+
+    if not isinstance(revision, str) or revision != current_revision:
+        return unresolved("Router test evidence revision does not match the current source revision.")
+    if not isinstance(expected_hash, str) or expected_hash != observed_hash:
+        return unresolved("Router test evidence does not match the recorded JUnit report hash.")
+    try:
+        root = ET.fromstring(junit_bytes)
+    except ET.ParseError as error:
+        return {
+            "status": "failed",
+            "revision": revision,
+            "junitSha256": observed_hash,
+            "assertions": [{
+                "operation": f"{method} {path}",
+                "test": f"{classname}::{name}",
+                "status": "failed",
+                "reason": f"Could not parse nextest JUnit XML: {error}",
+            } for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items()],
+        }
+
+    test_cases = list(root.iter("testcase"))
+    for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items():
+        matches = [
+            case for case in test_cases
+            if case.attrib.get("classname") == classname and case.attrib.get("name") == name
+        ]
+        assertion = {"operation": f"{method} {path}", "test": f"{classname}::{name}"}
+        if len(matches) != 1:
+            assertion.update({
+                "status": "unverified",
+                "reason": "The exact named router test is missing or duplicated in the JUnit report.",
+            })
+        elif matches[0].find("failure") is not None or matches[0].find("error") is not None:
+            assertion.update({"status": "failed", "reason": "The exact named router test failed."})
+        elif matches[0].find("skipped") is not None:
+            assertion.update({"status": "unverified", "reason": "The exact named router test was skipped."})
+        else:
+            assertion.update({"status": "passed"})
+        entries.append(assertion)
+    statuses = {entry["status"] for entry in entries}
+    status = "failed" if "failed" in statuses else "pass" if statuses == {"passed"} else "unverified"
+    return {
+        "tier": "Rust HTTP router tests",
+        "status": status,
+        "revision": revision,
+        "junitSha256": observed_hash,
+        "assertions": entries,
+    }
+
+
+def load_router_test_evidence(path: Path | None) -> dict[str, Any]:
+    """Load the one explicit sidecar format; absent or stale evidence stays unresolved."""
+    if path is None:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "reason": "No --router-evidence sidecar was supplied.",
+            "assertions": [
+                {"operation": f"{method} {route}", "test": f"{class_name}::{test_name}",
+                 "status": "unverified", "reason": "No --router-evidence sidecar was supplied."}
+                for (method, route), (class_name, test_name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            raise ValueError("router evidence sidecar must be a JSON object")
+        junit_path_value = metadata.get("junitPath")
+        if not isinstance(junit_path_value, str) or not junit_path_value:
+            raise ValueError("router evidence sidecar requires junitPath")
+        junit_path = Path(junit_path_value)
+        if not junit_path.is_absolute():
+            junit_path = path.parent / junit_path
+        junit_bytes = junit_path.read_bytes()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "reason": f"Router test evidence could not be loaded: {error}",
+            "assertions": [
+                {"operation": f"{method} {route}", "test": f"{class_name}::{test_name}",
+                 "status": "unverified", "reason": "Router evidence input is unavailable."}
+                for (method, route), (class_name, test_name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+    try:
+        current_revision = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        current_revision = ""
+        evidence = parse_router_test_evidence(metadata, junit_bytes, current_revision)
+        evidence["status"] = "unverified"
+        evidence["reason"] = f"Could not determine current source revision: {error}"
+        return evidence
+    return parse_router_test_evidence(metadata, junit_bytes, current_revision)
+
+
 def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
     prebuilt_path = os.environ.get(P20_OPERATION_MANIFEST_ENV)
     if prebuilt_path:
@@ -1027,6 +1136,13 @@ def ensure_operation_probe_cases(
     for key, entry in manifest.items():
         status = entry.get("status")
         spec = PROBE_CASES.setdefault(key, {})
+        primary = spec.get("primary", {})
+        if primary.get("dispatch") is False and primary.get("consumer_only"):
+            if not primary.get("reason"):
+                raise RuntimeError(f"consumer-only probe {key[0]} {key[1]} needs a reason")
+            if status != "implemented":
+                primary["unverified"] = True
+            continue
         if status == "unimplemented":
             # The manifest state has one exact contract for schema-valid input.
             spec.setdefault("primary", {}).setdefault("expected", "501")
@@ -1699,6 +1815,26 @@ def probe_operations(
                 ]
                 observations = []
                 for case_name, probe_case in cases:
+                    if probe_case.get("dispatch") is False:
+                        if not probe_case.get("consumer_only") or not probe_case.get("reason"):
+                            raise RuntimeError(
+                                f"non-dispatched probe {method} {template}/{case_name} "
+                                "must be an explicitly named consumer-only case with a reason"
+                            )
+                        observations.append({
+                            "case": case_name,
+                            "status": None,
+                            "expected": None,
+                            "expectedMatches": False,
+                            "dispatched": False,
+                            "body": None,
+                            "elapsedSeconds": 0.0,
+                            "standard501Envelope": False,
+                            "noWrite": True,
+                            "consumerOnly": True,
+                            "reason": probe_case["reason"],
+                        })
+                        continue
                     if probe_case.get("refresh_queue"):
                         queue_snapshot = backend.request(
                             "GET",
@@ -1844,32 +1980,44 @@ def probe_operations(
                         **({"reason": probe_case["reason"]} if "reason" in probe_case else {}),
                     })
                 primary = observations[0]
-                schema_header = result.headers.get("x-studio-api-schema")
-                # The final response may belong to an additional probe case;
-                # the schema header is invariant across the operation's cases.
-                schema_header_matches = schema_header == backend.schema_hash
                 status = primary["status"]
                 operation_key = f"{method} {template}"
-                standard_501_envelope = primary["standard501Envelope"]
-                dependency_response_matches = (
-                    implementation != "partial" or status != 501 or standard_501_envelope
-                )
-                classification = classify_observation(
-                    status,
-                    implementation,
-                    schema_header_matches,
-                    standard_501_envelope,
-                    dependency_response_matches,
-                )
-                if primary.get("expected") == "400" and primary.get("expectedMatches"):
-                    classification = "implemented"
-                if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
-                    classification = "implemented"
-                classification = apply_probe_expectations(
-                    classification, cases, observations
-                )
-                if not all(observation["noWrite"] for observation in observations):
-                    classification = "unexpected"
+                dispatched_observations = [
+                    observation for observation in observations
+                    if observation.get("dispatched", True)
+                ]
+                if dispatched_observations:
+                    # The final response may belong to an additional dispatched
+                    # case; the schema header is invariant across an operation.
+                    schema_header = result.headers.get("x-studio-api-schema")
+                    schema_header_matches = schema_header == backend.schema_hash
+                    standard_501_envelope = primary["standard501Envelope"]
+                    dependency_response_matches = (
+                        implementation != "partial" or status != 501 or standard_501_envelope
+                    )
+                    classification = classify_observation(
+                        status,
+                        implementation,
+                        schema_header_matches,
+                        standard_501_envelope,
+                        dependency_response_matches,
+                    )
+                    if primary.get("expected") == "400" and primary.get("expectedMatches"):
+                        classification = "implemented"
+                    if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
+                        classification = "implemented"
+                    classification = apply_probe_expectations(
+                        classification, cases, observations
+                    )
+                    if not all(observation["noWrite"] for observation in dispatched_observations):
+                        classification = "unexpected"
+                else:
+                    status = None
+                    schema_header = None
+                    schema_header_matches = False
+                    standard_501_envelope = False
+                    dependency_response_matches = False
+                    classification = "unverified"
                 rows.append({
                     "method": method,
                     "path": template,
@@ -1881,7 +2029,8 @@ def probe_operations(
                     "expectedStatus": (
                         "unverified"
                         if any(
-                            case.get("unverified") or not case.get("expected")
+                            case.get("dispatch") is False
+                            or case.get("unverified") or not case.get("expected")
                             for _, case in cases
                         )
                         else cases[0][1]["expected"]
@@ -1923,12 +2072,21 @@ def is_named_fault_5xx(case: dict[str, Any]) -> bool:
     ))
 
 
-def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize disposable API evidence without counting refusals as capability."""
+def api_fixture_evidence(
+    operations_result: list[dict[str, Any]],
+    router_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize API fixtures and the two named Rust router-only positives."""
     statuses: list[str] = []
     positive_operations = 0
+    router_positive_operations = 0
     validated_negative_cases = 0
     implemented_operations = 0
+    router_positive = {
+        assertion["operation"]: assertion["test"]
+        for assertion in (router_evidence or {}).get("assertions", [])
+        if assertion.get("status") == "passed"
+    }
     for operation in operations_result:
         implementation = operation.get("implementation")
         if implementation == "implemented":
@@ -1944,7 +2102,11 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
         # `covered` is retained for report compatibility; gate only on named
         # passing consumer assertions that observed a 2xx response.
         positive_assertion = bool(operation.get("observedSuccessfulAssertions"))
-        if positive_case or positive_assertion:
+        router_assertion = router_positive.get(f"{operation.get('method')} {operation.get('path')}")
+        operation["routerPositiveAssertions"] = [router_assertion] if router_assertion else []
+        if router_assertion:
+            router_positive_operations += 1
+        if positive_case or positive_assertion or router_assertion:
             positive_operations += 1
         validated_negative_cases += sum(
             case.get("expected") not in (None, "2xx")
@@ -1963,7 +2125,11 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
             for case in cases
         )
         unresolved = any(
-            case.get("dispatched", True)
+            (
+                case.get("dispatched", True)
+                or not case.get("consumerOnly")
+                or not case.get("reason")
+            )
             and (
                 case.get("expected") is None
                 or case.get("unverified")
@@ -1977,7 +2143,7 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
             statuses.append("unexpected")
         elif (
             implementation == "implemented"
-            and (positive_case or positive_assertion)
+            and (positive_case or positive_assertion or router_assertion)
             and not unresolved
         ):
             statuses.append("pass")
@@ -1986,7 +2152,9 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
 
     unexpected_operations = statuses.count("unexpected")
     unverified_operations = statuses.count("unverified")
-    if not operations_result:
+    if router_evidence and router_evidence.get("status") == "failed":
+        status = "failed"
+    elif not operations_result:
         status = "unverified"
     elif unexpected_operations:
         status = "failed"
@@ -1995,11 +2163,12 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
     else:
         status = "pass"
     return {
-        "source": "disposable-fixture-records",
+        "source": "disposable-fixture-records-and-named-router-tests",
         "status": status,
         "operations": len(operations_result),
         "implementedOperations": implemented_operations,
         "positiveOperations": positive_operations,
+        "routerPositiveOperations": router_positive_operations,
         "unverifiedOperations": unverified_operations,
         "unexpectedOperations": unexpected_operations,
         "validatedNegativeCases": validated_negative_cases,
@@ -2167,6 +2336,7 @@ def apply_probe_expectations(
     declared_case_failed = any(
         case.get("expected") is not None
         and not case.get("unverified")
+        and observations[index].get("dispatched", True)
         and not observations[index]["expectedMatches"]
         for index, (_, case) in enumerate(cases)
     )
@@ -2174,7 +2344,8 @@ def apply_probe_expectations(
         return "unexpected"
     unverified_cases = [
         index for index, (_, case) in enumerate(cases)
-        if case.get("unverified") or not case.get("expected")
+        if observations[index].get("dispatched", True)
+        and (case.get("unverified") or not case.get("expected"))
     ]
     if unverified_cases:
         unresolved_server_error = any(
@@ -3074,6 +3245,10 @@ def main() -> int:
         "--live-state-root", type=Path,
         help="known live state root that a marked backup copy must not alias",
     )
+    parser.add_argument(
+        "--router-evidence", type=Path,
+        help="JSON sidecar binding the exact source revision to a hashed nextest CI JUnit report",
+    )
     options = parser.parse_args()
     command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
     if not command:
@@ -3160,12 +3335,13 @@ def main() -> int:
         successful_assertions,
         python=isolated_python,
     )
+    router_evidence = load_router_test_evidence(options.router_evidence)
     copied_data = (
         probe_copied_data(copy_state_root, copy_witness)
         if copy_state_root is not None and copy_witness is not None
         else None
     )
-    api_evidence = api_fixture_evidence(operations_result)
+    api_evidence = api_fixture_evidence(operations_result, router_evidence)
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -3212,6 +3388,7 @@ def main() -> int:
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
         "apiPositiveOperations": api_evidence["positiveOperations"],
+        "apiRouterPositiveOperations": api_evidence["routerPositiveOperations"],
         "apiUnverifiedOperations": api_evidence["unverifiedOperations"],
         "apiUnexpectedOperations": api_evidence["unexpectedOperations"],
         "apiValidatedNegativeCases": api_evidence["validatedNegativeCases"],
@@ -3219,6 +3396,7 @@ def main() -> int:
     ledger = {
         "probeMode": "seeded-scratch",
         "apiEvidence": api_evidence,
+        "routerEvidence": router_evidence,
         **({"copiedDataEvidence": copied_data} if copied_data is not None else {}),
         "schemaHash": schema_match.group(1),
         "operations": operations_result,
