@@ -1,6 +1,68 @@
 {
   "sourceCommit": "51d376b7",
   "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json",
+  "acceptedLoosenings": [
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/analytics",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/analytics",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/canvas",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/canvas",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
+    }
+  ],
   "document": {
     "components": {
       "headers": {
