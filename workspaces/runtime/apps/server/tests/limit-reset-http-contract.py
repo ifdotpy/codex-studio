@@ -49,7 +49,11 @@ class ResetCreditHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         replay = self.backend.request("POST", "/api/limits/reset", body=body, headers=self.headers())
         self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(replay.json(), first.json())
+        replay_json = replay.json()
+        first_json = first.json()
+        for field in ("outcome", "request_id", "credit_id", "account_id", "account_key"):
+            self.assertEqual(replay_json[field], first_json[field])
+        self.assertEqual(replay_json["limits"]["data"]["accountId"], "fixture-account")
         consume = [
             frame for frame in self.backend.received_provider_frames()
             if frame.get("method") == "account/rateLimitResetCredit/consume"

@@ -708,6 +708,14 @@ class BackendProcess:
         if self.supervisor_protocol:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
+        # Contracts that exercise the host vault inject a private fake binary
+        # before starting the child. Do not inherit a caller-provided selection.
+        test_desk = os.environ.get("STUDIO_LAYR_DESK_BIN")
+        if test_desk:
+            fake_desk = Path(test_desk).resolve()
+            if not fake_desk.is_file() or not fake_desk.is_relative_to(self.scratch_root.resolve()):
+                raise RuntimeError("The vault contract must select its fake layr-desk binary")
+            values["STUDIO_LAYR_DESK_BIN"] = str(fake_desk)
         # Keep the equipped interpreter when this factory is called from system Python.
         # A Rust backend command still needs this selection for its Python bootstrap.
         configured_python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON")

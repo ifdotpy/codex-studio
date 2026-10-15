@@ -173,9 +173,9 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     {
         return Err(PortError::ScopeMismatch);
     }
-    let actorless_read = request.transfer.is_none()
+    let actorless_request = request.transfer.is_none()
         && request.actor.is_none()
-        && valid_actorless_read_shape(request.method, &request.params);
+        && valid_actorless_request_shape(request.method, &request.params, &request.operation);
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
@@ -261,7 +261,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 transfer.transfer_id, transfer.member
             ))
     });
-    if !(actorless_read || actor_method || transfer_method)
+    if !(actorless_request || actor_method || transfer_method)
         || request.operation.is_empty()
         || request.operation.len() > 1024
         || request.params.to_string().len() > 2 * 1024 * 1024
@@ -410,7 +410,11 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
     })
 }
 
-pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool {
+pub(super) fn valid_actorless_request_shape(
+    method: Method,
+    params: &Value,
+    operation: &str,
+) -> bool {
     let Some(params) = params.as_object() else {
         return false;
     };
@@ -442,8 +446,6 @@ pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool
         }
         // Python codex_diagnostics.py sends an empty object.
         Method::ClaudeDiagnostics => params.is_empty(),
-        // Python codex_runtime.py:9679 reads limits with an empty params object.
-        Method::AccountRateLimitsRead => params.is_empty(),
         // Python codex_runtime.py:3904 requests only this stable monitor identity.
         Method::OperationStatus => {
             only(&["operationId"], &[])
@@ -493,6 +495,24 @@ pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool
                             .as_str()
                             .is_some_and(|thread_id| !thread_id.is_empty())
                 })
+        }
+        // The limits snapshot is a read issued by AccountSessionRuntime.
+        Method::AccountRateLimitsRead => params.is_empty() && operation.starts_with("limits-read:"),
+        // Reset-credit consumption is the only actorless account write. Bind it
+        // to the durable operation identity and exact Python request shape.
+        Method::AccountRateLimitResetCreditConsume => {
+            let idempotency_key = operation.strip_prefix("limit-reset:");
+            only(&["creditId", "idempotencyKey"], &[])
+                && params
+                    .get("creditId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty() && value.len() <= 1024)
+                && params
+                    .get("idempotencyKey")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty() && value.len() <= 1024)
+                && idempotency_key.is_some_and(|key| uuid::Uuid::parse_str(key).is_ok())
+                && params.get("idempotencyKey").and_then(Value::as_str) == idempotency_key
         }
         _ => false,
     }
@@ -728,32 +748,41 @@ mod validation_tests {
             ),
         ];
         for (method, params) in cases {
+            let operation = if method == Method::AccountRateLimitsRead {
+                "limits-read:fixture"
+            } else {
+                "fixture-operation"
+            };
             assert!(
-                valid_actorless_read_shape(method, &params),
+                valid_actorless_request_shape(method, &params, operation),
                 "{method:?}: {params}"
             );
             let mut extended = params;
             extended["unapproved"] = json!(true);
             assert!(
-                !valid_actorless_read_shape(method, &extended),
+                !valid_actorless_request_shape(method, &extended, operation),
                 "{method:?} accepted extra params: {extended}"
             );
         }
-        assert!(!valid_actorless_read_shape(
+        assert!(!valid_actorless_request_shape(
             Method::ThreadRead,
-            &json!({"threadId":"fixture-thread"})
+            &json!({"threadId":"fixture-thread"}),
+            "fixture-operation"
         ));
-        assert!(!valid_actorless_read_shape(
+        assert!(!valid_actorless_request_shape(
             Method::ThreadTurnsList,
-            &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"})
+            &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"}),
+            "fixture-operation"
         ));
-        assert!(!valid_actorless_read_shape(
+        assert!(!valid_actorless_request_shape(
             Method::SkillsList,
-            &json!({"cwds":["/workspace"],"forceReload":false,"extra":true})
+            &json!({"cwds":["/workspace"],"forceReload":false,"extra":true}),
+            "fixture-operation"
         ));
-        assert!(!valid_actorless_read_shape(
+        assert!(!valid_actorless_request_shape(
             Method::McpServerStatusList,
-            &json!({"threadId":"thread-1","limit":50})
+            &json!({"threadId":"thread-1","limit":50}),
+            "fixture-operation"
         ));
     }
 
@@ -777,6 +806,51 @@ mod validation_tests {
         });
         request.params["unexpected"] = json!(true);
         assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn retained_worker_accepts_only_bound_actorless_reset_credit_shapes() {
+        let request = |method, operation: &str, params| SessionRequest {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "fixture-connection".into(),
+                generation: 1,
+            },
+            expected_scope: None,
+            operation: operation.into(),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method,
+            params,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        };
+        assert!(
+            validate(&request(
+                Method::AccountRateLimitsRead,
+                "limits-read:account:1",
+                json!({})
+            ))
+            .is_ok()
+        );
+        let key = "11000000-0000-4000-8000-000000000001";
+        let params = json!({"creditId":"credit-A","idempotencyKey":key});
+        assert!(
+            validate(&request(
+                Method::AccountRateLimitResetCreditConsume,
+                &format!("limit-reset:{key}"),
+                params.clone(),
+            ))
+            .is_ok()
+        );
+        assert_eq!(
+            validate(&request(
+                Method::AccountRateLimitResetCreditConsume,
+                "limit-reset:other",
+                params,
+            )),
+            Err(PortError::Invalid)
+        );
     }
 
     #[test]

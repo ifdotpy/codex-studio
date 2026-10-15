@@ -30,8 +30,9 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                     "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
                 ));
         }
-        return Ok(Method::from_wire(&call.method)
-            .is_some_and(|method| super::valid_actorless_read_shape(method, &call.params)));
+        return Ok(Method::from_wire(&call.method).is_some_and(|method| {
+            super::valid_actorless_request_shape(method, &call.params, &call.operation)
+        }));
     };
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);

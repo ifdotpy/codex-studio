@@ -5,6 +5,7 @@ use crate::account_session_runtime::{
 };
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
 use studio_runtime_store::{RuntimeStore, StoreError};
@@ -13,6 +14,7 @@ use uuid::Uuid;
 
 const RESET_OPERATION_PREFIX: &str = "limit-reset:";
 const RESET_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+static RESET_REQUEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error)]
 pub enum ResetError {
@@ -96,7 +98,7 @@ fn read_attempts(
                 return Ok(Some(attempt.clone()));
             }
         }
-        Ok(attempts.into_iter().rev().find(|attempt| {
+        let attempt = attempts.into_iter().rev().find(|attempt| {
             attempt.account_id == account
                 && attempt.credit_id == credit
                 && (matches!(attempt.status.as_str(), "pending" | "uncertain")
@@ -104,7 +106,58 @@ fn read_attempts(
                         attempt.outcome.as_deref(),
                         Some("reset" | "alreadyRedeemed")
                     ))
-        }))
+        });
+        if let Some(attempt) = attempt {
+            // A public request id is permanently bound even when it reuses an
+            // existing account/credit attempt. This prevents later rebinding.
+            tx.execute(
+                "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
+                (request_id, &attempt.id),
+            )?;
+            return Ok(Some(attempt));
+        }
+        Ok(None)
+    })
+}
+
+fn latch_recovered_pending(
+    store: &RuntimeStore,
+    attempt_id: &str,
+    request_id: &str,
+) -> Result<Attempt, ResetError> {
+    store.transaction_with(|tx| {
+        let raw = tx.query_row(
+            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+            [attempt_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut attempt = from_record(serde_json::from_str(&raw)?)?;
+        if attempt.status == "pending" && attempt.certainty.as_deref() != Some("not_sent") {
+            attempt.certainty = Some("unknown".to_owned());
+            attempt.status = "uncertain".to_owned();
+            attempt.error = Some(
+                "The reset result is unknown; inspect the same attempt before retrying".to_owned(),
+            );
+            attempt.updated = Some(now()?);
+            let record = serde_json::to_string(&attempt)?;
+            tx.execute(
+                "UPDATE runtime_limit_reset_attempts SET record=?1 WHERE id=?2 AND json_extract(record,'$.status')='pending' AND COALESCE(json_extract(record,'$.certainty'),'')!='not_sent'",
+                (&record, attempt_id),
+            )?;
+            // Reload after the conditional transition: an overlapping completed
+            // redemption must win over this stale recovery snapshot.
+            let current = tx.query_row(
+                "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+                [attempt_id],
+                |row| row.get::<_, String>(0),
+            )?;
+            attempt = from_record(serde_json::from_str(&current)?)?;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
+            (request_id, attempt_id),
+        )?;
+        Ok(attempt)
     })
 }
 
@@ -241,6 +294,11 @@ pub fn consume_reset(
     if account_key.is_empty() {
         return Err(ResetError::Invalid("Supply an account key"));
     }
+    // Python codex_limit_resets.py serializes limit refresh and redemption. Keep
+    // concurrent retries from racing their durable outcome transitions.
+    let _guard = RESET_REQUEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let account = required(
         data,
         "account_id",
@@ -289,13 +347,10 @@ pub fn consume_reset(
         )?,
     };
     if attempt.status == "pending" && !is_new && attempt.certainty.as_deref() != Some("not_sent") {
-        attempt.certainty = Some("unknown".to_owned());
-        attempt.status = "uncertain".to_owned();
-        attempt.error = Some(
-            "The reset result is unknown; inspect the same attempt before retrying".to_owned(),
-        );
-        save_attempt(store, &attempt, &request_id)?;
-        return Ok(response(&attempt, limits));
+        attempt = latch_recovered_pending(store, &attempt.id, &request_id)?;
+        if attempt.status != "completed" {
+            return Ok(response(&attempt, limits));
+        }
     }
     if attempt.status == "completed" {
         return Ok(response(&attempt, limits));
@@ -392,7 +447,7 @@ pub fn consume_reset(
 
 #[cfg(test)]
 mod tests {
-    use super::consume_reset;
+    use super::{Attempt, consume_reset, latch_recovered_pending, read_attempts, save_attempt};
     use crate::account_session_runtime::{
         AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
@@ -547,5 +602,58 @@ mod tests {
         absent["credit_id"] = Value::String("absent".into());
         assert!(consume_reset(&store, &provider, &absent).is_err());
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reused_request_identity_is_bound_to_the_existing_credit_attempt() {
+        let (_root, store) = store();
+        let provider = FakeProvider::new([Reply::Outcome("reset")]);
+        let first_id = "11000000-0000-4000-8000-000000000010";
+        let alias_id = "11000000-0000-4000-8000-000000000011";
+        assert_eq!(
+            consume_reset(&store, &provider, &request(first_id)).unwrap()["outcome"],
+            "reset"
+        );
+        assert_eq!(
+            consume_reset(&store, &provider, &request(alias_id)).unwrap()["outcome"],
+            "reset"
+        );
+        let mut rebound = request(alias_id);
+        rebound["credit_id"] = Value::String("credit-B".into());
+        assert!(consume_reset(&store, &provider, &rebound).is_err());
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_pending_recovery_preserves_a_completed_attempt() {
+        let (_root, store) = store();
+        let request_id = "11000000-0000-4000-8000-000000000012";
+        let pending = Attempt {
+            id: request_id.into(),
+            account_id: "account-A".into(),
+            account_key: "default".into(),
+            credit_id: "credit-A".into(),
+            idempotency_key: "11000000-0000-4000-8000-000000000013".into(),
+            status: "pending".into(),
+            certainty: None,
+            outcome: None,
+            error: Some("in flight".into()),
+            created: Some(1.0),
+            updated: Some(2.0),
+        };
+        save_attempt(&store, &pending, request_id).unwrap();
+        let stale_snapshot = read_attempts(&store, request_id, "account-A", "credit-A")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stale_snapshot.status, "pending");
+        let mut completed = stale_snapshot;
+        completed.status = "completed".into();
+        completed.certainty = Some("written".into());
+        completed.outcome = Some("reset".into());
+        completed.error = None;
+        save_attempt(&store, &completed, request_id).unwrap();
+        let result = latch_recovered_pending(&store, request_id, request_id).unwrap();
+        assert_eq!(result.status, completed.status);
+        assert_eq!(result.outcome, completed.outcome);
     }
 }

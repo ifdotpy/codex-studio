@@ -370,8 +370,8 @@ async fn pull(
         .vault_host_command
         .clone()
         .ok_or_else(ApiError::internal)?;
-    let host_command =
-        host_command.with_desk_program(host_command.desk_program().map_err(vault_error)?);
+    let desk_program = host_command.desk_program().map_err(vault_error)?;
+    let host_command = host_command.with_desk_program(desk_program);
     let initial = serde_json::json!({"requestId":request_id,"state":"running","folder":target});
     let (job, started) = reserve_job(&job_client, VaultJobKind::Pull, &request_id, initial).await?;
     if started {
@@ -900,8 +900,8 @@ async fn unlock(
         .vault_host_command
         .clone()
         .ok_or_else(ApiError::internal)?;
-    let host_command =
-        host_command.with_desk_program(host_command.desk_program().map_err(vault_error)?);
+    let desk_program = host_command.desk_program().map_err(vault_error)?;
+    let host_command = host_command.with_desk_program(desk_program);
     let args = vec![
         "unlock".to_owned(),
         "--site".to_owned(),
@@ -1417,7 +1417,7 @@ mod tests {
         vault_project(state.path());
         let host_command = fake_host_command(
             state.path(),
-            "[ \"$1\" = unlock ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] || exit 91\n[ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --paper-file ] && [ \"$7\" = - ] || exit 92\n[ \"$(cat)\" = 'fixture paper words' ] || exit 93",
+            "if [ \"$1\" = unlock ]; then\n  [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] || exit 91\n  [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --paper-file ] && [ \"$7\" = - ] || exit 92\n  [ \"$(cat)\" = 'fixture paper words' ] || exit 93\nelif [ \"$1\" = service ] && [ \"$2\" = status ]; then\n  printf '%s\\n' '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp\"}'\nelif [ \"$1\" = status ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --json ]; then\n  printf '%s\\n' '{\"projects\":[{\"name\":\"project-one\",\"unlocked\":true}]}'\nelse\n  exit 94\nfi",
         );
         let app = app(state.path(), None, Some(host_command));
         let response = app
@@ -1450,7 +1450,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(mac, json!({"unlocked":true}));
+        assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/project-one"}));
     }
 
     #[cfg(unix)]
