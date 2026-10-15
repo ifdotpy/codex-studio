@@ -382,11 +382,10 @@ async fn run_guest_attachment(
             }
         }
     }
-    // The read lane is independent of command cancellation. Stop and join it
-    // before returning so a failed attachment cannot leave a concurrent guest
-    // read racing its replacement. Cancellation detaches; explicit actor
-    // disposal owns provider.stop.
-    reader.abort();
+    // Let an in-flight blocking guest read reach its RPC deadline, then join
+    // the reader before returning so a failed attachment cannot overlap its
+    // replacement. Cancellation detaches; explicit actor disposal owns
+    // provider.stop.
     let _reader_exit = reader.await;
     TaskExit {
         result,
