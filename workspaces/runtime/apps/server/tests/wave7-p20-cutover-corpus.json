@@ -39,55 +39,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p01-runtime-composition",
-          "kind": "accepted_branch",
-          "owner": "P01"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "account-driver/unavailable",
-      "operation_count": 4,
-      "operations": [
-        "POST /api/agents",
-        "POST /api/agents/account",
-        "POST /api/conversation",
-        "POST /api/leads"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "provider-session/model-list",
-      "operation_count": 4,
-      "operations": [
-        "GET /api/models",
-        "POST /api/agents",
-        "POST /api/conversation",
-        "POST /api/leads"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -131,27 +82,6 @@
         "GET /api/multi-server/v1/identity",
         "POST /api/multi-server",
         "POST /api/multi-server/v1/auto-pair"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "worker-driver/settings-catalog",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/agents",
-        "POST /api/conversation",
-        "POST /api/leads"
       ]
     },
     {
@@ -334,18 +264,6 @@
       "dependency": "payload-store/tool-request-recovery",
       "operation_count": 2,
       "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-service/claude-discovery",
-      "operation_count": 2,
-      "operations": ["GET /api/capabilities", "GET /api/skills"]
     },
     {
       "closures": [
@@ -792,52 +710,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-session/account-rate-limits",
-      "operation_count": 1,
-      "operations": ["GET /api/limits"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-session/account-session",
-      "operation_count": 1,
-      "operations": ["GET /api/models"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p01-runtime-composition",
-          "kind": "accepted_branch",
-          "owner": "P01"
-        },
-        {
-          "closes": "origin/feat/wave7-p14-sync-resources",
-          "kind": "accepted_branch",
-          "owner": "P14"
-        },
-        {
-          "closes": "origin/feat/wave7-p17-terminals",
-          "kind": "accepted_branch",
-          "owner": "P17"
-        }
-      ],
-      "dependency": "provider-session/app-server",
-      "operation_count": 1,
-      "operations": ["GET /api/sync/stream"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p11-native-actions",
           "kind": "accepted_branch",
           "owner": "P11"
@@ -978,23 +850,6 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "thread-preparation/tool-catalog",
-      "operation_count": 1,
-      "operations": ["GET /api/capabilities"]
-    },
-    {
-      "closures": [
-        {
           "closes": "Wave 7 P12 Completion/continuations",
           "kind": "open_task",
           "owner": "P12"
@@ -1036,23 +891,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p06-notification-effects",
-          "kind": "accepted_branch",
-          "owner": "P06"
-        },
-        {
-          "closes": "origin/feat/wave7-p14-sync-resources",
-          "kind": "accepted_branch",
-          "owner": "P14"
-        }
-      ],
-      "dependency": "usage-policy/token-rates",
-      "operation_count": 1,
-      "operations": ["GET /api/sync/stream"]
-    },
-    {
-      "closures": [
-        {
           "closes": "first-cutover refusal: VM excluded",
           "kind": "external_or_scope",
           "owner": "first-cutover refusal: VM excluded"
@@ -1076,10 +914,10 @@
     }
   ],
   "counts": {
-    "implemented": 107,
-    "named_dependencies": 74,
+    "implemented": 113,
+    "named_dependencies": 65,
     "not_registered": 0,
-    "partial": 53,
+    "partial": 47,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1116,12 +954,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "provider-service/claude-discovery",
-        "thread-preparation/tool-catalog"
-      ],
+      "dependencies": [],
       "operation": "GET /api/capabilities",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["workspace-state/image-execution"],
@@ -1202,9 +1037,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/account-rate-limits"],
+      "dependencies": [],
       "operation": "GET /api/limits",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1222,12 +1057,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "provider-session/account-session",
-        "provider-session/model-list"
-      ],
+      "dependencies": [],
       "operation": "GET /api/models",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1320,9 +1152,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-service/claude-discovery"],
+      "dependencies": [],
       "operation": "GET /api/skills",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1340,12 +1172,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "provider-session/app-server",
-        "usage-policy/token-rates"
-      ],
+      "dependencies": [],
       "operation": "GET /api/sync/stream",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1484,9 +1313,6 @@
     },
     {
       "dependencies": [
-        "account-driver/unavailable",
-        "provider-session/model-list",
-        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
@@ -1494,10 +1320,7 @@
       "status": "partial"
     },
     {
-      "dependencies": [
-        "account-driver/unavailable",
-        "account-transfer/usage-resume-cancellation"
-      ],
+      "dependencies": ["account-transfer/usage-resume-cancellation"],
       "operation": "POST /api/agents/account",
       "status": "partial"
     },
@@ -1605,13 +1428,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "account-driver/unavailable",
-        "provider-session/model-list",
-        "worker-driver/settings-catalog"
-      ],
+      "dependencies": [],
       "operation": "POST /api/conversation",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1667,12 +1486,9 @@
     },
     {
       "dependencies": [
-        "account-driver/unavailable",
         "cross-server-driver/local-identity",
         "cross-server-driver/project-binding",
         "project-driver/folder-selection",
-        "provider-session/model-list",
-        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
