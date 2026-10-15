@@ -297,13 +297,10 @@ async fn write_project(
             )
             .await
             .map_err(|_| ApiError::internal())??;
-            if studio_runtime_schema::first_error("RemoteProjectRegistrationResponse", &value)
-                .map_err(|_| ApiError::internal())?
-                .is_some()
-            {
-                return Err(ApiError::internal());
-            }
-            return Ok(Json(ProjectWriteResponse::Remote(value)).into_response());
+            let value = super::generated_json::<crate::generated::RemoteProjectRegistrationResponse>(
+                value,
+            )?;
+            return Ok(Json(ProjectWriteResponse::RemoteRegistration(value)).into_response());
         }
         let action = body
             .get("action")
@@ -335,18 +332,20 @@ async fn write_project(
             )
             .await
             .map_err(|_| ApiError::internal())??;
-            let response_schema = if is_registration {
-                "RemoteProjectRegistrationResponse"
+            let response = if is_registration {
+                ProjectWriteResponse::RemoteRegistration(super::generated_json::<
+                    crate::generated::RemoteProjectRegistrationResponse,
+                >(value)?)
             } else {
-                "ServerOperationResponse"
+                if studio_runtime_schema::first_error("ServerOperationResponse", &value)
+                    .map_err(|_| ApiError::internal())?
+                    .is_some()
+                {
+                    return Err(ApiError::internal());
+                }
+                ProjectWriteResponse::Remote(value)
             };
-            if studio_runtime_schema::first_error(response_schema, &value)
-                .map_err(|_| ApiError::internal())?
-                .is_some()
-            {
-                return Err(ApiError::internal());
-            }
-            return Ok(Json(ProjectWriteResponse::Remote(value)).into_response());
+            return Ok(Json(response).into_response());
         }
     }
     let mut body = body;
@@ -563,6 +562,7 @@ fn local_project_registration(
 #[serde(untagged)]
 enum ProjectWriteResponse {
     Remote(Value),
+    RemoteRegistration(crate::generated::RemoteProjectRegistrationResponse),
     Removal(crate::generated::ProjectRemovalResponse),
     Sidebar(crate::generated::SidebarOrderResponse),
     Mutation(crate::generated::ProjectMutationRecord),
@@ -1127,7 +1127,6 @@ inventory::submit! {
 
 #[cfg(test)]
 mod local_registration_tests {
-    use super::{local_project_registration, remote_project_write};
     use serde_json::json;
     use std::sync::{
         Arc,
@@ -1144,13 +1143,57 @@ mod local_registration_tests {
 
     struct ProjectPeer(Arc<AtomicUsize>);
 
+    async fn post_project(
+        app: &axum::Router,
+        body: &serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use axum::{
+            body::{Body, to_bytes},
+            extract::ConnectInfo,
+            http::Request,
+        };
+        use tower::ServiceExt;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/projects")
+            .header("host", "127.0.0.1:4621")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "token")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(ConnectInfo(
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("peer address"),
+            ))
+            .body(Body::from(body.to_string()))
+            .expect("project registration request");
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("project response");
+        let status = response.status();
+        let body = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        (status, body)
+    }
+
     impl PairedTransport for ProjectPeer {
         fn exchange(
             &self,
-            _server: &str,
+            server: &str,
             envelope: &serde_json::Value,
             _timeout: std::time::Duration,
         ) -> Result<serde_json::Value, AccessError> {
+            assert_eq!(server, "peer");
             self.0.fetch_add(1, Ordering::SeqCst);
             let payload = &envelope["payload"];
             let path = payload["path"].as_str().expect("remote path");
@@ -1186,10 +1229,10 @@ mod local_registration_tests {
         }
     }
 
-    #[test]
-    fn local_registration_saves_logical_location_and_replays_its_receipt() {
+    #[tokio::test]
+    async fn local_registration_http_saves_logical_location_and_replays_receipt() {
         let root = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
         let project_path = root.path().join("project");
         std::fs::create_dir_all(&project_path).expect("project directory");
         let policy = AccountPolicyState::from_startup(
@@ -1197,33 +1240,32 @@ mod local_registration_tests {
             [],
         )
         .expect("account snapshot");
-        let accounts = policy.accounts();
         let body = json!({
             "action":"register",
             "server":"local",
             "path":project_path.to_string_lossy(),
             "request_id":"local-registration-1"
         });
-        let identity = studio_runtime_services::federation_credentials::Credentials::default()
-            .identity(&store, Some("https://local.fixture.ts.net"))
-            .expect("persisted identity");
-        let first = local_project_registration(
-            &store,
-            &body,
-            "default",
-            &accounts.accounts,
-            identity["serverId"].as_str().expect("server ID"),
-        )
-        .expect("local registration");
-        let replay = local_project_registration(
-            &store,
-            &body,
-            "default",
-            &accounts.accounts,
-            identity["serverId"].as_str().expect("server ID"),
-        )
-        .expect("receipt replay");
-        assert_eq!(first, replay);
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().to_string_lossy().into_owned(),
+            4621,
+            None,
+            Some(Arc::clone(&store)),
+            Some(Arc::new(policy)),
+        );
+        let app = crate::router::router(state).expect("projects HTTP router");
+        let (status, first) = post_project(&app, &body).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (status, replay) = post_project(&app, &body).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        // Sync metadata can be attached only to the first response; the saved
+        // logical receipt fields must remain identical on replay.
+        for field in ["requestId", "outcome", "projectId", "value"] {
+            assert_eq!(first[field], replay[field], "saved receipt field {field}");
+        }
         assert_eq!(first["outcome"], "applied");
         let connection = store.read().expect("store read");
         let (_, logical) = ProjectsRepository::get(
@@ -1233,11 +1275,14 @@ mod local_registration_tests {
         .expect("logical project read")
         .expect("logical project");
         assert_eq!(logical["locations"].as_array().expect("locations").len(), 1);
-        assert_eq!(logical["locations"][0]["serverId"], identity["serverId"]);
+        assert_eq!(
+            logical["locations"][0]["serverId"],
+            first["value"]["serverId"]
+        );
     }
 
-    #[test]
-    fn remote_project_registration_replays_saved_receipts_without_second_send() {
+    #[tokio::test]
+    async fn remote_project_registration_http_replays_saved_receipt_without_second_send() {
         let root = tempfile::tempdir().expect("state directory");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
         studio_runtime_services::federation_credentials::Credentials::default()
@@ -1256,11 +1301,11 @@ mod local_registration_tests {
             })
             .expect("paired fake server");
         let calls = Arc::new(AtomicUsize::new(0));
-        let driver = OrchestrationDriver::new(
+        let driver = Arc::new(OrchestrationDriver::new(
             Arc::clone(&store),
             Arc::new(ProjectPeer(Arc::clone(&calls))),
             Arc::new(NoEffects),
-        );
+        ));
         let policy = AccountPolicyState::from_startup(
             Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
             [],
@@ -1273,32 +1318,46 @@ mod local_registration_tests {
             "name":"Remote project",
             "request_id":"remote-registration-1"
         });
-        let first = remote_project_write(
-            store.as_ref(),
-            &body,
-            "default",
-            &policy.accounts().accounts,
-            &driver,
-            10,
-        )
-        .expect("fake peer registration");
-        let replay = remote_project_write(
-            store.as_ref(),
-            &body,
-            "default",
-            &policy.accounts().accounts,
-            &driver,
-            11,
-        )
-        .expect("saved receipt replay");
-        assert_eq!(first, replay);
+        let mut state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().to_string_lossy().into_owned(),
+            4621,
+            None,
+            Some(Arc::clone(&store)),
+            Some(Arc::new(policy)),
+        );
+        state.orchestration_driver = Some(Arc::clone(&driver));
+        let app = crate::router::router(state).expect("projects HTTP router");
+        let (first_status, first) = post_project(&app, &body).await;
+        assert_eq!(
+            first_status,
+            axum::http::StatusCode::OK,
+            "{first}; fake peer calls: {}",
+            calls.load(Ordering::SeqCst)
+        );
+        let (status, replay) = post_project(&app, &body).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        for field in ["requestId", "outcome", "projectId", "value"] {
+            assert_eq!(first[field], replay[field], "saved receipt field {field}");
+        }
         assert_eq!(first["outcome"], "applied");
+        assert_eq!(first["value"]["serverId"], "peer");
+        assert_eq!(first["value"]["requestId"], first["requestId"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut changed = body.clone();
+        changed["name"] = json!("Different project content");
+        let (status, _) = post_project(&app, &changed).await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let connection = store.read().expect("store read");
         let project = first["projectId"].as_str().expect("project ID");
         let (_, record) = ProjectsRepository::get(&connection, project)
             .expect("project read")
             .expect("logical project");
+        assert_eq!(record["name"], "Remote project");
+        assert_eq!(record["locations"].as_array().expect("locations").len(), 1);
         assert_eq!(record["locations"][0]["serverId"], "peer");
         assert_eq!(record["locations"][0]["path"], "/remote/project");
     }
