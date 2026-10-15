@@ -529,9 +529,6 @@ impl RuntimeStore {
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
         let holding = diagnostics_enabled.then(Instant::now);
         let outcome = (|| {
-            repositories::sync_documents::reset_sequence_high_water(&writer)
-                .map_err(StoreError::from)
-                .map_err(E::from)?;
             let transaction = writer
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::from)

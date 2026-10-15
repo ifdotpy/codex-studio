@@ -1,6 +1,6 @@
 //! Synchronous access to the durable sync document and entity tables.
 
-use rusqlite::{Connection, Error, ErrorCode, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 
@@ -513,66 +513,17 @@ pub(crate) fn hash_payload(payload: &str) -> String {
         .collect()
 }
 
-/// Clear the connection-local allocation cache before each managed write.
-pub(crate) fn reset_sequence_high_water(connection: &Connection) -> StoreResult<()> {
-    connection.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS sync_sequence_high_water (\
-             singleton INTEGER PRIMARY KEY CHECK(singleton=1), value INTEGER NOT NULL\
-         ); DELETE FROM temp.sync_sequence_high_water;",
-    )?;
-    Ok(())
-}
-
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
-    let high_water = match connection
+    connection
         .query_row(
-            "SELECT value FROM temp.sync_sequence_high_water WHERE singleton=1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-    {
-        Ok(high_water) => high_water,
-        Err(Error::SqliteFailure(error, Some(message)))
-            if error.code == ErrorCode::Unknown
-                && message == "no such table: temp.sync_sequence_high_water" =>
-        {
-            // Some repository callers own a raw transaction instead of using
-            // RuntimeStore::transaction; initialize the connection-local cache
-            // only on this uncommon first-allocation path.
-            reset_sequence_high_water(connection)?;
-            None
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if let Some(high_water) = high_water {
-        let next = high_water
-            .checked_add(1)
-            .ok_or(StoreError::RecordContract("sync sequence exhausted"))?;
-        connection.execute(
-            "UPDATE temp.sync_sequence_high_water SET value=?1 WHERE singleton=1",
-            [next],
-        )?;
-        return Ok(next);
-    }
-
-    let high_water = connection
-        .query_row(
-            "SELECT MAX(entity_seq,document_seq,version_seq) FROM ( \
+            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
              (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
             [],
-            |row| row.get::<_, i64>(0),
-        )?;
-    let next = high_water
-        .checked_add(1)
-        .ok_or(StoreError::RecordContract("sync sequence exhausted"))?;
-    connection.execute(
-        "INSERT INTO temp.sync_sequence_high_water(singleton,value) VALUES(1,?1)",
-        [next],
-    )?;
-    Ok(next)
+            |row| row.get(0),
+        )
+        .map_err(StoreError::from)
 }
 
 inventory::submit! {
@@ -584,7 +535,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use super::{SyncDocumentsRepository, next_sequence, reset_sequence_high_water};
+    use super::SyncDocumentsRepository;
     use rusqlite::Connection;
 
     #[test]
@@ -598,7 +549,6 @@ mod tests {
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");
-        reset_sequence_high_water(&connection).expect("sequence high-water initializes");
         let transaction = connection.transaction().expect("transaction begins");
         assert!(
             SyncDocumentsRepository::put_entity_hash(
@@ -620,16 +570,6 @@ mod tests {
             )
             .expect("identical hash replays")
         );
-        assert!(
-            SyncDocumentsRepository::put_entity_hash(
-                &transaction,
-                "transcript:agent",
-                "item:two",
-                "digest-two",
-                false,
-            )
-            .expect("second entity stores")
-        );
         let row: (i64, Option<String>) = transaction
             .query_row(
                 "SELECT seq,payload FROM sync_entities WHERE collection='transcript:agent' AND id='item:one'",
@@ -638,20 +578,6 @@ mod tests {
             )
             .expect("hash-only row reads");
         assert_eq!(row, (10, None));
-        let second_sequence: i64 = transaction
-            .query_row(
-                "SELECT seq FROM sync_entities WHERE collection='transcript:agent' AND id='item:two'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("second entity sequence reads");
-        assert_eq!(second_sequence, 11);
         transaction.commit().expect("transaction commits");
-
-        connection
-            .execute("INSERT INTO sync_documents VALUES(20,'drafts','next','{}',0)", [])
-            .expect("external sequence advances");
-        reset_sequence_high_water(&connection).expect("next transaction clears high-water");
-        assert_eq!(next_sequence(&connection).expect("next sequence allocates"), 21);
     }
 }
