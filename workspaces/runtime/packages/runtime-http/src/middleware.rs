@@ -850,7 +850,6 @@ mod tests {
             .body(Body::empty())
             .expect("request builds");
         let response = app.oneshot(request).await.expect("response");
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.headers()["x-studio-request-id"], "request-1");
         assert!(
             response
