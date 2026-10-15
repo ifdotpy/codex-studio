@@ -2,6 +2,7 @@
 """Context repair's no-op success and held-receipt no-write contract."""
 from __future__ import annotations
 
+import importlib.util
 import json
 from contextlib import closing
 import os
@@ -17,6 +18,13 @@ from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write
 from runtime_test_environment import make_runtime
 from studio_api.models import MAX_SAFE_INTEGER
 
+_fixture_spec = importlib.util.spec_from_file_location(
+    "context_repair_runtime_fixture", Path(__file__).with_name("runtime-contract.py")
+)
+_fixture = importlib.util.module_from_spec(_fixture_spec)
+assert _fixture_spec.loader is not None
+_fixture_spec.loader.exec_module(_fixture)
+
 
 class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
@@ -24,8 +32,12 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = BackendProcess(Path(os.environ["TMPDIR"]))
         cls.addClassCleanup(cls.backend.close)
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-        from codex_runtime import Runtime
-        runtime = make_runtime(Runtime, cls.backend)
+
+        class QuietRuntime(_fixture.Runtime):
+            def schedule(self):
+                pass
+
+        runtime = make_runtime(QuietRuntime, cls.backend, _fixture.FakeServer)
         cls.ids = {}
         try:
             for name in ("empty", "claude", "held", "rewrite"):
