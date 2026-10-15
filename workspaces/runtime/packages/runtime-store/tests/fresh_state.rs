@@ -11,6 +11,10 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError, check_state_readonly};
 
+// Rust-only feature indexes do not need a Python lazy-DDL owner. Keep the
+// exception exact; all other Rust feature objects still require one.
+const RUST_OWNED_FEATURE_SCHEMA_INDEXES: &[&str] = &["runtime_agent_callback_context"];
+
 #[test]
 fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration() {
     let rust_state = temporary_state("rust");
@@ -26,12 +30,16 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
         open_started.elapsed()
     );
     let rust_catalog = catalog_snapshot(&rust_state);
+    assert_rust_owned_feature_schema_objects(&rust_catalog, &feature_schema);
     assert_valid_markers(&expected["markers"]);
     assert_eq!(
-        rust_catalog,
+        catalog_without_rust_owned_feature_indexes(&rust_catalog),
         expected["databases"],
         "{}",
-        catalog_diff(&rust_catalog, &expected["databases"])
+        catalog_diff(
+            &catalog_without_rust_owned_feature_indexes(&rust_catalog),
+            &expected["databases"]
+        )
     );
     assert_eq!(sync_seeds(&rust_state), expected["sync_seeds"]);
     assert_eq!(sync_meta(&rust_state), expected["sync_meta"]);
@@ -58,7 +66,11 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
         opened["before"], opened["after"],
         "Python startup performs no schema migration"
     );
-    assert_eq!(opened["before"], expected["databases"]);
+    assert_rust_owned_feature_schema_objects(&opened["before"], &feature_schema);
+    assert_eq!(
+        catalog_without_rust_owned_feature_indexes(&opened["before"]),
+        expected["databases"]
+    );
     assert_eq!(opened["sync_seeds"], expected["sync_seeds"]);
     assert_eq!(opened["markers_before"], rust_markers);
     assert_eq!(
@@ -172,6 +184,10 @@ fn python(root: &Path, feature_schema: &Path, script: &str) -> Value {
         .arg(root)
         .arg(&source)
         .arg(feature_schema)
+        .arg(
+            serde_json::to_string(RUST_OWNED_FEATURE_SCHEMA_INDEXES)
+                .expect("Rust-owned schema objects serialize"),
+        )
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()
         .expect("isolated Python starts for fresh-schema parity");
@@ -181,6 +197,56 @@ fn python(root: &Path, feature_schema: &Path, script: &str) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("Python schema oracle returns JSON")
+}
+
+fn catalog_without_rust_owned_feature_indexes(catalog: &Value) -> Value {
+    let mut common = catalog.clone();
+    if let Some(objects) = common["canvas.sqlite3"]["sqlite_master"].as_array_mut() {
+        objects.retain(|object| {
+            !RUST_OWNED_FEATURE_SCHEMA_INDEXES
+                .contains(&object["name"].as_str().unwrap_or_default())
+        });
+    }
+    common
+}
+
+fn assert_rust_owned_feature_schema_objects(catalog: &Value, feature_schema: &Path) {
+    let source = fs::read_to_string(feature_schema).expect("canonical feature schema reads");
+    for name in RUST_OWNED_FEATURE_SCHEMA_INDEXES {
+        let declaration = format!("CREATE INDEX IF NOT EXISTS {name}");
+        let start = source
+            .find(&declaration)
+            .unwrap_or_else(|| panic!("canonical feature schema owns {name}"));
+        let remainder = &source[start..];
+        let end = remainder
+            .find(';')
+            .unwrap_or_else(|| panic!("canonical feature schema declaration for {name} ends"));
+        let expected_sql = normalize_schema_sql(&remainder[..end].replace("IF NOT EXISTS ", ""));
+        let actual = catalog["canvas.sqlite3"]["sqlite_master"]
+            .as_array()
+            .and_then(|objects| objects.iter().find(|object| object["name"] == *name))
+            .unwrap_or_else(|| panic!("Rust startup creates its owned feature index {name}"));
+        assert_eq!(actual["type"], "index", "{name} remains an index");
+        assert_eq!(
+            actual["table"], "runtime_agents",
+            "{name} indexes runtime_agents"
+        );
+        assert_eq!(
+            normalize_schema_sql(actual["sql"].as_str().expect("index SQL is present")),
+            expected_sql,
+            "{name} matches its canonical Rust feature-schema declaration"
+        );
+    }
+}
+
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(" ,", ",")
+        .replace(", ", ",")
+        .replace(" )", ")")
 }
 
 fn catalog_snapshot(state: &Path) -> Value {
@@ -498,6 +564,9 @@ root = pathlib.Path(sys.argv[1])
 def install_lazy_ddl(connection):
     feature_sql = pathlib.Path(sys.argv[3]).read_text()
     targets = set(re.findall(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF NOT EXISTS\s+([A-Za-z_][A-Za-z_0-9]*)", feature_sql, re.I))
+    rust_owned = set(json.loads(sys.argv[4]))
+    if rust_owned - targets:
+        raise AssertionError("Rust-owned feature schema object is absent from canonical schema: " + ", ".join(sorted(rust_owned - targets)))
     created = set(row[0] for row in connection.execute("SELECT name FROM sqlite_master"))
     statements = {}
     pattern = re.compile(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX)\s+(?:IF NOT EXISTS\s+)?([A-Za-z_][A-Za-z_0-9]*)\b", re.I | re.S)
@@ -511,10 +580,12 @@ def install_lazy_ddl(connection):
                         match = pattern.search(sql)
                         if match and match.group(1) in targets:
                             statements.setdefault(match.group(1), sql.strip())
+    if rust_owned & set(statements):
+        raise AssertionError("Rust-owned feature schema object also has a Python DDL owner: " + ", ".join(sorted(rust_owned & set(statements))))
     for name, statement in sorted(statements.items(), key=lambda item: "INDEX" in item[1].upper()):
         if "IF NOT EXISTS" in statement.upper() or name not in created:
             connection.execute(statement)
-    missing = targets - created - set(statements)
+    missing = targets - created - set(statements) - rust_owned
     if missing:
         raise AssertionError("Python lazy DDL owner not found for: " + ", ".join(sorted(missing)))
 
@@ -584,6 +655,9 @@ root = pathlib.Path(sys.argv[1])
 def install_lazy_ddl(connection):
     feature_sql = pathlib.Path(sys.argv[3]).read_text()
     targets = set(re.findall(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF NOT EXISTS\s+([A-Za-z_][A-Za-z_0-9]*)", feature_sql, re.I))
+    rust_owned = set(json.loads(sys.argv[4]))
+    if rust_owned - targets:
+        raise AssertionError("Rust-owned feature schema object is absent from canonical schema: " + ", ".join(sorted(rust_owned - targets)))
     created = set(row[0] for row in connection.execute("SELECT name FROM sqlite_master"))
     statements = {}
     pattern = re.compile(r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|INDEX)\s+(?:IF NOT EXISTS\s+)?([A-Za-z_][A-Za-z_0-9]*)\b", re.I | re.S)
@@ -597,10 +671,12 @@ def install_lazy_ddl(connection):
                         match = pattern.search(sql)
                         if match and match.group(1) in targets:
                             statements.setdefault(match.group(1), sql.strip())
+    if rust_owned & set(statements):
+        raise AssertionError("Rust-owned feature schema object also has a Python DDL owner: " + ", ".join(sorted(rust_owned & set(statements))))
     for name, statement in sorted(statements.items(), key=lambda item: "INDEX" in item[1].upper()):
         if "IF NOT EXISTS" in statement.upper() or name not in created:
             connection.execute(statement)
-    missing = targets - created - set(statements)
+    missing = targets - created - set(statements) - rust_owned
     if missing:
         raise AssertionError("Python lazy DDL owner not found for: " + ", ".join(sorted(missing)))
 
