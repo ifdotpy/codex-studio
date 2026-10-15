@@ -242,6 +242,7 @@ pub struct RuntimeStore {
     root: PathBuf,
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
+    analytics: Mutex<Connection>,
     version_reader: Mutex<Connection>,
     identity_registry_path: PathBuf,
     commit_notifiers: Mutex<CommitNotifiers>,
@@ -290,6 +291,9 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
+        let mut analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        analytics.pragma_update(None, "journal_mode", "WAL")?;
+        analytics.pragma_update(None, "synchronous", "FULL")?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();
@@ -309,6 +313,7 @@ impl RuntimeStore {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
+            analytics: Mutex::new(analytics),
             version_reader: Mutex::new(version_reader),
             identity_registry_path,
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
@@ -754,6 +759,7 @@ mod diagnostics_hook_tests {
             root: directory.path().to_path_buf(),
             _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
             writer: Mutex::new(writer),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(reader),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
@@ -796,6 +802,7 @@ mod commit_notification_tests {
             root: directory.path().to_path_buf(),
             _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),

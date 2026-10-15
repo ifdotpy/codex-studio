@@ -183,17 +183,7 @@ impl RuntimeStore {
         E: From<StoreError>,
     {
         let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let mut db = Connection::open_with_flags(
-            self.root.join("analytics.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )
-        .map_err(StoreError::from)?;
-        db.busy_timeout(std::time::Duration::from_secs(15))
-            .map_err(StoreError::from)?;
-        db.pragma_update(None, "journal_mode", "WAL")
-            .map_err(StoreError::from)?;
-        db.pragma_update(None, "synchronous", "FULL")
-            .map_err(StoreError::from)?;
+        let mut db = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(StoreError::from)?;
