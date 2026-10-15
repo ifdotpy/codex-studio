@@ -431,7 +431,12 @@ fn save(
     payload_root: Option<&std::path::Path>,
 ) -> Result<(), ToolRequestError> {
     let decision = payload_root
-        .map(|root| crate::payload_blobs::decide_externalize(TABLE, record).map(|d| (root, d)))
+        // decide_externalize uses logical table names; the physical SQLite
+        // table is runtime_tool_requests, but its payload contract is
+        // tool_requests.
+        .map(|root| {
+            crate::payload_blobs::decide_externalize("tool_requests", record).map(|d| (root, d))
+        })
         .transpose()?;
     let persisted = decision
         .as_ref()

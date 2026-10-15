@@ -606,6 +606,37 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             actual=json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",(record["id"],)).fetchone()[0])
         self.assertEqual(normalized(actual),normalized(expected[record["id"]]))
 
+    def test_saved_large_result_settlement_keeps_request_payload_externalized(self):
+        identity = "saved-large-list"
+        record = receipt(identity, self.lead_id, stage="queued", outcome="pending",
+                         tool="orchestration_servers", result=None)
+        evidence = {"outcome": "applied", "padding": "large-" * 20_000}
+        result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps(evidence)},
+        ]}
+        self.assertGreater(len(json.dumps(result).encode()), 64 * 1024)
+        write_receipts(self.backend, [record], saved_results={identity: result})
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        listed = next(row for row in response.json()["requests"] if row["id"] == identity)
+        self.assertEqual((listed["stage"], listed["outcome"]), ("completed", "applied"))
+
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = json.loads(database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0])
+            refs = database.execute(
+                "SELECT table_name,record_id,field FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+        self.assertEqual(refs, [("runtime_tool_requests", identity, "result")])
+        self.assertGreater(stored["_payloadBlobs"]["result"]["size"], 64 * 1024)
+        self.assertLess(len(json.dumps(stored["result"])), 64 * 1024)
+
     def test_project_location_outbox_evidence_never_returns_stale_receipt(self):
         from codex_multi_server_orchestration import identity
         key=identity("project-location",self.lead_id,"location-evidence")
