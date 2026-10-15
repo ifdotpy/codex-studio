@@ -7,6 +7,7 @@ use crate::router::HttpState;
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsError};
 use tokio::sync::{mpsc, oneshot};
@@ -431,6 +432,8 @@ async fn setup(
             region,
             writer,
             host_command.clone(),
+            vm_state_dir,
+            Arc::clone(&state.sync_changes),
             job_client,
         ));
     }
@@ -744,6 +747,8 @@ async fn run_setup_job(
     region: String,
     writer: String,
     host_command: studio_runtime_services::vault::VaultHostCommand,
+    vm_state_dir: std::path::PathBuf,
+    sync_changes: Arc<studio_runtime_services::change_notifications::ChangeNotificationHub>,
     job_client: VaultJobClient,
 ) {
     let args = vec![
@@ -799,6 +804,12 @@ async fn run_setup_job(
                 .and_then(|value| value.get("site").and_then(Value::as_str).map(str::to_owned));
             match site {
                 Some(site) => {
+                    if let Err(error) = refresh_mac_views(&vm_state_dir, &host_command).await {
+                        // The deploy already succeeded. Keep its receipt successful and let
+                        // the next sync tick retry the best-effort local status refresh.
+                        eprintln!("Vault setup succeeded, but Mac status refresh failed: {error}");
+                    }
+                    sync_changes.notify_one();
                     finish_job(
                         &job_client,
                         VaultJobKind::Setup,
@@ -1302,6 +1313,17 @@ mod tests {
         (owner, client)
     }
 
+    fn setup_refresh_fake_script(refresh_succeeds: bool) -> String {
+        let service_status = if refresh_succeeds {
+            "printf '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp/disk\",\"program\":\"%s\"}\\n' \"$0\""
+        } else {
+            "exit 92"
+        };
+        format!(
+            "if [ \"$1\" = deploy ]; then\n  printf '%s\\n' '{{\"site\":\"https://desk.example/\"}}'\nelif [ \"$1\" = service ] && [ \"$2\" = status ]; then\n  {service_status}\nelif [ \"$1\" = status ] && [ \"$2\" = --site ]; then\n  printf '%s\\n' '{{\"projects\":[{{\"name\":\"project-one\",\"unlocked\":true}}]}}'\nelse\n  exit 94\nfi"
+        )
+    }
+
     fn vault_project(state: &std::path::Path) {
         let project = state.join("linux-vm/layr-projects/p1");
         std::fs::create_dir_all(&project).unwrap();
@@ -1451,6 +1473,102 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/project-one"}));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_vault_setup_refreshes_mac_view_and_wakes_sync() {
+        let state = tempfile::tempdir().unwrap();
+        vault_project(state.path());
+        let host_command = fake_host_command(state.path(), &setup_refresh_fake_script(true));
+        let (owner, client) = test_job_client().await;
+        let request_id = test_request_id("setup-refresh");
+        reserve_job(
+            &client,
+            VaultJobKind::Setup,
+            &request_id,
+            json!({"requestId":request_id,"state":"running"}),
+        )
+        .await
+        .unwrap();
+        let changes =
+            Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new());
+        let mut receiver = changes.subscribe();
+
+        run_setup_job(
+            request_id.clone(),
+            "project-one".to_owned(),
+            "fixture".to_owned(),
+            "eu-central-1".to_owned(),
+            "writer".to_owned(),
+            host_command,
+            state.path().join("linux-vm"),
+            changes,
+            client.clone(),
+        )
+        .await;
+
+        let job = find_job(&client, VaultJobKind::Setup, &request_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["state"], "done");
+        assert_eq!(job["site"], "https://desk.example/");
+        let mac: Value = serde_json::from_slice(
+            &std::fs::read(
+                state
+                    .path()
+                    .join("linux-vm/layr-projects/p1/vault-mac.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/disk/project-one"}));
+        assert_eq!(receiver.borrow_and_update().revision, 1);
+        owner.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_vault_setup_stays_done_when_best_effort_refresh_fails() {
+        let state = tempfile::tempdir().unwrap();
+        vault_project(state.path());
+        let host_command = fake_host_command(state.path(), &setup_refresh_fake_script(false));
+        let (owner, client) = test_job_client().await;
+        let request_id = test_request_id("setup-refresh-failed");
+        reserve_job(
+            &client,
+            VaultJobKind::Setup,
+            &request_id,
+            json!({"requestId":request_id,"state":"running"}),
+        )
+        .await
+        .unwrap();
+        let changes =
+            Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new());
+        let mut receiver = changes.subscribe();
+
+        run_setup_job(
+            request_id.clone(),
+            "project-one".to_owned(),
+            "fixture".to_owned(),
+            "eu-central-1".to_owned(),
+            "writer".to_owned(),
+            host_command,
+            state.path().join("linux-vm"),
+            changes,
+            client.clone(),
+        )
+        .await;
+
+        let job = find_job(&client, VaultJobKind::Setup, &request_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["state"], "done");
+        assert_eq!(job["site"], "https://desk.example/");
+        assert_eq!(receiver.borrow_and_update().revision, 1);
+        owner.shutdown().await.unwrap();
     }
 
     #[cfg(unix)]
@@ -1682,6 +1800,8 @@ mod tests {
             "eu-central-1".to_owned(),
             "writer".to_owned(),
             fake_host_command(root.path(), "printf '%16385s' '' >&2"),
+            root.path().join("linux-vm"),
+            Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new()),
             client.clone(),
         )
         .await;
