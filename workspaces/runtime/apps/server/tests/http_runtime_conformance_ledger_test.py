@@ -337,9 +337,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         copied_data = {
             "stateCheckBefore": True,
             "existingRowRead": True,
-            "unchangedOldDataFromBeforeStartup": True,
+            "preexistingRowsPreservedFromBeforeStartup": True,
             "stateCheckAfter": True,
             "unchangedDuringFinderRead": True,
+            "schemaChangesReviewed": True,
             "baselineRestore": True,
             "pythonRollbackReadback": True,
         }
@@ -1007,6 +1008,177 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 self.assertNotEqual(original_identity, replacement_identity)
                 os.replace(replacement, database)
                 self.assertFalse(snapshot.unchanged())
+
+    def test_old_row_preservation_allows_new_tables_and_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-rows-additions-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)")
+                connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                connection.execute("CREATE TABLE duplicate_values(value BLOB)")
+                connection.executemany(
+                    "INSERT INTO duplicate_values VALUES (?)",
+                    [(b"same",), (b"same",)],
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO records VALUES (2, 'new row')")
+                    connection.execute(
+                        "INSERT INTO duplicate_values VALUES (?)", (b"same",),
+                    )
+                    connection.execute("CREATE TABLE new_table(value TEXT)")
+                    connection.execute("INSERT INTO new_table VALUES ('new table row')")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newTables"], 1)
+
+    def test_old_row_preservation_rejects_deleted_or_changed_rows(self) -> None:
+        for mutation in ("delete", "update"):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory(prefix="ledger-old-rows-change-") as scratch:
+                    database = Path(scratch) / "canvas.sqlite3"
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute("PRAGMA journal_mode=WAL")
+                        connection.execute(
+                            "CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)"
+                        )
+                        connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                        connection.commit()
+
+                    with ledger.sqlite_snapshot(database) as snapshot:
+                        with closing(sqlite3.connect(database)) as connection:
+                            statement = (
+                                "DELETE FROM records WHERE id=1"
+                                if mutation == "delete"
+                                else "UPDATE records SET value='changed' WHERE id=1"
+                            )
+                            connection.execute(statement)
+                            connection.commit()
+                        result = snapshot.preserved_existing_rows()
+                    self.assertFalse(result["preserved"])
+
+    def test_old_row_preservation_allows_added_columns_but_checks_old_columns(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-columns-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value BLOB)")
+                connection.execute("INSERT INTO records VALUES (1, ?)", (b"kept",))
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("ALTER TABLE records ADD COLUMN added TEXT")
+                    connection.execute(
+                        "UPDATE records SET added='new metadata' WHERE id=1"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newColumns"], 1)
+            self.assertEqual(result["changedTableDefinitions"], 1)
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE records SET value=? WHERE id=1", (b"changed",),
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
+
+            with tempfile.TemporaryDirectory(prefix="ledger-old-column-drop-") as second:
+                database = Path(second) / "canvas.sqlite3"
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    connection.execute(
+                        "CREATE TABLE records(id INTEGER PRIMARY KEY, old_value TEXT)"
+                    )
+                    connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                    connection.commit()
+                with ledger.sqlite_snapshot(database) as snapshot:
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute("ALTER TABLE records DROP COLUMN old_value")
+                        connection.commit()
+                    result = snapshot.preserved_existing_rows()
+                self.assertFalse(result["preserved"])
+
+    def test_no_primary_key_duplicate_tables_use_rowid_or_report_unverified(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-no-primary-key-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE duplicates(value TEXT)")
+                connection.executemany(
+                    "INSERT INTO duplicates VALUES (?)", [("same",), ("same",)],
+                )
+                connection.execute(
+                    "CREATE TABLE shadowed(rowid TEXT, _rowid_ TEXT, oid TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO shadowed VALUES ('a', 'b', 'c')"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "INSERT INTO duplicates VALUES ('same')"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertIsNone(result["preserved"])
+            self.assertEqual(result["unsupportedTables"], 1)
+
+            with tempfile.TemporaryDirectory(prefix="ledger-no-pk-delete-") as second:
+                database = Path(second) / "canvas.sqlite3"
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    connection.execute("CREATE TABLE duplicates(value TEXT)")
+                    connection.executemany(
+                        "INSERT INTO duplicates VALUES (?)", [("same",), ("same",)],
+                    )
+                    connection.commit()
+                with ledger.sqlite_snapshot(database) as snapshot:
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute(
+                            "DELETE FROM duplicates WHERE rowid=(SELECT MIN(rowid) FROM duplicates)"
+                        )
+                        connection.commit()
+                    result = snapshot.preserved_existing_rows()
+                self.assertFalse(result["preserved"])
+
+    def test_old_row_preservation_compares_exact_types_and_text_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-row-types-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value)")
+                connection.executemany(
+                    "INSERT INTO mixed VALUES (?)",
+                    [(None,), (b"blob\x00",), (1,), ("1",), (1.0,)],
+                )
+                connection.execute(
+                    "CREATE TABLE collated(value TEXT COLLATE NOCASE)"
+                )
+                connection.execute("INSERT INTO collated VALUES ('Ab')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE mixed SET value=1.0 WHERE rowid=("
+                        "SELECT rowid FROM mixed WHERE typeof(value)='integer' LIMIT 1)"
+                    )
+                    connection.execute("UPDATE collated SET value='ab'")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
 
     def test_copy_privacy_and_reset_probe_is_always_preserved(self) -> None:
         copied_response = {

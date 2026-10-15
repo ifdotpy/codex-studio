@@ -2007,12 +2007,13 @@ def api_fixture_evidence(operations_result: list[dict[str, Any]]) -> dict[str, A
 
 
 def copied_data_evidence_status(evidence: dict[str, Any]) -> str:
-    """Require full old-data preservation, a read-only witness and rollback."""
+    """Require old-row preservation, a finder no-write proof, and rollback."""
     required = (
         "stateCheckBefore",
         "existingRowRead",
-        "unchangedOldDataFromBeforeStartup",
+        "preexistingRowsPreservedFromBeforeStartup",
         "unchangedDuringFinderRead",
+        "schemaChangesReviewed",
         "stateCheckAfter",
         "baselineRestore",
         "pythonRollbackReadback",
@@ -2043,16 +2044,19 @@ def probe_copied_data(
             initialize_workspace=False,
             state_root=state_root,
         )
-        snapshot: SqliteSnapshot | None = None
+        preservation_snapshot: SqliteSnapshot | None = None
+        finder_snapshot: SqliteSnapshot | None = None
         try:
             backend.create_codex_replay("copy-read-only-replay.json")
-            # Cover startup recovery/migration work as well as the finder read.
-            snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
+            # Pin the pre-start database so startup changes can be checked
+            # against its old tables and rows after the finder read.
+            preservation_snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
             backend.start()
             headers = {
                 "X-Canvas-Token": backend.session["token"],
                 "X-Studio-API-Schema": backend.schema_hash,
             }
+            finder_snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
             started = time.monotonic()
             result = backend.request(
                 "GET",
@@ -2061,7 +2065,8 @@ def probe_copied_data(
                 headers=headers,
                 timeout=2.0,
             )
-            unchanged = snapshot.unchanged()
+            unchanged_during_read = finder_snapshot.unchanged()
+            old_data = preservation_snapshot.preserved_existing_rows()
             try:
                 body = result.json()
             except (ValueError, TypeError):
@@ -2075,8 +2080,9 @@ def probe_copied_data(
                 "status": copied_data_evidence_status({
                     "stateCheckBefore": None,
                     "existingRowRead": read_matches,
-                    "unchangedOldDataFromBeforeStartup": unchanged,
-                    "unchangedDuringFinderRead": unchanged,
+                    "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
+                    "unchangedDuringFinderRead": unchanged_during_read,
+                    "schemaChangesReviewed": None,
                     "stateCheckAfter": None,
                     "baselineRestore": None,
                     "pythonRollbackReadback": None,
@@ -2087,16 +2093,26 @@ def probe_copied_data(
                     "matched": read_matches,
                     "elapsedSeconds": round(time.monotonic() - started, 4),
                 }],
-                "unchangedOldDataFromBeforeStartup": unchanged,
-                "unchangedDuringFinderRead": unchanged,
+                "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
+                "unchangedDuringFinderRead": unchanged_during_read,
+                "schemaChangesReviewed": None,
+                "schemaChanges": {
+                    "newTables": old_data["newTables"],
+                    "newColumns": old_data["newColumns"],
+                    "newSchemaObjects": old_data["newSchemaObjects"],
+                    "changedTableDefinitions": old_data["changedTableDefinitions"],
+                    "unsupportedTables": old_data["unsupportedTables"],
+                },
                 "stateCheckBefore": None,
                 "stateCheckAfter": None,
                 "baselineRestore": None,
                 "pythonRollbackReadback": None,
             }
         finally:
-            if snapshot is not None:
-                snapshot.close()
+            if finder_snapshot is not None:
+                finder_snapshot.close()
+            if preservation_snapshot is not None:
+                preservation_snapshot.close()
             backend.close()
 
 
@@ -2576,7 +2592,7 @@ def sqlite_snapshot(path: Path) -> SqliteSnapshot:
 
 
 class SqliteSnapshot:
-    """Compare a probe's before/after SQLite contents with bounded Python memory."""
+    """Compare SQLite contents or preserve old rows with bounded Python memory."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -2619,6 +2635,96 @@ class SqliteSnapshot:
         finally:
             current.close()
 
+    def preserved_existing_rows(self) -> dict[str, Any]:
+        """Prove old rows remain intact while allowing appended rows/schema."""
+        result: dict[str, Any] = {
+            "preserved": None,
+            "newTables": 0,
+            "newColumns": 0,
+            "newSchemaObjects": 0,
+            "changedTableDefinitions": 0,
+            "unsupportedTables": 0,
+        }
+        if not self.stable:
+            result["preserved"] = False
+            return result
+        try:
+            if _sqlite_file_identity(self.path) != self.identity:
+                result["preserved"] = False
+                return result
+            version_before = self._data_version()
+            if version_before == self.version_before:
+                result["preserved"] = True
+                return result
+            current_uri = self.path.resolve().as_uri() + "?mode=ro"
+            self.baseline.execute(
+                "ATTACH DATABASE ? AS after_state", (current_uri,),
+            )
+            before_schema = _preservation_schema(self.baseline, "main")
+            after_schema = _preservation_schema(self.baseline, "after_state")
+            before_tables = {
+                name for (kind, name) in before_schema if kind == "table"
+            }
+            after_tables = {
+                name for (kind, name) in after_schema if kind == "table"
+            }
+            result["newTables"] = len(after_tables - before_tables)
+            result["newSchemaObjects"] = sum(
+                kind != "table" and (kind, name) not in before_schema
+                for kind, name in after_schema
+            )
+            preserved: bool | None = before_tables.issubset(after_tables)
+            for table in sorted(before_tables & after_tables):
+                old_sql = before_schema[("table", table)][1]
+                new_sql = after_schema[("table", table)][1]
+                if old_sql != new_sql:
+                    result["changedTableDefinitions"] += 1
+                old_columns = _preservation_table_columns(
+                    self.baseline, "main", table,
+                )
+                new_columns = _preservation_table_columns(
+                    self.baseline, "after_state", table,
+                )
+                result["newColumns"] += len(new_columns.keys() - old_columns.keys())
+                if any(
+                    new_columns.get(name) != definition
+                    for name, definition in old_columns.items()
+                ):
+                    preserved = False
+                    continue
+                if old_sql.lstrip().upper().startswith("CREATE VIRTUAL TABLE"):
+                    result["unsupportedTables"] += 1
+                    if preserved is True:
+                        preserved = None
+                    continue
+                comparison = _preserve_table_rows(
+                    self.baseline, table, old_columns,
+                    without_rowid=bool(re.search(r"\bWITHOUT\s+ROWID\b", old_sql, re.I)),
+                )
+                if comparison is None:
+                    result["unsupportedTables"] += 1
+                    if preserved is True:
+                        preserved = None
+                elif not comparison:
+                    preserved = False
+
+            for key, (_table_name, old_sql) in before_schema.items():
+                kind, _name = key
+                if kind == "table":
+                    continue
+                current_object = after_schema.get(key)
+                if current_object is None or current_object[1] != old_sql:
+                    preserved = False
+            if self._data_version() != version_before:
+                # A concurrent writer made the comparison's endpoint unstable.
+                result["preserved"] = None if preserved is not False else False
+            else:
+                result["preserved"] = preserved
+            return result
+        except (OSError, sqlite3.Error):
+            result["preserved"] = None
+            return result
+
     def close(self) -> None:
         self.baseline.close()
         self.monitor.close()
@@ -2650,6 +2756,100 @@ def _sqlite_schema(connection: sqlite3.Connection) -> tuple[tuple[Any, ...], ...
         "WHERE name NOT LIKE 'sqlite_%' "
         "ORDER BY type COLLATE BINARY,name COLLATE BINARY"
     ))
+
+
+def _preservation_schema(
+    connection: sqlite3.Connection,
+    schema: str,
+) -> dict[tuple[str, str], tuple[str, str | None]]:
+    if schema not in {"main", "after_state"}:
+        raise ValueError("unsupported SQLite schema name")
+    return {
+        (kind, name): (table, sql)
+        for kind, name, table, sql in connection.execute(
+            f"SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master "
+            "WHERE type IN ('table','index','view','trigger') "
+            "ORDER BY type COLLATE BINARY,name COLLATE BINARY"
+        )
+    }
+
+
+def _preservation_table_columns(
+    connection: sqlite3.Connection,
+    schema: str,
+    table: str,
+) -> dict[str, tuple[Any, ...]]:
+    if schema not in {"main", "after_state"}:
+        raise ValueError("unsupported SQLite schema name")
+    quoted_table = _quote_sqlite_identifier(table)
+    return {
+        name: (column_type, not_null, default, primary_key_order, hidden)
+        for _cid, name, column_type, not_null, default, primary_key_order, hidden
+        in connection.execute(f"PRAGMA {schema}.table_xinfo({quoted_table})")
+    }
+
+
+def _preserve_table_rows(
+    connection: sqlite3.Connection,
+    table: str,
+    columns: dict[str, tuple[Any, ...]],
+    *,
+    without_rowid: bool,
+) -> bool | None:
+    """Stream old identities through an indexed join; None means unsupported."""
+    quoted_table = _quote_sqlite_identifier(table)
+    folded_columns = {name.casefold() for name in columns}
+    rowid_alias = next(
+        (name for name in ("_rowid_", "rowid", "oid") if name not in folded_columns),
+        None,
+    )
+    if rowid_alias is not None and not without_rowid:
+        old_identity = f"old_row.{rowid_alias}"
+        new_identity = f"current_row.{rowid_alias}"
+        join = f"{new_identity} IS {old_identity}"
+    else:
+        primary_keys = sorted(
+            (
+                (metadata[3], name)
+                for name, metadata in columns.items()
+                if metadata[3]
+            ),
+        )
+        if not primary_keys:
+            return None
+        if not without_rowid and not all(columns[name][1] for _, name in primary_keys):
+            # Legacy rowid tables can allow NULL in composite primary keys.
+            # If their rowid aliases are shadowed, there is no safe identity.
+            return None
+        old_identity = f"old_row.{_quote_sqlite_identifier(primary_keys[0][1])}"
+        new_identity = f"current_row.{_quote_sqlite_identifier(primary_keys[0][1])}"
+        join_terms = []
+        for _, name in primary_keys:
+            quoted = _quote_sqlite_identifier(name)
+            join_terms.append(
+                f"typeof(current_row.{quoted}) = typeof(old_row.{quoted}) "
+                f"AND current_row.{quoted} IS old_row.{quoted}"
+            )
+        join = " AND ".join(join_terms)
+
+    differences = []
+    for name in columns:
+        quoted = _quote_sqlite_identifier(name)
+        differences.append(
+            f"typeof(current_row.{quoted}) <> typeof(old_row.{quoted}) "
+            f"OR (typeof(old_row.{quoted}) IN ('text','blob') "
+            f"AND CAST(current_row.{quoted} AS BLOB) IS NOT "
+            f"CAST(old_row.{quoted} AS BLOB)) "
+            f"OR (typeof(old_row.{quoted}) NOT IN ('text','blob') "
+            f"AND current_row.{quoted} IS NOT old_row.{quoted})"
+        )
+    mismatch = " OR ".join(differences) or "0"
+    query = (
+        f"SELECT 1 FROM main.{quoted_table} AS old_row "
+        f"LEFT JOIN after_state.{quoted_table} AS current_row ON {join} "
+        f"WHERE {new_identity} IS NULL OR ({mismatch}) LIMIT 1"
+    )
+    return connection.execute(query).fetchone() is None
 
 
 def _sqlite_content_digest(connection: sqlite3.Connection) -> bytes:
