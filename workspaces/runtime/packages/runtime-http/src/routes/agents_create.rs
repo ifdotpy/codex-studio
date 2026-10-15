@@ -1140,17 +1140,9 @@ async fn conversation(
             keys
         }),
     };
-    let needs_catalog = ["model", "effort", "fast_mode", "daybreak_enabled"]
-        .iter()
-        .any(|field| value.get(*field).is_some())
-        || value
-            .get("worker_defaults")
-            .is_some_and(|entry| !entry.is_null())
-        || value
-            .get("review_defaults")
-            .is_some_and(|entry| !entry.is_null());
+    let needs_conversation_catalog = conversation_needs_catalog(&value);
     let requested_model = body.model.as_ref().and_then(Option::as_deref);
-    let catalog_account = if needs_catalog {
+    let catalog_account = if needs_conversation_catalog {
         Some(
             conversation_catalog_account(
                 &state,
@@ -1169,7 +1161,7 @@ async fn conversation(
         parent_id,
         catalog_account.as_deref(),
         requested_model,
-        needs_catalog,
+        needs_conversation_catalog,
     )
     .await?;
     if let Some(defaults) = value
@@ -1204,6 +1196,33 @@ async fn conversation(
     })
     .await
 }
+
+fn conversation_needs_catalog(value: &Value) -> bool {
+    ["model", "effort", "fast_mode", "daybreak_enabled"]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+}
+
+#[cfg(test)]
+mod conversation_catalog_admission_tests {
+    use super::conversation_needs_catalog;
+    use serde_json::json;
+
+    #[test]
+    fn worker_defaults_only_update_does_not_require_conversation_catalog() {
+        assert!(!conversation_needs_catalog(&json!({
+            "worker_defaults": {
+                "account_key": "worker-account",
+                "model": "gpt-6-luna"
+            }
+        })));
+        assert!(!conversation_needs_catalog(&json!({
+            "review_defaults": {"model": "gpt-6-astra"}
+        })));
+        assert!(conversation_needs_catalog(&json!({"model": "gpt-6-astra"})));
+    }
+}
+
 async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,

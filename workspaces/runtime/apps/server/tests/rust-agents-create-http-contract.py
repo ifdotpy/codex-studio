@@ -1047,14 +1047,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), record["id"]))
 
-    def quiesce_fixture_agent(self, agent_id):
+    def quiesce_fixture_agent(self, agent_id, *, status="paused"):
         """Make a test-owned queued turn inert before unrelated refusal checks."""
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
             if row is None:
                 return
             record = json.loads(row[0])
-            record.update(autoWake=False, status="paused", inFlight=False, turnId=None)
+            record.update(autoWake=False, status=status, inFlight=False, turnId=None)
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id))
 
     def rust_only(self):
@@ -1335,7 +1335,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }
         self.await_model_catalog("default")
         self.post("/api/leads", body)
-        self.quiesce_fixture_agent(body["id"])
+        # Preserve the empty-lead renderer projection while preventing a queued
+        # scheduler wake; paused status would correctly change `empty` to false.
+        self.quiesce_fixture_agent(body["id"], status="idle")
 
         registry_path = self.backend.state / "accounts/registry.json"
         original = registry_path.read_bytes()
@@ -1349,7 +1351,15 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST", "/api/leads", body=body, headers=self.headers()
             )
             self.assertEqual(replay.status, 200, replay.body[:1000])
-            self.assertEqual(replay.json()["id"], body["id"])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(
+                    replayed.get(field),
+                    projection.get(field),
+                    f"replayed lead response lost canonical {field} projection",
+                )
             self.assertEqual(self.stored(body["id"])["id"], body["id"])
         finally:
             self.backend.stop()

@@ -120,9 +120,13 @@ pub fn replay_lead_request(
         });
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
-    let read = context.store.read()?;
     let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    Ok(super::replay_lead(&read, id, &signature, validate)?)
+    context.store.transaction_with_error(|tx| {
+        let Some(record) = super::replay_lead(tx, id, &signature, validate)? else {
+            return Ok(None);
+        };
+        Ok(Some(sync_projection(tx, &record)?))
+    })
 }
 
 /// Resolve the same project-bound account used by lead creation before the
