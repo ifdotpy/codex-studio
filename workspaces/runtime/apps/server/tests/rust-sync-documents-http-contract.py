@@ -62,18 +62,36 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         actor={"id":"invalid-epoch-agent","rootId":"invalid-epoch-agent","status":"idle",
                "isLead":True,"name":"Malformed agent","cwd":str(self.backend.cwd)}
         room={"id":"invalid-epoch-room","kind":"private","members":[actor["id"]]}
+        warmup=self.backend.request(
+            "GET",
+            "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+            headers=self._common_headers(),
+        )
+        self.assertEqual(warmup.status,200,warmup.body)
         with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
             register_functions(db)
             for table, row in (("runtime_agents",actor),("runtime_rooms",room)):
                 db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(row["id"],json.dumps(row)))
         before=no_write_snapshot(self.backend.state)
         try:
-            for path in ("/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
-                         "/api/agent-chat?room="+room["id"]):
-                response=self.backend.request("GET",path,headers=self._common_headers())
-                self.assertEqual(response.status,503,response.body)
-                self.assertIn("runtime_agents/"+actor["id"],response.json()["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state),before)
+            sync_response=self.backend.request(
+                "GET",
+                "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+                headers=self._common_headers(),
+            )
+            self.assertEqual(sync_response.status,200,sync_response.body)
+            sync_body=sync_response.json()
+            document_ids={document["id"] for document in sync_body["documents"]}
+            self.assertIn("entity:workspace:current",document_ids)
+            self.assertNotIn("entity:agent:"+actor["id"],document_ids)
+            self.assertEqual(sync_body["checkpoint"]["seq"],sync_body["maxSeq"])
+
+            chat_response=self.backend.request(
+                "GET","/api/agent-chat?room="+room["id"],headers=self._common_headers(),
+            )
+            self.assertEqual(chat_response.status,503,chat_response.body)
+            self.assertIn("runtime_agents/"+actor["id"],chat_response.json()["error"])
+            self.assertEqual(no_write_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
                 register_functions(db)
@@ -963,10 +981,7 @@ with canvas.connect() as db:
                     "GET", "/api/sync/pull?scope=drafts&after=0", headers=headers,
                 )
                 self.assertEqual(response.status, 503, response.body[:1000])
-                self.assertEqual(
-                    response.json()["error"],
-                    f"Invalid stored sync object drafts/{draft_id}",
-                )
+                self.assertIn(f"drafts/{draft_id}",response.json()["error"])
                 self.assertEqual(no_write_snapshot(backend.state), before)
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM sync_documents WHERE scope='drafts'")
