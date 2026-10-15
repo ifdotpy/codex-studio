@@ -8,15 +8,9 @@ use serde_json::Value;
 use studio_runtime_services::coordination::{self, CoordinationError};
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
-
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 3] = [
-    Dependency::new("capacity-retry/store"),
-    Dependency::new("cross-server/remote-events"),
-    Dependency::new("federation-driver/rooms"),
-];
 
 #[derive(serde::Deserialize)]
 struct ChatCreate {
@@ -37,11 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/agent-chat", OperationStatus::Implemented, agent_chat),
         get("/api/messages", OperationStatus::Implemented, messages),
-        post(
-            "/api/messages",
-            OperationStatus::partial(&MESSAGE_SEND_DEPENDENCIES),
-            post_message,
-        ),
+        post("/api/messages", OperationStatus::Implemented, post_message),
         get(
             "/api/messages/receipts",
             OperationStatus::Implemented,
@@ -390,12 +380,7 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "messages",
         routes: Some(routes),
-        dependencies: &[
-            "capacity-retry/store",
-            "cross-server/remote-events",
-            "federation-driver/rooms",
-            "event-driver/message-send",
-        ],
+        dependencies: &["event-driver/message-send"],
     }
 }
 

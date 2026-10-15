@@ -194,9 +194,6 @@ fn post_managed_message(
     }
     let mut agent =
         crate::event_write::checked_agent(transaction, input.room).map_err(event_write_error)?;
-    if crate::event_write::truthy(agent.extra.get("remoteAnchor")) {
-        crate::event_write::refuse_remote(&agent).map_err(event_write_error)?;
-    }
     if safety_retry_active(&agent) {
         return Err(CoordinationError::InvalidRequest(
             "Wait for the model change before sending another message",
