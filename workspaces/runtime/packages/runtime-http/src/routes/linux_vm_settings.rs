@@ -95,35 +95,43 @@ inventory::submit! {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::{
+        body::Body,
+        http::{Method, Request},
+    };
     use serde_json::json;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use tower::ServiceExt;
 
+    fn settings_request(
+        method: Method,
+        body: Option<Value>,
+        token: &str,
+        schema_hash: &str,
+    ) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri("/api/linux-vm/settings")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", token)
+            .header(crate::schema::API_SCHEMA_HASH_HEADER, schema_hash)
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("fixture peer address parses"),
+            ));
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
+            .expect("settings request builds")
+    }
+
     #[tokio::test]
-    async fn settings_post_runs_through_http_with_a_fake_control_socket() {
+    async fn settings_http_authorizes_validates_writes_and_reads_back_without_vm_execution() {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
-        let vm_dir = state_dir.path().join("linux-vm");
-        std::fs::create_dir_all(&vm_dir).expect("fixture operation succeeds");
-        let listener =
-            UnixListener::bind(vm_dir.join("control.sock")).expect("fixture operation succeeds");
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = listener.accept().expect("fixture operation succeeds");
-                let mut reader = BufReader::new(stream);
-                let mut line = String::new();
-                reader
-                    .read_line(&mut line)
-                    .expect("fixture operation succeeds");
-                let id = serde_json::from_str::<Value>(&line).expect("fixture operation succeeds")
-                    ["id"]
-                    .clone();
-                let mut stream = reader.into_inner();
-                writeln!(stream, "{}", json!({"id":id,"result":{"state":"stopped"}}))
-                    .expect("fixture operation succeeds");
-            }
-        });
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
@@ -136,36 +144,88 @@ mod tests {
         );
         let app = crate::router::router(state).expect("valid router");
         let body = json!({"cpus":1,"memoryBytes":4294967296u64,"systemDiskBytes":17179869184u64,"dataDiskBytes":137438953472u64});
+        let schema_hash = crate::schema::api_schema_hash();
+
         let response = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/linux-vm/settings")
-                    .header("host", "127.0.0.1:49171")
-                    .header("x-canvas-token", "fixture-token")
-                    .header(
-                        crate::schema::API_SCHEMA_HASH_HEADER,
-                        crate::schema::api_schema_hash(),
-                    )
-                    .header("content-type", "application/json")
-                    .extension(axum::extract::ConnectInfo(
-                        "127.0.0.1:12345"
-                            .parse::<std::net::SocketAddr>()
-                            .expect("fixture operation succeeds"),
-                    ))
-                    .body(Body::from(body.to_string()))
-                    .expect("fixture operation succeeds"),
-            )
+            .clone()
+            .oneshot(settings_request(
+                Method::POST,
+                Some(body.clone()),
+                "wrong-token",
+                schema_hash,
+            ))
             .await
-            .expect("fixture operation succeeds");
+            .expect("unauthorized response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(settings_request(
+                Method::POST,
+                Some(body.clone()),
+                "fixture-token",
+                "stale-schema",
+            ))
+            .await
+            .expect("schema mismatch response");
+        assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+
+        let vm_dir = state_dir.path().join("linux-vm");
+        std::fs::create_dir_all(&vm_dir).expect("fake VM state directory created");
+        let listener =
+            UnixListener::bind(vm_dir.join("control.sock")).expect("fake control socket binds");
+        let server = std::thread::spawn(move || {
+            // Set, response status, and subsequent GET status. This fake supports
+            // status queries only, so the fixture cannot execute a VM action.
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().expect("fake control accepts request");
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .expect("fake control reads request");
+                let request = serde_json::from_str::<Value>(&line).expect("request parses");
+                assert_eq!(request["method"], "host.status");
+                let id = request["id"].clone();
+                let mut stream = reader.into_inner();
+                writeln!(stream, "{}", json!({"id":id,"result":{"state":"stopped"}}))
+                    .expect("fake control sends status");
+            }
+        });
+        let response = app
+            .clone()
+            .oneshot(settings_request(
+                Method::POST,
+                Some(body),
+                "fixture-token",
+                schema_hash,
+            ))
+            .await
+            .expect("settings POST response");
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .expect("fixture operation succeeds");
+            .expect("POST response body reads");
         let value = serde_json::from_slice::<Value>(&bytes).expect("fixture operation succeeds");
         assert_eq!(value["settings"]["cpus"], 1);
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["allocatedDiskBytes"], 0);
+
+        let response = app
+            .oneshot(settings_request(
+                Method::GET,
+                None,
+                "fixture-token",
+                schema_hash,
+            ))
+            .await
+            .expect("settings GET response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("GET response body reads");
+        let readback = serde_json::from_slice::<Value>(&bytes).expect("GET response parses");
+        assert_eq!(readback["settings"], value["settings"]);
+        assert_eq!(readback["state"], "stopped");
         server.join().expect("fixture operation succeeds");
     }
 
