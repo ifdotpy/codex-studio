@@ -162,7 +162,10 @@ impl HistoryWake {
 }
 
 fn record_file_change(pending: &mut PendingHistoryEvents, path: PathBuf, event: PendingFileEvent) {
-    if pending.files.len() >= MAX_PENDING_FILE_EVENTS && !pending.files.contains_key(&path) {
+    if let Some(previous) = pending.files.get_mut(&path) {
+        previous.removed = event.removed;
+        previous.structural |= event.structural;
+    } else if pending.files.len() >= MAX_PENDING_FILE_EVENTS {
         pending.overflow = true;
         pending.accounts_dirty = true;
         pending.files.clear();
@@ -949,7 +952,34 @@ mod tests {
     #[test]
     fn watcher_events_coalesce_by_path_and_overflow_requests_rescan() {
         let path = PathBuf::from("/profile/sessions/rollout-thread.jsonl");
+        let create_then_modify =
+            PathBuf::from("/profile/sessions/rollout-create-then-modify.jsonl");
         let mut pending = PendingHistoryEvents::default();
+        record_file_change(
+            &mut pending,
+            create_then_modify.clone(),
+            PendingFileEvent {
+                removed: false,
+                structural: true,
+            },
+        );
+        record_file_change(
+            &mut pending,
+            create_then_modify.clone(),
+            PendingFileEvent {
+                removed: false,
+                structural: false,
+            },
+        );
+        assert_eq!(
+            pending.files.get(&create_then_modify),
+            Some(&PendingFileEvent {
+                removed: false,
+                structural: true,
+            }),
+            "a later data modification must not erase an earlier structural event"
+        );
+
         record_file_change(
             &mut pending,
             path.clone(),
@@ -966,7 +996,7 @@ mod tests {
                 structural: true,
             },
         );
-        assert_eq!(pending.files.len(), 1);
+        assert_eq!(pending.files.len(), 2);
         assert_eq!(
             pending.files.get(&path),
             Some(&PendingFileEvent {
