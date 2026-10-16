@@ -162,8 +162,8 @@ fn is_hashed_asset(relative: &str) -> bool {
 fn find_dist_directory(executable_directory: &Path) -> Option<PathBuf> {
     for ancestor in executable_directory.ancestors() {
         for relative in [
-            Path::new("web/dist"),
             Path::new("workspaces/client/apps/web/dist"),
+            Path::new("web/dist"),
         ] {
             let candidate = ancestor.join(relative);
             if candidate.join("index.html").is_file() {
@@ -188,6 +188,32 @@ mod tests {
     use axum::http::Request;
     use axum::routing::any;
     use tower::ServiceExt;
+
+    #[test]
+    fn discovers_workspace_assets_before_legacy_assets_and_keeps_packaged_fallback() {
+        let directory = tempfile::tempdir().expect("repository fixture");
+        let root = directory.path();
+        let executable_directory = root.join("target/release");
+        let legacy = root.join("web/dist");
+        let workspace = root.join("workspaces/client/apps/web/dist");
+        fs::create_dir_all(&executable_directory).expect("executable directory");
+        fs::create_dir_all(&legacy).expect("legacy directory");
+        fs::write(legacy.join("index.html"), "legacy").expect("legacy renderer");
+        assert_eq!(
+            find_dist_directory(&executable_directory),
+            Some(legacy.canonicalize().expect("canonical legacy root"))
+        );
+        fs::create_dir_all(&workspace).expect("workspace directory");
+        fs::write(workspace.join("index.html"), "current").expect("current renderer");
+        assert_eq!(
+            find_dist_directory(&executable_directory),
+            Some(workspace.canonicalize().expect("canonical workspace root"))
+        );
+        assert_eq!(
+            fs::read_to_string(legacy.join("index.html")).expect("legacy renderer retained"),
+            "legacy"
+        );
+    }
 
     fn fixture() -> (tempfile::TempDir, WebAssets) {
         let directory = tempfile::tempdir().expect("temporary web root");
