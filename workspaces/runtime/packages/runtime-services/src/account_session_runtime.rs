@@ -2271,12 +2271,36 @@ mod limits_runtime_tests {
         );
 
         caller.abort();
+        assert!(
+            caller
+                .await
+                .expect_err("caller task was aborted")
+                .is_cancelled()
+        );
         fixture
             .provider
             .first_read_gate
             .as_ref()
             .expect("test holds the login provider response")
             .release();
+
+        // Join the retained operation before replaying its receipt. The provider
+        // gate only controls the response handoff; it does not imply that the
+        // durable receipt update has completed.
+        let joined = {
+            let mut owner = fixture.runtime.durable_operations.lock().await;
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                owner
+                    .as_mut()
+                    .expect("durable operation owner remains open")
+                    .join_next(),
+            )
+            .await
+            .expect("retained login finishes after provider response is released")
+        };
+        assert!(matches!(joined, Some(Ok(()))));
+
         let replay = AccountSessionPort::login(
             fixture.runtime.as_ref(),
             LoginRequest {
