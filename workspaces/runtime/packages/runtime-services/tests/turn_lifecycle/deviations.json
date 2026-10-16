@@ -61,9 +61,5 @@
   "radio-policy": {
     "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
     "fields": ["/entryResult"]
-  },
-  "bounded-open-streams": {
-    "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
-    "fields": ["/entryResult"]
   }
 }

@@ -10496,21 +10496,6 @@
     ]
   },
   {
-    "id": "bounded-open-streams",
-    "module": "notification_dispatch",
-    "unit_test": "bounded_open_streams_refuse_without_writing",
-    "bound": 8192,
-    "deviation": "bounded-open-streams",
-    "reason": "Python has no open-stream bound. Rust refuses the next stream with StreamCapacity, no stored writes and unchanged pending text; never silently evict data.",
-    "expected": {
-      "python": "accepts another stream",
-      "rust": "StreamCapacity",
-      "sqlite_changes": 0,
-      "buffer_changes": 0
-    },
-    "tier": "fast"
-  },
-  {
     "id": "submission-empty",
     "module": "notification_dispatch",
     "submission": true,

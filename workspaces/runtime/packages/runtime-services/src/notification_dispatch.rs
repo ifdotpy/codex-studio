@@ -95,7 +95,7 @@ pub struct PreparedSubmission {
 pub enum NotificationDispatchError {
     #[error("invalid provider notification or delivery identity")]
     InvalidNotification,
-    #[error("open notification stream capacity reached")]
+    #[error("notification output queue capacity reached")]
     StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
     InvalidStoredObject { table: String, id: String },
@@ -437,7 +437,6 @@ pub fn dispatch_notification_with_effects(
                     EnqueueResult::Closed => DispatchOutcome::Ignored {
                         reason: "closed-stream".into(),
                     },
-                    EnqueueResult::Full => return Err(NotificationDispatchError::StreamCapacity),
                     EnqueueResult::FlushRequired => {
                         unreachable!("command output retains a bounded tail")
                     }
@@ -1158,7 +1157,6 @@ fn write_text_notification(
                 Ok(true)
             }
             EnqueueResult::Closed => Ok(false),
-            EnqueueResult::Full => Err(NotificationDispatchError::StreamCapacity),
         };
     }
     let previous = old
@@ -2321,58 +2319,6 @@ mod tests {
             );
             tx.commit().expect("caller may commit after caught error");
         }
-    }
-
-    #[test]
-    fn bounded_open_streams_refuse_without_writing() {
-        let cases: Vec<Value> = serde_json::from_str(include_str!(
-            "../tests/turn_lifecycle/notification_cases.json"
-        ))
-        .expect("cases");
-        let case = cases
-            .iter()
-            .find(|c| c["id"] == "bounded-open-streams")
-            .expect("boundary case");
-        let mut streams = NotificationStreamBuffer::default();
-        for index in 0..case["bound"].as_u64().expect("bound") {
-            assert!(matches!(
-                streams.enqueue_delta(
-                    super::stream::StreamKey {
-                        agent_id: "agent".into(),
-                        account: "default".into(),
-                        generation: 7,
-                        thread: "thread".into(),
-                        turn: Some("turn".into()),
-                        item: index.to_string(),
-                        method: "item/agentMessage/delta".into(),
-                    },
-                    "pending",
-                    &json!({})
-                ),
-                super::stream::EnqueueResult::Buffered
-            ));
-        }
-        let original = streams.clone();
-        let mut connection = database();
-        let tx = connection.transaction().expect("transaction");
-        let before = tx.total_changes();
-        let result = super::dispatch_notification(
-            &tx,
-            "agent",
-            &PublicationContext::default(),
-            &streams,
-            &identity(1),
-            &frame(
-                &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"overflow","delta":"retained"}}),
-            ),
-            1.0,
-        );
-        assert!(matches!(
-            result,
-            Err(super::NotificationDispatchError::StreamCapacity)
-        ));
-        assert_eq!(tx.total_changes(), before);
-        assert_eq!(streams, original);
     }
 
     #[test]

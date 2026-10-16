@@ -86,9 +86,7 @@ replayed frames from writing or recreating buffered deltas.
 
 ## Deviations and tiers
 
-The notification registry now retains only `radio-policy` and the 8,192
-open-stream bound. Token-usage, async-question and unhandled-kind deviation
-groups are removed. Every notification fixture calls real `Runtime.notification`.
+The notification registry now retains only `radio-policy`. Token-usage, async-question, unhandled-kind, and open-stream-bound deviation groups are removed. Every notification fixture calls real `Runtime.notification`.
 The token fixture records the budget owner's actual Python capture and injects
 only that agent patch into Rust; budget tables belong to the budget corpus.
 Notification-owned agent/context usage, transcript, tasks, plans, requests,
@@ -125,9 +123,6 @@ preview and full-text storage preserve all model text.
 Turn-start and terminal-turn notices belong to the scheduler and account worker.
 Their real Python comparison remains in `turn_lifecycle_corpus.rs` (`started_notice`
 and terminal transition witnesses); they no longer appear as unhandled inventory.
-At the stream bound, the dispatcher returns `StreamCapacity` without changing
-stored rows or the caller's stream buffer.
-
 Fast cases cover every method, all six orders, every review regression and the
 transaction/replay witnesses. Remaining notification methods share a single sequence to avoid
 repeated state initialization. The full matrix additionally covers all timer masks,

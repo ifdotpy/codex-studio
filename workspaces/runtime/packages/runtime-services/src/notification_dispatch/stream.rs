@@ -14,8 +14,8 @@ use std::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-const MAX_STREAMS: usize = 8_192;
 const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
+const MAX_CLOSED_STREAMS: usize = 8_192;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct StreamKey {
@@ -251,7 +251,6 @@ impl<'de> Deserialize<'de> for NotificationStreamBuffer {
 pub(super) enum EnqueueResult {
     Buffered,
     Closed,
-    Full,
     FlushRequired,
 }
 
@@ -627,9 +626,6 @@ impl NotificationStreamBuffer {
         let index = if let Some(index) = self.indexes.entries.get(&key).copied() {
             index
         } else {
-            if self.entries.len() == MAX_STREAMS {
-                return EnqueueResult::Full;
-            }
             self.entries.push(Shared::new(Entry {
                 key: key.clone(),
                 flushed: false,
@@ -758,7 +754,7 @@ impl NotificationStreamBuffer {
         if !self.indexes.closed.contains(key) {
             self.closed.push(Shared::new(key.clone()));
         }
-        if self.closed.len() > MAX_STREAMS {
+        if self.closed.len() > MAX_CLOSED_STREAMS {
             self.closed.remove(0);
         }
         self.rebuild_indexes();
@@ -793,6 +789,41 @@ impl NotificationStreamBuffer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn completed_streams_release_capacity_over_a_worker_lifetime() {
+        let mut streams = NotificationStreamBuffer::default();
+        for index in 0..(MAX_CLOSED_STREAMS + 1) {
+            let key = StreamKey {
+                agent_id: "agent".into(),
+                account: "default".into(),
+                generation: 1,
+                thread: "thread".into(),
+                turn: Some("turn".into()),
+                item: index.to_string(),
+                method: "item/agentMessage/delta".into(),
+            };
+            assert!(matches!(
+                streams.enqueue_delta(key.clone(), "x", &Value::Null),
+                EnqueueResult::Buffered
+            ));
+            streams.close(&key);
+            assert!(streams.entries.is_empty());
+        }
+        let key = StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 1,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "after-cap".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        assert!(matches!(
+            streams.enqueue_delta(key, "still alive", &Value::Null),
+            EnqueueResult::Buffered
+        ));
+    }
 
     #[test]
     fn staged_mutation_detaches_only_the_affected_entry() {
