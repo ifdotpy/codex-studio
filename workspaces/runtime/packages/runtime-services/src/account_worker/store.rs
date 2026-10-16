@@ -26,6 +26,24 @@ fn invalid(id: &str) -> WorkerError {
     }
     .into()
 }
+
+const JOURNAL_FRAME_PAYLOAD_PREFIX: &[u8] = b"{\"frame\":";
+const JOURNAL_FRAME_PAYLOAD_SUFFIX: &[u8] = b"}";
+
+fn journal_frame_payload(frame: &Frame, operation: &str) -> Result<Vec<u8>, WorkerError> {
+    let encoded = studio_runtime_providers::encode_line(frame).map_err(|_| invalid(operation))?;
+    let encoded = encoded
+        .strip_suffix(b"\n")
+        .ok_or_else(|| invalid(operation))?;
+    let mut payload = Vec::with_capacity(
+        encoded.len() + JOURNAL_FRAME_PAYLOAD_PREFIX.len() + JOURNAL_FRAME_PAYLOAD_SUFFIX.len(),
+    );
+    payload.extend_from_slice(JOURNAL_FRAME_PAYLOAD_PREFIX);
+    payload.extend_from_slice(encoded);
+    payload.extend_from_slice(JOURNAL_FRAME_PAYLOAD_SUFFIX);
+    Ok(payload)
+}
+
 fn receipt_id(operation: &str, phase: &str) -> String {
     format!("account-worker:{operation}:{phase}")
 }
@@ -1006,16 +1024,25 @@ fn journal_one(
         "journal:{journal_scope}:{}:{}",
         entry.generation.0, entry.cursor.0
     );
-    let payload = match &entry.payload {
+    let digest = match &entry.payload {
         JournalPayload::Frame(frame) => {
-            json!({"frame": serde_json::from_slice::<Value>(&studio_runtime_providers::encode_line(frame).map_err(|_|invalid(&operation))?).map_err(|_|invalid(&operation))?})
+            studio_runtime_store::sha256_hex(&journal_frame_payload(frame, &operation)?)
         }
-        JournalPayload::RawStdout { bytes, .. } => json!({"raw":bytes}),
-        JournalPayload::Stderr(value) => json!({"stderr":value}),
-        JournalPayload::Exit(value) => json!({"exit":value}),
-        JournalPayload::Other { kind, payload } => json!({"kind":kind,"payload":payload}),
+        JournalPayload::RawStdout { bytes, .. } => {
+            studio_runtime_store::sha256_hex(json!({"raw":bytes}).to_string().as_bytes())
+        }
+        JournalPayload::Stderr(value) => {
+            studio_runtime_store::sha256_hex(json!({"stderr":value}).to_string().as_bytes())
+        }
+        JournalPayload::Exit(value) => {
+            studio_runtime_store::sha256_hex(json!({"exit":value}).to_string().as_bytes())
+        }
+        JournalPayload::Other { kind, payload } => studio_runtime_store::sha256_hex(
+            json!({"kind":kind,"payload":payload})
+                .to_string()
+                .as_bytes(),
+        ),
     };
-    let digest = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
     if let Some((actor_id, expected_epoch)) = expected_vm_actor
         && !crate::linux_vm_provider::vm_actor_matches(tx, actor_id, expected_epoch, account, None)?
     {
@@ -2246,4 +2273,103 @@ fn hold_before_claim(
     );
     AgentRepository::put(tx, &agent)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod journal_frame_payload_tests {
+    use super::*;
+    use serde_json::{Map, json};
+    use studio_runtime_providers::{NotificationFrame, RequestFrame, UnknownMethodFrame};
+
+    fn assert_legacy_payload_bytes(frame: &Frame) {
+        let encoded = studio_runtime_providers::encode_line(frame).expect("frame encoding");
+        let frame_value: Value = serde_json::from_slice(&encoded).expect("encoded frame JSON");
+        let legacy_payload = json!({"frame": frame_value}).to_string();
+        assert_eq!(
+            journal_frame_payload(frame, "test journal").expect("journal payload"),
+            legacy_payload.as_bytes()
+        );
+    }
+
+    #[test]
+    fn payload_bytes_match_legacy_digest_input_for_all_frame_variants() {
+        let params = json!({
+            "zLast": {
+                "newline": "first\nsecond",
+                "unicode": "café 雪 😀",
+                "escaped": "quote: \\\" slash: / tab: \\t"
+            },
+            "aFirst": [1, -2, 1.25, 1e30, true, null]
+        });
+        let mut request_fields = Map::new();
+        request_fields.insert("zExtension".into(), json!({"z": 2, "a": 1}));
+        request_fields.insert("id".into(), json!("superseded-id"));
+        request_fields.insert("method".into(), json!("superseded/method"));
+        request_fields.insert("params".into(), json!({"superseded": true}));
+        let request = Frame::Request(RequestFrame {
+            id: RequestId::Number(u64::MAX),
+            method: Method::TurnStarted,
+            params: Some(params.clone()),
+            fields: request_fields.clone(),
+        });
+        let string_request = Frame::Request(RequestFrame {
+            id: RequestId::String("claude-request-id".into()),
+            method: Method::TurnStarted,
+            params: Some(params.clone()),
+            fields: request_fields,
+        });
+
+        let mut notification_fields = Map::new();
+        notification_fields.insert("zExtension".into(), json!({"z": 2, "a": 1}));
+        notification_fields.insert("method".into(), json!("superseded/method"));
+        let notification = Frame::Notification(NotificationFrame {
+            method: Method::TurnCompleted,
+            params: Some(params.clone()),
+            fields: notification_fields,
+        });
+
+        let mut result_fields = Map::new();
+        result_fields.insert("zExtension".into(), json!({"nested": {"z": 1, "a": 2}}));
+        result_fields.insert("id".into(), json!("superseded-result-id"));
+        result_fields.insert("result".into(), json!({"superseded": true}));
+        let response_result = Frame::Response {
+            id: RequestId::Number(9_007_199_254_740_991),
+            body: ResponseBody::Result(json!({"z": params.clone(), "a": 1e-30})),
+            fields: result_fields,
+        };
+
+        let mut error_fields = Map::new();
+        error_fields.insert("aExtension".into(), json!("before\nafter 雪"));
+        error_fields.insert("id".into(), json!(0));
+        error_fields.insert("error".into(), json!({"superseded": true}));
+        let response_error = Frame::Response {
+            id: RequestId::Number(17),
+            body: ResponseBody::Error(json!({
+                "code": -32_601,
+                "message": "provider \"failed\"\n雪",
+                "data": {"z": 1.0, "a": -0.0}
+            })),
+            fields: error_fields,
+        };
+
+        let mut unknown_fields = Map::new();
+        unknown_fields.insert(
+            "zExtension".into(),
+            json!({"last": 0.000001, "first": -0.0}),
+        );
+        unknown_fields.insert("method".into(), json!("future/notification"));
+        unknown_fields.insert("params".into(), params);
+        unknown_fields.insert("aExtension".into(), json!("雪\n😀"));
+        let unknown = Frame::UnknownMethod(UnknownMethodFrame {
+            method: "future/notification".into(),
+            fields: unknown_fields,
+        });
+
+        assert_legacy_payload_bytes(&request);
+        assert_legacy_payload_bytes(&string_request);
+        assert_legacy_payload_bytes(&notification);
+        assert_legacy_payload_bytes(&response_result);
+        assert_legacy_payload_bytes(&response_error);
+        assert_legacy_payload_bytes(&unknown);
+    }
 }
