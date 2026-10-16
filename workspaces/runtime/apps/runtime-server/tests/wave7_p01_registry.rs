@@ -1602,6 +1602,7 @@ fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<Stri
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
                        json_set(source.record, '$.id', printf('00000000-0000-4000-8000-%012d', seq.i),
                                 '$.accountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
+                                '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
             (count as i64, source, each_account),
@@ -1714,13 +1715,13 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
             panic!("fair wake hang guard: {state}")
         })
         .unwrap();
-    assert_eq!(account, "second");
+    assert_eq!(account, "account:second");
     assert_eq!(request["method"], "turn/start");
     let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
         .await
         .unwrap_or_else(|_| panic!("eligible agent behind saturated queue was not started"))
         .unwrap();
-    assert_eq!(account, "default");
+    assert_eq!(account, "account:default");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
     tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
@@ -1772,7 +1773,7 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         .await
         .expect("strict account continuation reaches the eligible tail")
         .unwrap();
-    assert_eq!(account, "page-000129");
+    assert_eq!(account, "account:page-000129");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
     tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
