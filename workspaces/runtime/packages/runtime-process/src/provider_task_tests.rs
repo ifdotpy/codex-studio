@@ -777,3 +777,16 @@ async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery
         assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
     }).await.unwrap();
 }
+
+#[test]
+fn closed_pump_classification_preserves_sticky_shutdown_and_terminal_state() {
+    assert!(matches!(
+        pump_channel_closed(false, false),
+        Some(AdapterError::TaskFailed)
+    ));
+    assert!(matches!(
+        pump_channel_closed(true, false),
+        Some(AdapterError::Cancelled)
+    ));
+    assert!(pump_channel_closed(true, true).is_none());
+}

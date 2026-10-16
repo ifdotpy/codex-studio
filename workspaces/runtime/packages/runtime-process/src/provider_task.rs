@@ -378,6 +378,16 @@ struct AdapterTask {
     open_attempted: bool,
 }
 
+fn pump_channel_closed(shutdown: bool, terminal: bool) -> Option<AdapterError> {
+    if terminal {
+        None
+    } else if shutdown {
+        Some(AdapterError::Cancelled)
+    } else {
+        Some(AdapterError::TaskFailed)
+    }
+}
+
 impl AdapterTask {
     async fn run(mut self) -> TaskExit {
         let result = self.connected().await;
@@ -651,7 +661,11 @@ impl AdapterTask {
                         Some(Err(error)) => break Err(error),
                         None => {
                             pump_open = false;
-                            if !terminal { break Err(AdapterError::TaskFailed); }
+                            if let Some(error) =
+                                pump_channel_closed(*self.stop.borrow(), terminal)
+                            {
+                                break Err(error);
+                            }
                         }
                     }
                 }

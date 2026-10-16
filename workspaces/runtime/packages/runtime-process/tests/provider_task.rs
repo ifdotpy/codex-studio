@@ -593,10 +593,12 @@ async fn cancelling_shutdown_future_keeps_owned_join_handle() {
             .await
         );
         drop(completion);
-        assert!(matches!(
-            attachment.shutdown().await.result,
-            Err(AdapterError::Cancelled)
-        ));
+        let exit = attachment.shutdown().await;
+        assert!(
+            matches!(&exit.result, Err(AdapterError::Cancelled)),
+            "shutdown must preserve cancellation after the pending event RPC: {:?}",
+            exit.result
+        );
         assert!(peer.read().await.is_none());
     })
     .await;
