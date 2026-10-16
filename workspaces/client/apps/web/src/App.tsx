@@ -237,8 +237,12 @@ export default function App({ active = true }: { active?: boolean }) {
     isRemoteServerView,
   } = useScreenEnvironment();
   const { removeAllSendingMessages } = useSendingMessageRemoval();
-  const { pendingChatCreations, saveChatCreation, confirmChatCreation } =
-    useServerChatCreations();
+  const {
+    pendingChatCreations,
+    saveChatCreation,
+    confirmChatCreation,
+    rejectChatCreation,
+  } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
   const { watchResourceChanges } = useServerResources();
   const watchResourceReads = useServerResourceReads();
@@ -1622,6 +1626,11 @@ export default function App({ active = true }: { active?: boolean }) {
       void refresh();
       return a.id;
     } catch (e) {
+      if (e instanceof ApiError && e.outcome === "not_applied") {
+        rejectChatCreation(creationKey, creationRequest.id, errorText(e));
+        setPendingCreations(pendingChatCreations(creationKey));
+        creation.current = null;
+      }
       notify(errorText(e));
       return null;
     } finally {

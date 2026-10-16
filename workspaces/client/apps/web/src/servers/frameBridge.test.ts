@@ -372,7 +372,7 @@ it("forwards typed operational diagnostics and only documented validation detail
       correlation: "validation-error",
       result: undefined,
       error: {
-        message: "Invalid request",
+        message: "Invalid request (body.name).",
         status: 422,
         location: ["body", "name"],
       },

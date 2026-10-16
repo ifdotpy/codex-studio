@@ -323,6 +323,12 @@ export type QueueItemDto = QueueView["items"][number];
 
 export function errorText(error: unknown) {
   if (error instanceof ApiSchemaMismatchError) return "";
+  if (
+    error instanceof ApiError &&
+    error.message === "Invalid request" &&
+    error.location?.length
+  )
+    return `Invalid request (${error.location.join(".")}).`;
   return displayError(error);
 }
 /** Each instance owns one server's session, schema gate, workspace and persistence. */

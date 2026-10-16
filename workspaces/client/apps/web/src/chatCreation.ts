@@ -44,8 +44,28 @@ export function createChatCreationStore(localStorage: Storage) {
     if (legacy?.id === id) localStorage.removeItem(key);
   }
 
-  return { pendingChatCreations, saveChatCreation, confirmChatCreation };
+  function rejectChatCreation(key: string, id: string, reason: string): void {
+    const request = pendingChatCreations(key).find((item) => item.id === id);
+    if (!request) return;
+    // Preserve the exact body before removing a proven non-applied attempt.
+    localStorage.setItem(
+      `${key}:rejected:${id}`,
+      JSON.stringify({ request, outcome: "not_applied", reason }),
+    );
+    confirmChatCreation(key, id);
+  }
+
+  return {
+    pendingChatCreations,
+    saveChatCreation,
+    confirmChatCreation,
+    rejectChatCreation,
+  };
 }
 
-export const { pendingChatCreations, saveChatCreation, confirmChatCreation } =
-  createChatCreationStore(serverLocalStorage);
+export const {
+  pendingChatCreations,
+  saveChatCreation,
+  confirmChatCreation,
+  rejectChatCreation,
+} = createChatCreationStore(serverLocalStorage);

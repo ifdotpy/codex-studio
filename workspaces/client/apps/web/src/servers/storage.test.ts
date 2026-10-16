@@ -80,3 +80,29 @@ it("routes storage events only to the matching server namespace", () => {
   expect(a({ key: null })).toBeNull();
   expect(serverStoragePrefix("local")).toBe("");
 });
+
+it("retains rejected request evidence and preserves pending requests if archiving fails", () => {
+  const raw = memoryStorage();
+  const store = createChatCreationStore(raw);
+  const request = { id: "rejected", cwd: "/project" };
+  store.saveChatCreation("creation", request);
+  store.saveChatCreation("creation", { id: "unknown" });
+  store.rejectChatCreation(
+    "creation",
+    "rejected",
+    "Invalid request (body.model).",
+  );
+  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
+  expect(JSON.parse(raw.getItem("creation:rejected:rejected")!)).toEqual({
+    request,
+    outcome: "not_applied",
+    reason: "Invalid request (body.model).",
+  });
+  raw.setItem = () => {
+    throw new Error("disk full");
+  };
+  expect(() =>
+    store.rejectChatCreation("creation", "unknown", "refused"),
+  ).toThrow("disk full");
+  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
+});
