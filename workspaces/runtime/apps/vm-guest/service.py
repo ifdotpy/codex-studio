@@ -37,6 +37,11 @@ METHODS |= {"vault.configure", "vault.push"}
 METHODS |= {"secrets.set", "secrets.remove"}
 METHODS |= {"project.import", "project.exec", "project.seed", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
             "sync.mac.worktree"}
+# In-place guest updates: the root broker owns them (guest_update.py).
+UPDATE_READ_METHODS = {"update.plan", "update.status"}
+UPDATE_METHODS = UPDATE_READ_METHODS | {"update.stage", "update.apply"}
+READ_METHODS |= UPDATE_READ_METHODS
+METHODS |= UPDATE_METHODS
 METHODS |= {"host.exec", "host.configure"}
 # The VM browser bridge (browser_bridge.py, docs/vm-browser-bridge.md). The long poll keeps no
 # receipt; the answer, the callback relay and the close keep one, so a retry with the same
@@ -441,7 +446,7 @@ class Service:
         if method in {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health",
                       "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
                       "sync.mac.handoff", "sync.mac.worktree", "vault.configure", "vault.push", "vault.status",
-                      "secrets.set", "secrets.remove", "secrets.list"}:
+                      "secrets.set", "secrets.remove", "secrets.list"} | UPDATE_METHODS:
             return await admin_request(request_id, method, params, emit=emit)
         if method in {"host.configure", "host.exec"}:
             from host_exec_protocol import HostExecError

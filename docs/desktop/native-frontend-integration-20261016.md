@@ -225,3 +225,48 @@ is still locked, within the shared hang guard, and still checks every queued
 capture, retained receipt and closed lease. These are deterministic ordering
 checks, not relaxed production timeout settings. Focused suites passed: 31 analytics outcomes and 78 runner outcomes.
 The complete gate has not passed on this candidate.
+
+The full gate then passed on tree `e354895af09855fd95b55af72284e9fafbb315fb`:
+6,005 server, 63 bridge, 2,225 Rust, 1,050 web, ten tooling and six browser smoke
+checks, plus all three type-check stages. Commit `899a259137eed1d56337124015520e13cf7c0b83`
+contains that exact tree. No live backend or VM changed.
+
+Before publication, upstream main advanced to `a26ad0b1b` (PR 271). Its hosted
+checks passed. The pending integration retains its disk notices, image cleanup
+retry, VM health/update support, retained approval recovery and QUIC transfers.
+The only textual conflict was the desktop notice component: both new notices
+now use the native frontend's owning-server API and subscriptions. VM delivery
+for this recovery remains restricted to an idle MBP; adding upstream in-place
+update support does not authorize a live maintenance operation. The combined
+candidate requires its own full gate before merge or publication.
+
+The combined gate passed 6,033 server outcomes and failed the nested real-PTY
+exit check in the supervisor-isolation suite; 227 outcomes were skipped. The
+terminal did not report exit within the shared hang guard. A diagnostic-only
+isolated run passed, so it is not evidence of a product fix. The PTY scenario
+now uses a small phase-driven child through the real Codex process transport,
+rather than shell command parsing and prompt handling. It still proves initial
+cwd/size, input delivery, resize, output, exit status 7 and no model connection.
+The decoy supervisor assertion and the other real-shell terminal cases remain.
+Failure diagnostics include terminal output and native transport state. Both
+focused terminal and isolation suites passed; no live terminal or provider was
+restarted. The full gate remains required on this combined source.
+
+The full gate on tree `ddfc41422967fe4c650d1e2b4ec31fa679abbf46` passed
+6,035 server, 63 bridge, 2,225 Rust, 1,053 web and ten tooling outcomes, plus
+all three type-check stages. Browser smoke passed five scenarios; the schema
+cache scenario completed its assertions but cleanup failed with `kill EPERM`.
+An owned Darwin child reproduced the boundary deterministically: a process
+group containing only a zombie returned EPERM; after parent `waitpid`, the
+same group returned ESRCH. Apple's [killpg1 implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c)
+excludes zombies from its signalable members. The cleanup helper now waits within its existing
+exit deadline after EPERM and accepts completion only when the group probe
+returns ESRCH. A persistent permission error still fails, and a live group
+that ignores SIGTERM still receives SIGKILL. Three fast unit regressions pass
+(two failed before the change), as do the existing real descendant cleanup
+checks. No live backend, provider or VM was signalled.
+
+The focused built-renderer schema/cache browser scenario also passed after
+the cleanup correction. Main has since advanced to `5f545fddb`; this gate
+keeps the reviewed a26 integration fixed. Publication must preserve the later
+upstream changes and verify the resulting merge before it reaches main.

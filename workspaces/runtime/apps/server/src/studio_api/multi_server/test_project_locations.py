@@ -420,6 +420,35 @@ class LayrReadinessTests(unittest.TestCase):
         refresh_readiness(self.home)
         self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrSync']['state'], 'paused')
 
+    def test_a_layr_fault_in_the_vm_shows_on_imported_projects_only(self) -> None:
+        import time
+        from codex_vm_agents import project_layr_id, refresh_readiness
+        key = project_layr_id(self.record(self.home, self.project['id']))
+        directory = self.vm / 'layr-projects' / key
+        directory.mkdir(parents=True)
+        (directory / 'project.json').write_text(json.dumps({'projectId': key, 'source': self.project['path']}))
+        self.chat(self.home, self.project['path'], project_id=self.project['id'], project_server_id='home')
+        now = time.time()
+        # The watchdog's record: the guest answers, layr.health has failed for 180 seconds.
+        (self.vm / 'guest-health.json').write_text(json.dumps({'helperPid': 7, 'healthyAt': now, 'layr': {
+            'failingSince': now - 180, 'lastFailureAt': now, 'failures': 4,
+            'error': 'The layr admin channel is unavailable'}}))
+        refresh_readiness(self.home)
+        value = self.entity(self.home, self.project['id'])[1]['layrReadiness']
+        self.assertEqual((value['state'], value['projectId']), ('failed', key))
+        self.assertIn('layr admin channel is unavailable', value['error'])
+        # A project that is not in the VM shows no VM-wide fault.
+        (self.case.root / 'other').mkdir()
+        other = self.home.projects({'path': str(self.case.root / 'other'), 'name': 'Other'})
+        self.chat(self.home, other['path'], project_id=other['id'], project_server_id='home')
+        refresh_readiness(self.home)
+        self.assertEqual(self.entity(self.home, other['id'])[1]['layrReadiness'], {'state': 'not_imported'})
+        (self.vm / 'guest-health.json').write_text(json.dumps({'helperPid': 7, 'healthyAt': now,
+                                                               'layr': {'readyAt': now, 'failures': 0}}))
+        refresh_readiness(self.home)
+        self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrReadiness'],
+                         {'state': 'ready', 'projectId': key})
+
     def test_no_readiness_without_layr_support_or_a_folder_here(self) -> None:
         from codex_vm_agents import refresh_readiness
         remote_only = self.home.projects({'server': 'remote', 'path': str(self.case.root / 'remote'),

@@ -99,6 +99,12 @@ class PeerLinkProcesses(unittest.TestCase):
         self.assertEqual(response["raw"], BIG)
         self.assertLess(time.monotonic() - started, 5)
 
+    def test_an_export_offset_query_reaches_the_backend(self) -> None:
+        # The bundle fetch and the chat move continue an export from an offset (docs/peer-link.md).
+        path = '/api/servers/exports/0e3c1a5e-7b1d-4f43-9a6e-2c1f0b9d8e77.bundle?offset=131072'
+        self.assertEqual(self._send('a', 'b', path, method='GET', raw=b'')['status'], 200)
+        self.assertEqual((Backend.seen[-1]['method'], Backend.seen[-1]['path']), ('GET', path))
+
     def test_the_response_limit_is_kept(self) -> None:
         with self.assertRaises(codex_peer_link.LinkFailure) as caught:
             self.links["a"].exchange("b", self._route("b"), self.keys["b"]["publicKey"], "GET", "/api/big", {}, b"", 10, 1024)

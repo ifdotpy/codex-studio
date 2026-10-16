@@ -542,7 +542,10 @@ statically linked executable. All other real-home state stays blocked and
 logged. If no executable resolves, this suite is reported as an environment
 skip with the missing Codex executable named. There is no fake-binary split:
 all 15 tests exercise PTY process creation and the real supervisor/app-server
-lifecycle protocol, so a stub would remove the contract under test.
+lifecycle protocol, so a stub would remove the contract under test. The combined
+cwd/resize/exit witness uses a phase-driven Python child in that real PTY; other
+cases retain actual shell jobs. This separates terminal RPC assertions from
+interactive shell prompt and redraw scheduling.
 `pnpm --filter codex-agents-web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by
 successful browser discovery or mocked unit tests.

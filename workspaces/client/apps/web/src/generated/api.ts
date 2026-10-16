@@ -4412,6 +4412,8 @@ export interface components {
       /** @default null */
       imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
       /** @default null */
+      imageWorkspaceCleanupRetry?: components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"];
+      /** @default null */
       imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
       /**
        * Imageworkspacecreatedat
@@ -4463,7 +4465,14 @@ export interface components {
        * @default null
        */
       imageWorkspacePhase?:
-        | ("read_only" | "ready" | "fallback" | "archived")
+        | (
+            | "read_only"
+            | "ready"
+            | "fallback"
+            | "archiving"
+            | "archived"
+            | "removed"
+          )
         | null;
       /**
        * Imageworkspaceready
@@ -11472,6 +11481,8 @@ export interface components {
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
+      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
+      /** @default null */
       linuxVm?: components["schemas"]["LinuxVMStatus"] | null;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
@@ -11800,6 +11811,18 @@ export interface components {
       serverId: string;
       /** Tailscaleuser */
       tailscaleUser: null | string;
+    };
+    /** DiskSpaceStatus */
+    DiskSpaceStatus: {
+      /** Freebytes */
+      freeBytes: number | null;
+      /**
+       * Level
+       * @description Set when the free space of the state volume is below the warning or the critical threshold.
+       */
+      level: ("warning" | "critical") | null;
+      /** Message */
+      message: null | string;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {
@@ -13034,6 +13057,29 @@ export interface components {
        * @default null
        */
       state?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ImageWorkspaceCleanupRetryRecordResponse */
+    ImageWorkspaceCleanupRetryRecordResponse: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at: number;
+      /** Attempts */
+      attempts: number;
+      /** Error */
+      error: string;
+      /** Nextat */
+      nextAt: number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };

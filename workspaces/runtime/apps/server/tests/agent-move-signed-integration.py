@@ -767,6 +767,71 @@ class Moves(f.SignedIntegration):
         self.assertTrue(held.get('recoveryExpiredAt'))
         self.assertEqual(self.a.runtime.agent(self.lead['id'])['executionMove']['phase'], 'unknown')
 
+
+    def transfer_history_with_link(self, key, lose_after=None):
+        """Run a move until the history transfer ends; return the actions and the streams."""
+        from studio_api.multi_server.router import export_file
+        endpoints = {endpoint.server_id: endpoint for endpoint in (self.a, self.b)}
+        streams = []
+
+        def stream(transport, server, path, *, timeout, sink):
+            streams.append(path)
+            if lose_after is not None and len(streams) > 1:
+                raise OSError('The link is down')
+            name, _, query = path.rsplit('/', 1)[1].partition('?')
+            opened = export_file(endpoints[server].runtime.root, name, query.removeprefix('offset='))
+            if opened is None:
+                return True
+            data, _size, _start = opened
+            sent = 0
+            with data:
+                while block := data.read(4096):
+                    if lose_after is not None and sent + len(block) > lose_after:
+                        raise OSError('The link lost the stream')
+                    sink(block)
+                    sent += len(block)
+            return True
+
+        service = self.a.runtime.multi_server().moves()
+        original = service._exchange
+        actions = []
+
+        def exchange(server, action, payload, key):
+            actions.append((action, payload.get('offset')))
+            if action == 'move_prepare':
+                raise TimeoutError('Stop after the history transfer')
+            return original(server, action, payload, key)
+
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': key}, key)
+        with patch('codex_server_transport.PairedServerTransport.stream', stream), \
+                patch.object(service, '_exchange', side_effect=exchange):
+            service.tick()
+            f.fixture.f.eventually(lambda: not service.running)
+        move = accepted['requestId']
+        source = (service._folder(move) / 'native.zip').read_bytes()
+        target = self.b.runtime.multi_server().moves()
+        received = target._folder(move) / 'incoming-native.zip'
+        self.assertEqual(received.read_bytes(), source)
+        # The published copy of the history is gone after the transfer.
+        self.assertEqual(list((self.a.runtime.root / 'server-exports').glob('*.zip')), [])
+        return [action for action in actions if action[0] in {'move_pull', 'move_chunk'}], streams
+
+    def test_a_link_pull_replaces_the_history_chunks(self):
+        actions, streams = self.transfer_history_with_link('link-move')
+        self.assertEqual([action for action, _ in actions], ['move_pull'])
+        self.assertEqual(len(streams), 1)
+        self.assertRegex(streams[0], r'^/api/servers/exports/[0-9a-f-]{36}\.zip\?offset=0$')
+
+    def test_a_lost_history_stream_continues_with_chunks_from_the_held_offset(self):
+        actions, streams = self.transfer_history_with_link('lost-link-move', lose_after=16384)
+        # The second pull finds the link down and holds nothing new; the chunks continue.
+        self.assertEqual([action for action, _ in actions[:2]], ['move_pull', 'move_pull'])
+        self.assertEqual(len(streams), 2)
+        self.assertTrue(streams[1].endswith('?offset=16384'))
+        chunks = [offset for action, offset in actions if action == 'move_chunk']
+        self.assertEqual(chunks[0], 16384)
+
     def test_an_expired_transfer_releases_the_chat_without_a_target_import(self):
         from codex_multi_server_orchestration import identity
         service = self.a.runtime.multi_server().moves()

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -29,6 +30,7 @@ import zlib
 
 from codex_layout import (CLAUDE_BRIDGE_ROOT, DESKTOP_ROOT, PROVIDERS_ROOT,
                          REPOSITORY_ROOT, SERVER_SOURCE_ROOT, VM_GUEST_ROOT)
+from codex_shared_values import GUEST_PAYLOAD_RECORD_PATH, GUEST_UPDATE_KEY_PATH
 from codex_state import state_dir as studio_state_dir
 
 _GIB = 1024 ** 3
@@ -225,8 +227,42 @@ PROBE_GAP_SECONDS = 90
 # a dead kernel never accepts only after 15 seconds.
 BUSY = 'busy'
 BUSY_CLOSE_SECONDS = 10.0
+# The guest service can answer while the root broker or the layr daemon is down: on
+# 2026-10-14 the layr admin channel was unavailable, every VM chat paused, and the ping
+# still answered. The watchdog asks `layr.health` at most once per LAYR_PROBE_SECONDS after
+# a ping answer. LAYR_FAULT_PROBES failed answers over LAYR_FAULT_SECONDS make a layr fault;
+# a slow layr command or one restart of a unit (2 seconds) does not. A fault record older
+# than LAYR_FAULT_FRESH_SECONDS (a stopped VM, a stopped backend) is not shown.
+LAYR_PROBE_SECONDS = 60.0
+LAYR_PROBE_TIMEOUT = 20.0
+LAYR_FAULT_SECONDS = 120
+LAYR_FAULT_PROBES = 3
+LAYR_FAULT_FRESH_SECONDS = 300
 _HEALTH_FILE = 'guest-health.json'
 _INTENT_FILE = 'intent.json'
+
+
+def layr_fault(state_dir: Path, pid: Any = None, *, now: float | None = None) -> dict[str, Any] | None:
+    """A layr daemon or root broker that has not answered for LAYR_FAULT_SECONDS while the
+    guest answers. With pid None, any fresh record counts: host records only, no VM call."""
+    try:
+        health = json.loads((state_dir / _HEALTH_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    layr = health.get('layr') if isinstance(health, dict) else None
+    if not isinstance(layr, dict):
+        return None
+    since, last = layr.get('failingSince'), layr.get('lastFailureAt')
+    now = time.time() if now is None else now
+    if ((pid is not None and health.get('helperPid') != pid)
+            or not isinstance(since, (int, float)) or not isinstance(last, (int, float))
+            or now - last > LAYR_FAULT_FRESH_SECONDS
+            or int(layr.get('failures') or 0) < LAYR_FAULT_PROBES
+            or last - since < LAYR_FAULT_SECONDS):
+        return None
+    return {'kind': 'layr_unavailable', 'since': since, 'error': layr.get('error'),
+            'reason': f'LAYR in the VM has not answered for {int(last - since)} seconds: '
+                      + str(layr.get('error') or 'no reason')}
 
 
 def _kernel_death(log: str) -> tuple[str, str] | None:
@@ -487,9 +523,16 @@ echo STUDIO_PROVISION_READY
 '''.replace('@CODEX@', codex_version).replace('@CLAUDE@', claude_version).replace('@PNPM@', pnpm_version)
 
 
+def payload_record(codex_version: str, claude_version: str, pnpm_version: str, script: str) -> dict[str, str]:
+    """The parts of a guest payload that only provisioning installs (provider CLIs, pnpm, and
+    the provision script itself, before its generation lines)."""
+    return {'codex': codex_version, 'claude': claude_version, 'pnpm': pnpm_version,
+            'script': hashlib.sha256(script.encode()).hexdigest()}
+
+
 def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
                   runtime_source: Path = SERVER_SOURCE_ROOT,
-                  bridge_source: Path | None = None) -> dict[str, Any]:
+                  bridge_source: Path | None = None, update_key: str | None = None) -> dict[str, Any]:
     """Return cloud-init data. Guest service installation is a reviewed guest contract."""
     files = []
     for path in sorted(guest_dir.rglob('*')):
@@ -565,9 +608,17 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
                                             'pnpm': pnpm_version, 'script': script}, sort_keys=True).encode()).hexdigest()
     ready_path = '/var/lib/codex-studio/provision-ready-' + generation
+    # What only provisioning installs. An in-place update (codex_linux_vm_update.py) compares it
+    # and takes the reboot path when it differs.
+    record = json.dumps(payload_record(codex_version, claude_version, pnpm_version, script),
+                        sort_keys=True, separators=(',', ':'))
     script = script.replace('touch /var/lib/codex-studio/provision-ready\n',
-                            'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n')
+                            'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n'
+                            + "printf '%s' " + shlex.quote(record) + ' > ' + GUEST_PAYLOAD_RECORD_PATH + '\n')
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
+    if update_key is not None:
+        # Root only. The root broker accepts an in-place update that this key signs.
+        files.append({'path': GUEST_UPDATE_KEY_PATH, 'permissions': '0600', 'content': update_key + '\n'})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
 After=network-online.target cloud-config.service
@@ -677,6 +728,23 @@ class Client:
             return {}
         return value if isinstance(value, dict) else {}
 
+    def update_key(self) -> str:
+        """The key that signs in-place guest updates. Made once and kept: a new key changes the
+        payload generation, so the guest would provision again."""
+        path = self.state_dir / 'update-key'
+        try:
+            value = path.read_text().strip()
+        except FileNotFoundError:
+            self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            value = os.urandom(32).hex()
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as stream:
+                stream.write(value + '\n')
+            return value
+        if not re.fullmatch(r'[0-9a-f]{64}', value):
+            raise LinuxVMError('The VM update key file is invalid.')
+        return value
+
     def intent(self) -> dict[str, Any]:
         """The last start or stop: {'state', 'by', 'at'} and 'restart' while an automatic
         restart is between its stop and its start."""
@@ -717,6 +785,38 @@ class Client:
         saved['lastProbeAt'] = now
         _atomic_json(self.state_dir / _HEALTH_FILE, saved)
         return saved
+
+    def layr_probe_due(self, pid: Any, now: float) -> bool:
+        """Whether the watchdog asks layr.health now: once per LAYR_PROBE_SECONDS per boot."""
+        saved = self._read_json(_HEALTH_FILE)
+        last = (saved.get('layr') or {}).get('lastProbeAt') if saved.get('helperPid') == pid else None
+        return not isinstance(last, (int, float)) or now - last >= LAYR_PROBE_SECONDS
+
+    def record_layr(self, pid: Any, error: str | None, *, now: float | None = None) -> dict[str, Any]:
+        """Save one layr.health answer of the guest of this helper PID: None is a ready layr
+        (daemon and root broker), any text a failure. Only after the guest itself answered."""
+        if type(pid) is not int or not self.state_dir.is_dir():
+            return {}
+        now = time.time() if now is None else now
+        saved = self._read_json(_HEALTH_FILE)
+        if saved.get('helperPid') != pid:
+            return {}
+        layr = dict(saved.get('layr') or {})
+        previous = layr.get('lastProbeAt')
+        if error is None:
+            layr.update(readyAt=now, failingSince=None, lastFailureAt=None, failures=0, error=None)
+        else:
+            if (layr.get('failingSince') is None or not isinstance(previous, (int, float))
+                    or now - previous > LAYR_PROBE_SECONDS + PROBE_GAP_SECONDS):
+                layr.update(failingSince=now, failures=0)
+            layr.update(failures=int(layr.get('failures') or 0) + 1, lastFailureAt=now, error=error[:300])
+        layr['lastProbeAt'] = now
+        saved['layr'] = layr
+        _atomic_json(self.state_dir / _HEALTH_FILE, saved)
+        return layr
+
+    def layr_fault(self, pid: Any = None, *, now: float | None = None) -> dict[str, Any] | None:
+        return layr_fault(self.state_dir, pid, now=now)
 
     def _guest_failure(self, host: dict[str, Any], log: str) -> dict[str, Any] | None:
         """A dead (kernel_panic, kernel_error) or unresponsive (unanswered) guest behind a helper that
@@ -809,6 +909,12 @@ class Client:
             # The helper and its Virtualization process stay alive after a guest panic.
             state = 'unresponsive' if failure['kind'] == 'unanswered' else 'failed'
             result.update(state=state, helperState='running', error=failure['reason'], guestFailure=failure)
+        elif result.get('state') == 'running':
+            # The VM stays `running` (its chats keep their providers), but nothing that needs
+            # layr works: new VM chats, turn saves, project commands.
+            fault = self.layr_fault(result.get('pid'))
+            if fault is not None:
+                result.update(error=fault['reason'], layrFault=fault)
         from codex_linux_vm_watchdog import summary
         watchdog = summary(self.state_dir)
         if watchdog is not None:
@@ -889,7 +995,8 @@ class Client:
             _require_space(self.state_dir, create=True)
             codex_version = _version(os.environ.get('CODEX_BIN') or shutil.which('codex') or 'codex', 'Codex', _remaining(deadline, 15))
             claude_version = _version(os.environ.get('CLAUDE_BIN') or shutil.which('claude') or 'claude', 'Claude', _remaining(deadline, 15))
-            config = _cloud_config(self.guest_dir, codex_version, claude_version)
+            config = _cloud_config(self.guest_dir, codex_version, claude_version,
+                                   update_key=self.update_key())
             staging = Path(tempfile.mkdtemp(prefix='create-', dir=self.state_dir))
             try:
                 archive = staging / 'ubuntu.tar.gz'
@@ -945,7 +1052,8 @@ class Client:
         if console.exists():
             (self.state_dir / 'console.previous.log').write_bytes(console.read_bytes()[-1024 * 1024:])
         manifest = json.loads((self.state_dir / 'image.json').read_text())
-        config = _cloud_config(self.guest_dir, manifest['codex'], manifest['claude'])
+        config = _cloud_config(self.guest_dir, manifest['codex'], manifest['claude'],
+                               update_key=self.update_key())
         payload = '#cloud-config\n' + json.dumps(config)
         identity = hashlib.sha256(payload.encode()).hexdigest()
         with tempfile.TemporaryDirectory(prefix='provision-', dir=self.state_dir) as name:

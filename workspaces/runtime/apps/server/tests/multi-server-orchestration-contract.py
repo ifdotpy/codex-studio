@@ -48,6 +48,28 @@ class FakeTransport:
         return result
 
 
+class LinkTransport(FakeTransport):
+    """A QUIC link: an export comes as one stream, read by the export route."""
+    def __init__(self, local_server_id, network, lose_after=None):
+        super().__init__(local_server_id, network)
+        self.lose_after, self.streams = lose_after, []
+    def stream(self, server, path, *, timeout, sink):
+        from studio_api.multi_server.router import export_file
+        self.streams.append(path)
+        name, _, query = path.rsplit('/', 1)[1].partition('?')
+        opened = export_file(self.network[server].runtime.root, name, query.removeprefix('offset='))
+        assert opened is not None
+        stream, _size, _start = opened
+        sent = 0
+        with stream:
+            while data := stream.read(64 * 1024):
+                if self.lose_after is not None and sent + len(data) > self.lose_after:
+                    raise OSError('The link lost the stream')
+                sink(data)
+                sent += len(data)
+        return True
+
+
 class CrossServer(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='studio-multi-server-')
@@ -1091,6 +1113,72 @@ class CrossServer(unittest.TestCase):
         with self.home.read_db() as db:
             self.assertIsNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', ('asset-input',)).fetchone())
             self.assertIsNone(db.execute('SELECT 1 FROM runtime_event_meta WHERE id=?', ('asset-input',)).fetchone())
+
+
+    def bundle_fetch_with(self, transport):
+        repo, git = self.review_repo()
+        (repo / 'blob').write_bytes(os.urandom(600 * 1024))
+        git('add', 'blob')
+        git('commit', '-qm', 'Work')
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        target = self.root / 'home' / 'link-target'
+        target.mkdir()
+        subprocess.run(['git', '-C', str(target), 'init', '-q'], check=True)
+        self.network['home'].transport = transport
+        result = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'link-fetch')
+        self.assertEqual(result['commit'], git('rev-parse', 'HEAD'))
+        self.assertEqual(list((self.remote.root / 'server-exports').glob('*.bundle')), [])
+        return [call['payload']['offset'] for call in transport.calls if call['action'] == 'chunk']
+
+    def test_link_streams_the_git_bundle_without_chunk_actions(self):
+        transport = LinkTransport('home', self.network)
+        self.assertEqual(self.bundle_fetch_with(transport), [])
+        self.assertEqual(len(transport.streams), 1)
+        self.assertRegex(transport.streams[0], r'^/api/servers/exports/[0-9a-f-]{36}\.bundle\?offset=0$')
+
+    def test_lost_bundle_stream_continues_with_chunks_from_its_offset(self):
+        offsets = self.bundle_fetch_with(LinkTransport('home', self.network, lose_after=300 * 1024))
+        self.assertEqual(offsets[0], 256 * 1024)
+
+
+    def run_tick(self, service):
+        service.tick()
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
+        while service._running and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(service._running)
+
+    def test_a_queued_request_wakes_the_delivery_once(self):
+        service = self.network['remote']
+        with self.remote.db() as db:
+            service.queue(db, 'home', 'projects', {}, 'wake-one')
+        self.assertTrue(service.wake_requested())
+        self.run_tick(service)
+        self.assertFalse(service.wake_requested())
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute("SELECT state FROM runtime_server_outbox WHERE id='wake-one'").fetchone()[0],
+                             'complete')
+
+    def test_a_wake_before_the_commit_checks_the_outbox_again(self):
+        service = self.network['remote']
+        with self.remote.db() as db:
+            service.queue(db, 'home', 'projects', {}, 'wake-late')
+        original, reads = service._due_keys, []
+        def late():
+            reads.append(1)
+            return [] if len(reads) == 1 else original()
+        with patch.object(service, '_due_keys', side_effect=late):
+            self.run_tick(service)
+        self.assertEqual(len(reads), 2)
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute("SELECT state FROM runtime_server_outbox WHERE id='wake-late'").fetchone()[0],
+                             'complete')
+        # Without a wake, an empty outbox read is not repeated.
+        reads.clear()
+        with patch.object(service, '_due_keys', side_effect=lambda: reads.append(1) or []):
+            self.run_tick(service)
+        self.assertEqual(len(reads), 1)
 
     def test_review_incremental_fetch_releases_bundle_and_does_not_store_chunk_data(self):
         repo, git = self.review_repo()

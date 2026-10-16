@@ -54,6 +54,8 @@ systemctl enable --now codex-studio-grow.service codex-studio-guest.service
 # Boot can start the guest service before this script writes its new unit. A running service
 # keeps the unit it started with, so a changed unit (such as the RuntimeDirectory of the
 # browser bridge socket) applies only after a restart. Provider owners survive it (KillMode).
-if [ "$(cat "$unit")" != "$unit_before" ]; then
+# An in-place update (guest_update.py) sets STUDIO_DEFER_RESTARTS: the root broker restarts the
+# changed units itself, after its reply and once no request runs.
+if [ "$(cat "$unit")" != "$unit_before" ] && [ -z "${STUDIO_DEFER_RESTARTS:-}" ]; then
   systemctl try-restart codex-studio-guest.service
 fi

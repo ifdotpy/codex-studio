@@ -4,6 +4,9 @@ After=local-fs.target codex-studio-grow.service
 Requires=codex-studio-grow.service
 RequiresMountsFor=/var/lib/codex-studio
 ConditionPathIsMountPoint=/var/lib/codex-studio
+# Never give up. With the default start limit (5 starts in 10 seconds) a run of OOM kills can
+# leave the daemon failed for good, and the root broker requires it.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

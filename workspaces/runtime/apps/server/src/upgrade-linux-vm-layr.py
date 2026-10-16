@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Upgrade the existing VM only after an idle-provider preflight and disk backup."""
+"""Upgrade the existing VM guest. A change that the guest can take in place (guest files, layr)
+keeps every agent running (codex_linux_vm_update.py). Any other change reboots the VM, only
+after an idle-provider preflight and a disk backup."""
 from __future__ import annotations
 
 import argparse
@@ -14,23 +16,24 @@ import uuid
 
 from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
 from codex_linux_vm import Client, LinuxVMError, _atomic_json
+from codex_linux_vm_update import apply_in_place, plan as choose
 
 BACKUP_RESERVE_BYTES = 20 * 1024**3
 
 
 def upgrade(state: Path, helper: Path, payload: Path, operation: str,
-            allowed_orphans: set[str] | None = None) -> dict[str, Any]:
+            allowed_orphans: set[str] | None = None, *, reboot: bool = False) -> dict[str, Any]:
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', operation):
         raise ValueError('Use a bounded operation ID.')
     client = Client(state, helper=helper)
     # The backend watchdog does not restart the VM while an upgrade holds this lock,
     # and an upgrade does not start during an automatic restart.
     with client.maintenance():
-        return _upgrade(client, helper, payload, operation, allowed_orphans)
+        return _upgrade(client, helper, payload, operation, allowed_orphans, reboot)
 
 
 def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
-             allowed_orphans: set[str] | None) -> dict[str, Any]:
+             allowed_orphans: set[str] | None, reboot: bool = False) -> dict[str, Any]:
     allowed_orphans = allowed_orphans or set()
     for handle in allowed_orphans:
         if str(uuid.UUID(handle)) != handle:
@@ -46,6 +49,23 @@ def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
     receipt = directory / 'receipt.json'
     if receipt.exists():
         raise LinuxVMError('This upgrade has a saved receipt. Inspect it before another operation.', uncertain=True)
+    evidence: dict[str, Any] = {'operationId': operation, 'stateDir': str(client.state_dir),
+        'helper': str(helper), 'payload': str(payload)}
+    if not reboot:
+        # The path comes from what changed (docs/linux-vm-workspaces.md, "Guest updates"). The
+        # in-place path keeps every provider: no idle preflight, no backup, no VM restart.
+        chosen = choose(client)
+        evidence['plan'] = {key: chosen.get(key) for key in ('path', 'changed', 'restarts', 'reasons')}
+        if chosen['path'] == 'current':
+            evidence['stage'] = 'complete'
+            _atomic_json(receipt, evidence)
+            return evidence
+        if chosen['path'] == 'in_place':
+            evidence['stage'] = 'in-place'
+            _atomic_json(receipt, evidence)
+            evidence.update(stage='complete', inPlace=apply_in_place(client, chosen, operation))
+            _atomic_json(receipt, evidence)
+            return evidence
     providers = client.call('provider.list', {}, timeout=30)['providers']
     active = [row for row in providers if active_provider(row)]
     if active:
@@ -55,9 +75,7 @@ def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
     # exists, so the reserve covers that growth, not the allocated disk size.
     if shutil.disk_usage(client.state_dir).free < BACKUP_RESERVE_BYTES:
         raise LinuxVMError('Free host space must exceed 20 GiB for the disk backup clones.')
-    evidence: dict[str, Any] = {'operationId': operation, 'stateDir': str(client.state_dir),
-        'helper': str(helper), 'payload': str(payload), 'providers': providers,
-        'approvedOrphanHandles': sorted(allowed_orphans), 'stage': 'backup'}
+    evidence.update(providers=providers, approvedOrphanHandles=sorted(allowed_orphans), stage='backup')
     _atomic_json(receipt, evidence)
     backups = directory / 'backup'
     backups.mkdir(mode=0o700)
@@ -108,6 +126,8 @@ if __name__ == '__main__':
     parser.add_argument('--payload', type=Path, default=REPOSITORY_ROOT)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--approved-orphan', action='append', default=[])
+    parser.add_argument('--reboot', action='store_true',
+                        help='take the reboot path even when the change can be applied in place')
     args = parser.parse_args()
     print(json.dumps(upgrade(args.state, args.helper, args.payload, args.operation_id,
-                            set(args.approved_orphan)), indent=2))
+                            set(args.approved_orphan), reboot=args.reboot), indent=2))

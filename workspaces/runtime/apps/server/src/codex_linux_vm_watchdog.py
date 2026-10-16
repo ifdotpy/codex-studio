@@ -21,7 +21,7 @@ import time
 from typing import Any, Callable
 import uuid
 
-from codex_linux_vm import Client, LinuxVMError, _atomic_json
+from codex_linux_vm import LAYR_PROBE_TIMEOUT, Client, LinuxVMError, _atomic_json
 
 PROBE_INTERVAL = 30.0
 PROBE_TIMEOUT = 15.0
@@ -131,10 +131,12 @@ class Watchdog:
 
     def __init__(self, client: Client, *, on_stopped: Callable[[Record], list[str]] | None = None,
                  on_finished: Callable[[Record], None] | None = None,
+                 on_layr_changed: Callable[[], None] | None = None,
                  clock: Callable[[], float] = time.time) -> None:
         self.client = client
         self.on_stopped = on_stopped
         self.on_finished = on_finished
+        self.on_layr_changed = on_layr_changed
         self.clock = clock
 
     def check(self) -> str:
@@ -189,7 +191,29 @@ class Watchdog:
     def probe(self, status: dict[str, Any]) -> bool:
         error = self.client.ping(PROBE_TIMEOUT)
         self.client.record_health(status.get('pid'), error, now=self.clock())
+        if error is None:
+            self.probe_layr(status)
         return error is None
+
+    def probe_layr(self, status: dict[str, Any]) -> None:
+        """Ask the root broker for layr health after a guest answer. The watchdog only shows a
+        layr fault: the Mac has no root path into the guest when the broker is down, and a VM
+        restart ends every provider. systemd restarts a dead daemon or broker (no start limit,
+        vm-guest units)."""
+        pid, now = status.get('pid'), self.clock()
+        if not self.client.layr_probe_due(pid, now):
+            return
+        before = self.client.layr_fault(pid, now=now) is not None
+        try:
+            health = self.client.call('layr.health', {}, timeout=LAYR_PROBE_TIMEOUT)
+            error = None if isinstance(health, dict) and health.get('state') == 'ready' else (
+                'layr state ' + str(health.get('state') if isinstance(health, dict) else health))
+        except LinuxVMError as failure:
+            error = str(failure) or type(failure).__name__
+        self.client.record_layr(pid, error, now=self.clock())
+        after = self.client.layr_fault(pid, now=self.clock()) is not None
+        if before != after and self.on_layr_changed is not None:
+            self.on_layr_changed()
 
     def _settle(self) -> None:
         """Close a restart whose start a backend stop interrupted after the launch: the
@@ -403,6 +427,12 @@ def post_notices(runtime: Any, record: Record) -> None:
                              'Linux VM', nativeNotice='error')
 
 
+def refresh_layr_chips(runtime: Any) -> None:
+    """Show a layr fault, or its end, on the LAYR chip of each project."""
+    from codex_vm_agents import refresh_readiness
+    refresh_readiness(runtime)
+
+
 class _Service:
     def __init__(self, runtime: Any, client: Client, interval: float) -> None:
         self.runtime = runtime
@@ -410,7 +440,8 @@ class _Service:
         self.stop = threading.Event()
         self.watchdog = Watchdog(client,
                                  on_stopped=lambda record: drop_providers(runtime, record),
-                                 on_finished=lambda record: post_notices(runtime, record))
+                                 on_finished=lambda record: post_notices(runtime, record),
+                                 on_layr_changed=lambda: refresh_layr_chips(runtime))
         self.thread = threading.Thread(target=self.run, name='studio-vm-watchdog', daemon=True)
 
     def run(self) -> None:

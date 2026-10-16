@@ -82,12 +82,25 @@ export async function stopFixtureProcessGroup(childOrPid, timeoutMs = 1_000) {
   const pid = fixturePid(childOrPid);
   if (pid === undefined) return;
 
-  signalFixtureProcessGroup(childOrPid, "SIGTERM");
-  if (await waitForGroupExit(pid, timeoutMs)) return;
-
-  signalFixtureProcessGroup(childOrPid, "SIGKILL");
-  if (!(await waitForGroupExit(pid, timeoutMs)))
-    throw new Error(`Fixture process group ${pid} did not exit after SIGKILL`);
+  for (const signal of /** @type {NodeJS.Signals[]} */ ([
+    "SIGTERM",
+    "SIGKILL",
+  ])) {
+    let denied;
+    try {
+      signalFixtureProcessGroup(childOrPid, signal);
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EPERM")
+        throw error;
+      // Darwin can return EPERM for a group containing only zombies until
+      // their parent reaps them. Require ESRCH from the group probe before
+      // accepting cleanup; a live inaccessible group must still fail.
+      denied = error;
+    }
+    if (await waitForGroupExit(pid, timeoutMs)) return;
+    if (denied) throw denied;
+  }
+  throw new Error(`Fixture process group ${pid} did not exit after SIGKILL`);
 }
 
 export function registerFixtureProcessGroup(registryDirectory, pid) {

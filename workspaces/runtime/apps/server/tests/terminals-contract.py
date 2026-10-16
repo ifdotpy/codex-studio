@@ -85,9 +85,26 @@ class TerminalsContract(unittest.TestCase):
         )
 
     def test_real_pty_cwd_output_resize_exit_and_no_model(self):
-        task = self.create()
+        # Exercise the real provider PTY with explicit input phases. Interactive
+        # shell prompt/redraw handling is not part of the terminal RPC contract.
+        program = r"""import os, pathlib, sys
+assert sys.stdin.readline() == 'initial\n'
+size = os.get_terminal_size(0)
+pathlib.Path('terminal-proof').write_text(f'{os.getcwd()}\n{size.lines} {size.columns}\n')
+assert sys.stdin.readline() == 'resized\n'
+size = os.get_terminal_size(0)
+pathlib.Path('resized-proof').write_text(f'{size.lines} {size.columns}\n')
+print('PTY-OUTPUT', flush=True)
+sys.exit(7)
+"""
+        probe = self.root / 'pty-probe'
+        probe.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable)
+                         + ' -c ' + shlex.quote(program) + '\n')
+        probe.chmod(0o700)
+        with patch.dict(os.environ, {'SHELL': str(probe)}):
+            task = self.create()
         marker = self.fixture.project / "terminal-proof"
-        self.send(task, "pwd > terminal-proof; stty size >> terminal-proof\n")
+        self.send(task, "initial\n")
         wait_for_condition(
             lambda: (contents if (contents := read_text_if_present(marker))
                      and len(contents.splitlines()) == 2 else None),
@@ -98,10 +115,16 @@ class TerminalsContract(unittest.TestCase):
             [str(self.fixture.project.resolve()), "24 80"],
         )
         self.manager.action("resize", {"id": task["id"], "cols": 120, "rows": 36})
-        self.send(
-            task, 'stty size > resized-proof; printf "\\nPTY-OUTPUT\\n"; exit 7\n'
-        )
-        f.eventually(lambda: self.manager.output(task["id"])["status"] == "exited")
+        self.send(task, "resized\n")
+        try:
+            f.eventually(lambda: self.manager.output(task["id"])["status"] == "exited")
+        except AssertionError as error:
+            output = self.manager.output(task["id"])
+            resized = read_text_if_present(self.fixture.project / "resized-proof")
+            server = self.manager.server
+            self.fail(f"{error}; terminal={output!r}; resized={resized!r}; "
+                      f"native_exit={server.proc.poll()!r}; "
+                      f"transport_error={server.transport_error!r}")
         self.assertEqual(
             (self.fixture.project / "resized-proof").read_text().strip(), "36 120"
         )
