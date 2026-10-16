@@ -52,7 +52,7 @@ AGENT_FIELD_GROUPS = {
         branch budgetBlocked budgetStartWait cancelledPark capacityRetryCount checkpointError
         checkpointHistoryHead complaintMisses complaintsPresented
         claudeInputRequest claudeOptions claudePreInputRetry cleanedWorktree compactionsObservedOnly
-        connectionRecovery contextRepair contextRepairHistory
+        connectionRecovery contextRepair contextRepairHistory imageWorkspaceCleanupRetry
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey layrBaseState layrHome layrOwner layrSubpath layrTurnRetryAt
         layrTurnSaves nativeToolSource imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError

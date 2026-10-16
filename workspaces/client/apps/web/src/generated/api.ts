@@ -4412,6 +4412,8 @@ export interface components {
       /** @default null */
       imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
       /** @default null */
+      imageWorkspaceCleanupRetry?: components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"];
+      /** @default null */
       imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
       /**
        * Imageworkspacecreatedat
@@ -4463,7 +4465,14 @@ export interface components {
        * @default null
        */
       imageWorkspacePhase?:
-        | ("read_only" | "ready" | "fallback" | "archived")
+        | (
+            | "read_only"
+            | "ready"
+            | "fallback"
+            | "archiving"
+            | "archived"
+            | "removed"
+          )
         | null;
       /**
        * Imageworkspaceready
@@ -13048,6 +13057,29 @@ export interface components {
        * @default null
        */
       state?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ImageWorkspaceCleanupRetryRecordResponse */
+    ImageWorkspaceCleanupRetryRecordResponse: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at: number;
+      /** Attempts */
+      attempts: number;
+      /** Error */
+      error: string;
+      /** Nextat */
+      nextAt: number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };

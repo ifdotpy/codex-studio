@@ -30,7 +30,7 @@ AgentStatusValue = Literal[
 AgentProviderValue = Literal["codex", "claude"]
 AgentRoleValue = Literal["lead", "worker", "orchestrator", "agent", "implementer", "reviewer"]
 AgentModeValue = Literal["multi", "single"]
-ImageWorkspacePhase = Literal["read_only", "ready", "fallback", "archived"]
+ImageWorkspacePhase = Literal["read_only", "ready", "fallback", "archiving", "archived", "removed"]
 WorktreePreparation = Literal["waiting", "preparing"]
 WorkStatusValue = Literal["ready", "running", "blocked", "review", "accepted", "cancelled"]
 ComplaintStatusValue = Literal["open", "in_progress", "resolved", "declined"]
@@ -1118,6 +1118,14 @@ class ImageWorkspaceCleanupResultRecord(TypedDict):
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]
 
 
+class ImageWorkspaceCleanupRetryRecord(TypedDict):
+    """A failed image cleanup that codex_image_cleanup_retry repeats with a backoff."""
+    attempts: SafeInt
+    at: float
+    nextAt: float
+    error: str
+
+
 class ImageWorkspaceRepositoryState(TypedDict):
     path: str
     startCommit: str
@@ -1543,6 +1551,7 @@ class AgentRecord(TypedDict):
     authResumeAttempt: NotRequired[SafeInt]
     cleanedImageWorkspace: NotRequired[CleanedImageWorkspaceRecord]
     imageWorkspaceCleanupResult: NotRequired[ImageWorkspaceCleanupResultRecord]
+    imageWorkspaceCleanupRetry: NotRequired[ImageWorkspaceCleanupRetryRecord]
     imageWorkspaceBaseError: NotRequired[str]
     nativeToolRefreshId: NotRequired[str]
     nativeToolUpdate: NotRequired[NativeToolUpdateRecord]

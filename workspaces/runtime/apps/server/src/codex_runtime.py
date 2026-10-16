@@ -6771,6 +6771,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         native_release_tick(self)
         from codex_disk_space import tick as disk_space_tick
         disk_space_tick(self)
+        from codex_image_cleanup_retry import tick as image_cleanup_tick
+        image_cleanup_tick(self)
         self.analytics_history_ensure_running()
         from codex_session_names import session_names
         session_names(self).tick()
