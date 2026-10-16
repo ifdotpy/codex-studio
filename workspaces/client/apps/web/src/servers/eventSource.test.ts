@@ -61,3 +61,20 @@ it("uses signed fetch for remote events and cancels the stream on close", async 
   expect(frames).toEqual(["{}"]);
   expect(errors).not.toHaveBeenCalled();
 });
+it("cancels a rejected event response", async () => {
+  vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
+  const { SignedEventSource } = await import("./eventSource");
+  const cancel = vi.fn();
+  const source = new SignedEventSource(
+    "/api/sync/stream",
+    async () =>
+      new Response(new ReadableStream({ cancel }), {
+        headers: { "Content-Type": "text/html" },
+      }),
+  );
+  const error = vi.fn();
+  source.onerror = error;
+  await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
+  expect(cancel).toHaveBeenCalledOnce();
+  source.close();
+});

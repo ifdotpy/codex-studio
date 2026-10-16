@@ -534,6 +534,7 @@ export function createApiScope(options: ApiScopeOptions) {
     const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
     if (isApiSchemaMismatchResponse(response, request)) {
       markApiSchemaMismatch(serverHash);
+      await response.body?.cancel().catch(() => {});
       // Do not let a response from another contract reach a projection or
       // mutation persister. The update gate is still raised before rejection.
       throw new ApiSchemaMismatchError(true);

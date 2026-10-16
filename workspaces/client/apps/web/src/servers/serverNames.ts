@@ -19,7 +19,10 @@ export async function refreshServerName(server: StudioServer) {
       signal: AbortSignal.timeout(15000),
     }),
   );
-  if (!response.ok) throw new Error("The server name is unavailable.");
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("The server name is unavailable.");
+  }
   const identity = await response.json();
   if (identity.serverId !== server.id)
     throw new Error("The server response has another identity.");

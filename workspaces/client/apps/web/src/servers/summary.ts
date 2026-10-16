@@ -68,9 +68,14 @@ export async function fetchServerSummary(
         : await createServerTransport(server, (owner, request) =>
             serverCredentialAdapter().fetch(owner, request),
           ).fetch(request);
-  if (!response.ok) throw new Error("The server summary is unavailable.");
-  if (response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("The server summary is unavailable.");
+  }
+  if (response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH) {
+    await response.body?.cancel().catch(() => {});
     throw new SchemaMismatchError();
+  }
   const value = await response.json();
   if (
     !value ||

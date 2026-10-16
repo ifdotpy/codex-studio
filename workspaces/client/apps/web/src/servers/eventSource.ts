@@ -71,8 +71,10 @@ export class SignedEventSource
         !response.ok ||
         !response.body ||
         !response.headers.get("Content-Type")?.startsWith("text/event-stream")
-      )
+      ) {
+        await response.body?.cancel().catch(() => {});
         throw new Error("The server event stream is unavailable.");
+      }
       if (this.stopped) {
         await response.body.cancel();
         return;
