@@ -333,11 +333,12 @@ async fn diagnostics(
     });
     let mut value = value;
     redact_untrusted_diagnostic_text(&mut value);
+    strip_diagnostics_execution_extras(&state.validators, &mut value);
     if !state
         .validators
         .validate_stored("DiagnosticsResponse", &value)
     {
-        let (field, keyword) = diagnostics_schema_rejection(&value);
+        let (field, keyword) = diagnostics_schema_rejection(&state.validators, &value);
         eprintln!(
             "diagnostics response schema rejection: schema=DiagnosticsResponse field={field} keyword={keyword}"
         );
@@ -346,10 +347,11 @@ async fn diagnostics(
     super::generated_json::<crate::generated::DiagnosticsResponse>(value).map(Json)
 }
 
-fn diagnostics_schema_rejection(value: &Value) -> (&'static str, &'static str) {
-    let rejection = studio_runtime_schema::first_error("DiagnosticsResponse", value)
-        .ok()
-        .flatten();
+fn diagnostics_schema_rejection(
+    registry: &crate::validation::Registry,
+    value: &Value,
+) -> (&'static str, &'static str) {
+    let rejection = registry.first_stored_error("DiagnosticsResponse", value);
     let Some((pointer, keyword)) = rejection else {
         return ("unlocated", "unavailable");
     };
@@ -378,6 +380,15 @@ fn diagnostics_schema_rejection(value: &Value) -> (&'static str, &'static str) {
         _ => "other",
     };
     (field, keyword)
+}
+
+fn strip_diagnostics_execution_extras(
+    registry: &crate::validation::Registry,
+    response: &mut Value,
+) {
+    if let Some(executions) = response.get_mut("executions") {
+        registry.strip_stored_extra_fields("ExecutionLedger", executions);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -516,7 +527,10 @@ fn redact_untrusted_diagnostic_text(value: &mut Value) {
 
 #[cfg(test)]
 mod diagnostics_http_tests {
-    use super::{DIAGNOSTICS_RESPONSE_FIELDS, redact_untrusted_diagnostic_text};
+    use super::{
+        DIAGNOSTICS_RESPONSE_FIELDS, redact_untrusted_diagnostic_text,
+        strip_diagnostics_execution_extras,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -540,13 +554,14 @@ mod diagnostics_http_tests {
 
     #[test]
     fn diagnostics_schema_rejection_logs_only_known_fields_and_keywords() {
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
         for value in [
             json!({
                 "executions": {"runs": [{"unexpected-private-name": "secret-value"}]}
             }),
             json!({"private-root-name": "secret-value"}),
         ] {
-            let (field, keyword) = super::diagnostics_schema_rejection(&value);
+            let (field, keyword) = super::diagnostics_schema_rejection(&registry, &value);
             assert!(
                 field == "unlocated" || DIAGNOSTICS_RESPONSE_FIELDS.contains(&field),
                 "the log field must come from the known response DTO"
@@ -569,6 +584,91 @@ mod diagnostics_http_tests {
             ));
             assert!(!format!("{field}{keyword}").contains("secret"));
         }
+    }
+
+    #[test]
+    fn diagnostics_projects_legacy_execution_extras_without_changing_stored_rows() {
+        let connection = Connection::open_in_memory().expect("in-memory read fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_execution_runs (
+                    id TEXT PRIMARY KEY, agent TEXT, account TEXT, epoch INTEGER,
+                    thread TEXT, turn TEXT, created REAL, record TEXT NOT NULL
+                );
+                CREATE TABLE runtime_execution_attempts (
+                    id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL
+                );",
+            )
+            .expect("fixture tables");
+        let run = json!({
+            "id": "run-1", "agent": "agent-1", "accountKey": "default",
+            "epoch": 1, "threadId": null, "turnId": null, "created": 1.0,
+            "status": "running", "firstAttemptId": null, "rootAttemptId": null,
+            "latestAttemptId": null,
+            "restartRecovery": {"startAttempt": {"id": "restart-attempt", "legacyField": true}},
+            "disconnectRecovery": {"startAttempt": {"id": "disconnect-attempt", "legacyField": true}},
+            "attempts": [], "nodes": [], "effects": [], "attemptIds": [],
+            "requestIds": [], "inputEventIds": []
+        });
+        let attempt = json!({"id": "attempt-1", "legacyField": true});
+        let raw_run = run.to_string();
+        let raw_attempt = attempt.to_string();
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_runs(id, created, record) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["run-1", 1.0, raw_run],
+            )
+            .expect("stored run fixture");
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_attempts(id, run, record) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["attempt-1", "run-1", raw_attempt],
+            )
+            .expect("stored attempt fixture");
+
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
+        let mut response = json!({
+            "executions": studio_runtime_services::diagnostics::execution_ledger(&connection)
+                .expect("read-only execution projection")
+        });
+        strip_diagnostics_execution_extras(&registry, &mut response);
+        assert!(registry.validate_stored("ExecutionLedger", &response["executions"]));
+        assert!(
+            response["executions"]["runs"][0]["attempts"][0]
+                .get("legacyField")
+                .is_none()
+        );
+        assert!(
+            response["executions"]["runs"][0]["restartRecovery"]["startAttempt"]
+                .get("legacyField")
+                .is_none()
+        );
+        assert!(
+            response["executions"]["runs"][0]["disconnectRecovery"]["startAttempt"]
+                .get("legacyField")
+                .is_none()
+        );
+
+        let mut malformed_known_field = response["executions"].clone();
+        malformed_known_field["runs"][0]["attempts"][0]["epoch"] = json!("invalid");
+        assert!(!registry.validate_stored("ExecutionLedger", &malformed_known_field));
+
+        let stored_run: String = connection
+            .query_row(
+                "SELECT record FROM runtime_execution_runs WHERE id='run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read persisted run after projection");
+        let stored_attempt: String = connection
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='attempt-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read persisted attempt after projection");
+        assert_eq!(stored_run, run.to_string());
+        assert_eq!(stored_attempt, attempt.to_string());
     }
 
     #[test]

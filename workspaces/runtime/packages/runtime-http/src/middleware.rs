@@ -31,8 +31,17 @@ pub(crate) async fn boundary(
     let path = request.uri().path().to_owned();
     let api = path.starts_with("/api/");
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+    let matched_template = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str);
     let matched_operation = api
-        .then(|| state.validators.match_route(method.as_str(), &path))
+        .then(|| {
+            matched_template.map_or_else(
+                || state.validators.match_route(method.as_str(), &path),
+                |template| state.validators.match_template(method.as_str(), template),
+            )
+        })
         .flatten();
     if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
         return crate::routes::incoming_multi_server::serve(state, request).await;
@@ -323,18 +332,31 @@ pub(crate) async fn response_safety(
     let response_request_id = request.headers().get("x-studio-request-id").cloned();
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
-    let route = crate::schema::operations()
-        .ok()
-        .and_then(|operations| {
-            crate::schema::matching_template(
-                operations.iter().map(|(operation_method, template)| {
-                    (operation_method.as_str(), template.as_str())
-                }),
-                Some(&method),
-                &path,
-            )
+    let matched_template = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str);
+    let route = matched_template
+        .and_then(|template| {
+            state
+                .validators
+                .match_template(&method, template)
+                .map(|operation| operation.key)
         })
-        .map(|template| format!("{method} {template}"))
+        .or_else(|| {
+            crate::schema::operations()
+                .ok()
+                .and_then(|operations| {
+                    crate::schema::matching_template(
+                        operations.iter().map(|(operation_method, template)| {
+                            (operation_method.as_str(), template.as_str())
+                        }),
+                        Some(&method),
+                        &path,
+                    )
+                })
+                .map(|template| format!("{method} {template}"))
+        })
         .unwrap_or_else(|| "unmatched route".to_owned());
     let request_id = request
         .headers()
@@ -350,15 +372,24 @@ pub(crate) async fn response_safety(
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let etag_route = method == "GET"
-        && crate::schema::matching_template(
-            state
-                .etag_operations
-                .iter()
-                .map(|(method, template)| (method.as_str(), template.as_str())),
-            Some(&method),
-            &path,
-        )
-        .is_some();
+        && matched_template.map_or_else(
+            || {
+                crate::schema::matching_template(
+                    state
+                        .etag_operations
+                        .iter()
+                        .map(|(method, template)| (method.as_str(), template.as_str())),
+                    Some(&method),
+                    &path,
+                )
+                .is_some()
+            },
+            |template| {
+                state
+                    .etag_operations
+                    .contains(&(method.clone(), template.to_owned()))
+            },
+        );
     let (mut response, fallback_cause) =
         match AssertUnwindSafe(next.run(request)).catch_unwind().await {
             Ok(response) => (response, None),
