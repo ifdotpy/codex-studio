@@ -10,6 +10,7 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_services::federation_credentials::CredentialError;
 use studio_runtime_services::multi_server::{self, MultiServerError};
+use studio_runtime_services::resource_notify::ResourceNotifications;
 use studio_runtime_services::remote_transport::{self, MultiServerExchangeInput};
 
 use crate::error::ApiError;
@@ -25,6 +26,8 @@ const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
     #[cfg(not(unix))]
     Dependency::new("server-credentials/platform-support"),
 ];
+const ACCESS_ACTIVITY_TIMESTAMP_FIELD: &str = "lastAccess";
+const DISCOVERY_OBSERVATION_TIMESTAMP_FIELD: &str = "lastSeen";
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -114,6 +117,78 @@ async fn snapshot(
     >(result)?))
 }
 
+pub(super) async fn read_snapshot(state: &HttpState) -> Result<Value, ApiError> {
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let credentials = state.credentials.clone();
+    let origin = state.public_origin.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server/snapshot",
+        move || {
+            let identity = credentials
+                .identity(&store, origin.as_deref())
+                .map_err(map_credential_error)?;
+            multi_server::snapshot_for_comparison(&store, &identity).map_err(map_service_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+pub(super) fn publish_resource_change(
+    notifications: &ResourceNotifications,
+    request_id: &str,
+) {
+    let request = serde_json::json!({
+        "requestId": request_id,
+        "resources": [{"kind": "multi-server"}],
+    });
+    if let Err(error) = notifications.publish_once(&request) {
+        // The in-memory publisher is unavailable only while its stream hub is
+        // closing or its publication state is poisoned. Closing forces streams
+        // to reconnect and receive the current baseline. Never fail the already
+        // committed command response.
+        eprintln!("Could not publish committed multi-server change: {error}");
+    }
+}
+
+fn publish_uncertain_write_hint(notifications: &ResourceNotifications) {
+    // An error can occur after a durable write. Keep this recovery hint on a
+    // fresh internal ID so it cannot consume the command's success receipt if
+    // that same command later retries successfully.
+    let notification_id = uuid::Uuid::new_v4().simple().to_string();
+    publish_resource_change(notifications, &notification_id);
+}
+
+pub(super) fn notify_snapshot_change(
+    notifications: &ResourceNotifications,
+    request_id: &str,
+    before: &Value,
+    after: &Value,
+) {
+    if semantic_snapshot(before) != semantic_snapshot(after) {
+        publish_resource_change(notifications, request_id);
+    }
+}
+
+fn semantic_snapshot(snapshot: &Value) -> Value {
+    let mut semantic = snapshot.clone();
+    for collection in ["clients", "servers"] {
+        let Some(records) = semantic
+            .get_mut(collection)
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for record in records {
+            if let Some(record) = record.as_object_mut() {
+                record.remove(ACCESS_ACTIVITY_TIMESTAMP_FIELD);
+                record.remove(DISCOVERY_OBSERVATION_TIMESTAMP_FIELD);
+            }
+        }
+    }
+    semantic
+}
+
 async fn audit(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccessAuditResponse>, ApiError> {
@@ -146,10 +221,15 @@ async fn manage(
         .and_then(Value::as_str)
         .unwrap_or_default();
     if action == "create_invite" {
+        let request_id = body["requestId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request ID"))?
+            .to_owned();
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let credentials = state.credentials;
-        let origin = state.public_origin;
-        let whoami = state.tailscale_whoami;
+        let credentials = state.credentials.clone();
+        let origin = state.public_origin.clone();
+        let whoami = state.tailscale_whoami.clone();
+        let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server/invite",
             move || {
@@ -171,8 +251,16 @@ async fn manage(
                             "The Tailscale owner identity is unavailable",
                         )
                     })?;
-                multi_server::create_invite(&store, &identity, &body, "local", Some(&owner))
-                    .map_err(map_service_error)
+                let result = multi_server::create_invite(
+                    &store,
+                    &identity,
+                    &body,
+                    "local",
+                    Some(&owner),
+                )
+                .map_err(map_service_error)?;
+                publish_resource_change(&notifications, &request_id);
+                Ok(result)
             },
         )
         .await
@@ -180,23 +268,48 @@ async fn manage(
         return Ok(Json(result).into_response());
     }
     if action == "accept_invite" {
+        let request_id = body["requestId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request ID"))?
+            .to_owned();
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let credentials = state.credentials;
+        let credentials = state.credentials.clone();
         let origin = state.public_origin.clone();
-        let whoami = state.tailscale_whoami;
+        let whoami = state.tailscale_whoami.clone();
+        let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server/accept-invite",
-            move || accept_invite(&store, &credentials, origin.as_deref(), whoami, &body),
+            move || {
+                match accept_invite(&store, &credentials, origin.as_deref(), whoami, &body) {
+                    Ok(result) => {
+                        publish_resource_change(&notifications, &request_id);
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        publish_uncertain_write_hint(&notifications);
+                        Err(error)
+                    }
+                }
+            },
         )
         .await
         .map_err(|_| ApiError::internal())??;
         return Ok(Json(result).into_response());
     }
     if action == "ui_invite" {
+        let request_id = body["requestId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request ID"))?
+            .to_owned();
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server/ui-invite",
-            move || ui_invite(&store, &body),
+            move || {
+                let result = ui_invite(&store, &body)?;
+                publish_resource_change(&notifications, &request_id);
+                Ok::<_, ApiError>(result)
+            },
         )
         .await
         .map_err(|_| ApiError::internal())??;
@@ -205,20 +318,37 @@ async fn manage(
     if action == "discover"
         && let Some(origin) = state.public_origin.clone()
     {
-        let store = state.store.ok_or_else(ApiError::internal)?;
-        let credentials = state.credentials;
+        let before = read_snapshot(&state).await?;
+        let request_id = body["requestId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request ID"))?
+            .to_owned();
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials.clone();
         let discovery = state
             .server_discovery
+            .clone()
             .ok_or_else(|| unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES))?;
+        let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server",
             move || {
                 let identity = credentials
                     .identity(&store, Some(&origin))
                     .map_err(map_credential_error)?;
-                discovery
+                let result = discovery
                     .discover(&store, &identity, &origin)
-                    .map_err(map_discovery_error)
+                    .map_err(map_discovery_error);
+                match result {
+                    Ok(result) => {
+                        notify_snapshot_change(&notifications, &request_id, &before, &result);
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        publish_uncertain_write_hint(&notifications);
+                        Err(error)
+                    }
+                }
             },
         )
         .await
@@ -235,26 +365,35 @@ async fn manage(
         "settings" | "alias" | "revoke" | "unrevoke" | "name"
     ) || (action == "discover" && state.public_origin.is_none())
     {
-        let store = state.store.ok_or_else(ApiError::internal)?;
-        let credentials = state.credentials;
-        let origin = state.public_origin;
+        let before = read_snapshot(&state).await?;
+        let request_id = body["requestId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request ID"))?
+            .to_owned();
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials.clone();
+        let origin = state.public_origin.clone();
+        let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server",
             move || {
                 let action = body["action"].as_str().unwrap_or_default();
                 if action == "name" {
                     let target = body["serverId"].as_str().unwrap_or_default();
-                    if credentials
+                    let local_target = credentials
                         .is_local_target(&store, target)
-                        .map_err(map_credential_error)?
-                    {
+                        .map_err(map_credential_error)?;
+                    if local_target {
                         credentials
-                            .rename(
+                            .rename_with_notification(
                                 &store,
                                 target,
                                 body["label"].as_str().unwrap_or_default(),
                                 body["requestId"].as_str().unwrap_or_default(),
                                 "local",
+                                |request_id| {
+                                    publish_resource_change(&notifications, request_id)
+                                },
                             )
                             .map_err(map_credential_error)?;
                     } else {
@@ -266,17 +405,25 @@ async fn manage(
                             body["label"].as_str().unwrap_or_default(),
                             body["requestId"].as_str().unwrap_or_default(),
                         )?;
+                        publish_resource_change(
+                            &notifications,
+                            body["requestId"].as_str().unwrap_or_default(),
+                        );
                     }
                 }
                 let identity = credentials
                     .identity(&store, origin.as_deref())
                     .map_err(map_credential_error)?;
-                if matches!(action, "name" | "discover") {
+                let result = if matches!(action, "name" | "discover") {
                     multi_server::snapshot(&store, &identity).map_err(map_service_error)
                 } else {
                     multi_server::manage(&store, &identity, &body, "local")
                         .map_err(map_service_error)
+                }?;
+                if action != "name" {
+                    notify_snapshot_change(&notifications, &request_id, &before, &result);
                 }
+                Ok(result)
             },
         )
         .await
@@ -857,6 +1004,26 @@ mod tests {
     };
 
     struct FakeDiscovery(Arc<AtomicUsize>);
+
+    #[test]
+    fn semantic_snapshot_ignores_activity_times_but_keeps_peer_status() {
+        let before = serde_json::json!({
+            "clients": [{"id":"peer","lastAccess":10,"reachability":"reachable"}],
+            "servers": [{"id":"peer","lastSeen":10,"reachability":"reachable"}],
+        });
+        let after = serde_json::json!({
+            "clients": [{"id":"peer","lastAccess":20,"reachability":"reachable"}],
+            "servers": [{"id":"peer","lastSeen":20,"reachability":"reachable"}],
+        });
+        assert_eq!(semantic_snapshot(&before), semantic_snapshot(&after));
+
+        let changed = serde_json::json!({
+            "clients": [{"id":"peer","lastAccess":20,"reachability":"unreachable"}],
+            "servers": [{"id":"peer","lastSeen":20,"reachability":"unreachable"}],
+        });
+        assert_ne!(semantic_snapshot(&before), semantic_snapshot(&changed));
+    }
+
     impl studio_runtime_services::multi_server_discovery::ServerDiscoveryPort for FakeDiscovery {
         fn discover(
             &self,

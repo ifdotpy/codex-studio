@@ -14382,6 +14382,14 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** MultiServerResource */
+    MultiServerResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "multi-server";
+    };
     /** MutationReceipt */
     MutationReceipt: {
       /**
@@ -19025,6 +19033,7 @@ export interface components {
       | components["schemas"]["DraftsResource"]
       | components["schemas"]["LimitsResource"]
       | components["schemas"]["ModelsResource"]
+      | components["schemas"]["MultiServerResource"]
       | components["schemas"]["PanelResource"]
       | components["schemas"]["QueueResource"]
       | components["schemas"]["ReceiptsResource"]

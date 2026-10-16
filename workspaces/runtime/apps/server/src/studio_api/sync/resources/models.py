@@ -111,6 +111,10 @@ class StateResource(ContractModel):
     kind: Literal["state"]
 
 
+class MultiServerResource(ContractModel):
+    kind: Literal["multi-server"]
+
+
 class DraftsResource(ContractModel):
     kind: Literal["drafts"]
 
@@ -144,6 +148,7 @@ ResourceRefValue = Annotated[
     | DesktopResource
     | RoomResource
     | StateResource
+    | MultiServerResource
     | DraftsResource
     | TranscriptsResource
     | TranscriptResource,

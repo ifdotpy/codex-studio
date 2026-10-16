@@ -29,20 +29,59 @@ pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
 }
 
 pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
-    Ok(store.transaction_with(|tx| -> Result<Value, StoreError> {
-        let aliases = ensure_server_aliases(tx, identity)?;
-        let clients=project_records(tx,"runtime_access_clients")?;
-        let discovered=project_records(tx,"runtime_access_discovered")?;
-        let invites=tx.prepare_cached("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
-            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
-            .map(|r| { let (id,raw)=r?; let v=parse("runtime_access_invites",&id,&raw)?; let invite_id=v.get("inviteId").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"inviteId"))?; let expires=v.get("expires").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"expires"))?; let created=v.get("created").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"created"))?; let status=v.get("status").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"status"))?; if !["open","used"].contains(&status){return Err(invalid("runtime_access_invites",&id,"status"));} Ok(json!({"inviteId":invite_id,"expires":expires,"created":created,"status":status})) })
-            .collect::<Result<Vec<_>,StoreError>>()?;
-        let auto_pair=tx.query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1",[],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(1)!=0;
-        let mut servers=clients.iter().filter(|v|v.get("kind").and_then(Value::as_str)==Some("server")).cloned().collect::<Vec<_>>();
-        for peer in discovered {if !servers.iter().any(|saved|saved.get("id")==peer.get("id")){servers.push(peer);}}
+    Ok(store.transaction_with(|tx| snapshot_in_transaction(tx, identity, true))?)
+}
 
-        Ok(json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
-    })?)
+/// Read a snapshot-shaped view without persisting default aliases.
+/// Use for side-effect-free comparisons before authenticating signed writes.
+pub fn snapshot_for_comparison(
+    store: &RuntimeStore,
+    identity: &Value,
+) -> Result<Value, MultiServerError> {
+    Ok(store.transaction_with(|tx| snapshot_in_transaction(tx, identity, false))?)
+}
+
+fn snapshot_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &Value,
+    persist_default_aliases: bool,
+) -> Result<Value, StoreError> {
+    let aliases = server_aliases(tx, identity, persist_default_aliases)?;
+    let clients = project_records(tx, "runtime_access_clients")?;
+    let discovered = project_records(tx, "runtime_access_discovered")?;
+    let invites = tx
+        .prepare_cached("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .map(|r| {
+            let (id, raw) = r?;
+            let v = parse("runtime_access_invites", &id, &raw)?;
+            let invite_id = v.get("inviteId").and_then(Value::as_str).ok_or_else(|| invalid("runtime_access_invites", &id, "inviteId"))?;
+            let expires = v.get("expires").and_then(Value::as_i64).ok_or_else(|| invalid("runtime_access_invites", &id, "expires"))?;
+            let created = v.get("created").and_then(Value::as_i64).ok_or_else(|| invalid("runtime_access_invites", &id, "created"))?;
+            let status = v.get("status").and_then(Value::as_str).ok_or_else(|| invalid("runtime_access_invites", &id, "status"))?;
+            if !["open", "used"].contains(&status) {
+                return Err(invalid("runtime_access_invites", &id, "status"));
+            }
+            Ok(json!({"inviteId":invite_id,"expires":expires,"created":created,"status":status}))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let auto_pair = tx
+        .query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1", [], |r| r.get::<_, i64>(0))
+        .optional()?
+        .unwrap_or(1)
+        != 0;
+    let mut servers = clients
+        .iter()
+        .filter(|v| v.get("kind").and_then(Value::as_str) == Some("server"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for peer in discovered {
+        if !servers.iter().any(|saved| saved.get("id") == peer.get("id")) {
+            servers.push(peer);
+        }
+    }
+
+    Ok(json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
 }
 
 pub fn manage(
@@ -80,7 +119,7 @@ pub fn manage(
         .get("autoPair")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    store.transaction_with(|tx| -> Result<(), MultiServerError> {
+    store.transaction_with(|tx| -> Result<Value, MultiServerError> {
         match action.as_str() {
             "settings" => { tx.execute("UPDATE runtime_access_settings SET auto_pair=?1 WHERE id=1",[i64::from(auto)])?; audit_write(tx,"local",actor,"settings")?; }
             "revoke" => { let id=body.get("clientId").and_then(Value::as_str).unwrap_or_default(); let mut client=stored(tx,"runtime_access_clients",id)?.ok_or_else(||MultiServerError::Refused("client does not exist".into()))?; if client.get("status").and_then(Value::as_str)!=Some("revoked") { client["status"]=json!("revoked"); client["revoked"]=json!(unix_time()?); tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2",rusqlite::params![client.to_string(),id])?; audit_write(tx,id,actor,"revoke")?; } }
@@ -125,9 +164,8 @@ pub fn manage(
         let clients=project_records(tx,"runtime_access_clients")?;
         let records=MultiServerRepository::audit(tx)?;
         let _=(clients,records);
-        Ok(())
-    })?;
-    snapshot(store, identity)
+        snapshot_in_transaction(tx, identity, true).map_err(MultiServerError::from)
+    })?
 }
 
 /// Create a single-use signed pairing invitation. The token is deterministically
@@ -349,6 +387,14 @@ fn ensure_server_aliases(
     tx: &rusqlite::Transaction<'_>,
     identity: &Value,
 ) -> Result<BTreeMap<String, String>, StoreError> {
+    server_aliases(tx, identity, true)
+}
+
+fn server_aliases(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &Value,
+    persist_default_aliases: bool,
+) -> Result<BTreeMap<String, String>, StoreError> {
     let local_alias = tx
         .query_row(
             "SELECT alias FROM runtime_access_local_alias WHERE id=1",
@@ -386,10 +432,12 @@ fn ensure_server_aliases(
         } else {
             let alias = default_server_alias(client, &mut used);
             client["alias"] = json!(alias);
-            tx.execute(
-                "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
-                rusqlite::params![client.to_string(), id],
-            )?;
+            if persist_default_aliases {
+                tx.execute(
+                    "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
+                    rusqlite::params![client.to_string(), id],
+                )?;
+            }
             alias
         };
         aliases.insert(id, alias);
@@ -715,5 +763,41 @@ mod tests {
         let later = super::snapshot(&store, &identity).expect("snapshot preserves saved aliases");
         assert_eq!(later["settings"]["aliases"]["peer-b"], "BOB");
         assert_eq!(later["settings"]["aliases"]["peer-a"], "AAA");
+    }
+
+    #[test]
+    fn comparison_snapshot_does_not_persist_default_aliases() {
+        let root = tempfile::tempdir().expect("isolated multi-server state");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let identity = crate::federation_credentials::Credentials::default()
+            .identity(&store, Some("https://local.example.ts.net"))
+            .expect("fixture identity is created");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "peer-b",
+                        json!({"id":"peer-b","clientId":"peer-b","kind":"server","status":"paired","label":"Bob","created":1,"publicKey":"peer-key-b","origin":"https://bob.example.ts.net"}).to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("fixture peer inserts");
+
+        let snapshot = super::snapshot_for_comparison(&store, &identity)
+            .expect("comparison snapshot computes default alias");
+        assert_eq!(snapshot["settings"]["aliases"]["peer-b"], "BOB");
+        let saved: Option<String> = store
+            .read_transaction(|tx| {
+                tx.query_row(
+                    "SELECT json_extract(record,'$.alias') FROM runtime_access_clients WHERE id='peer-b'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .expect("alias field remains absent");
+        assert_eq!(saved, None);
     }
 }

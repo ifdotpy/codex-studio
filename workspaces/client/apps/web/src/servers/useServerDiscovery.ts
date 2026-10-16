@@ -28,6 +28,7 @@ import {
 import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
 import { refreshServerName } from "./serverNames";
+import { watchResourceReads } from "../components/watchResourceReads";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
   enabled: boolean,
@@ -247,33 +248,29 @@ export function useServerDiscovery(
   const loadRef = useRef(load);
   loadRef.current = load;
   useEffect(() => {
+    if (!localAvailable) return;
+    const watcher = watchResourceReads(
+      { kind: "multi-server" },
+      async () => {
+        await loadRef.current();
+        setError("");
+      },
+      (failure) => setError(errorText(failure)),
+      { waitForBaseline: true },
+    );
+    const refresh = () => watcher.refresh();
+    window.addEventListener(DISCOVERY_REFRESH_EVENT, refresh);
+    return () => {
+      window.removeEventListener(DISCOVERY_REFRESH_EVENT, refresh);
+      watcher();
+    };
+  }, [localAvailable]);
+  useEffect(() => {
     if (!enabled) return;
     active.current = true;
-    let timer: ReturnType<typeof setTimeout>;
-    let stopped = false,
-      delay = 30000;
-    const poll = async () => {
-      try {
-        await loadRef.current();
-        if (!stopped) setError("");
-        delay = 30000;
-      } catch (failure) {
-        if (!stopped) setError(errorText(failure));
-        delay = Math.min(delay * 2, 120000);
-      }
-      if (!stopped) timer = setTimeout(poll, delay);
-    };
-    const refresh = () => {
-      void loadRef.current().catch((failure) => setError(errorText(failure)));
-    };
-    window.addEventListener(DISCOVERY_REFRESH_EVENT, refresh);
-    void poll();
     return () => {
-      stopped = true;
       active.current = false;
       controller.current?.stop();
-      clearTimeout(timer);
-      window.removeEventListener(DISCOVERY_REFRESH_EVENT, refresh);
     };
   }, [enabled]);
   const run = async (request: ServerAccessRequest) => {
@@ -345,13 +342,6 @@ export function useServerDiscovery(
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
-      if (localAvailable) {
-        try {
-          await loadRef.current();
-        } catch (failure) {
-          if (!stopped) setError(errorText(failure));
-        }
-      }
       for (const server of readServers()) {
         if (stopped) return;
         try {

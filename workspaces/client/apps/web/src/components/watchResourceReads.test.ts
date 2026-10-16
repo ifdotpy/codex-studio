@@ -54,6 +54,7 @@ vi.mock("../sync/resume", () => ({
 import { watchResourceReads } from "./watchResourceReads";
 
 const terminals: ResourceRef = { kind: "terminals" };
+const multiServer: ResourceRef = { kind: "multi-server" };
 const limits: ResourceRef = { kind: "limits", accountKey: "default" };
 const output: ResourceRef = { kind: "terminal", terminalId: "terminal-1" };
 const notify = (resource: ResourceRef, version?: ResourceVersion) => {
@@ -92,6 +93,21 @@ describe("watchResourceReads", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(displayed).toEqual([20, 80]);
     expect(read).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("reads the multi-server snapshot only for its targeted resource event", async () => {
+    const read = vi.fn(async () => {});
+    const stop = watchResourceReads(multiServer, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+    notify(terminals, { epoch: "workspace", revision: 1 });
+    await Promise.resolve();
+    expect(read).not.toHaveBeenCalled();
+
+    notify(multiServer, { epoch: "workspace", revision: 2 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(read).toHaveBeenCalledWith({ epoch: "workspace", revision: 2 });
     stop();
   });
 

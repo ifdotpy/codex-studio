@@ -89,15 +89,15 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     {
         return error_response(StatusCode::FORBIDDEN, "The Tailscale identity is invalid");
     }
-    let Some(boundary) = state.multi_server_boundary else {
+    let Some(boundary) = state.multi_server_boundary.clone() else {
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires remote-transport/owner-lookup",
         );
     };
-    let credentials = state.credentials;
-    let public_origin = state.public_origin;
-    let whoami = state.tailscale_whoami;
+    let credentials = state.credentials.clone();
+    let public_origin = state.public_origin.clone();
+    let whoami = state.tailscale_whoami.clone();
     if request.method() == "OPTIONS" {
         const ALLOWED: &str = "content-type, accept, x-canvas-workspace, x-studio-api-schema, x-codex-sync-protocol, last-event-id, if-none-match, cache-control, range, x-studio-client, x-studio-server, x-studio-timestamp, x-studio-nonce, x-studio-request-id, x-studio-signature";
         let requested = request
@@ -128,7 +128,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         return response;
     }
     if request.method() == "GET" && request.uri().path() == "/api/multi-server/v1/identity" {
-        let Some(store) = state.store else {
+        let Some(store) = state.store.clone() else {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
         };
         let address = request
@@ -172,7 +172,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             "Not implemented: requires multi-server-runtime/signed-dispatch",
         );
     }
-    let Some(store) = state.store else {
+    let Some(store) = state.store.clone() else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
     let lengths = request.headers().get_all("content-length");
@@ -257,6 +257,10 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     let is_orchestration = request.is_orchestration();
     let is_name = request.is_name();
     let is_management_invite = request.is_management_invite();
+    let updates_snapshot = !is_orchestration
+        && (request.is_pairing()
+            || request.is_auto_pairing()
+            || is_management_invite);
     let advertise_link = is_orchestration
         || request.is_status()
         || request.is_pairing()
@@ -264,11 +268,12 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         || is_name
         || is_management_invite;
     let request_id = request.request_id().to_owned();
-    let driver = state.orchestration_driver;
+    let notifications = state.resource_notifications.clone();
+    let driver = state.orchestration_driver.clone();
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/incoming_multi_server",
         move || {
-            if is_orchestration {
+            let result = if is_orchestration {
                 let principal = boundary
                     .authorize_operation_incoming(&store, &request, &address, &logins, now)?;
                 let driver = driver.ok_or_else(|| {
@@ -290,7 +295,19 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                     .unwrap_or_default()
                     .to_owned();
                 credentials
-                    .rename(&store, "local", &label, &request_id, &principal)
+                    .rename_with_notification(
+                        &store,
+                        "local",
+                        &label,
+                        &request_id,
+                        &principal,
+                        |request_id| {
+                            super::multi_server::publish_resource_change(
+                                &notifications,
+                                request_id,
+                            )
+                        },
+                    )
                     .map_err(credential_error)?;
                 credentials
                     .identity(&store, public_origin.as_deref())
@@ -321,7 +338,14 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 .map_err(map_invite_error)
             } else {
                 boundary.handle_incoming(&store, &request, &address, &logins, now)
+            };
+            if updates_snapshot && result.is_ok() {
+                // Publish before returning from the blocking task. If the HTTP
+                // future is canceled after commit, the durable write still has
+                // its targeted wake. Stable IDs deduplicate exact retries.
+                super::multi_server::publish_resource_change(&notifications, &request_id);
             }
+            result
         },
     )
     .await;
@@ -333,7 +357,8 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             }
             response
         }
-        Ok(Ok(value)) => match validate_response(&method, is_name, is_management_invite, value) {
+        Ok(Ok(value)) => {
+            match validate_response(&method, is_name, is_management_invite, value) {
             Ok(v) => {
                 let mut response = Json(v).into_response();
                 if advertise_link {
@@ -342,7 +367,8 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 response
             }
             Err(e) => e.into_response(),
-        },
+            }
+        }
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }

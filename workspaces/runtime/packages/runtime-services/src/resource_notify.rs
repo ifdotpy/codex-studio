@@ -154,7 +154,13 @@ impl ResourceNotifications {
                     .find(|(existing, _)| *existing == key)
                     .map_or(0, |(_, revision)| *revision)
             };
-            let version = explicit.max(cursor.resource_revision);
+            // Multi-server discovery reads also refresh volatile access timestamps. Its
+            // semantic cursor must come only from explicit multi-server publications.
+            let version = if resource.get("kind").and_then(Value::as_str) == Some("multi-server") {
+                explicit
+            } else {
+                explicit.max(cursor.resource_revision)
+            };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());
                 versions.push(if version == 0 || overflow {
@@ -236,6 +242,45 @@ mod tests {
         assert!(view.overflow);
         assert_eq!(view.resources.len(), 1);
         assert_eq!(view.versions, vec![2]);
+    }
+
+    #[test]
+    fn multi_server_publication_is_typed_targeted_and_replay_safe() {
+        let changes = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(changes.clone());
+        let multi_server = json!({"kind": "multi-server"});
+
+        // Ordinary store commits advance the broad cursor but must not invalidate
+        // this resource, or a discovery read could trigger another discovery read.
+        changes.notify_one();
+        let broad_commit = notifications
+            .changes_since(std::slice::from_ref(&multi_server), Some(0))
+            .expect("multi-server revision after unrelated commit");
+        assert!(broad_commit.resources.is_empty());
+
+        let request = json!({
+            "requestId": "multi-server-change",
+            "resources": [multi_server.clone()],
+        });
+        assert!(notifications.publish_once(&request).expect("publish"));
+
+        let state = json!({"kind": "state"});
+        let targeted = notifications
+            .changes_since(std::slice::from_ref(&multi_server), Some(0))
+            .expect("multi-server revision");
+        assert_eq!(targeted.resources, vec![multi_server.clone()]);
+        assert_eq!(targeted.versions.len(), 1);
+
+        let unrelated = notifications
+            .changes_since(&[state], Some(broad_commit.cursor.revision))
+            .expect("unrelated state revision");
+        assert!(unrelated.resources.is_empty());
+
+        assert!(!notifications.publish_once(&request).expect("exact replay"));
+        let replay = notifications
+            .changes_since(std::slice::from_ref(&multi_server), Some(0))
+            .expect("replay revision");
+        assert_eq!(replay.versions, targeted.versions);
     }
 
     #[test]

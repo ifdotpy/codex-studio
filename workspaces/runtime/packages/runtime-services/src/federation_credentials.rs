@@ -123,6 +123,21 @@ impl Credentials {
         request_id: &str,
         actor: &str,
     ) -> Result<(), CredentialError> {
+        self.rename_with_notification(store, target, label, request_id, actor, |_| {})
+    }
+
+    /// Complete a durable rename while notifying the owner after each pending
+    /// identity file write. The callback runs before later journal completion
+    /// can fail, and receives the stable request ID for deduplicated recovery.
+    pub fn rename_with_notification(
+        &self,
+        store: &RuntimeStore,
+        target: &str,
+        label: &str,
+        request_id: &str,
+        actor: &str,
+        mut after_identity_write: impl FnMut(&str),
+    ) -> Result<(), CredentialError> {
         supported_platform()?;
         if !self.is_local_target(store, target)? {
             return Err(CredentialError::RemoteRequired);
@@ -138,8 +153,12 @@ impl Credentials {
         })?;
         // Credential creation and pending recovery follow a committed reservation:
         // a conflicting request must not create a file or apply older journal rows.
-        let identity = self.load(store, &mut saved)?;
-        self.recover(store, identity)
+        let identity = self.load_with_notification(
+            store,
+            &mut saved,
+            &mut after_identity_write,
+        )?;
+        self.recover_with_notification(store, identity, &mut after_identity_write)
     }
 
     /// Resolve a target without creating credentials or recovering pending writes.
@@ -170,6 +189,15 @@ impl Credentials {
         store: &RuntimeStore,
         saved: &'a mut Option<StoredMultiServerIdentity>,
     ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
+        self.load_with_notification(store, saved, &mut |_| {})
+    }
+
+    fn load_with_notification<'a>(
+        &self,
+        store: &RuntimeStore,
+        saved: &'a mut Option<StoredMultiServerIdentity>,
+        after_identity_write: &mut impl FnMut(&str),
+    ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
         if saved.is_none() {
             let path = store.root().join("multi-server/identity.json");
             match fs::symlink_metadata(&path) {
@@ -182,17 +210,18 @@ impl Credentials {
                 Err(_) => return Err(CredentialError::Storage),
             }
             let mut identity = remote_transport::read_multi_server_identity(store.root())?;
-            self.recover(store, &mut identity)?;
+            self.recover_with_notification(store, &mut identity, after_identity_write)?;
             store.set_local_server_id(Some(identity.server_id.clone()))?;
             *saved = Some(identity);
         }
         saved.as_mut().ok_or(CredentialError::Storage)
     }
 
-    fn recover(
+    fn recover_with_notification(
         &self,
         store: &RuntimeStore,
         identity: &mut StoredMultiServerIdentity,
+        after_identity_write: &mut impl FnMut(&str),
     ) -> Result<(), CredentialError> {
         // File access stays outside store transactions; the writer rechecks
         // the journal before marking each recovery complete.
@@ -208,6 +237,7 @@ impl Credentials {
         for (id, label, actor) in pending {
             updated.label = label;
             write_identity(store.root(), &updated, false)?;
+            after_identity_write(&id);
             updates.push((id, actor, updated.label.clone()));
         }
         let now = std::time::SystemTime::now()
@@ -418,6 +448,29 @@ mod tests {
                 fs::remove_dir_all(root).expect("remove disposable state");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_notifies_after_identity_file_write_with_stable_request_id() {
+        let (root, store) = remote_transport::tests::runtime_store_fixture();
+        let credentials = Credentials::default();
+        let mut notified = Vec::new();
+
+        credentials
+            .rename_with_notification(
+                &store,
+                "local",
+                "Renamed server",
+                "rename-notify",
+                "local",
+                |request_id| notified.push(request_id.to_owned()),
+            )
+            .expect("rename completes");
+
+        assert_eq!(notified, vec!["rename-notify"]);
+        let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
+        assert_eq!(identity.label, "Renamed server");
     }
 
     #[cfg(unix)]

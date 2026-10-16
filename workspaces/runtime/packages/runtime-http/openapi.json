@@ -30861,6 +30861,21 @@
         "title": "MovedToolRequestResponse",
         "type": "object"
       },
+      "MultiServerResource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "multi-server",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "MultiServerResource",
+        "type": "object"
+      },
       "MutationReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -42648,6 +42663,7 @@
             "drafts": "#/components/schemas/DraftsResource",
             "limits": "#/components/schemas/LimitsResource",
             "models": "#/components/schemas/ModelsResource",
+            "multi-server": "#/components/schemas/MultiServerResource",
             "panel": "#/components/schemas/PanelResource",
             "queue": "#/components/schemas/QueueResource",
             "receipts": "#/components/schemas/ReceiptsResource",
@@ -42683,6 +42699,9 @@
           },
           {
             "$ref": "#/components/schemas/ModelsResource"
+          },
+          {
+            "$ref": "#/components/schemas/MultiServerResource"
           },
           {
             "$ref": "#/components/schemas/PanelResource"
