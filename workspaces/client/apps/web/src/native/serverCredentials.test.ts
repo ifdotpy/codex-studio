@@ -73,3 +73,37 @@ it("does not retry an uncertain server write", async () => {
   ).rejects.toThrow("lost response");
   expect(nativeRequest).toHaveBeenCalledOnce();
 });
+it("releases every rejected summary response before the next poll", async () => {
+  const { setServerCredentialAdapter } = await import("../servers/transport");
+  const { fetchServerSummary, SchemaMismatchError } =
+    await import("../servers/summary");
+  vi.stubGlobal("window", {});
+  const open = new Set<string>();
+  let next = 0;
+  vi.mocked(nativeRequest).mockImplementation(async (method, params) => {
+    if (method === "servers.request") {
+      if (open.size >= 32) throw new Error("Too many open server responses.");
+      const stream = String(++next);
+      open.add(stream);
+      return {
+        status: 200,
+        headers: [["x-studio-api-schema", "other"]],
+        stream,
+      };
+    }
+    if (method === "servers.read") return { base64: "e30=" };
+    if (method === "servers.cancel")
+      open.delete((params as { stream: string }).stream);
+  });
+  setServerCredentialAdapter(new NativeServerCredentials());
+  try {
+    for (let index = 0; index < 40; index++) {
+      await expect(
+        fetchServerSummary(server, new AbortController().signal),
+      ).rejects.toBeInstanceOf(SchemaMismatchError);
+      expect(open.size).toBe(0);
+    }
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

@@ -8,15 +8,20 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+
+// Maximum concurrent signed requests and response bodies per native client.
+const MAX_OPEN_SERVER_RESPONSES: usize = 32;
 
 struct Body {
+    _permit: OwnedSemaphorePermit,
     response: reqwest::Response,
     touched: Instant,
 }
 pub struct RemoteClient {
     vault: Arc<dyn Vault>,
     mutation: Mutex<()>,
+    response_slots: Arc<Semaphore>,
     http: reqwest::Client,
     bodies: Mutex<HashMap<String, (String, Arc<Mutex<Body>>)>>,
 }
@@ -25,6 +30,7 @@ impl RemoteClient {
         Ok(Self {
             vault,
             mutation: Mutex::new(()),
+            response_slots: Arc::new(Semaphore::new(MAX_OPEN_SERVER_RESPONSES)),
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
@@ -145,6 +151,18 @@ impl RemoteClient {
                     None if method != "POST" => server_keys::random_id()?,
                     _ => return Err("A server write needs its original request ID.".into()),
                 };
+                // Reserve before sending: a capacity error must not discard a
+                // response to a write that the server already accepted.
+                self.bodies.lock().await.retain(|_, (_, body)| {
+                    body.try_lock()
+                        .map(|v| v.touched.elapsed() < Duration::from_secs(120))
+                        .unwrap_or(true)
+                });
+                let permit = self
+                    .response_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| "Too many open server responses. The request was not sent.")?;
                 let response = self
                     .signed(
                         credential,
@@ -171,19 +189,12 @@ impl RemoteClient {
                 }
                 let stream = server_keys::random_id()?;
                 let mut bodies = self.bodies.lock().await;
-                bodies.retain(|_, (_, body)| {
-                    body.try_lock()
-                        .map(|v| v.touched.elapsed() < Duration::from_secs(120))
-                        .unwrap_or(true)
-                });
-                if bodies.len() >= 32 {
-                    return Err("Too many open server responses.".into());
-                }
                 bodies.insert(
                     stream.clone(),
                     (
                         server.to_owned(),
                         Arc::new(Mutex::new(Body {
+                            _permit: permit,
                             response,
                             touched: Instant::now(),
                         })),
@@ -470,6 +481,21 @@ mod tests {
         let mut wrong = params.clone();
         wrong["url"] = json!("https://other.tailnet.ts.net/api/test");
         assert!(client.dispatch("servers.request", &wrong).await.is_err());
+        // Saturation rejects before the fixture receives any bytes. Releasing
+        // the reservation lets the same original request execute exactly once.
+        let reserved = client
+            .response_slots
+            .clone()
+            .try_acquire_many_owned(MAX_OPEN_SERVER_RESPONSES as u32)
+            .unwrap();
+        assert!(
+            client
+                .dispatch("servers.request", &params)
+                .await
+                .unwrap_err()
+                .contains("The request was not sent")
+        );
+        drop(reserved);
         let response = client.dispatch("servers.request", &params).await.unwrap();
         assert_eq!(response["status"], 409);
         let stream = json!({"stream":response["stream"]});
@@ -482,6 +508,10 @@ mod tests {
             bytes.extend(STANDARD.decode(chunk["base64"].as_str().unwrap()).unwrap());
         }
         assert_eq!(bytes, b"a\0\xff");
+        assert_eq!(
+            client.response_slots.available_permits(),
+            MAX_OPEN_SERVER_RESPONSES
+        );
         server.join().unwrap();
         assert!(client.dispatch("servers.read", &stream).await.is_err());
     }
