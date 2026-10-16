@@ -188,6 +188,13 @@ impl Fixture {
     }
     pub async fn open(&self) -> Arc<LoginService> {
         let changes = self.changes.clone();
+        self.open_with_change(Arc::new(move || changes.notify_one()))
+            .await
+    }
+    pub async fn open_with_change(
+        &self,
+        on_change: Arc<dyn Fn() + Send + Sync>,
+    ) -> Arc<LoginService> {
         LoginService::open(
             LoginConfig {
                 directory: self.receipts.file.directory().to_owned(),
@@ -202,7 +209,7 @@ impl Fixture {
             self.launcher.clone(),
             self.receipts.clone(),
             self.chats.clone(),
-            Arc::new(move || changes.notify_one()),
+            on_change,
         )
         .await
         .expect("valid fixture")

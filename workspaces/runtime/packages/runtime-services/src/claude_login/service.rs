@@ -178,7 +178,7 @@ struct Launch {
     program: PathBuf,
     config: PathBuf,
     profile: Option<Value>,
-    lease: File,
+    lease: Option<File>,
 }
 pub struct LoginService {
     config: LoginConfig,
@@ -398,7 +398,7 @@ impl LoginService {
             program,
             config,
             profile,
-            lease,
+            lease: Some(lease),
         };
         let task = tokio::spawn(async move {
             service.run(id, launch, receiver).await;
@@ -530,6 +530,8 @@ impl LoginService {
             inherited_lease: Some(
                 launch
                     .lease
+                    .as_ref()
+                    .ok_or(LoginError::Unavailable)?
                     .try_clone()
                     .map_err(|_| LoginError::Unavailable)?,
             ),
@@ -538,10 +540,10 @@ impl LoginService {
     async fn run(
         self: Arc<Self>,
         id: String,
-        launch: Launch,
+        mut launch: Launch,
         mut commands: mpsc::Receiver<Command>,
     ) {
-        let result = self.run_inner(&id, &launch, &mut commands).await;
+        let result = self.run_inner(&id, &mut launch, &mut commands).await;
         if result.is_err()
             && self
                 .finish(&id, LoginStatus::Error, Some(FAILED))
@@ -575,7 +577,6 @@ impl LoginService {
         if state.is_err() {
             self.failed.store(true, Ordering::Release);
         }
-        drop(launch.lease);
         // A final receipt write may fail after Ready was installed in memory.
         // Wake readers even when finish() correctly leaves that terminal state intact.
         (self.on_change)();
@@ -583,7 +584,7 @@ impl LoginService {
     async fn run_inner(
         &self,
         id: &str,
-        launch: &Launch,
+        launch: &mut Launch,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<(), LoginError> {
         let snapshot = {
@@ -695,6 +696,10 @@ impl LoginService {
         let next = job.snapshot.ready(&account, job.snapshot.adding())?;
         job.verified = true;
         self.save(&next).await?;
+        // The provider child and status probe are both closed, the account
+        // publication is durable, and the Ready receipt is durable. Release
+        // the cross-process config lease before exposing Ready to readers.
+        drop(launch.lease.take());
         job.snapshot = next;
         job.url = None;
         self.jobs.refresh(id, &job);
