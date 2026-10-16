@@ -325,6 +325,14 @@ class PeerUpdateStatus(ContractModel):
     lastInstall: PeerUpdateEvent | None
 
 
+class DiskSpaceStatus(ContractModel):
+    level: Literal["warning", "critical"] | None = Field(
+        description="Set when the free space of the state volume is below the warning or the critical threshold."
+    )
+    freeBytes: SafeInt | None
+    message: str | None
+
+
 class DesktopResponse(ResponseModel):
     application: str
     protocol: SafeInt
@@ -346,6 +354,7 @@ class DesktopResponse(ResponseModel):
     stateDir: str
     linuxVm: LinuxVMStatus | None = None
     peerUpdate: PeerUpdateStatus | None = None
+    diskSpace: DiskSpaceStatus | None = None
 
 
 class HostResources(ContractModel):

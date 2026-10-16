@@ -7,9 +7,11 @@ from concurrent.futures import Future
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import threading
 import time
 from typing import Any, cast
@@ -24,6 +26,10 @@ from codex_native_errors import NativeRpcError
 from codex_mcp_capabilities import prompt_catalog, instruction_proofs, instruction_differences, capabilities_match, proof_levels
 
 CHUNK = 96 * 1024
+# A history pull over the QUIC link stays inside one request timeout; a bounded number of pulls
+# continue a large file (docs/peer-link.md).
+PULL_SECONDS = 12
+PULL_ROUNDS = 64
 DEADLINE = 300
 # The transfer deadline grows with the native history at this floor rate.
 MIN_TRANSFER_RATE = 64 * 1024
@@ -753,6 +759,38 @@ class AgentMoves:
             raise ValueError('The exact native settings exceed 256 KiB after compression. No instructions were truncated')
         return descriptor
 
+    def _pull(self, operation: dict[str, Any], entry: dict[str, Any]) -> int:
+        """Let the target receive a history file as streams over the QUIC link (docs/peer-link.md).
+        Returns the size that the target holds; the chunks continue from there. A target without a
+        link to this server, or an older one, holds nothing new and the chunks send everything."""
+        key = operation['id']
+        export = identity(key, 'pull', entry['name'])
+        exports = Path(self.runtime.root) / 'server-exports'
+        exports.mkdir(mode=0o700, exist_ok=True)
+        published = exports / (export + '.zip')
+        received = 0
+        try:
+            published.unlink(missing_ok=True)
+            # A hard link publishes the exact file without a copy; the export route reads it.
+            os.link(self._folder(key) / entry['name'], published)
+            for _ in range(PULL_ROUNDS):
+                if self.runtime.closed or time.time() > operation['deadline']:
+                    break
+                value = self._exchange(operation['server'], 'move_pull',
+                                       {'move': key, 'name': entry['name'], 'export': export},
+                                       identity(key, 'pull', entry['name'], str(received)))
+                held = value.get('offset')
+                if type(held) is not int or not received < held <= entry['size']:
+                    break
+                received = held
+                if received == entry['size']:
+                    break
+        except Exception:
+            pass  # The target keeps the bytes it holds; the chunk actions continue from there.
+        finally:
+            published.unlink(missing_ok=True)
+        return received
+
     def _run(self, key: str) -> None:
         operation: dict[str, Any] | None = None
         try:
@@ -772,8 +810,9 @@ class AgentMoves:
                 self._exchange(operation['server'], 'move_begin', descriptor, identity(key, 'begin'))
                 folder = self._folder(key)
                 for entry in descriptor['files']:
+                    offset = self._pull(operation, entry)
                     with (folder / entry['name']).open('rb') as stream:
-                        offset = 0
+                        stream.seek(offset)
                         while chunk := stream.read(CHUNK):
                             if self.runtime.closed or time.time() > operation['deadline']:
                                 raise RuntimeError('The move reached its transfer deadline. No input was repeated')
@@ -1035,11 +1074,47 @@ class AgentMoves:
                     stream.flush()
                     __import__('os').fsync(stream.fileno())
             return {'offset': offset + len(data)}
+        if action == 'move_pull':
+            return self._receive_pull(principal, operation, payload)
         if action == 'move_prepare':
             return self._prepare(operation)
         if action == 'move_activate':
             return self._activate(operation)
         raise ValueError('Unknown move operation')
+
+    def _receive_pull(self, principal: str, operation: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """Receive the rest of a history file from the source as one stream over the QUIC link
+        (docs/peer-link.md). The stream lands in a separate part file; only an unchanged file
+        takes it. Returns the size held, as `move_chunk` does."""
+        if operation['phase'] != 'receiving':
+            raise ValueError('The move no longer accepts history chunks')
+        entry = next((entry for entry in operation['descriptor']['files'] if entry['name'] == payload.get('name')), None)
+        if entry is None or entry['name'] != 'native.zip' or entry['size'] > MAX_HISTORY_BYTES + 1024 * 1024:
+            raise ValueError('The history chunk file is invalid')
+        export = str(uuid.UUID(str(payload.get('export'))))
+        folder = self._folder(operation['move'])
+        path = folder / ('incoming-' + entry['name'])
+        # A retried pull can overlap the first one, so each pull has its own part file.
+        part = folder / ('pull-' + uuid.uuid4().hex + '-' + entry['name'])
+        start = path.stat().st_size if path.exists() else 0
+        if start < entry['size']:
+            from codex_server_transport import receive_export
+            try:
+                with part.open('wb') as stream:
+                    part.chmod(0o600)
+                    end = receive_export(self.service.transport, principal, export + '.zip', start, entry['size'],
+                                         stream.write, PULL_SECONDS)
+                with self.lock:
+                    held = path.stat().st_size if path.exists() else 0
+                    if end > start and held == start:
+                        with path.open('ab') as target, part.open('rb') as source:
+                            path.chmod(0o600)
+                            shutil.copyfileobj(source, target)
+                            target.flush()
+                            os.fsync(target.fileno())
+            finally:
+                part.unlink(missing_ok=True)
+        return {'offset': path.stat().st_size if path.exists() else 0}
 
     def _prepare(self, operation: dict[str, Any]) -> dict[str, Any]:
         if operation['phase'] in {'ready', 'active'}:

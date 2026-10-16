@@ -25,6 +25,14 @@ PROGRESS_LAYOUT_FRESH_SECONDS = 90
 PROGRESS_LAYOUT_MAX_CLIENTS = 32
 PROGRESS_LAYOUT_MAX_BYTES = 65_536
 
+# In-place VM guest updates (docs/linux-vm-workspaces.md, "Guest updates"). Provisioning writes
+# the Mac's update key (root only) and the record of the parts that only provisioning installs;
+# the root broker reads both. Paths in the guest.
+GUEST_UPDATE_KEY_PATH = "/etc/codex-studio/update-key"
+GUEST_PAYLOAD_RECORD_PATH = "/var/lib/codex-studio/guest-payload.json"
+# The largest raw file part in one update.stage request (base64 must fit the 2 MiB guest frame).
+GUEST_UPDATE_PART_BYTES = 1024 * 1024
+
 # Codex model/list catalog response contract; byte values count encoded UTF-8.
 MODEL_CATALOG_MAX_FRAME_BYTES = 2 * 1024 * 1024
 MODEL_CATALOG_MAX_RESPONSE_BYTES = 16 * 1024 * 1024

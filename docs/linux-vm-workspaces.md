@@ -109,6 +109,64 @@ Mac-only browser paths are not injected into guest provider configuration.
 Existing native sessions keep their frozen tools, role text, and original Source headers.
 The frozen runtime references are not documentation that can be revised.
 
+## Guest updates
+
+`upgrade-linux-vm-layr.py` updates the guest of an existing VM. Many VM agents can run at that
+time, so a change that the guest can take in place does not reboot the VM:
+
+```sh
+python3 workspaces/runtime/apps/server/src/upgrade-linux-vm-layr.py --state <vm-state> --helper <helper> --operation-id <id>
+```
+
+The root broker owns the rules (`vm-guest/guest_update.py`). The Mac
+(`codex_linux_vm_update.py`) asks it for a path with `update.plan`. The request has the SHA-256
+of each payload file in `/opt/codex-studio` and the payload record: the Codex, Claude and pnpm
+versions and the hash of the provision script. Provisioning writes that record to
+`/var/lib/codex-studio/guest-payload.json`. The broker answers with one path:
+
+- `current`: the guest has these files. The receipt is `complete` and nothing changes.
+- `in_place`: only files below `vm/guest/`, `vm/layr/`, `vm/layr-desk/` or `.agents/skills/`
+  changed.
+- `reboot`: any other change, a different payload record, or a guest without the update key or
+  the update methods (provisioned by an older Studio). The provider CLIs, the Claude bridge,
+  the package manifests and `scripts/` (the process supervisor of the running providers) need
+  this path.
+
+The in-place path:
+
+1. The Mac sends each changed file with `update.stage`, in parts of at most
+   `GUEST_UPDATE_PART_BYTES` (1 MiB). Each part has its own exact request ID.
+2. `update.apply` writes the files. The studio user relays every request, so the broker
+   accepts only a request that the update key signs (HMAC-SHA256 of the operation ID and the
+   whole manifest). The Mac keeps the key in `<vm-state>/update-key`. Provisioning writes it
+   to `/etc/codex-studio/update-key`, for root only.
+3. The broker runs `install.sh` with `STUDIO_DEFER_RESTARTS=1`: owners, modes, units, and a
+   layr build when its source changed. The install restarts nothing.
+4. After its reply the broker waits until no other broker request runs (at most 10 minutes).
+   Then it restarts the changed units: the guest service and the broker for a guest Python
+   module, `codex-studio-layr` for a layr source (systemd then restarts the broker too,
+   because the broker requires the daemon), the share bridge for `share_bridge.py`, and a
+   changed unit file. A restart of the broker runs from a separate transient unit
+   (`systemd-run`). The new broker process marks that restart complete.
+5. The Mac reads `update.status` until the stage is `complete`. A request that fails during
+   the restarts is read again. Then the Mac checks that `update.plan` says `current` and that
+   `layr.health` is `ready`.
+
+Running agents keep their turns. A restart of the guest service or of the broker does not end
+a provider: the units use `KillMode=process`, each provider runs under a detached process
+supervisor, and Studio attaches to it again. A restart of the layr daemon lets its in-flight
+request children finish.
+
+An operation that wrote files and did not finish its install or its restarts stays unfinished
+in the broker (`install_failed`, `restart_failed`, `writing`). The next plan and apply include
+its files, also in a new operation, so the work is not lost. The Mac keeps a failed operation
+in its receipt (stage `in-place`). Read `update.status` of that operation, then use a new
+operation ID.
+
+`--reboot` takes the reboot path also for a change that the guest can take in place. The
+reboot path is the earlier full path: it requires idle providers, makes a disk backup, stops
+the VM, writes a new provision seed and starts the VM.
+
 ## Guest crash watchdog
 
 The guest kernel can panic, for example `Kernel panic - not syncing: corrupted stack end
@@ -154,6 +212,27 @@ three results:
 Both states have `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
 `helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
 also when the console of its last boot has a panic.
+
+### LAYR fault
+
+The guest service can answer while the layr daemon or the root broker is down. On 2026-10-14
+the guest answered every probe, `layr admin channel is unavailable` failed every layr call, and
+all VM chats paused while the status said `running`. After a guest answer the watchdog also asks
+`layr.health` (through the guest service and the root broker), at most once a minute, and saves
+the result under `layr` in `guest-health.json`. Three failed answers over 120 seconds in the same
+boot make a LAYR fault:
+
+- the state stays `running`, because the providers of the VM chats still run;
+- `status()` has `error` and `layrFault` (`layr_unavailable`, since, error), and the Linux VM
+  settings show the reason;
+- the LAYR chip of each project that is in the VM shows `failed` with the reason. The watchdog
+  updates the chips when a fault starts and when it ends.
+
+A record that is more than 5 minutes old (a stopped VM or backend) shows no fault. The watchdog
+does not act on a LAYR fault. The Mac has no root path into the guest when the root broker is
+down, and a VM restart ends every provider. In the guest, systemd restarts a dead daemon, broker
+or guest service. Their units have no start limit (`StartLimitIntervalSec=0`): with the default
+limit, a run of OOM kills could leave the daemon failed for good, and the broker requires it.
 
 ### Recovery
 
@@ -223,11 +302,15 @@ Run checks one at a time:
 ```sh
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/vm-agents-contract.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_watchdog.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_update.py
+python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_guest_update.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
 ```
 
 The first suite uses a local native provider fixture. It sends no model request.
 The second suite checks the watchdog with a fake helper. It starts no VM.
-The third suite requires a provisioned isolated VM and explicit authority for live model requests.
+The third and fourth suites check guest updates with the real broker handler and a recorded
+install script and systemctl. They start no VM.
+The last suite requires a provisioned isolated VM and explicit authority for live model requests.
 Do not restart a VM or remove a journal that has an active or unknown provider result.
 The watchdog restarts only a guest that is dead or gives no answer: Studio cannot reach its providers.

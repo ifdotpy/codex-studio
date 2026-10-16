@@ -6201,6 +6201,10 @@
             "$ref": "#/components/schemas/ImageWorkspaceCleanupResultRecordResponse",
             "default": null
           },
+          "imageWorkspaceCleanupRetry": {
+            "$ref": "#/components/schemas/ImageWorkspaceCleanupRetryRecordResponse",
+            "default": null
+          },
           "imageWorkspaceCollect": {
             "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
             "default": null
@@ -6313,7 +6317,9 @@
                   "read_only",
                   "ready",
                   "fallback",
-                  "archived"
+                  "archiving",
+                  "archived",
+                  "removed"
                 ],
                 "type": "string"
               },
@@ -23606,6 +23612,17 @@
               }
             ]
           },
+          "diskSpace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiskSpaceStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "linuxVm": {
             "anyOf": [
               {
@@ -24540,6 +24557,58 @@
           "autoPair"
         ],
         "title": "DiscoveryIdentity",
+        "type": "object"
+      },
+      "DiskSpaceStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "freeBytes": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freebytes"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "enum": [
+                  "warning",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the free space of the state volume is below the warning or the critical threshold.",
+            "title": "Level"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "required": [
+          "level",
+          "freeBytes",
+          "message"
+        ],
+        "title": "DiskSpaceStatus",
         "type": "object"
       },
       "DraftDocumentInput": {
@@ -27711,6 +27780,68 @@
           }
         },
         "title": "ImageWorkspaceCleanupResultRecordResponse",
+        "type": "object"
+      },
+      "ImageWorkspaceCleanupRetryRecordResponse": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "attempts": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "nextAt": {
+            "title": "Nextat",
+            "type": "number"
+          }
+        },
+        "required": [
+          "attempts",
+          "at",
+          "nextAt",
+          "error"
+        ],
+        "title": "ImageWorkspaceCleanupRetryRecordResponse",
         "type": "object"
       },
       "ImageWorkspaceCollectRepositoryRecordResponse": {

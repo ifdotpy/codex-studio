@@ -11,6 +11,7 @@ from pathlib import Path
 import pwd
 import socket
 import struct
+import time
 
 from common import (GuestError, MAX_LINE, connect_db, digest, identifier,
                     private_dir, receipt, require, save_receipt)
@@ -96,6 +97,21 @@ class Broker:
             self.methods.update(project_secrets.METHODS)
             self.read_methods.update(project_secrets.READ_METHODS)
             self.handlers.update({method: handler for method in project_secrets.METHODS})
+        # In-place guest updates (docs/linux-vm-workspaces.md, "Guest updates"). A restart of
+        # the changed units waits until no broker request is in flight.
+        self.in_flight = 0
+        self.updates = None
+        try:
+            import guest_update
+        except ModuleNotFoundError as exc:
+            if exc.name != "guest_update":
+                raise
+        else:
+            self.updates = guest_update.UpdateHandlers(state, root, busy=lambda: self.in_flight)
+            require(not self.methods.intersection(guest_update.METHODS), "The admin method is registered twice")
+            self.methods.update(guest_update.METHODS)
+            self.read_methods.update(guest_update.READ_METHODS)
+            self.handlers.update({method: self.updates for method in guest_update.METHODS})
 
     def close(self):
         self.db.close()
@@ -163,6 +179,7 @@ class Broker:
             return {"id": request_id, "error": {"code": "invalid_params", "message": "The admin parameters are invalid"}}
 
     async def client(self, reader, writer):
+        self.in_flight += 1
         try:
             peer = writer.get_extra_info("socket").getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
             _, uid, _ = struct.unpack("3i", peer)
@@ -182,6 +199,7 @@ class Broker:
         except (OSError, ValueError, asyncio.TimeoutError, GuestError):
             pass
         finally:
+            self.in_flight -= 1
             writer.close()
 
 
@@ -194,7 +212,11 @@ def socket_directory(path: Path) -> None:
 
 async def serve():
     require(os.getuid() == 0, "The layr admin service requires root")
+    started = time.time()
     broker = Broker()
+    if broker.updates is not None:
+        # This process is the restart that an in-place update scheduled before it.
+        broker.updates.finish_restarts(started)
     # Mounts disappear at reboot. Recreate only exports already registered.
     await broker.share.restore()
     # The project vault keeps the latest state in S3 without a caller (docs/vault.md).

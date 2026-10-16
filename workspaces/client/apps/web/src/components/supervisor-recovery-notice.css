@@ -7,3 +7,8 @@
   background: var(--mantine-color-yellow-light);
   font-size: var(--mantine-font-size-sm);
 }
+
+.supervisor-recovery-notice[data-level="critical"] {
+  border-color: var(--mantine-color-red-6);
+  background: var(--mantine-color-red-light);
+}

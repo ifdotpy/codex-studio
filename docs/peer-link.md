@@ -95,17 +95,45 @@ server closes with a TLS error ran no request, so it counts as `sent: false`.
 ## Files
 
 `GET /api/servers/exports/{name}?offset=N` returns a file of `server-exports/` (an app archive
-`<uuid>.zip` or a Git bundle `<uuid>.bundle`) as raw bytes from the offset. Only a paired
-server can read it, and only over the link (the route is not in the OpenAPI schema). The update
-puller (`docs/peer-updates.md`) receives the archive as one stream. When the stream is not
-available or stops, the `update.chunk` actions continue from the received offset. The whole
-archive checksum is checked as before.
+or a history `<uuid>.zip`, or a Git bundle `<uuid>.bundle`) as raw bytes from the offset. Only a
+paired server can read it, and only over the link (the route is not in the OpenAPI schema).
+`receive_export` (`codex_server_transport.py`) reads it for three callers. In each, the chunk
+actions continue from the received offset when the server has no link or the stream stops, and
+the whole-file checksum is checked as before:
+
+- The update puller (`docs/peer-updates.md`) receives the app archive.
+- The Git fetch of a remote worker branch receives the bundle before its `chunk` actions.
+- A chat move publishes its `native.zip` as a hard link in `server-exports/` for the transfer.
+  The source sends `move_pull` requests; the target streams the rest of the file from the
+  source into a separate part file. It adds the part to the received file only when that file
+  did not change meanwhile, and answers the size it holds, as `move_chunk` does. One pull
+  streams for at most 12 seconds, so it stays inside one request timeout; up to 64 pulls continue
+  a large file. The source then sends `move_chunk` from that size. An older target refuses
+  `move_pull`, and the chunks send the whole file.
+
+## Events
+
+Remote events travel as signed requests in the outbox of the sending server: agent events,
+command exits and worker state. A queued request wakes the delivery at once, so an event takes
+one exchange (10 ms over the link) instead of waiting for the 1-second scheduler tick. The tick
+stays the fallback, and a wake that comes before its transaction commits checks the outbox once
+more after 50 ms. Request identities, receipts and the lost-response rules do not change.
 
 ## Not yet
 
-- Git bundle fetch and the chat move still use their chunk actions.
-- Events (command output, agent events, reachability) still use requests.
-- The window still reaches a paired server over HTTPS (WebTransport later).
+- Reachability still comes from the discovery pass (every 5 minutes). Design: the link process
+  reports each paired connection when it opens and when it closes (keepalive 10 seconds, idle
+  60 seconds). The backend marks a server reachable while a connection is open and leaves the
+  unreachable state to discovery, because a closed connection proves only that no traffic ran.
+- One long-lived event stream per server pair. The outbox already pushes events, so a stream
+  would save only the per-request signature. It needs its own receipt per event to keep the
+  lost-response rules; do it only when the event rate makes the per-request cost visible.
+- The window still reaches a paired server over HTTPS through the local backend. Design for
+  WebTransport: the desktop main process (it holds the native privileges) opens a WebTransport
+  session to the paired link with the same raw public key pinning, and the renderer keeps using
+  the local HTTP API. The link accepts one more ALPN (`h3`) only for a session token that the
+  paired backend issues to its own owner (the existing UI invitation), and maps each
+  WebTransport stream to one request as today. The window keeps HTTPS as the fallback.
 
 ## Checks
 
@@ -114,3 +142,6 @@ archive checksum is checked as before.
   `cargo build --release -p studio-peer-link` (two link processes, fake backends: the Serve
   headers, a 3 MiB answer, the answer limit, a refused key, a revoked key)
 - `python3 -m unittest test_codex_peer_updates` (the stream and its continuation by chunks)
+- `tests/multi-server-orchestration-contract.py` (the bundle stream, its continuation by chunks,
+  the delivery wake) and `tests/agent-move-signed-integration.py` (the history pull and its
+  continuation by chunks)

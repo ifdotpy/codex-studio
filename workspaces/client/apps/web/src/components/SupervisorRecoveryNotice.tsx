@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { get } from "../api";
+import { desktopNotices, type DesktopNotice } from "./desktopNotices";
 import { watchResourceReads } from "./watchResourceReads";
 import "./supervisor-recovery-notice.css";
 
+// Host notices from /api/desktop: supervisor recovery and low disk space.
 export default function SupervisorRecoveryNotice() {
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notices, setNotices] = useState<DesktopNotice[]>([]);
 
   useEffect(() => {
     let live = true;
@@ -15,10 +17,10 @@ export default function SupervisorRecoveryNotice() {
         const data = await get("/api/desktop", {
           signal: controller.signal,
         });
-        if (live) setNotice(data.supervisorNotice || null);
+        if (live) setNotices(desktopNotices(data));
       },
       () => {
-        // A transient status failure does not replace the current notice.
+        // A transient status failure does not replace the current notices.
       },
     );
     return () => {
@@ -28,10 +30,14 @@ export default function SupervisorRecoveryNotice() {
     };
   }, []);
 
-  if (!notice) return null;
-  return (
-    <div className="supervisor-recovery-notice" role="alert">
-      {notice}
+  return notices.map((notice) => (
+    <div
+      key={notice.id}
+      className="supervisor-recovery-notice"
+      data-level={notice.level}
+      role="alert"
+    >
+      {notice.text}
     </div>
-  );
+  ));
 }
