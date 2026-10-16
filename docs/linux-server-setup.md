@@ -54,6 +54,32 @@ Do not stop or restart `codex-studio-supervisor` while its handles are live.
 A supervisor failure has the separate recovery limits in
 [restart recovery](restart-recovery.md).
 
+## Rust backend
+
+The Rust server uses the same switch as the desktop app,
+`CODEX_DESKTOP_BACKEND` (`python` or `rust`; owner:
+[`backend.cjs`](../workspaces/client/apps/desktop/backend.cjs)). After every
+`git pull`, build and restart:
+
+```sh
+just build-server
+CODEX_DESKTOP_BACKEND=rust codex-supervisor enable --port 4620 --state ~/.local/state/codex-agents
+```
+
+`enable` writes `~/.config/systemd/user/codex-studio.service` with
+`target/release/studio-runtime-server` (or `CODEX_RUNTIME_SERVER`) and restarts
+it. It carries `CODEX_CANVAS_PUBLIC_ORIGIN`, `CODEX_BIN`, `CODEX_NODE`, and
+`PATH` from the current shell. The Rust server runs without the Python process
+supervisor, as on the desktop. After a later build, `systemctl --user restart
+codex-studio` is enough.
+
+`enable` refuses while another process serves the state directory. To retire a
+hand-made unit, stop it at an idle boundary first, for example
+`systemctl --user stop codex-canvas-rust-hotfix.service`, then run `enable`.
+Never run two backends on one state directory. A Rust start leaves
+`rust-state-owner.json` in the state directory; Python then refuses that state
+(see [Rust backend state compatibility](rust-backend-state-compatibility.md)).
+
 ## WSL networking and Tailscale
 
 Enable systemd in `/etc/wsl.conf` inside Ubuntu:

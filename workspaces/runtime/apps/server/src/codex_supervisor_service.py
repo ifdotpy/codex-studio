@@ -53,6 +53,84 @@ def _recovery_script(resources: Path) -> Path:
     return resources / 'desktop/recover_backend.py'
 
 
+# The desktop owns this switch: workspaces/client/apps/desktop/backend.cjs
+# (`backendSelectionEnv`). The parity test checks this copy against it.
+BACKEND_SELECTION_ENV = 'CODEX_DESKTOP_BACKEND'
+BACKEND_SELECTIONS = ('python', 'rust')
+# Environment the Rust server reads at startup; services carry it from the operator's shell.
+RUST_SERVICE_ENVIRONMENT = ('CODEX_CANVAS_PUBLIC_ORIGIN', 'CODEX_BIN', 'CODEX_NODE')
+
+
+def backend_selection(environment: dict[str, str] | None = None) -> str:
+    selected = (os.environ if environment is None else environment).get(BACKEND_SELECTION_ENV) or 'python'
+    if selected not in BACKEND_SELECTIONS:
+        raise ValueError(BACKEND_SELECTION_ENV + ' must be either python or rust.')
+    return selected
+
+
+def runtime_server(resources: Path, environment: dict[str, str] | None = None) -> Path:
+    configured = (os.environ if environment is None else environment).get('CODEX_RUNTIME_SERVER')
+    server = Path(configured) if configured else resources / 'target/release/studio-runtime-server'
+    if not (server.is_file() and os.access(server, os.X_OK)):
+        raise ValueError('Build the Rust server first (just build-server) or set CODEX_RUNTIME_SERVER: ' + str(server))
+    return server.resolve()
+
+
+def rust_linux_unit(resources: Path, state: Path, server: Path, port: int,
+                    environment: dict[str, str] | None = None) -> bytes:
+    """The Rust server runs without the Python process supervisor, as on the desktop."""
+    source = os.environ if environment is None else environment
+    values = {key: source[key] for key in RUST_SERVICE_ENVIRONMENT if source.get(key)}
+    values.update(CODEX_AGENTS_STATE_DIR=str(state), PATH=source.get('PATH', '/usr/local/bin:/usr/bin:/bin'))
+    lines = '\n'.join('Environment=' + systemd_quote(key + '=' + value) for key, value in values.items())
+    command = ' '.join(systemd_quote(arg, command=True) for arg in (str(server), '--port', str(port)))
+    return f'''[Unit]
+Description=Codex Studio server (Rust)
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory={str(resources).replace('%', '%%')}
+{lines}
+ExecStart={command}
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
+'''.encode()
+
+
+def enable_rust_linux(resources: Path, state: Path, port: int) -> dict[str, Any]:
+    server = runtime_server(resources)
+    url = 'http://127.0.0.1:' + str(port)
+    before = desktop(url, state)
+    if before:
+        main_pid = int(run(['systemctl', '--user', 'show', 'codex-studio.service', '--property=MainPID', '--value']).stdout.strip() or 0)
+        if main_pid != before['pid']:
+            raise RuntimeError('Another backend serves this state directory and is not codex-studio.service. '
+                               'Stop it at an idle boundary first; no service was changed.')
+    unit = rust_linux_unit(resources, state, server, port)
+    with tempfile.TemporaryDirectory(prefix='codex-services-') as temporary:
+        path = Path(temporary) / 'codex-studio.service'
+        path.write_bytes(unit)
+        run(['systemd-analyze', '--user', 'verify', str(path)])
+    atomic_write(Path.home() / '.config/systemd/user/codex-studio.service', unit)
+    run(['systemctl', '--user', 'daemon-reload'])
+    run(['systemctl', '--user', 'enable', 'codex-studio.service'])
+    run(['systemctl', '--user', 'restart' if before else 'start', 'codex-studio.service'])
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        current = desktop(url, state)
+        if current and current.get('backendKind') == 'rust' and current.get('pid') != (before or {}).get('pid'):
+            return {'stateDir': str(state), 'previousPid': (before or {}).get('pid'), 'pid': current['pid'],
+                    'backend': 'rust', 'backendBuild': current.get('backendBuild')}
+        time.sleep(.25)
+    raise RuntimeError('The Rust backend did not become ready before the deadline. Inspect `journalctl --user -u codex-studio`; do not start another backend.')
+
+
 def _default_resources() -> Path:
     source = Path(__file__).resolve().parent
     for candidate in (source, *source.parents):
@@ -249,12 +327,15 @@ def install_macos(resources: Path, state: Path, python: str, config: dict[str, A
 def enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     if sys.platform not in {'darwin', 'linux'}:
         raise ValueError('Supervisor service installation supports macOS and Linux.')
+    rust = backend_selection() == 'rust'
+    if rust and sys.platform != 'linux':
+        raise ValueError('The Rust server service is installed on Linux; the desktop app selects it on macOS.')
     import fcntl
     resources, state = resources.expanduser().resolve(), state.expanduser().resolve()
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (state / 'supervisor-enable.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return _enable(resources, state, port)
+        return enable_rust_linux(resources, state, port) if rust else _enable(resources, state, port)
 
 
 def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:

@@ -85,6 +85,69 @@ class Services(unittest.TestCase):
         self.assertNotIn('BindsTo=', backend)
         self.assertNotIn('Requires=', backend)
 
+    def rust_server(self) -> Path:
+        server = self.root / 'bin/studio-runtime-server'
+        server.parent.mkdir(parents=True, exist_ok=True)
+        server.write_text('#!/bin/sh\n')
+        server.chmod(0o755)
+        return server
+
+    def test_backend_selection_matches_the_desktop_owner(self) -> None:
+        owner = (service.REPOSITORY_ROOT / 'workspaces/client/apps/desktop/backend.cjs').read_text()
+        self.assertIn(f'const backendSelectionEnv = "{service.BACKEND_SELECTION_ENV}";', owner)
+        self.assertIn('selected !== "python" && selected !== "rust"', owner)
+        self.assertEqual(service.backend_selection({}), 'python')
+        self.assertEqual(service.backend_selection({service.BACKEND_SELECTION_ENV: 'rust'}), 'rust')
+        with self.assertRaisesRegex(ValueError, 'python or rust'):
+            service.backend_selection({service.BACKEND_SELECTION_ENV: 'go'})
+
+    def test_rust_unit_runs_the_server_without_the_python_supervisor(self) -> None:
+        server = self.rust_server()
+        unit = service.rust_linux_unit(self.resources, self.state, server, 4620, {
+            'PATH': '/usr/bin', 'CODEX_CANVAS_PUBLIC_ORIGIN': 'https://studio.example', 'UNRELATED': 'x'}).decode()
+        self.assertIn(f'ExecStart="{server}" "--port" "4620"', unit)
+        self.assertIn('Environment="CODEX_CANVAS_PUBLIC_ORIGIN=https://studio.example"', unit)
+        self.assertIn(f'Environment="CODEX_AGENTS_STATE_DIR={self.state}"', unit)
+        self.assertNotIn('SUPERVISOR', unit)
+        self.assertNotIn('UNRELATED', unit)
+        self.assertNotIn('python', unit.lower())
+
+    def test_rust_enable_refuses_a_foreign_backend_and_changes_nothing(self) -> None:
+        server = self.rust_server()
+        environment = {service.BACKEND_SELECTION_ENV: 'rust', 'CODEX_RUNTIME_SERVER': str(server)}
+        with patch.object(sys, 'platform', 'linux'), patch.dict('os.environ', environment), \
+                patch.object(service, 'desktop', return_value={'pid': 123, 'backendKind': 'rust'}), \
+                patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '0')) as run, \
+                patch.object(Path, 'home', return_value=self.root):
+            with self.assertRaisesRegex(RuntimeError, 'not codex-studio.service'):
+                service.enable(self.resources, self.state, 4620)
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertFalse((self.root / '.config/systemd/user').exists())
+
+    def test_rust_enable_installs_and_starts_the_service(self) -> None:
+        server = self.rust_server()
+        environment = {service.BACKEND_SELECTION_ENV: 'rust', 'CODEX_RUNTIME_SERVER': str(server)}
+        ready = {'pid': 456, 'backendKind': 'rust', 'backendBuild': 'b' * 64}
+        with patch.object(sys, 'platform', 'linux'), patch.dict('os.environ', environment), \
+                patch.object(service, 'desktop', side_effect=[None, ready]), \
+                patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '')) as run, \
+                patch.object(Path, 'home', return_value=self.root):
+            result = service.enable(self.resources, self.state, 4620)
+        self.assertEqual(result['pid'], 456)
+        self.assertEqual(result['backend'], 'rust')
+        unit = (self.root / '.config/systemd/user/codex-studio.service').read_text()
+        self.assertIn(str(server), unit)
+        self.assertFalse((self.root / '.config/systemd/user/codex-studio-supervisor.service').exists())
+        self.assertIn(['systemctl', '--user', 'start', 'codex-studio.service'], [c.args[0] for c in run.call_args_list])
+
+    def test_rust_enable_requires_a_built_server(self) -> None:
+        environment = {service.BACKEND_SELECTION_ENV: 'rust', 'CODEX_RUNTIME_SERVER': str(self.root / 'missing')}
+        with patch.object(sys, 'platform', 'linux'), patch.dict('os.environ', environment), \
+                patch.object(service, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'Build the Rust server first'):
+                service.enable(self.resources, self.state, 4620)
+        run.assert_not_called()
+
     def test_service_quote_preserves_literal_paths_and_refuses_lines(self) -> None:
         self.assertEqual(service.systemd_quote('/a b/%/$/"/\\', command=True), '"/a b/%%/$$/\\"/\\\\"')
         self.assertEqual(service.systemd_quote('CODEX_HOME=/a/$home'), '"CODEX_HOME=/a/$home"')

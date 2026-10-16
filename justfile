@@ -5,6 +5,12 @@ facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/faca
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
 
+[doc("Build the server for `codex-supervisor enable`: web UI and the release Rust runtime server.")]
+build-server:
+    pnpm install --frozen-lockfile
+    pnpm --filter codex-agents-web run build
+    cargo build --release --locked -p studio-runtime-server
+
 [doc("List pnpm, Cargo, and Python server packages discovered from their manifests.")]
 packages:
     @node {{quote(facade)}} packages
