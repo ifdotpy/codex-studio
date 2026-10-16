@@ -308,10 +308,11 @@ The actor validation gate passed on 2026-10-16 at commit
 `just test-fast` (6,000 server tests, 63 bridge tests, 2,200 Rust tests, 921 web
 tests, 10 tooling tests, and 5 browser tests), strict workspace Clippy with
 `-D warnings`, workspace doctests, and strict runtime mypy. Any later delivery
-must rerun the required gate against its exact commit head. Raw-read migration
-and live backend/browser behavior validation remain separate pending work; this
-gate does not claim that a backend was deployed or that live behavior was
-verified.
+must rerun the required gate against its exact commit head. The tracked [Rust
+chat lifecycle verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.mjs)
+also passed once against real state on the `1ed0548b`-equivalent tree; this
+limited smoke does not validate the current exact head. Raw-read migration and
+targeted invalidation behavior validation remain pending.
 
 ## Historical production writer caller inventory
 

@@ -1,6 +1,6 @@
 # Targeted runtime invalidations
 
-**Status:** Source review complete; this branch's build, test, and live idle-browser validation are pending.
+**Status:** One tracked Chromium lifecycle passed on the `1ed0548b`-equivalent tree; this branch's exact-head full gate and targeted invalidation validation remain pending.
 **Audience:** maintainers changing Canvas commit notifications or their consumers.
 
 ## Goal and boundaries
@@ -159,10 +159,15 @@ The source owners are `runtime-store` for table and resource observers,
 `runtime-server`/`runtime-services` for dependency groups, and `runtime-http` for
 the resource subscriber. Keep the HTTP classifier limited to the resource
 observer; do not remove the separate broad commit signal, explicit route
-notifications, or any non-SQL source. The real HTTP/browser idle path still
-needs before/after validation, including proof that receipt-only writes stay
-quiet while event and resource writes still wake subscribers. No deployed
-backend, performance, or live behavior result is claimed here.
+notifications, or any non-SQL source. The tracked [Rust chat lifecycle
+verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.mjs)
+passed against real state on the `1ed0548b`-equivalent tree: one Luna chat was
+created (195 ms), acknowledged (252 ms), answered (7,019 ms), and deleted
+(1,443 ms). A 15-second steady window observed zero requests and zero errors;
+the owned chat was deleted. This does not replace the current branch's
+exact-head full gate or targeted before/after proof that receipt-only writes
+stay quiet while event and resource writes still wake subscribers. No broader
+performance claim is made.
 
 An unrelated test-planner follow-up remains outside this slice:
 [`run.py`](../../workspaces/runtime/apps/server/tests/server/run.py) reads
