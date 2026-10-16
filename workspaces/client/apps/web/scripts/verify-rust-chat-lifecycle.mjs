@@ -112,6 +112,11 @@ function chatSelector(id) {
   return `[data-chat="${id}"]`;
 }
 
+export function selectedChatRowSelector(id) {
+  const row = chatSelector(id);
+  return `${row}[aria-current="true"], ${row}[aria-current="page"]`;
+}
+
 function redactUrl(url) {
   const parsed = new URL(url);
   for (const key of parsed.searchParams.keys())
@@ -370,9 +375,7 @@ async function promptAlreadyVisible(page) {
 }
 
 async function recordCreateNavigation(page, journal, journalPath) {
-  const selectedRow = page.locator(
-    `${chatSelector(journal.chatId)}[aria-current="page"]`,
-  );
+  const selectedRow = page.locator(selectedChatRowSelector(journal.chatId));
   await selectedRow.waitFor({ timeout: CHAT_ROW_TIMEOUT_MS });
   journal.stages.create.navigation ||= {
     signal: "selected-chat-row",
@@ -711,7 +714,6 @@ async function main() {
         await page
           .getByRole("combobox", { name: "Message", exact: true })
           .waitFor();
-        await recordCreateNavigation(page, journal, journalPath);
       }
       if (journal.stages.create?.state === "sent") {
         journal.stages.create.state = "confirmed";

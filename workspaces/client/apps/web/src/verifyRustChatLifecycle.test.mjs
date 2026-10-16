@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { isExpectedCreateNavigationAbort } from "../scripts/verify-rust-chat-lifecycle.mjs";
+import {
+  isExpectedCreateNavigationAbort,
+  selectedChatRowSelector,
+} from "../scripts/verify-rust-chat-lifecycle.mjs";
 
 const journal = {
   origin: "https://studio.example.ts.net",
@@ -38,6 +41,12 @@ const failure = {
   error: "net::ERR_ABORTED",
   stage: "create",
 };
+
+it("matches selected chat row values used by project and sidebar rows", () => {
+  expect(selectedChatRowSelector("new-chat")).toBe(
+    '[data-chat="new-chat"][aria-current="true"], [data-chat="new-chat"][aria-current="page"]',
+  );
+});
 
 it("classifies only the old-panel abort within the confirmed create navigation", () => {
   expect(isExpectedCreateNavigationAbort(failure, journal)).toBe(true);
