@@ -68,4 +68,5 @@ systemctl daemon-reload
 systemctl enable --now codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
 # The daemon starts at boot, before provisioning rebuilds layr: a new binary needs a restart
 # (on 2026-10-11 the old daemon kept reading .regenerable after the .layrattributes release).
-if [ "${rebuilt:-0}" = 1 ]; then systemctl restart codex-studio-layr.service; fi
+# An in-place update (guest_update.py) restarts it later, once no broker request runs.
+if [ "${rebuilt:-0}" = 1 ] && [ -z "${STUDIO_DEFER_RESTARTS:-}" ]; then systemctl restart codex-studio-layr.service; fi

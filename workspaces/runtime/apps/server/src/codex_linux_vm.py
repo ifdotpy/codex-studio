@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -29,6 +30,7 @@ import zlib
 
 from codex_layout import (CLAUDE_BRIDGE_ROOT, DESKTOP_ROOT, PROVIDERS_ROOT,
                          REPOSITORY_ROOT, SERVER_SOURCE_ROOT, VM_GUEST_ROOT)
+from codex_shared_values import GUEST_PAYLOAD_RECORD_PATH, GUEST_UPDATE_KEY_PATH
 from codex_state import state_dir as studio_state_dir
 
 _GIB = 1024 ** 3
@@ -521,9 +523,16 @@ echo STUDIO_PROVISION_READY
 '''.replace('@CODEX@', codex_version).replace('@CLAUDE@', claude_version).replace('@PNPM@', pnpm_version)
 
 
+def payload_record(codex_version: str, claude_version: str, pnpm_version: str, script: str) -> dict[str, str]:
+    """The parts of a guest payload that only provisioning installs (provider CLIs, pnpm, and
+    the provision script itself, before its generation lines)."""
+    return {'codex': codex_version, 'claude': claude_version, 'pnpm': pnpm_version,
+            'script': hashlib.sha256(script.encode()).hexdigest()}
+
+
 def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
                   runtime_source: Path = SERVER_SOURCE_ROOT,
-                  bridge_source: Path | None = None) -> dict[str, Any]:
+                  bridge_source: Path | None = None, update_key: str | None = None) -> dict[str, Any]:
     """Return cloud-init data. Guest service installation is a reviewed guest contract."""
     files = []
     for path in sorted(guest_dir.rglob('*')):
@@ -599,9 +608,17 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
                                             'pnpm': pnpm_version, 'script': script}, sort_keys=True).encode()).hexdigest()
     ready_path = '/var/lib/codex-studio/provision-ready-' + generation
+    # What only provisioning installs. An in-place update (codex_linux_vm_update.py) compares it
+    # and takes the reboot path when it differs.
+    record = json.dumps(payload_record(codex_version, claude_version, pnpm_version, script),
+                        sort_keys=True, separators=(',', ':'))
     script = script.replace('touch /var/lib/codex-studio/provision-ready\n',
-                            'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n')
+                            'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n'
+                            + "printf '%s' " + shlex.quote(record) + ' > ' + GUEST_PAYLOAD_RECORD_PATH + '\n')
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
+    if update_key is not None:
+        # Root only. The root broker accepts an in-place update that this key signs.
+        files.append({'path': GUEST_UPDATE_KEY_PATH, 'permissions': '0600', 'content': update_key + '\n'})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
 After=network-online.target cloud-config.service
@@ -710,6 +727,23 @@ class Client:
         except (OSError, ValueError):
             return {}
         return value if isinstance(value, dict) else {}
+
+    def update_key(self) -> str:
+        """The key that signs in-place guest updates. Made once and kept: a new key changes the
+        payload generation, so the guest would provision again."""
+        path = self.state_dir / 'update-key'
+        try:
+            value = path.read_text().strip()
+        except FileNotFoundError:
+            self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            value = os.urandom(32).hex()
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as stream:
+                stream.write(value + '\n')
+            return value
+        if not re.fullmatch(r'[0-9a-f]{64}', value):
+            raise LinuxVMError('The VM update key file is invalid.')
+        return value
 
     def intent(self) -> dict[str, Any]:
         """The last start or stop: {'state', 'by', 'at'} and 'restart' while an automatic
@@ -961,7 +995,8 @@ class Client:
             _require_space(self.state_dir, create=True)
             codex_version = _version(os.environ.get('CODEX_BIN') or shutil.which('codex') or 'codex', 'Codex', _remaining(deadline, 15))
             claude_version = _version(os.environ.get('CLAUDE_BIN') or shutil.which('claude') or 'claude', 'Claude', _remaining(deadline, 15))
-            config = _cloud_config(self.guest_dir, codex_version, claude_version)
+            config = _cloud_config(self.guest_dir, codex_version, claude_version,
+                                   update_key=self.update_key())
             staging = Path(tempfile.mkdtemp(prefix='create-', dir=self.state_dir))
             try:
                 archive = staging / 'ubuntu.tar.gz'
@@ -1017,7 +1052,8 @@ class Client:
         if console.exists():
             (self.state_dir / 'console.previous.log').write_bytes(console.read_bytes()[-1024 * 1024:])
         manifest = json.loads((self.state_dir / 'image.json').read_text())
-        config = _cloud_config(self.guest_dir, manifest['codex'], manifest['claude'])
+        config = _cloud_config(self.guest_dir, manifest['codex'], manifest['claude'],
+                               update_key=self.update_key())
         payload = '#cloud-config\n' + json.dumps(config)
         identity = hashlib.sha256(payload.encode()).hexdigest()
         with tempfile.TemporaryDirectory(prefix='provision-', dir=self.state_dir) as name:

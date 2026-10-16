@@ -624,7 +624,9 @@ class UpgradeSpace(unittest.TestCase):
         with patch.object(vm.Client, 'call', return_value={'providers': []}), \
                 patch.object(self.upgrade.shutil, 'disk_usage', return_value=usage), \
                 patch.object(self.upgrade.subprocess, 'run', copy):
-            self.upgrade.upgrade(self.directory, self.directory / 'helper', self.directory, 'space-1')
+            # The space rule belongs to the reboot path; the in-place path makes no backup.
+            self.upgrade.upgrade(self.directory, self.directory / 'helper', self.directory, 'space-1',
+                                 reboot=True)
         return copy
 
     def test_the_reserve_alone_admits_the_clone_backup(self) -> None:
