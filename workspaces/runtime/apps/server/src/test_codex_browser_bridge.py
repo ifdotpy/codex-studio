@@ -12,6 +12,7 @@ import asyncio
 import base64
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr
+import errno
 import gzip
 import http.client
 import io
@@ -437,12 +438,51 @@ class Binds(unittest.TestCase):
                 try:
                     with self.assertRaisesRegex(PortBusy, f"Port {port} is in use on this Mac"):
                         self.attempt(host, port)
-                    if address == "::1":
-                        # The bind of 127.0.0.1 that came first does not stay.
-                        with socket.socket() as probe:
-                            probe.bind(("127.0.0.1", port))
                 finally:
                     holder.close()
+
+    def test_localhost_ipv6_conflict_closes_partial_ipv4_reservation(self) -> None:
+        class FakeSocket:
+            def __init__(self, family: socket.AddressFamily) -> None:
+                self.family = family
+                self.closed = False
+
+            def setsockopt(self, *_args: Any) -> None:
+                pass
+
+            def bind(self, address: tuple[str, int]) -> None:
+                if address[0] == "::1":
+                    raise OSError(errno.EADDRINUSE, "occupied IPv6 loopback")
+
+            def listen(self, _backlog: int) -> None:
+                pass
+
+            def getsockname(self) -> tuple[str, int]:
+                return "127.0.0.1", 43210
+
+            def close(self) -> None:
+                self.closed = True
+
+        sockets: list[FakeSocket] = []
+
+        def make_socket(family: socket.AddressFamily, _kind: int) -> FakeSocket:
+            listener = FakeSocket(family)
+            sockets.append(listener)
+            return listener
+
+        forward = Forward(
+            "b",
+            {"host": "localhost", "port": 43210, "path": "/"},
+            lambda _target, _headers: None,
+            lambda _forward, _reason: None,
+        )
+        with patch.object(bridge_module.socket, "socket", make_socket):
+            with self.assertRaisesRegex(PortBusy, "Port 43210 is in use"):
+                forward.bind()
+
+        self.assertEqual(len(sockets), 2)
+        self.assertTrue(all(listener.closed for listener in sockets))
+        self.assertEqual(forward.sockets, [])
 
     def test_localhost_binds_both_loopback_addresses(self) -> None:
         port = free_port()

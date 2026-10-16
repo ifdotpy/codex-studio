@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn parser_uses_only_global_footer_after_last_heap() {
-        let summary = parse_allocator_summary(VALID_FIXTURE).unwrap();
+        let summary = parse_allocator_summary(VALID_FIXTURE).expect("complete allocator fixture");
         assert_eq!(
             summary,
             AllocatorSummary {
@@ -287,7 +287,7 @@ mod tests {
     fn parser_accepts_glibc_footer_omitting_zero_fast_total() {
         let without_global_fast =
             VALID_FIXTURE.replace("<total type=\"fast\" count=\"4\" size=\"100\"/>\n", "");
-        let summary = parse_allocator_summary(&without_global_fast).unwrap();
+        let summary = parse_allocator_summary(&without_global_fast).expect("zero fast-bin fixture");
         assert_eq!(summary.fast_free_bytes, 0);
         assert_eq!(summary.rest_free_bytes, 200);
         assert_eq!(summary.mmap_bytes, 50);
