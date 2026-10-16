@@ -217,6 +217,7 @@ async fn diagnostics(
             let Some(process_tree) = process_tree else {
                 return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
             };
+            studio_runtime_services::diagnostics::log_on_demand_memory_snapshot();
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
                 .map_err(|_| ApiError::internal())?;

@@ -34,10 +34,23 @@ recovery after new monitor work may have been admitted.
 
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the
-async listener and signal handling.
+async listener and signal handling. The async executor defaults to at most four
+worker threads, capped by the available CPU parallelism; setting
+`TOKIO_WORKER_THREADS` leaves the worker count to Tokio's environment-variable
+handling. This setting controls async executor workers only; it does not cap
+blocking-pool threads or in-flight provider work.
 
 `state-check` opens `<state-dir>/canvas.sqlite3` strictly read-only and prints a
 JSON report with the row and rejected-row counts for each typed record table.
 Rejected rows are grouped by the first JSON pointer and validation keyword;
 record contents and IDs are never printed. A missing typed table is reported
 with zero rows.
+
+For an on-demand allocator snapshot, set `CODEX_CANVAS_STARTUP_MEMORY=1` before
+starting the server, then request `GET /api/diagnostics`. The request writes one
+`RUST_ALLOCATOR_MEMORY` event to stderr with current RSS, the recorded startup
+memory marks, and a bounded GNU libc allocator snapshot on Linux with glibc.
+Other targets report the allocator data as unavailable. The HTTP response and
+runtime state are unchanged, and no periodic memory sampling is started. The
+allocator snapshot is aggregate accounting, not an allocation trace; process
+RSS also includes memory outside GNU libc's allocator.

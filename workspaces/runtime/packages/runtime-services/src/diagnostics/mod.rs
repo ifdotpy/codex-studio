@@ -5,8 +5,9 @@
 //! records HTTP route templates, never request URLs, and SQLite profile
 //! durations, never SQL text or bound values. Slow transaction history comes
 //! from the actual serialized store boundary; SQLite statement profiles are
-//! never labeled as transactions. Startup memory checkpoints contain stage
-//! names and byte counts only; allocation traces are intentionally not collected.
+//! never labeled as transactions. Startup marks contain stage names and byte
+//! counts; explicit diagnostics requests can include bounded GNU allocator
+//! aggregate XML, never allocation traces.
 //!
 //! Python source parity: `codex_diagnostics.py:130-209,255` (migration and
 //! snapshot fields), `codex_execution.py:388-400` (execution chain),
@@ -20,9 +21,10 @@
 //! and otherwise zero. SQLite profile durations and writer wait/hold aggregates
 //! are bounded in memory; slow profile rows use `firstStatement: other` because
 //! SQL is discarded. Python stack frames, holder identity, transaction journals,
-//! and SQLite busy-error counters are not available. Startup captures opt-in
-//! Linux current RSS only; peak RSS and allocation traces are unavailable.
+//! and SQLite busy-error counters are not available. Startup marks capture
+//! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.
 
+mod allocator;
 mod host;
 mod http;
 mod locks;
@@ -52,6 +54,7 @@ pub(crate) fn measure_runtime_stage<T>(name: &'static str, operation: impl FnOnc
     result
 }
 
+pub use allocator::log_on_demand_memory_snapshot;
 pub use host::{current_process_id, process_kind, system_snapshot};
 pub use http::{http_request_metrics, record_http_request};
 pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtime_lock_samples};

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::try_with_state;
 
 const STARTUP_MARK_LIMIT: usize = 64;
+pub(super) const STARTUP_MEMORY_ENV: &str = "CODEX_CANVAS_STARTUP_MEMORY";
 
 /// Closed startup stage set prevents caller supplied text entering diagnostics.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Serialize)]
@@ -34,11 +35,10 @@ fn state() -> &'static Mutex<StartupState> {
 /// Record an opt-in startup checkpoint once per stage.
 ///
 /// Like the Python collector, collection is disabled unless
-/// `CODEX_CANVAS_STARTUP_MEMORY=1`. Current RSS is read from Linux procfs only;
-/// peak RSS and allocation traces remain unavailable in this small port.
+/// `CODEX_CANVAS_STARTUP_MEMORY=1`. Startup marks read current RSS from Linux
+/// procfs; peak RSS and allocation traces remain unavailable in this port.
 pub fn mark_startup_memory(stage: StartupMemoryMark) {
-    if std::env::var_os("CODEX_CANVAS_STARTUP_MEMORY").as_deref() != Some(std::ffi::OsStr::new("1"))
-    {
+    if !startup_memory_enabled() {
         return;
     }
     let value = json!({
@@ -64,7 +64,11 @@ pub fn startup_memory_marks() -> Vec<Value> {
     marks
 }
 
-fn current_rss_bytes() -> Option<u64> {
+pub(super) fn startup_memory_enabled() -> bool {
+    std::env::var_os(STARTUP_MEMORY_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+pub(super) fn current_rss_bytes() -> Option<u64> {
     let mut status = String::new();
     File::open("/proc/self/status")
         .ok()?

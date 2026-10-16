@@ -41,6 +41,8 @@ use tokio::sync::{Notify, watch};
 
 const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
+/// Default ceiling for Tokio's async executor workers, measured in threads.
+const DEFAULT_ASYNC_EXECUTOR_MAX_WORKER_THREADS: usize = 4;
 // Allow the worker and retained-service bounds to complete before process exit.
 const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 // Retry failed durable scheduler work after this bounded delay; commits can wake sooner.
@@ -58,14 +60,33 @@ fn startup_trace(checkpoint: &'static str) {
     }
 }
 
+fn async_executor_worker_threads(
+    available_parallelism: Option<usize>,
+    tokio_worker_threads_override_is_set: bool,
+) -> Option<usize> {
+    if tokio_worker_threads_override_is_set {
+        None
+    } else {
+        Some(
+            available_parallelism
+                .unwrap_or(1)
+                .clamp(1, DEFAULT_ASYNC_EXECUTOR_MAX_WORKER_THREADS),
+        )
+    }
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
         eprintln!("{}", panic_observed_log(panic.location()));
     }));
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(worker_threads) = async_executor_worker_threads(
+        std::thread::available_parallelism().ok().map(usize::from),
+        env::var_os("TOKIO_WORKER_THREADS").is_some(),
+    ) {
+        runtime_builder.worker_threads(worker_threads);
+    }
+    let runtime = match runtime_builder.enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("{}", runtime_initialization_exit_log(&error.to_string()));
@@ -1871,6 +1892,23 @@ mod exit_logging_tests {
         tokio::task::yield_now().await;
         shutdown_tx.send_replace(true);
         assert!(!waiter.await.expect("shutdown waiter"));
+    }
+}
+
+#[cfg(test)]
+mod executor_worker_tests {
+    use super::async_executor_worker_threads;
+
+    #[test]
+    fn default_async_worker_count_is_capped_by_available_parallelism() {
+        assert_eq!(async_executor_worker_threads(Some(1), false), Some(1));
+        assert_eq!(async_executor_worker_threads(Some(2), false), Some(2));
+        assert_eq!(async_executor_worker_threads(Some(32), false), Some(4));
+    }
+
+    #[test]
+    fn explicit_tokio_worker_override_leaves_configuration_to_tokio() {
+        assert_eq!(async_executor_worker_threads(Some(32), true), None);
     }
 }
 
