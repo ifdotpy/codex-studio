@@ -20,7 +20,8 @@ pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
 pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
 const STARTUP_RECEIPT_BATCH: usize = 64;
-const MONITOR_TICK_BATCH: usize = 64;
+/// Maximum running monitor rows evaluated per keyset page.
+pub(crate) const MONITOR_TICK_BATCH: usize = 64;
 const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

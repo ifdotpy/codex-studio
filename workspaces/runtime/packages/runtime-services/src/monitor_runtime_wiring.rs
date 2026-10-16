@@ -1586,10 +1586,15 @@ mod tests {
     async fn monitor_loop_reaches_a_due_sixty_fifth_monitor_then_sleeps() {
         let (_root, store, port) = fixture();
         insert_active_owner(&store);
+        let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH + 1;
+        let page_count = monitor_count.div_ceil(crate::monitor_runtime::MONITOR_TICK_BATCH);
+        // The probe commit resets the cursor, so the follow-up scan traverses the
+        // same pages once more before the runtime can enter its idle wait.
+        let expected_ticks = page_count * 2;
         let active_at = crate::event_write::unix_time().expect("read fixture time");
         store
             .transaction_with(|tx| {
-                for index in 0..65 {
+                for index in 0..monitor_count {
                     let id = format!("monitor-{index:03}");
                     let activity_at = if index == 64 {
                         active_at - 100.0
@@ -1630,11 +1635,23 @@ mod tests {
         let task = super::start(runtime.clone(), shutdown_rx);
 
         wait_for_probes(&port, 1).await;
-        wait_for_calls(&port, 3).await;
-        wait_for_completed_ticks(&runtime, 3).await;
-        wait_for_cycles(&runtime, 2).await;
+        wait_for_calls(&port, expected_ticks).await;
+        wait_for_completed_ticks(&runtime, expected_ticks).await;
+        wait_for_cycles(&runtime, page_count).await;
+        assert!(
+            runtime
+                .scan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stall_monitor
+                .is_none(),
+            "both cursor traversals must finish before claiming the loop is idle"
+        );
         assert_eq!(port.probes.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            runtime.loop_activity.ticks.load(Ordering::SeqCst),
+            expected_ticks
+        );
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
