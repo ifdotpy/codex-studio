@@ -30,6 +30,7 @@ class BackendEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="http-backend-interrupt-") as temporary:
             root = Path(temporary)
             pid_file = root / "child.pid"
+            pid_temp_file = root / "child.pid.tmp"
             runner_code = f"""
 import signal, subprocess, sys
 from pathlib import Path
@@ -39,7 +40,9 @@ child = subprocess.Popen(
     [sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True,
 )
 harness._register_owned_process(child)
-Path({str(pid_file)!r}).write_text(str(child.pid), encoding='ascii')
+pid_temp = Path({str(pid_temp_file)!r})
+pid_temp.write_text(str(child.pid), encoding='ascii')
+pid_temp.replace({str(pid_file)!r})
 signal.pause()
 """
             runner = subprocess.Popen(

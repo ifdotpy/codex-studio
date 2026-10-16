@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -20,6 +21,14 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from server_test_waits import HANG_GUARD_SECONDS
+
+FAKE_PULL_GATE_TIMEOUT_MARGIN_SECONDS = 5.0
+FAKE_PULL_GATE_POLL_INTERVAL_SECONDS = 0.01
+FAKE_PULL_GATE_TIMEOUT_SECONDS = HANG_GUARD_SECONDS + FAKE_PULL_GATE_TIMEOUT_MARGIN_SECONDS
+FAKE_PULL_GATE_MAX_ATTEMPTS = math.ceil(
+    FAKE_PULL_GATE_TIMEOUT_SECONDS / FAKE_PULL_GATE_POLL_INTERVAL_SECONDS
+)
 
 
 class GuestHandler(socketserver.StreamRequestHandler):
@@ -49,6 +58,8 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.fake_tools = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         cls.fake_desk = Path(cls.fake_tools.name) / "layr-desk"
         cls.fake_desk_calls = Path(cls.fake_tools.name) / "layr-desk-calls.txt"
+        cls.fake_desk_pull_release = Path(cls.fake_tools.name) / "release-pull"
+        fake_desk_pull_release = shlex.quote(str(cls.fake_desk_pull_release))
         cls.fake_desk.write_text(
             "#!/bin/sh\n"
             f"printf '%s\\n' \"$*\" >> {shlex.quote(str(cls.fake_desk_calls))}\n"
@@ -61,7 +72,14 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "    ;;\n"
             "  service) printf '%s\\n' '{\"installed\":false}' ;;\n"
             "  status) printf '%s\\n' '{\"projects\":[{\"name\":\"project-one\",\"unlocked\":true}]}' ;;\n"
-            "  pull) printf '%s\\n' '{\"seq\":7,\"files\":2,\"bytes\":1024}' ;;\n"
+            "  pull)\n"
+            f"    attempts=0; max_attempts={FAKE_PULL_GATE_MAX_ATTEMPTS}\n"
+            f"    while [ ! -e {fake_desk_pull_release} ] && [ $attempts -lt $max_attempts ]; do\n"
+            "      attempts=$((attempts + 1))\n"
+            f"      sleep {FAKE_PULL_GATE_POLL_INTERVAL_SECONDS}\n"
+            "    done\n"
+            f"    [ -e {fake_desk_pull_release} ] || exit 34\n"
+            "    printf '%s\\n' '{\"seq\":7,\"files\":2,\"bytes\":1024}' ;;\n"
             "  *) exit 32 ;;\n"
             "esac\n"
         )
@@ -184,9 +202,12 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(unlock.json(), {"unlocked": True})
 
         body = {"projectId": "project-1", "requestId": "pull-1", "to": str(pull_parent)}
-        first = self.request("/api/vault/pull", body)
-        self.assertEqual(first.status, 200, first.body[:1000])
-        self.assertEqual(first.json()["state"], "running")
+        try:
+            first = self.request("/api/vault/pull", body)
+            self.assertEqual(first.status, 200, first.body[:1000])
+            self.assertEqual(first.json()["state"], "running")
+        finally:
+            self.fake_desk_pull_release.touch()
         result = self.backend.wait_until(
             lambda: (response.json() if (response := self.request("/api/vault/pull", body)).status == 200
                      and response.json().get("state") != "running" else None),
