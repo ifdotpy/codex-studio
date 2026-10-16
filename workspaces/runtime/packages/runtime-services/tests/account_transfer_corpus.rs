@@ -324,23 +324,22 @@ fn selection_matches_real_python_method() {
 }
 
 #[test]
-fn selection_holds_pending_resume_without_changing_agent() {
+fn selection_decision_keeps_resume_for_atomic_store_cancellation() {
     let agent = json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,"accountKey":"source","cwd":"/project","usageResume":{"status":"scheduled"}});
     let snapshot =
         studio_runtime_services::account_selection::SelectionSnapshot::read(&agent.to_string())
             .expect("snapshot");
-    let error = snapshot
+    let selected = snapshot
         .decide(
             "target",
             Some(&json!({"provider":"codex"})),
             "/project",
             true,
         )
-        .expect_err("hold");
-    assert_eq!(
-        error.to_string(),
-        "Not implemented: requires account-transfer/usage-resume-cancellation"
-    );
+        .expect("store adapter cancels the persisted resume atomically");
+    assert_eq!(selected["accountKey"], "target");
+    assert_eq!(selected["usageResume"], agent["usageResume"]);
+    assert_eq!(selected["usageResume"]["status"], "scheduled");
     assert_eq!(
         snapshot
             .decide("source", None, "/project", true)

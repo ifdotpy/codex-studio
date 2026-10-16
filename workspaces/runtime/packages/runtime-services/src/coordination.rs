@@ -9,6 +9,10 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
+pub fn message_text_within_limit(text: &str) -> bool {
+    text.chars().count() <= studio_runtime_schema::shared_values::MAX_MANAGED_MESSAGE_CODEPOINTS
+}
+
 #[derive(Debug, Error)]
 pub enum CoordinationError {
     #[error("{0}")]
@@ -19,6 +23,10 @@ pub enum CoordinationError {
     RequiresDependency(&'static str),
     #[error("invalid stored object {object}/{id}")]
     InvalidStored { object: &'static str, id: String },
+    #[error("{0}")]
+    AdmissionDenied(String),
+    #[error(transparent)]
+    BudgetRuntime(#[from] crate::budget_runtime::BudgetRuntimeError),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -136,6 +144,45 @@ pub struct PostManagedMessage<'a> {
     pub assets: &'a [Value],
 }
 
+/// Return the saved receipt only when the stable message identity already
+/// names the exact durable message accepted for a paired anchor input.
+pub(crate) fn remote_message_receipt(
+    connection: &Transaction<'_>,
+    room: &str,
+    id: &str,
+    text: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    let text = crate::event_write::python_strip(text);
+    let Some(event) = QueueEventRepository::get(connection, &QueueEventId::from(id))? else {
+        return Ok(None);
+    };
+    let metadata = QueueWriteRepository::metadata(connection, id)?
+        .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+    let assets = metadata
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| invalid_stored("runtime_event_meta", id))?;
+    if event.agent.0 != room || event.kind != "user" || event.text != text || !assets.is_empty() {
+        return Ok(None);
+    }
+
+    let signature = crate::event_write::python_json(&json!({
+        "agent": room,
+        "text": text,
+        "assets": [],
+    }));
+    crate::event_write::read_receipt(
+        connection,
+        Some(id),
+        &signature,
+        "runtime_events",
+        id,
+        |value| valid_message_receipt(value, id),
+    )
+    .map_err(event_write_error)
+}
+
 #[derive(Debug, PartialEq)]
 pub struct PostMessageResult {
     pub receipt: Value,
@@ -183,19 +230,19 @@ fn post_managed_message(
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
     let text = crate::event_write::python_strip(input.text);
-    if input.text.chars().count() > 32_000 || (text.is_empty() && input.assets.is_empty()) {
+    if !message_text_within_limit(input.text) || (text.is_empty() && input.assets.is_empty()) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
         ));
     }
     let mut agent =
         crate::event_write::checked_agent(transaction, input.room).map_err(event_write_error)?;
-    crate::event_write::refuse_remote(&agent).map_err(event_write_error)?;
     if safety_retry_active(&agent) {
         return Err(CoordinationError::InvalidRequest(
             "Wait for the model change before sending another message",
         ));
     }
+    crate::message_admission::attachments(input.assets)?;
     let signature = crate::event_write::python_json(&json!({
         "agent": input.room,
         "text": text,
@@ -218,11 +265,34 @@ fn post_managed_message(
                 "This message id has different content",
             ));
         }
+        if event.status == "stored_only"
+            && crate::event_write::truthy(agent.extra.get("remoteAnchor"))
+            && let Some(receipt) = crate::event_write::read_receipt(
+                transaction,
+                Some(input.id),
+                &signature,
+                "runtime_events",
+                input.id,
+                |value| valid_message_receipt(value, input.id),
+            )
+            .map_err(event_write_error)?
+        {
+            return Ok(PostMessageResult {
+                receipt,
+                event_inserted: false,
+            });
+        }
         return Ok(PostMessageResult {
             receipt: studio_runtime_store::system_reads::validate(
                 "runtime_events",
                 input.id,
-                json!({"id": input.id, "status": event.status, "error": event.error}),
+                // Python keeps accepted input pending until actual submission;
+                // Rust's reservation is only an internal claim phase.
+                json!({
+                    "id": input.id,
+                    "status": if event.status == "reserved" { "pending" } else { &event.status },
+                    "error": event.error,
+                }),
             )?,
             event_inserted: false,
         });
@@ -230,7 +300,7 @@ fn post_managed_message(
 
     // An orphan receipt cannot prove that this event is still durable.
     let receipt_id = input.id.to_owned();
-    if crate::event_write::read_receipt(
+    if let Some(receipt) = crate::event_write::read_receipt(
         transaction,
         Some(&receipt_id),
         &signature,
@@ -239,12 +309,17 @@ fn post_managed_message(
         |value| valid_message_receipt(value, input.id),
     )
     .map_err(event_write_error)?
-    .is_some()
     {
+        if crate::event_write::truthy(agent.extra.get("remoteWorker"))
+            || crate::event_write::truthy(agent.extra.get("remoteAnchor"))
+        {
+            return Ok(PostMessageResult {
+                receipt,
+                event_inserted: false,
+            });
+        }
         return Err(invalid_stored("runtime_events", input.id));
     }
-    crate::message_admission::attachments(input.assets)?;
-
     let root = if agent.root_id == agent.id {
         agent.clone()
     } else {
@@ -307,6 +382,203 @@ fn post_managed_message(
     }
     Ok(PostMessageResult {
         receipt: result,
+        event_inserted: inserted,
+    })
+}
+
+/// Queue model-authored follow-up input for a descendant. This is the durable
+/// event path used by Runtime.send; the caller resolves descendant ancestry
+/// from the same transaction before invoking it.
+pub struct AgentFollowup<'a> {
+    pub sender_id: &'a str,
+    pub sender_epoch: i64,
+    pub recipient_id: &'a str,
+    pub id: &'a str,
+    pub text: &'a str,
+    pub delivery: &'a str,
+    pub now: f64,
+}
+
+pub fn send_followup(
+    transaction: &Transaction<'_>,
+    input: AgentFollowup<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    send_followup_inner(
+        transaction,
+        Some((input.sender_id, input.sender_epoch)),
+        FollowupInput {
+            recipient_id: input.recipient_id,
+            id: input.id,
+            text: input.text,
+            delivery: input.delivery,
+            now: input.now,
+            radio_answer_turn_id: None,
+        },
+        admission,
+    )
+}
+
+/// An actorless runtime follow-up, matching `Runtime.send(..., sender=None)`.
+pub struct SystemFollowup<'a> {
+    pub recipient_id: &'a str,
+    pub id: &'a str,
+    pub text: &'a str,
+    pub delivery: &'a str,
+    pub now: f64,
+}
+
+pub fn send_system_followup(
+    transaction: &Transaction<'_>,
+    input: SystemFollowup<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    send_system_followup_with_radio_answer(transaction, input, None, admission)
+}
+
+/// Queue an async-question answer and bind it to the exact active radio turn,
+/// as Runtime.send(..., radio_question=...) does.
+pub fn send_system_followup_with_radio_answer(
+    transaction: &Transaction<'_>,
+    input: SystemFollowup<'_>,
+    radio_answer_turn_id: Option<&str>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    send_followup_inner(
+        transaction,
+        None,
+        FollowupInput {
+            recipient_id: input.recipient_id,
+            id: input.id,
+            text: input.text,
+            delivery: input.delivery,
+            now: input.now,
+            radio_answer_turn_id,
+        },
+        admission,
+    )
+}
+
+struct FollowupInput<'a> {
+    recipient_id: &'a str,
+    id: &'a str,
+    text: &'a str,
+    delivery: &'a str,
+    now: f64,
+    radio_answer_turn_id: Option<&'a str>,
+}
+
+fn send_followup_inner(
+    transaction: &Transaction<'_>,
+    sender_identity: Option<(&str, i64)>,
+    input: FollowupInput<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    let FollowupInput {
+        recipient_id,
+        id,
+        text,
+        delivery,
+        now,
+        radio_answer_turn_id,
+    } = input;
+    let text = crate::event_write::python_strip(text);
+    if text.is_empty() || !message_text_within_limit(text) {
+        return Err(CoordinationError::InvalidRequest(
+            "Message must have text or attachments, at most 32000 characters",
+        ));
+    }
+    if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+        return Err(CoordinationError::InvalidRequest(
+            "Choose queue, steer, after_tool or after_turn",
+        ));
+    }
+    let mut recipient =
+        crate::event_write::checked_agent(transaction, recipient_id).map_err(event_write_error)?;
+    if let Some((sender_id, sender_epoch)) = sender_identity {
+        let sender =
+            crate::event_write::checked_agent(transaction, sender_id).map_err(event_write_error)?;
+        if sender.epoch != sender_epoch || !crate::event_write::truthy(sender.extra.get("autoWake"))
+        {
+            return Err(CoordinationError::InvalidRequest("Sender was stopped"));
+        }
+        if recipient.root_id != sender.root_id {
+            return Err(CoordinationError::InvalidRequest(
+                "This record belongs to another team",
+            ));
+        }
+    } else if !crate::event_write::truthy(recipient.extra.get("autoWake")) {
+        return Err(CoordinationError::InvalidRequest(
+            "Agent is stopped; no message was queued",
+        ));
+    }
+    if safety_retry_active(&recipient) {
+        return Err(CoordinationError::InvalidRequest(
+            "Wait for the model change before sending another message",
+        ));
+    }
+    let root = if recipient.root_id == recipient.id {
+        recipient.clone()
+    } else {
+        crate::event_write::checked_agent(transaction, &recipient.root_id.0)
+            .map_err(event_write_error)?
+    };
+    require_not_excluded(&root, &recipient)?;
+    if recipient.root_id != recipient.id {
+        crate::event_write::assert_delegation(&root).map_err(event_write_error)?;
+    }
+    assert_native_thread_open(&recipient)?;
+    let blockers = admission.workspace(transaction, &recipient)?;
+    admission.budget(transaction, &recipient, &root)?;
+
+    if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(id))? {
+        if event.agent.0 != recipient_id || event.kind != "followup" || event.text != text {
+            return Err(CoordinationError::Conflict(
+                "This message id has different content",
+            ));
+        }
+        return Ok(PostMessageResult {
+            receipt: studio_runtime_store::system_reads::validate(
+                "runtime_events",
+                id,
+                json!({"id":id,"status":event.status,"error":event.error}),
+            )?,
+            event_inserted: false,
+        });
+    }
+    if sender_identity.is_some() {
+        recipient.extra.insert("autoWake".into(), Value::Bool(true));
+        recipient.extra.insert("error".into(), Value::Null);
+        recipient.extra.insert("complaintMisses".into(), json!(0));
+        recipient.extra.remove("nativeFailureHold");
+        capacity_reset(transaction, &mut recipient)?;
+        studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
+        let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
+        crate::agents_create::publish_agent(transaction, &projection)?;
+    }
+    let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery});
+    if let Some(turn_id) = radio_answer_turn_id.filter(|value| !value.is_empty()) {
+        metadata["radioAnswerTurnId"] = Value::String(turn_id.to_owned());
+    }
+    if let Some((sender_id, _)) = sender_identity {
+        metadata["senderId"] = Value::String(sender_id.to_owned());
+    }
+    QueueWriteRepository::put_metadata(transaction, id, &metadata)?;
+    let inserted = crate::event_write::enqueue_event(
+        transaction,
+        &recipient,
+        id.to_owned(),
+        "followup",
+        text.to_owned(),
+        now,
+    )
+    .map_err(event_write_error)?;
+    let mut receipt = json!({"id":id,"status":"queued"});
+    if !blockers.is_empty() {
+        receipt["waitingFor"] = json!(blockers);
+    }
+    Ok(PostMessageResult {
+        receipt,
         event_inserted: inserted,
     })
 }
@@ -446,11 +718,7 @@ fn capacity_reset(
                 )?;
             }
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
-            None => {
-                return Err(CoordinationError::RequiresDependency(
-                    "capacity-retry/store",
-                ));
-            }
+            None => return Err(invalid_stored("runtime_capacity_retries", &id)),
         }
         if agent
             .extra
@@ -780,7 +1048,7 @@ fn validated_message(
     if message.id.is_empty()
         || message.room.is_empty()
         || message.author.is_empty()
-        || message.text.chars().count() > 32_000
+        || !message_text_within_limit(&message.text)
         || !message.at.is_finite()
     {
         return Err(CoordinationError::InvalidStored {
@@ -916,9 +1184,15 @@ mod tests {
     use studio_runtime_store::Connection;
 
     use super::{
-        CoordinationError, PostMessage, connect_chat, create_chat, post_message,
-        require_single_team,
+        CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
+        message_text_within_limit, post_message, post_message_with_admission, require_single_team,
     };
+
+    #[test]
+    fn message_limit_counts_unicode_characters_for_paired_inputs() {
+        assert!(message_text_within_limit(&"🙂".repeat(10_000)));
+        assert!(!message_text_within_limit(&"🙂".repeat(32_001)));
+    }
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
@@ -927,9 +1201,13 @@ mod tests {
              CREATE TABLE graph_edges(id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,kind TEXT NOT NULL,UNIQUE(source,target,kind));
              CREATE TABLE messages(id TEXT PRIMARY KEY,room TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,at REAL NOT NULL,deliveries TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+             CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
-             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("coordination schema creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
@@ -940,6 +1218,32 @@ mod tests {
                     [id, record.as_str()],
                 )
                 .expect("agent inserts");
+        }
+        connection
+    }
+
+    fn database_at(path: &std::path::Path) -> Connection {
+        let connection = Connection::open(path).expect("durable test database opens");
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,members TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS graph_edges(id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,kind TEXT NOT NULL,UNIQUE(source,target,kind));
+             CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,room TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,at REAL NOT NULL,deliveries TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+             CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
+             CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
+        ).expect("durable test schema creates");
+        for (id, root) in [("lead", "lead"), ("worker", "lead")] {
+            let record = json!({"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    [id, record.as_str()],
+                )
+                .expect("durable test agent inserts");
         }
         connection
     }
@@ -956,6 +1260,325 @@ mod tests {
     fn mixed_teams_are_refused() {
         assert!(require_single_team(["team-a", "team-b"].into_iter()).is_err());
         assert!(require_single_team(["team-a", "team-a"].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn refused_chat_validation_does_not_advance_sqlite_sequence() {
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
+        lead.extra.insert("threadId".into(), json!("thread-1"));
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("managed thread persists");
+        connection
+            .execute(
+                "INSERT INTO graph_agents(id,record) VALUES('alias',?1)",
+                [json!({"id":"alias","threadId":"thread-1"}).to_string()],
+            )
+            .expect("registered alias inserts");
+        let before: i64 = connection
+            .query_row(
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_documents'),0)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sequence reads");
+        let transaction = connection.transaction().expect("transaction starts");
+        let result = create_chat(&transaction, "chat", "Team", &["alias".into()]);
+        assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
+        drop(transaction);
+        let after: i64 = connection
+            .query_row(
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_documents'),0)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sequence reads after refusal");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    // Python creates these exact row values at codex_runtime.py:5014-5015.
+    fn managed_message_preserves_python_profile_fields_on_agent_write() {
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
+        lead.extra.insert("autoWake".into(), json!(true));
+        lead.extra.insert("profileId".into(), json!("profile-1"));
+        lead.extra.insert(
+            "profileInstructions".into(),
+            json!("Use the project profile."),
+        );
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("profile fields persist");
+
+        let transaction = connection.transaction().expect("transaction starts");
+        let result = post_message_with_admission(
+            &transaction,
+            PostManagedMessage {
+                room: "lead",
+                id: "profile-message",
+                text: "hello",
+                delivery: "queue",
+                assets: &[],
+            },
+            &AllowAdmission,
+        )
+        .expect("managed message queues");
+        assert!(result.event_inserted);
+        transaction.commit().expect("message transaction commits");
+
+        let saved = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds after write")
+        .expect("lead remains");
+        assert_eq!(saved.extra.get("profileId"), Some(&json!("profile-1")));
+        assert_eq!(
+            saved.extra.get("profileInstructions"),
+            Some(&json!("Use the project profile."))
+        );
+    }
+
+    struct AllowAdmission;
+
+    impl crate::message_admission::MessageAdmission for AllowAdmission {
+        fn workspace(
+            &self,
+            _tx: &studio_runtime_store::Transaction<'_>,
+            _agent: &studio_runtime_store::AgentRecord,
+        ) -> Result<Vec<serde_json::Value>, CoordinationError> {
+            Ok(Vec::new())
+        }
+
+        fn budget(
+            &self,
+            _tx: &studio_runtime_store::Transaction<'_>,
+            _agent: &studio_runtime_store::AgentRecord,
+            _root: &studio_runtime_store::AgentRecord,
+        ) -> Result<(), CoordinationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn actorless_followup_matches_python_runtime_send_row_and_replays_once() {
+        use super::{SystemFollowup, send_system_followup};
+
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
+        lead.status = studio_runtime_store::AgentStatus::Running;
+        lead.extra.insert("autoWake".into(), json!(true));
+        lead.extra.insert("inFlight".into(), json!(true));
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("recipient becomes an active lead");
+        let send = |connection: &mut Connection, text: &str| {
+            let tx = connection.transaction().expect("transaction starts");
+            let result = send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: "mac-conflict:state:abcd",
+                    text,
+                    delivery: "after_turn",
+                    now: 123.5,
+                },
+                &AllowAdmission,
+            );
+            if result.is_ok() {
+                tx.commit().expect("system follow-up commits");
+            }
+            result
+        };
+        send(&mut connection, " Mac conflict ").expect("Python-compatible actorless input queues");
+        send(&mut connection, " Mac conflict ").expect("same identity replay returns receipt");
+        let event: (String, String, String, String, i64) = connection
+            .query_row(
+                "SELECT id,agent,kind,text,epoch FROM runtime_events",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("one follow-up row exists");
+        assert_eq!(
+            event,
+            (
+                "mac-conflict:state:abcd".to_owned(),
+                "lead".to_owned(),
+                "followup".to_owned(),
+                "Mac conflict".to_owned(),
+                0,
+            )
+        );
+        let metadata: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='mac-conflict:state:abcd'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event metadata exists");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&metadata).expect("metadata is valid JSON");
+        assert_eq!(metadata["delivery"], "after_turn");
+        assert_eq!(metadata["assets"], json!([]));
+        assert!(metadata.get("senderId").is_none());
+        assert_eq!(count(&connection, "runtime_events"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mac_handoff_survives_p03_precommit_and_postcommit_restarts() {
+        use super::{SystemFollowup, send_system_followup};
+        use crate::linux_vm_guest::{GuestError, GuestRpc};
+        use serde_json::Value;
+        use std::time::Duration;
+
+        struct Guest(std::sync::Mutex<usize>);
+        impl GuestRpc for Guest {
+            fn stream(
+                &self,
+                method: &str,
+                _params: &Value,
+                _request_id: Option<&str>,
+                _timeout: Duration,
+                _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+            ) -> Result<Value, GuestError> {
+                if method == "sync.mac.handoff" {
+                    *self.0.lock().expect("guest count lock") += 1;
+                }
+                Ok(match method {
+                    "sync.mac.head" => json!({"mainStateId":"main-1"}),
+                    "sync.mac.read" => {
+                        json!({"kind":"file","mode":420,"data":"Z3Vlc3QgdmVyc2lvbg==","eof":true})
+                    }
+                    "sync.mac.handoff" => {
+                        json!({"line":"mac-conflict","stateId":"handoff-1","mainStateId":"main-1"})
+                    }
+                    _ => json!({"ok":true}),
+                })
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary state");
+        let state_dir = root.path().join("state");
+        let project = state_dir.join("layr-projects/p1");
+        let folder = state_dir.join("mac-folder");
+        std::fs::create_dir_all(project.join("sync")).expect("project fixture");
+        std::fs::create_dir_all(&folder).expect("Mac folder fixture");
+        std::fs::write(
+            project.join("project.json"),
+            json!({"projectId":"p1","source":folder}).to_string(),
+        )
+        .expect("project record");
+        std::fs::write(folder.join("file.txt"), b"mac version").expect("Mac version");
+        std::fs::write(
+            project.join("sync/held.json"),
+            json!({"file.txt":{"h":"old","why":"conflict"}}).to_string(),
+        )
+        .expect("held conflict");
+        std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("sync status");
+        let guest = Guest(std::sync::Mutex::new(0));
+        let first = crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &guest)
+            .expect("guest handoff succeeds");
+        let identity = first.handoff_id.expect("handoff identity");
+        let text = first.handoff_text.expect("handoff text");
+        assert_eq!(*guest.0.lock().expect("guest count lock"), 1);
+
+        let database_path = root.path().join("runtime.sqlite");
+        {
+            let mut connection = database_at(&database_path);
+            // Fail point before the P03 transaction: dropping it simulates process loss.
+            let tx = connection.transaction().expect("P03 transaction starts");
+            send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 123.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("P03 row stages before commit");
+            drop(tx);
+            drop(connection);
+        }
+        {
+            let mut connection = database_at(&database_path);
+            assert_eq!(count(&connection, "runtime_events"), 0);
+            let restarted_guest = Guest(std::sync::Mutex::new(0));
+            let replay =
+                crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &restarted_guest)
+                    .expect("restart resolves saved guest receipt");
+            assert_eq!(replay.handoff_id.as_deref(), Some(identity.as_str()));
+            assert_eq!(*restarted_guest.0.lock().expect("guest count lock"), 0);
+            let tx = connection
+                .transaction()
+                .expect("P03 transaction starts after restart");
+            send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 124.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("P03 row commits after restart");
+            tx.commit().expect("P03 transaction commits");
+        }
+        {
+            let mut connection = database_at(&database_path);
+            // Fail point after the P03 commit: replay after restart returns the same receipt.
+            let restarted_guest = Guest(std::sync::Mutex::new(0));
+            let replay =
+                crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &restarted_guest)
+                    .expect("postcommit restart resolves");
+            assert_eq!(replay.handoff_id.as_deref(), Some(identity.as_str()));
+            let tx = connection
+                .transaction()
+                .expect("P03 replay transaction starts");
+            let receipt = send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 125.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("same-identity replay gets receipt");
+            assert!(!receipt.event_inserted);
+            tx.commit().expect("idempotent replay transaction commits");
+            assert_eq!(count(&connection, "runtime_events"), 1);
+            assert_eq!(*restarted_guest.0.lock().expect("guest count lock"), 0);
+        }
     }
 
     #[test]

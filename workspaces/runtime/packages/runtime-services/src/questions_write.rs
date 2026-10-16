@@ -4,12 +4,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::event_write::{self, EventWriteError};
+use crate::{
+    coordination::{self, CoordinationError, SystemFollowup},
+    host_project_runtime::PreparedHost,
+    message_admission::MessageAdmission,
+    projects::ProjectsError,
+};
 
 const USER: &str = "user";
 const PENDING: &str = "pending";
@@ -35,6 +41,10 @@ pub enum QuestionsWriteError {
     Json(#[from] serde_json::Error),
     #[error("system clock is before the Unix epoch")]
     Clock,
+    #[error(transparent)]
+    Coordination(#[from] CoordinationError),
+    #[error(transparent)]
+    Projects(#[from] ProjectsError),
 }
 
 pub struct ComplaintResponseWrite<'a> {
@@ -44,6 +54,270 @@ pub struct ComplaintResponseWrite<'a> {
     pub status: &'a str,
     pub version: i64,
     pub signature: &'a str,
+}
+
+pub struct ComplaintWriteResult {
+    pub record: Value,
+    pub event_inserted: bool,
+    pub wake_event_worker: bool,
+}
+
+pub struct AsyncQuestionAnswerResult {
+    pub response: Value,
+    pub event_inserted: bool,
+}
+
+pub struct AsyncQuestionAnswerInput<'a, V> {
+    pub id: &'a str,
+    pub data: &'a Value,
+    pub text: &'a str,
+    pub admission: &'a dyn MessageAdmission,
+    pub prepared: &'a PreparedHost,
+    pub now: f64,
+    pub validate: V,
+}
+
+pub fn answer_async_question_in_store(
+    store: &RuntimeStore,
+    id: &str,
+    data: &Value,
+    now: f64,
+    validate: impl Fn(&Value) -> bool,
+) -> Result<Option<AsyncQuestionAnswerResult>, QuestionsWriteError> {
+    let raw = store
+        .read_transaction_with_error(|transaction| {
+            QuestionsWriteRepository::request(transaction, id)
+        })?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
+    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
+        return Err(invalid_stored("runtime_requests", id));
+    }
+    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return Ok(None);
+    }
+    let agent_id = record
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?
+        .to_owned();
+    let text = async_answer_text(&record, data)?;
+    let connection = store.read()?;
+    let admission =
+        crate::message_admission::MessageIngressAdmission::load(store, &connection, &agent_id)?;
+    drop(connection);
+    let prepared = PreparedHost::load(store)?;
+    let result = store.transaction_with_error(|transaction| {
+        answer_async_question(
+            transaction,
+            AsyncQuestionAnswerInput {
+                id,
+                data,
+                text: &text,
+                admission: &admission,
+                prepared: &prepared,
+                now,
+                validate: &validate,
+            },
+        )
+    })?;
+    Ok(Some(result))
+}
+
+fn async_answer_text(record: &Value, data: &Value) -> Result<String, QuestionsWriteError> {
+    let questions = record
+        .pointer("/params/questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+    let answers = data.get("answers").and_then(Value::as_object).ok_or(
+        QuestionsWriteError::InvalidRequest("Supply question answers"),
+    )?;
+    let mut sections = Vec::with_capacity(questions.len());
+    for question in questions {
+        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+        let prompt = question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or(question_id);
+        let choices = answers
+            .get(question_id)
+            .and_then(|answer| answer.get("answers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if choices.iter().any(|choice| !choice.is_string()) {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Supply question answers",
+            ));
+        }
+        let mut section = vec![prompt.to_owned()];
+        section.extend(choices.iter().filter_map(Value::as_str).map(str::to_owned));
+        sections.push(section.join("\n"));
+    }
+    Ok(sections.join("\n"))
+}
+
+/// Atomically admit an async-question follow-up, mirror an active radio answer,
+/// and record the answer receipt. All filesystem and budget history preparation
+/// is owned by the caller and happens before this writer transaction.
+pub fn answer_async_question<V: Fn(&Value) -> bool>(
+    transaction: &Transaction<'_>,
+    input: AsyncQuestionAnswerInput<'_, V>,
+) -> Result<AsyncQuestionAnswerResult, QuestionsWriteError> {
+    let AsyncQuestionAnswerInput {
+        id,
+        data,
+        text,
+        admission,
+        prepared,
+        now,
+        validate,
+    } = input;
+    let mut record = request(transaction, id, &validate)?;
+    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return Err(QuestionsWriteError::InvalidRequest("Not an async question"));
+    }
+    let signature = crate::provider_callbacks::answer_signature(data);
+    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
+        if previous != signature {
+            return Err(QuestionsWriteError::Conflict(
+                "This request already has a different answer",
+            ));
+        }
+        if record.get("status").and_then(Value::as_str) == Some("answered") {
+            return Ok(AsyncQuestionAnswerResult {
+                response: json!({"status":"answered","replayed":true}),
+                event_inserted: false,
+            });
+        }
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
+        ));
+    }
+    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Request is no longer pending",
+        ));
+    }
+    let agent_id = record
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent = stored_agent(transaction, agent_id)?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
+    if !event_write::truthy(agent.extra.get("isLead")) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Only the orchestrator can ask the user. The subagent must contact its orchestrator.",
+        ));
+    }
+    if event_write::truthy(agent.extra.get("deletedAt"))
+        || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+        || !event_write::truthy(agent.extra.get("autoWake"))
+    {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "This question belongs to a stopped turn",
+        ));
+    }
+    let text = event_write::python_strip(text);
+    let consumed = crate::radio_runtime::route_question_answer(
+        transaction,
+        prepared,
+        &record,
+        text,
+        None,
+        now,
+    )?;
+    let event_inserted = if consumed {
+        false
+    } else {
+        let turn_id = record.get("turnId").and_then(Value::as_str);
+        let accepted = coordination::send_system_followup_with_radio_answer(
+            transaction,
+            SystemFollowup {
+                recipient_id: agent_id,
+                id: &format!("{id}:answer"),
+                text,
+                delivery: "queue",
+                now,
+            },
+            turn_id,
+            admission,
+        )?;
+        crate::radio_runtime::record_question_answer_followup(
+            transaction,
+            prepared,
+            &record,
+            text,
+            now,
+        )?;
+        accepted.event_inserted
+    };
+
+    record["status"] = json!("answered");
+    record["answerSignature"] = json!(signature);
+    record["answeredBy"] = json!(USER);
+    record["answeredAt"] = json!(now);
+    record["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
+    record["deferred"] = json!(false);
+    record["answerHistory"] = answer_history(&record, data)?;
+    put_request(transaction, id, &record, &validate)?;
+    Ok(AsyncQuestionAnswerResult {
+        response: json!({"status":"answered"}),
+        event_inserted,
+    })
+}
+
+fn answer_history(record: &Value, data: &Value) -> Result<Value, QuestionsWriteError> {
+    let questions = record
+        .pointer("/params/questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+    let answers = data.get("answers").and_then(Value::as_object).ok_or(
+        QuestionsWriteError::InvalidRequest("Supply question answers"),
+    )?;
+    let mut history = Vec::with_capacity(questions.len());
+    for question in questions {
+        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+        let values = answers
+            .get(question_id)
+            .and_then(|answer| answer.get("answers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if values.iter().any(|value| !value.is_string()) {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Supply question answers",
+            ));
+        }
+        history.push(json!({
+            "id":question_id,
+            "question":question.get("question").and_then(Value::as_str).unwrap_or(question_id),
+            "isSecret":event_write::truthy(question.get("isSecret")),
+            "answer":if event_write::truthy(question.get("isSecret")) { json!("[redacted]") } else { json!(values) }
+        }));
+    }
+    Ok(Value::Array(history))
 }
 
 pub fn defer_question(
@@ -159,7 +433,7 @@ pub fn submit_complaint(
     request_id: &str,
     text: &str,
     validate: impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
+) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let actor = stored_agent(transaction, lead_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Invalid request"))?;
     if event_write::truthy(actor.extra.get("deletedAt")) {
@@ -202,7 +476,11 @@ pub fn submit_complaint(
                 "This complaint id has different content",
             ));
         }
-        return Ok(previous);
+        return Ok(ComplaintWriteResult {
+            record: previous,
+            event_inserted: false,
+            wake_event_worker: false,
+        });
     }
     let record = json!({
         "id": id,
@@ -228,7 +506,7 @@ pub fn submit_complaint(
         .ok_or_else(|| QuestionsWriteError::InvalidRequest("Invalid complaint"))?;
     QuestionsWriteRepository::put_complaint(transaction, id, &event_write::python_json(&record))?;
     let message = complaint_message(&record);
-    event_write::enqueue_event(
+    let event_inserted = event_write::enqueue_event(
         transaction,
         &lead,
         format!("complaint:{id}"),
@@ -236,14 +514,24 @@ pub fn submit_complaint(
         message,
         now,
     )?;
-    Ok(record)
+    // Python's enqueue() fast-dispatches only for autoWake agents, while its
+    // send eligibility excludes moveImportPending agents. Keep the event
+    // durable, but do not wake the worker while either owner gate is closed.
+    let wake_event_worker = event_inserted
+        && event_write::truthy(lead.extra.get("autoWake"))
+        && !event_write::recovery_pending(&lead);
+    Ok(ComplaintWriteResult {
+        record,
+        event_inserted,
+        wake_event_worker,
+    })
 }
 
 pub fn respond_to_complaint(
     transaction: &Transaction<'_>,
     input: ComplaintResponseWrite<'_>,
     validate: impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
+) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let ComplaintResponseWrite {
         complaint_id,
         request_id,
@@ -261,7 +549,11 @@ pub fn respond_to_complaint(
         complaint_id,
         &validate,
     )? {
-        return Ok(saved);
+        return Ok(ComplaintWriteResult {
+            record: saved,
+            event_inserted: false,
+            wake_event_worker: false,
+        });
     }
     let raw = QuestionsWriteRepository::complaint(transaction, complaint_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown complaint"))?;
@@ -342,7 +634,7 @@ pub fn respond_to_complaint(
         complaint_id,
         &event_write::python_json(&complaint),
     )?;
-    if !event_write::truthy(reporter.extra.get("deletedAt")) {
+    let event_inserted = if !event_write::truthy(reporter.extra.get("deletedAt")) {
         let event = json!({
             "complaint_id": complaint_id,
             "responder": USER,
@@ -355,10 +647,21 @@ pub fn respond_to_complaint(
             "complaint_response",
             event_write::python_json(&event),
             now,
-        )?;
-    }
+        )?
+    } else {
+        false
+    };
+    // Match Python enqueue/send gates: preserve the event, but do not wake
+    // while autoWake is disabled or move import/recovery blocks sending.
+    let wake_event_worker = event_inserted
+        && event_write::truthy(reporter.extra.get("autoWake"))
+        && !event_write::recovery_pending(&reporter);
     event_write::save_receipt(transaction, Some(&receipt_id), signature, &complaint)?;
-    Ok(complaint)
+    Ok(ComplaintWriteResult {
+        record: complaint,
+        event_inserted,
+        wake_event_worker,
+    })
 }
 
 fn request(

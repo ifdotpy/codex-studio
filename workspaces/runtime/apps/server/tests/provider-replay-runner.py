@@ -40,6 +40,17 @@ def recorded_frames(path):
     return [json.loads(line) for line in text[:text.rfind("\n") + 1].splitlines()]
 
 
+def replayable_fixture_names():
+    """Return complete provider-turn fixtures, excluding boundary-only replies."""
+    fixture_dir = SERVER_TESTS_ROOT / "fixtures" / "provider-replay"
+    return sorted(
+        path.stem
+        for path in fixture_dir.glob("*.json")
+        if path.name != "codex-rpc-replies.json"
+        and not json.loads(path.read_text(encoding="utf-8")).get("boundaryOnly")
+    )
+
+
 def app_server_stderr(root):
     """Return bounded stderr tails retained in AppServer logs for failed child startup."""
     logs = sorted(root.rglob("app-server.log"))
@@ -646,10 +657,7 @@ class ProviderReplay(unittest.TestCase):
             self.assertEqual(missing, [], "every outbound RPC requires exactly one reply")
 
     def test_all_recorded_fixtures(self):
-        fixture_dir = SERVER_TESTS_ROOT / "fixtures" / "provider-replay"
-        names = sorted(path.stem for path in fixture_dir.glob("*.json")
-                       if path.name != "codex-rpc-replies.json"
-                       and not json.loads(path.read_text(encoding="utf-8")).get("boundaryOnly"))
+        names = replayable_fixture_names()
         self.assertGreaterEqual(len(names), 6)
         if os.environ.get("PROVIDER_REPLAY_FILTER"):
             names = [os.environ["PROVIDER_REPLAY_FILTER"]]

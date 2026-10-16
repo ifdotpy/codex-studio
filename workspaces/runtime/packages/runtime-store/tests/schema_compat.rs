@@ -125,6 +125,35 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
 }
 
 #[test]
+fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
+    let state = temporary_state();
+    create_from_live_schema(&state);
+    let analytics_path = state.join("analytics.sqlite3");
+    let db = Connection::open(&analytics_path).expect("analytics fixture opens");
+    db.execute("DROP INDEX analytics_limits_account_at", [])
+        .expect("fixture index drops");
+    drop(db);
+
+    let store = RuntimeStore::open(Some(&state)).expect("Rust opens existing analytics schema");
+    drop(store);
+
+    let db = Connection::open(&analytics_path).expect("analytics fixture reopens");
+    let exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='analytics_limits_account_at')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("index lookup succeeds");
+    assert!(
+        exists,
+        "Rust open creates the missing analytics limits index"
+    );
+    drop(db);
+    cleanup(state);
+}
+
+#[test]
 fn missing_required_objects_are_typed_and_name_the_object() {
     for (sql, expected) in [
         ("DROP TABLE runtime_tasks", "runtime_tasks"),

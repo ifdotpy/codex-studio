@@ -553,245 +553,7 @@
     "phase": "submitted",
     "state": "python_unknown",
     "findings": ["A5", "B3"],
-    "expectedDifferences": [
-      {
-        "path": "/runtime_agents/0/record/autoWake",
-        "python": true,
-        "pythonPresent": true,
-        "rust": false,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/contextRepairWait",
-        "python": {
-          "error": "Context repair waits for a confirmed input receipt: event",
-          "events": ["event"],
-          "nextCheckAt": 0,
-          "scope": "native",
-          "source": {
-            "accountKey": "default",
-            "attemptId": null,
-            "epoch": 0,
-            "id": "agent",
-            "threadId": "thread"
-          }
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/disconnectRecovery",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "at": "<time>",
-          "autoWake": true,
-          "connectionId": null,
-          "epoch": 0,
-          "source": "restart",
-          "startAttempt": {
-            "accountKey": "default",
-            "activeAtReservation": false,
-            "connectionId": null,
-            "created": "<time>",
-            "epoch": 0,
-            "events": ["event"],
-            "id": "attempt",
-            "nativeOperationId": "turn:agent:event:attempt:attempt",
-            "submitted": true,
-            "supervisorIdentity": null,
-            "threadId": "thread"
-          },
-          "supervisor": null,
-          "threadId": "thread",
-          "turnId": null
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/error",
-        "python": "Context repair waits for a confirmed input receipt: event",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/restartRecovery/connectionId",
-        "python": null,
-        "pythonPresent": false,
-        "rust": null,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/restartRecovery/reason",
-        "python": "Native input submission has no confirmed turn identity.",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/restartRecovery/supervisor",
-        "python": null,
-        "pythonPresent": false,
-        "rust": null,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "activeAtReservation": false,
-          "connectionId": null,
-          "created": "<time>",
-          "epoch": 0,
-          "events": ["event"],
-          "id": "attempt",
-          "nativeOperationId": "turn:agent:event:attempt:attempt",
-          "submitted": true,
-          "supervisorIdentity": null,
-          "threadId": "thread"
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/startOutcomeHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "epoch": 0,
-          "reason": "Python submission identity requires native history reconciliation; input will not be replayed.",
-          "stage": "recovery"
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "queued",
-        "pythonPresent": true,
-        "rust": "interrupted",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_execution_runs/0/record/disconnectRecovery",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "at": "<time>",
-          "autoWake": true,
-          "connectionId": null,
-          "epoch": 0,
-          "source": "restart",
-          "startAttempt": {
-            "accountKey": "default",
-            "activeAtReservation": false,
-            "connectionId": null,
-            "created": "<time>",
-            "epoch": 0,
-            "events": ["event"],
-            "id": "attempt",
-            "nativeOperationId": "turn:agent:event:attempt:attempt",
-            "submitted": true,
-            "supervisorIdentity": null,
-            "threadId": "thread"
-          },
-          "supervisor": null,
-          "threadId": "thread",
-          "turnId": null
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_execution_runs/0/record/restartRecovery/connectionId",
-        "python": null,
-        "pythonPresent": false,
-        "rust": null,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_execution_runs/0/record/restartRecovery/reason",
-        "python": "Native input submission has no confirmed turn identity.",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/runtime_execution_runs/0/record/restartRecovery/supervisor",
-        "python": null,
-        "pythonPresent": false,
-        "rust": null,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/autoWake",
-        "python": true,
-        "pythonPresent": true,
-        "rust": false,
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/contextRepairWait",
-        "python": {
-          "error": "Context repair waits for a confirmed input receipt: event",
-          "scope": "native"
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": "Context repair waits for a confirmed input receipt: event",
-        "pythonPresent": true,
-        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {},
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "queued",
-        "pythonPresent": true,
-        "rust": "interrupted",
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      }
-    ],
+    "expectedDifferences": [],
     "tier": "fast",
     "return": 1
   },
@@ -876,28 +638,6 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/runtime_agents/0/record/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "activeAtReservation": false,
-          "connectionGeneration": 1,
-          "connectionId": null,
-          "created": "<time>",
-          "epoch": 0,
-          "events": ["event"],
-          "id": "attempt",
-          "nativeOperationId": "turn:agent:event:attempt:attempt",
-          "requestTicket": "ticket",
-          "submitted": true,
-          "supervisorIdentity": null,
-          "threadId": "thread"
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/runtime_execution_runs/0/record/disconnectRecovery",
         "python": null,
         "pythonPresent": false,
@@ -961,14 +701,6 @@
           "threadId": "thread",
           "turnId": null
         },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {},
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       }
@@ -1309,18 +1041,18 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/sync_entities/0/payload/value/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {},
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/sync_entities/1/payload/value/error",
         "python": "Codex disconnected",
         "pythonPresent": true,
         "rust": "Server restarted before delivery acknowledgement",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {},
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       }
@@ -1585,6 +1317,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -4854,6 +4587,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -5558,7 +5292,8 @@
     ],
     "expectRefusal": {
       "table": "runtime_agents",
-      "id": "agent"
+      "id": "agent",
+      "pointer": "/epoch"
     },
     "expectedDifferences": [],
     "tier": "fast",
@@ -6972,6 +6707,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -7067,6 +6803,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -7162,6 +6899,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",

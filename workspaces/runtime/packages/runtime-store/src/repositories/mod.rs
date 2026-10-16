@@ -69,7 +69,7 @@ pub(crate) fn schema_registrations() -> Vec<&'static SchemaRegistration> {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_state, agents, events, messages, sync_documents, tasks};
+    use super::{account_state, agents, events, messages, sync_documents, tasks, usage};
     use crate::records::{
         AgentId, AgentRecord, AgentRepository, ChatMessage, ChatMessageId, MessageRepository,
         QueueEvent, QueueEventId, QueueEventRepository, TaskRecord, TaskRepository,
@@ -223,7 +223,11 @@ mod tests {
         MessageRepository::put(&db, &message).expect("message write uses declared objects");
         MessageRepository::get(&db, &message.id).expect("message read uses declared objects");
 
-        let db = database_with(&account_state::REQUIREMENTS);
+        let db = database_with(&usage::REQUIREMENTS);
+        db.execute_batch(
+            "CREATE TABLE sync_entities (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(collection,id))",
+        )
+        .expect("workspace snapshot fixture table is created");
         db.execute(
             "INSERT INTO sync_entities(collection, id, payload, deleted) VALUES ('workspace', 'current', ?1, 0)",
             [json!({"value": {"rateLimitsByAccount": {

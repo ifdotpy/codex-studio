@@ -5,9 +5,10 @@ import logging
 import math
 import sqlite3
 from copy import deepcopy
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast, get_args
 
-from pydantic import AfterValidator, TypeAdapter, ValidationError
+from pydantic import AfterValidator, BaseModel, TypeAdapter, ValidationError
+from pydantic_core import ErrorDetails
 
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
@@ -44,6 +45,7 @@ MAX_MUTATION_SYNC_ENTITIES = 500
 # SQLite trigger schema owner for atomic event projection/window maintenance.
 ENTITY_EVENT_TRIGGER_PREFIX = "sync_entity_event"
 ENTITY_EVENT_INSERT_TRIGGER = ENTITY_EVENT_TRIGGER_PREFIX + "_INSERT"
+EVENT_SYNC_COLUMNS = ("id", "agent", "kind", "status", "created", "error")
 
 
 def entity_tombstone_prune_due(count: int) -> bool:
@@ -57,7 +59,7 @@ def entity_tombstone_prune_due(count: int) -> bool:
     return count > limit + min(ENTITY_TOMBSTONE_PRUNE_BATCH, limit // 20)
 
 
-_DTO_MODELS = {
+_DTO_MODELS: dict[str, type[BaseModel]] = {
     "agent": AgentEntityDto,
     "room": RoomEntityDto,
     "task": TaskEntityDto,
@@ -76,7 +78,7 @@ _DTO_MODELS = {
 }
 AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
 COLLECTION_FIELDS = {
-    name: frozenset(model.model_fields)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_fields dynamically
+    name: frozenset(model.model_fields)
     for name, model in _DTO_MODELS.items()
     if name != "agent"
 }
@@ -234,7 +236,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             }
     while True:
         try:
-            validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
+            validated = model.model_validate(result)
             break
         except Exception as error:
             error_reader = getattr(error, "errors", None)
@@ -298,15 +300,77 @@ def _drop_error_path(value: Any, path: tuple[object, ...]) -> None:
         _drop_error_path(value[head], tuple(tail))
 
 
-def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], ...]:
-    paths: set[tuple[object, ...]] = set()
-    for item in error.errors():
+def _contract_extra_paths(error: ValidationError) -> tuple[tuple[int | str, ...], ...]:
+    # Pydantic inserts the selected model name into errors produced by an
+    # untagged nested union (for example, ``nativeStatus.AgentNativeStatus``).
+    # Only those union-branch labels are metadata; the remaining path is the
+    # field path to remove from the selected DTO alternative.
+    branch_names: set[str] = set()
+
+    def contract_model(value: Any) -> bool:
+        return isinstance(value, type) and (
+            issubclass(value, BaseModel) or hasattr(value, "__pydantic_config__")
+        )
+
+    pending: list[Any] = list(_DTO_MODELS.values()) + [UiPreferencesDto]
+    visited: set[Any] = set()
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        if contract_model(node):
+            if issubclass(node, BaseModel):
+                pending.extend(field.annotation for field in node.model_fields.values())
+            else:
+                pending.extend(getattr(node, "__annotations__", {}).values())
+            continue
+        arguments = get_args(node)
+        if len(arguments) > 1:
+            branch_names.update(
+                argument.__name__
+                for argument in arguments
+                if contract_model(argument)
+            )
+        pending.extend(
+            argument
+            for argument in arguments
+            if get_args(argument) or contract_model(argument)
+        )
+    errors = error.errors()
+    union_groups: dict[tuple[int | str, ...], dict[str, list[ErrorDetails]]] = {}
+    for item in errors:
+        location = tuple(item.get("loc", ()))
+        for index, part in enumerate(location):
+            if isinstance(part, str) and part in branch_names:
+                prefix = location[:index]
+                union_groups.setdefault(prefix, {}).setdefault(part, []).append(item)
+
+    selected_branches: dict[tuple[int | str, ...], str] = {}
+    for prefix, branches in union_groups.items():
+        selected_branches[prefix] = min(
+            branches,
+            key=lambda branch: (
+                sum(item.get("type") != "extra_forbidden" for item in branches[branch]),
+                len(branches[branch]),
+                branch,
+            ),
+        )
+
+    paths: set[tuple[int | str, ...]] = set()
+    for item in errors:
         if item.get("type") != "extra_forbidden":
             continue
         location = tuple(item.get("loc", ()))
-        # Discriminated-union validation prepends the collection and DTO value.
-        if "value" in location:
-            location = location[location.index("value") + 1:]
+        selected = True
+        for index, part in enumerate(location):
+            if isinstance(part, str) and part in branch_names:
+                if selected_branches.get(location[:index]) != part:
+                    selected = False
+                    break
+        if not selected:
+            continue
+        location = tuple(part for part in location if part not in branch_names)
         if location:
             paths.add(location)
     return tuple(sorted(paths, key=lambda path: tuple(map(str, path))))
@@ -342,7 +406,12 @@ def response_entity_payload_fail_open(
         for key in envelope_extras:
             del candidate[key]
 
-        paths = _contract_extra_paths(original_error)
+        selected_model = ChatEntityDto if deleted else _DTO_MODELS[envelope["collection"]]
+        try:
+            selected_model.model_validate(candidate["value"])
+            paths: tuple[tuple[int | str, ...], ...] = ()
+        except ValidationError as selected_error:
+            paths = _contract_extra_paths(selected_error)
         if deleted:
             # The union adapter reports a legacy alias through its branch DTO;
             # remove forbidden fields from the value itself using that DTO.
@@ -506,8 +575,8 @@ def event_window_statements(*, full: bool = False) -> tuple[str, str, str]:
     return backfill, retire, marker
 
 
-def event_trigger_sql(operation: str) -> str:
-    """Generate one event trigger; the Rust stored SQL is a checked consumer."""
+def event_trigger_statements(operation: str) -> tuple[str, ...]:
+    """Generate event triggers; the Rust stored SQL is a checked consumer."""
     if operation not in ('INSERT', 'UPDATE', 'DELETE'):
         raise ValueError('Invalid event trigger operation')
     old = operation == 'DELETE'
@@ -515,9 +584,14 @@ def event_trigger_sql(operation: str) -> str:
     key = 'OLD.id' if old else 'NEW.id'
     deleted = int(old)
     payload = f"sync_entity_payload('event',{key},{record},{deleted})"
-    statements = ';\n'.join(event_window_statements())
-    return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}
-          AFTER {operation} ON runtime_events BEGIN
+    def make_trigger(
+            suffix: str,
+            trigger_operation: str,
+            trigger_when: str,
+            statements: tuple[str, ...]) -> str:
+        joined_statements = ";\n          ".join(statements)
+        return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{suffix}
+          AFTER {trigger_operation} ON runtime_events {trigger_when} BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',{key},(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
@@ -527,8 +601,58 @@ def event_trigger_sql(operation: str) -> str:
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
           WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;
-          {statements};
+          {joined_statements};
         END"""
+
+    window_statements = event_window_statements()
+    if operation != 'UPDATE':
+        return (make_trigger(operation, operation, '', window_statements),)
+
+    update_of = "UPDATE OF " + ",".join(EVENT_SYNC_COLUMNS)
+    from codex_entity_contracts import EVENT_WINDOW
+    recent = f"SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"
+    recent_before = f"""SELECT id FROM (
+        SELECT id,created FROM runtime_events WHERE id!=NEW.id
+        UNION ALL SELECT OLD.id,OLD.created
+    ) ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"""
+    old_in_window = f"EXISTS (SELECT 1 FROM ({recent_before}) e WHERE e.id=OLD.id)"
+    new_in_window = f"EXISTS (SELECT 1 FROM ({recent}) e WHERE e.id=NEW.id)"
+    membership_changed = f"""CASE
+        WHEN OLD.id IS NEW.id AND OLD.created IS NEW.created THEN 0
+        ELSE (WITH old_member AS (SELECT {old_in_window} AS present),
+                   new_member AS (SELECT {new_in_window} AS present)
+              SELECT CASE WHEN OLD.id IS NEW.id
+                          THEN old_member.present != new_member.present
+                          ELSE old_member.present OR new_member.present
+                     END
+              FROM old_member,new_member)
+    END"""
+    payload_when = "WHEN (" \
+        "OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR " \
+        "OLD.kind IS NOT NEW.kind OR OLD.status IS NOT NEW.status OR " \
+        "OLD.created IS NOT NEW.created OR OLD.error IS NOT NEW.error) " \
+        f"AND NOT ({membership_changed})"
+    membership_when = f"WHEN {membership_changed}"
+    dead_payload = "sync_entity_payload('event',NEW.id,'{}',1)"
+    retire_if_outside = f"""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+        SELECT 'event',NEW.id,(SELECT max(seq)+1 FROM (
+                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+               sync_entity_hash({dead_payload}),{dead_payload},1
+        WHERE NOT EXISTS (SELECT 1 FROM ({recent}) e WHERE e.id=NEW.id)
+        ON CONFLICT(collection,id) DO UPDATE SET
+            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
+        WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted"""
+    payload_statements = (retire_if_outside, event_window_statements()[2])
+    return (
+        make_trigger('UPDATE', update_of, payload_when, payload_statements),
+        make_trigger('UPDATE_WINDOW', update_of, membership_when, window_statements),
+    )
+
+
+def event_trigger_sql(operation: str) -> str:
+    return ';\n'.join(event_trigger_statements(operation))
 
 
 def install_bypass_triggers(db: sqlite3.Connection) -> None:
@@ -537,13 +661,24 @@ def install_bypass_triggers(db: sqlite3.Connection) -> None:
         # Retire the intermediate Python-only callback trigger if a development
         # state was prepared with it. Both runtimes keep the portable names.
         db.execute(f"DROP TRIGGER IF EXISTS sync_entity_event_window_v2_{operation}")
-        expected = event_trigger_sql(operation)
-        row = db.execute('SELECT sql FROM sqlite_master WHERE type=\'trigger\' AND name=?',
-                         (f'{ENTITY_EVENT_TRIGGER_PREFIX}_{operation}',)).fetchone()
-        if row and row[0] == expected.replace("CREATE TRIGGER IF NOT EXISTS", "CREATE TRIGGER", 1):
+        expected = event_trigger_statements(operation)
+        names = [f'{ENTITY_EVENT_TRIGGER_PREFIX}_{operation}']
+        if operation == 'UPDATE':
+            names.append(f'{ENTITY_EVENT_TRIGGER_PREFIX}_UPDATE_WINDOW')
+        installed = db.execute(
+            f"SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ({','.join('?' for _ in names)})",
+            names).fetchall()
+        expected_sql = {
+            name: statement.replace("CREATE TRIGGER IF NOT EXISTS", "CREATE TRIGGER", 1)
+            for name, statement in zip(names, expected)
+        }
+        if len(installed) == len(expected_sql) and all(
+                expected_sql.get(row[0]) == row[1] for row in installed):
             continue
-        db.execute(f'DROP TRIGGER IF EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}')
-        db.execute(expected)
+        for name in names:
+            db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        for statement in expected:
+            db.execute(statement)
 
 
 def _ensure_sequence_transaction(db: sqlite3.Connection) -> None:

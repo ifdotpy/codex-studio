@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 chrono.workspace = true
+file-rotate.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 studio-runtime-providers = { path = "../runtime-providers" }
@@ -15,6 +16,7 @@ studio-runtime-store = { path = "../runtime-store" }
 thiserror.workspace = true
 strum.workspace = true
 tokio.workspace = true
+pty-process = "=0.5.3"
 
 [target.'cfg(unix)'.dependencies]
 command-fds = "=0.3.2"

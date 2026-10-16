@@ -10,17 +10,23 @@ impl SchedulerRepository {
         after_agents: &BTreeMap<String, String>,
         account_limit: usize,
         agent_limit: usize,
-    ) -> StoreResult<BTreeMap<String, Vec<(String, i64)>>> {
-        const TARGETS: &str = "WITH targets AS (
+    ) -> StoreResult<AccountWakePage> {
+        let targets = format!(
+            "WITH targets AS (
  SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
  json_type(a.record,'$.accountKey') account_type,
  json_extract(a.record,'$.epoch') epoch,
+ json_extract(a.record,'$.workspaceMode') workspace_mode,
  (json_extract(a.record,'$.status')='queued'
   AND json_extract(a.record,'$.autoWake')=1
   AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
   AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0
   AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id
-     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending')) pending,
+     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending'))
+ OR (json_extract(a.record,'$.startAttempt.action')='capacity'
+     AND json_extract(a.record,'$.startAttempt.submitted')=0
+     AND json_extract(a.record,'$.capacityRetry.id')=json_extract(a.record,'$.startAttempt.capacityRetryId')
+     AND json_extract(a.record,'$.status')='starting') pending,
  ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
    AND json_extract(a.record,'$.startAttempt.submitted')=1
    AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
@@ -34,12 +40,17 @@ impl SchedulerRepository {
       NOT IN ('finished','continued','reattached','input_restored')))) recovery
  FROM runtime_agents a WHERE json_extract(a.record,'$.deletedAt') IS NULL
  AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
- AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0)
-";
+ AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
+ AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h
+   WHERE h.id='{}' || a.id AND h.signature='{}'))
+",
+            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+        );
         let invalid: Option<String> = connection
             .query_row(
                 &format!(
-                    "{TARGETS} SELECT id FROM targets WHERE (pending OR recovery)
+                    "{targets} SELECT id FROM targets WHERE (pending OR recovery)
         AND (account='' OR account_type NOT IN ('null','text')) LIMIT 1"
                 ),
                 [],
@@ -53,8 +64,8 @@ impl SchedulerRepository {
             });
         }
 
-        let mut account_statement = connection.prepare(&format!(
-            "{TARGETS} SELECT DISTINCT account FROM targets
+        let mut account_statement = connection.prepare_cached(&format!(
+            "{targets} SELECT DISTINCT account FROM targets
              WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
         ))?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
@@ -69,21 +80,22 @@ impl SchedulerRepository {
             accounts = read_accounts("")?;
         }
 
-        let mut agent_statement = connection.prepare(&format!(
-            "{TARGETS} SELECT id,epoch FROM targets
+        let mut agent_statement = connection.prepare_cached(&format!(
+            "{targets} SELECT id,epoch,workspace_mode FROM targets
              WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
         ))?;
         let mut result = BTreeMap::new();
         for account in accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
-            let mut read_agents = |after: &str| -> rusqlite::Result<Vec<(String, i64)>> {
-                agent_statement
-                    .query_map(
-                        rusqlite::params![account, after, agent_limit as i64],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?
-                    .collect()
-            };
+            let mut read_agents =
+                |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
+                    agent_statement
+                        .query_map(
+                            rusqlite::params![account, after, agent_limit as i64],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )?
+                        .collect()
+                };
             let mut agents = read_agents(after)?;
             if agents.is_empty() && !after.is_empty() {
                 agents = read_agents("")?;
@@ -101,7 +113,7 @@ impl SchedulerRepository {
 
     /// Return queued local agents with pending events in the current epoch.
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT a.id,json_extract(a.record,'$.epoch') FROM runtime_agents a \
              WHERE json_extract(a.record,'$.status')='queued' \
              AND json_extract(a.record,'$.autoWake')=1 \
@@ -136,6 +148,7 @@ impl SchedulerRepository {
             attempt_created,
             limit,
             false,
+            None,
         )
     }
 
@@ -156,6 +169,31 @@ impl SchedulerRepository {
             attempt_created,
             limit,
             true,
+            None,
+        )
+    }
+
+    /// Claim exactly one radio turn selected by the runtime-services policy in
+    /// this transaction. The caller must authorize the event before invoking
+    /// this entry point; this method fences its pending identity and journals
+    /// the same durable attempt as the ordinary claim path.
+    pub fn claim_selected_radio_turn(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        attempt_created: f64,
+        event_id: &str,
+    ) -> StoreResult<Option<ClaimedEvents>> {
+        Self::claim_selected(
+            transaction,
+            agent_id,
+            epoch,
+            attempt_id,
+            attempt_created,
+            1,
+            true,
+            Some(event_id),
         )
     }
 
@@ -168,6 +206,7 @@ impl SchedulerRepository {
         attempt_created: f64,
         limit: usize,
         preparation: bool,
+        radio_event: Option<&str>,
     ) -> StoreResult<Option<ClaimedEvents>> {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
@@ -217,12 +256,14 @@ impl SchedulerRepository {
         }
 
         // Python gives radio turns priority over the ordinary queue prefix.
-        if transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+        if radio_event.is_none()
+            && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
              AND status='pending' AND kind IN ('radio','radio_turn'))",
-            params![agent_id, epoch],
-            |row| row.get::<_, bool>(0),
-        )? {
+                params![agent_id, epoch],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
             return Ok(Some(refused(
                 &agent,
                 "radio-turn requires radio-policy".to_owned(),
@@ -257,7 +298,16 @@ impl SchedulerRepository {
                 )));
             }
         }
-        let sql = if has_metadata {
+        let sql = if let Some(_event_id) = radio_event {
+            if has_metadata {
+                "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
+                 FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
+                 WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+            } else {
+                "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,NULL \
+                 FROM runtime_events e WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+            }
+        } else if has_metadata {
             "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
              FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
              WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
@@ -267,14 +317,26 @@ impl SchedulerRepository {
              FROM runtime_events e WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
              ORDER BY e.created,e.rowid LIMIT ?3"
         };
-        let mut statement = transaction.prepare(sql)?;
-        let rows = statement.query_map(params![agent_id, epoch, prefix as i64], |row| {
-            Ok((
-                crate::QueueEventRepository::from_row(row)?,
-                row.get::<_, Option<String>>(9)?,
-            ))
-        })?;
-        let joined = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut statement = transaction.prepare_cached(sql)?;
+        let joined = if let Some(event_id) = radio_event {
+            statement
+                .query_map(params![event_id, agent_id, epoch], |row| {
+                    Ok((
+                        crate::QueueEventRepository::from_row(row)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            statement
+                .query_map(params![agent_id, epoch, prefix as i64], |row| {
+                    Ok((
+                        crate::QueueEventRepository::from_row(row)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         drop(statement);
         if joined.is_empty() {
             return Ok(None);
@@ -313,7 +375,8 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
         let prepared =
             prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
-        if !preparation
+        if radio_event.is_none()
+            && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
                 let dependency =
                     event_policy_dependency(&event.kind).or(match event.kind.as_str() {
@@ -329,18 +392,21 @@ impl SchedulerRepository {
                 format!("scheduler cannot claim {kind}: requires {dependency}"),
             )));
         }
-        let mut events = if preparation
-            && prepared
-                .events
-                .first()
-                .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint"))
-        {
+        let take_single_event = radio_event.is_some()
+            || (preparation
+                && prepared
+                    .events
+                    .first()
+                    .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint")));
+        let mut events = if take_single_event {
             prepared.events.iter().take(1).cloned().collect()
         } else {
             select_turn_batch(&prepared.events, &prepared.metadata, prefix)
         };
 
-        let unsupported = if agent.extra.get("pendingSettings").is_some_and(truthy) {
+        let unsupported = if radio_event.is_some() {
+            None
+        } else if agent.extra.get("pendingSettings").is_some_and(truthy) {
             Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")
         } else if agent.extra.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
             && agent
@@ -484,7 +550,7 @@ impl SchedulerRepository {
         if event_ids.is_empty() || event_ids.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid_agent(agent_id));
         }
-        let mut statement = transaction.prepare(
+        let mut statement = transaction.prepare_cached(
             "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
              WHERE id IN (SELECT value FROM json_each(?1)) AND agent=?2 AND epoch=?3 ORDER BY created,rowid",
         )?;
@@ -530,7 +596,7 @@ impl SchedulerRepository {
             return Ok(true);
         }
         let payload = serde_json::to_string(&changes)?;
-        let mut update = transaction.prepare(
+        let mut update = transaction.prepare_cached(
             "UPDATE runtime_events SET status=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.status'), \
              error=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.error') \
              WHERE id IN (SELECT key FROM json_each(?1)) AND agent=?2 AND epoch=?3 \
@@ -637,7 +703,7 @@ pub(super) fn replay_claim(
     } else {
         ""
     };
-    let mut statement = tx.prepare(&format!("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} FROM json_each(?1) j JOIN runtime_events e ON e.id=json_extract(j.value,'$.id') {metadata_join} ORDER BY j.key"))?;
+    let mut statement = tx.prepare_cached(&format!("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} FROM json_each(?1) j JOIN runtime_events e ON e.id=json_extract(j.value,'$.id') {metadata_join} ORDER BY j.key"))?;
     let mut events = Vec::new();
     let mut metadata = BTreeMap::new();
     for row in statement.query_map([saved["inputIdentity"].to_string()], |r| {
@@ -1004,7 +1070,7 @@ pub(super) fn apply_preparation(
         .collect::<BTreeMap<_, _>>();
     if !changes.is_empty() {
         let payload = serde_json::to_string(&changes)?;
-        let mut statement = transaction.prepare(
+        let mut statement = transaction.prepare_cached(
             "UPDATE runtime_events SET status=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.status'), \
              error=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.error') \
              WHERE id IN (SELECT key FROM json_each(?1)) AND status='pending' RETURNING id",
@@ -1056,7 +1122,7 @@ pub(super) fn obsolete_work_review_ids(
             .map(|event| event.id.0.as_str())
             .collect::<Vec<_>>(),
     )?;
-    let mut statement = transaction.prepare(
+    let mut statement = transaction.prepare_cached(
         "SELECT e.id FROM runtime_events e \
          JOIN json_each(?1) selected ON selected.value=e.id \
          WHERE e.kind='work_review' AND json_valid(e.text) \

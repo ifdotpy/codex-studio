@@ -2,6 +2,7 @@
 use crate::{RuntimeStore, StoreError, StoreResult};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    types::ValueRef,
 };
 use serde_json::Value;
 
@@ -76,7 +77,7 @@ impl AnalyticsCaptureRepository {
         turn: &Value,
         total: &Value,
     ) -> StoreResult<Option<Value>> {
-        let mut statement = db.prepare("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND turn IS ? AND json_extract(record,'$.total.totalTokens') IS NULL AND json_extract(record,'$.usageSource') IS NOT 'claudeResponse' ORDER BY seq LIMIT 129")?;
+        let mut statement = db.prepare_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND turn IS ? AND json_extract(record,'$.total.totalTokens') IS NULL AND json_extract(record,'$.usageSource') IS NOT 'claudeResponse' ORDER BY seq LIMIT 129")?;
         let rows = statement
             .query_map(params![agent, thread.as_str(), turn.as_str()], |r| {
                 r.get::<_, String>(0)
@@ -169,6 +170,9 @@ impl AnalyticsCaptureRepository {
     }
 }
 impl RuntimeStore {
+    /// Keep the shared writer lock for stable main-store reads through commit:
+    /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
+    /// and analytics_history_repair::{migrate_budget,repair_terminal_errors} rely on it.
     /// Serialize analytics with canvas writes. The callback must do SQLite and
     /// bounded pure decisions only. Analytics commit is the durable receipt;
     /// a lost commit response is Unknown and must be reconciled by the caller.
@@ -179,23 +183,103 @@ impl RuntimeStore {
     where
         E: From<StoreError>,
     {
-        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let mut db = Connection::open_with_flags(
-            self.root.join("analytics.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )
-        .map_err(StoreError::from)?;
-        db.busy_timeout(std::time::Duration::from_secs(15))
-            .map_err(StoreError::from)?;
-        db.pragma_update(None, "journal_mode", "WAL")
-            .map_err(StoreError::from)?;
-        db.pragma_update(None, "synchronous", "FULL")
-            .map_err(StoreError::from)?;
+        let diagnostics_enabled =
+            crate::DIAGNOSTICS_ENABLED.load(std::sync::atomic::Ordering::Acquire);
+        let waiting = diagnostics_enabled.then(std::time::Instant::now);
+        let mut did_wait = false;
+        let writer = match self.writer.try_lock() {
+            Ok(writer) => writer,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                did_wait = true;
+                let waiters = self
+                    .writer_waiters
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                self.writer_waiter_peak
+                    .fetch_max(waiters, std::sync::atomic::Ordering::Relaxed);
+                if diagnostics_enabled {
+                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                        waiting_threads: waiters,
+                        peak_waiters: self
+                            .writer_waiter_peak
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    });
+                }
+                let writer = match self.writer.lock() {
+                    Ok(writer) => writer,
+                    Err(_) => {
+                        let waiting_threads = self
+                            .writer_waiters
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                            - 1;
+                        if diagnostics_enabled {
+                            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                                waiting_threads,
+                                peak_waiters: self
+                                    .writer_waiter_peak
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                            });
+                        }
+                        return Err(StoreError::WriterPoisoned.into());
+                    }
+                };
+                let waiting_threads = self
+                    .writer_waiters
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                    - 1;
+                if diagnostics_enabled {
+                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                        waiting_threads,
+                        peak_waiters: self
+                            .writer_waiter_peak
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    });
+                }
+                writer
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(StoreError::WriterPoisoned.into());
+            }
+        };
+        let wait = waiting.map_or(std::time::Duration::ZERO, |start| start.elapsed());
+        if diagnostics_enabled {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterAdmission {
+                wait,
+                waited: did_wait,
+                waiting_threads: self
+                    .writer_waiters
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                peak_waiters: self
+                    .writer_waiter_peak
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            });
+        }
+        let holding = diagnostics_enabled.then(std::time::Instant::now);
+        let mut db = self
+            .analytics
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(StoreError::from)?;
         let result = operation(&tx, &writer)?;
+        let commit_started = diagnostics_enabled.then(std::time::Instant::now);
         tx.commit().map_err(StoreError::CommitOutcomeUnknown)?;
+        if let Some(started) = commit_started {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
+                database: crate::StoreDatabaseKind::Analytics,
+                elapsed: started.elapsed(),
+            });
+        }
+        drop(db);
+        drop(writer);
+        self.request_wal_checkpoint();
+        if let Some(started) = holding {
+            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
+                wait,
+                hold: started.elapsed(),
+            });
+        }
         Ok(result)
     }
 }
@@ -213,55 +297,159 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
     let mut result = Vec::new();
     for table in [
         CaptureTable::Agents,
-        CaptureTable::History,
         CaptureTable::Items,
         CaptureTable::Turns,
         CaptureTable::Usage,
     ] {
-        let mut report = crate::StateCheckTable {
-            table: table.name(),
-            row_count: 0,
-            rejected_count: 0,
-            failures: Vec::new(),
-        };
-        let exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-            [table.name()],
-            |r| r.get(0),
-        )?;
-        if exists {
-            let mut statement = db.prepare(&format!("SELECT id,record FROM {}", table.name()))?;
-            let mut rows = statement.query([])?;
-            let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
-            while let Some(row) = rows.next()? {
-                report.row_count += 1;
-                let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
-                let error = match serde_json::from_str::<Value>(&raw) {
-                    Ok(v) => {
-                        let schema = studio_runtime_schema::first_error(table.schema(), &v)
-                            .map_err(StoreError::SchemaValidation)?;
-                        schema.or_else(|| {
-                            (v["id"].as_str() != Some(id.as_str()))
-                                .then(|| ("/id".into(), "rowKey".into()))
-                        })
-                    }
-                    Err(_) => Some((String::new(), "json".into())),
-                };
-                if let Some(error) = error {
-                    report.rejected_count += 1;
-                    *failures.entry(error).or_default() += 1;
-                }
-            }
-            report.failures = failures
-                .into_iter()
-                .map(|((pointer, keyword), count)| crate::StateCheckFailure {
-                    pointer,
-                    keyword,
-                    count,
-                })
-                .collect();
-        }
-        result.push(report);
+        result.push(check_analytics_table(&db, table)?);
     }
+    let (history, importer) = check_history_rows(&db)?;
+    result.insert(1, history);
+    result.insert(2, importer);
     Ok(result)
+}
+
+fn empty_report(table: &'static str) -> crate::StateCheckTable {
+    crate::StateCheckTable {
+        table,
+        row_count: 0,
+        rejected_count: 0,
+        failures: Vec::new(),
+    }
+}
+
+fn check_analytics_table(
+    db: &Connection,
+    table: CaptureTable,
+) -> StoreResult<crate::StateCheckTable> {
+    let mut report = empty_report(table.name());
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        [table.name()],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(report);
+    }
+    let mut statement = db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
+    let mut rows = statement.query([])?;
+    let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    while let Some(row) = rows.next()? {
+        report.row_count += 1;
+        let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+        let error = match serde_json::from_str::<Value>(&raw) {
+            Ok(v) => {
+                let schema = studio_runtime_schema::first_error(table.schema(), &v)
+                    .map_err(StoreError::SchemaValidation)?;
+                schema.or_else(|| {
+                    (v["id"].as_str() != Some(id.as_str())).then(|| ("/id".into(), "rowKey".into()))
+                })
+            }
+            Err(_) => Some((String::new(), "json".into())),
+        };
+        if let Some(error) = error {
+            record_analytics_failure(&mut report, &mut failures, error);
+        }
+    }
+    finish_analytics_report(&mut report, failures);
+    Ok(report)
+}
+
+fn check_history_rows(
+    db: &Connection,
+) -> StoreResult<(crate::StateCheckTable, crate::StateCheckTable)> {
+    const IMPORTER_ROW_ID: &str = "importer";
+    let mut history = empty_report("analytics_history");
+    let mut importer = empty_report("analytics_history_importer");
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_history')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok((history, importer));
+    }
+    let mut statement = db.prepare_cached("SELECT id,agent,record FROM analytics_history")?;
+    let mut rows = statement.query([])?;
+    let mut history_failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    let mut importer_failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    while let Some(row) = rows.next()? {
+        let id = row.get_ref(0)?;
+        let is_importer =
+            matches!(id, ValueRef::Text(bytes) if bytes == IMPORTER_ROW_ID.as_bytes());
+        let (report, failures) = if is_importer {
+            (&mut importer, &mut importer_failures)
+        } else {
+            (&mut history, &mut history_failures)
+        };
+        report.row_count += 1;
+
+        let id = match id {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let agent = match row.get_ref(1)? {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let raw = match row.get_ref(2)? {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let (Some(id), Some(agent), Some(raw)) = (id, agent, raw) else {
+            record_analytics_failure(report, failures, (String::new(), "storageType".into()));
+            continue;
+        };
+        if is_importer && !agent.is_empty() {
+            record_analytics_failure(report, failures, ("/agent".into(), "rowKey".into()));
+            continue;
+        }
+        let value = match serde_json::from_str::<Value>(raw) {
+            Ok(value) => value,
+            Err(_) => {
+                record_analytics_failure(report, failures, (String::new(), "json".into()));
+                continue;
+            }
+        };
+        let schema = if is_importer {
+            "AnalyticsHistoryImporterDiagnostic"
+        } else {
+            CaptureTable::History.schema()
+        };
+        let error = studio_runtime_schema::first_error(schema, &value)
+            .map_err(StoreError::SchemaValidation)?
+            .or_else(|| {
+                (!is_importer && value["id"].as_str() != Some(id))
+                    .then(|| ("/id".into(), "rowKey".into()))
+            });
+        if let Some(error) = error {
+            record_analytics_failure(report, failures, error);
+        }
+    }
+    finish_analytics_report(&mut history, history_failures);
+    finish_analytics_report(&mut importer, importer_failures);
+    Ok((history, importer))
+}
+
+fn record_analytics_failure(
+    report: &mut crate::StateCheckTable,
+    failures: &mut std::collections::BTreeMap<(String, String), u64>,
+    error: (String, String),
+) {
+    report.rejected_count += 1;
+    *failures.entry(error).or_default() += 1;
+}
+
+fn finish_analytics_report(
+    report: &mut crate::StateCheckTable,
+    failures: std::collections::BTreeMap<(String, String), u64>,
+) {
+    report.failures = failures
+        .into_iter()
+        .map(|((pointer, keyword), count)| crate::StateCheckFailure {
+            pointer,
+            keyword,
+            count,
+        })
+        .collect();
 }

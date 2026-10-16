@@ -1,5 +1,5 @@
 //! Existing transfer rows; schema creation remains owned by store bootstrap.
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{JsonRecord, RecordKeyMode, RecordQueryShape, StoreError, StoreResult, Table};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -36,8 +36,8 @@ impl AccountTransferRepository {
             .transpose()
     }
     pub fn ids(db: &Connection) -> StoreResult<Vec<String>> {
-        let mut statement =
-            db.prepare("SELECT id FROM runtime_account_transfers ORDER BY rowid LIMIT 4097")?;
+        let mut statement = db
+            .prepare_cached("SELECT id FROM runtime_account_transfers ORDER BY rowid LIMIT 4097")?;
         let ids = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -79,14 +79,11 @@ const TABLES: &[TableRequirement] = &[TableRequirement {
 }];
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[ConditionalTableRequirement {
-        table_exists: "runtime_account_transfers",
-        tables: TABLES,
-    }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: TABLES,
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

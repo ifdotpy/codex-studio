@@ -6,7 +6,9 @@ pub mod shared_values;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-pub use jsonschema::{Draft, Registry as JsonSchemaRegistry, Validator};
+pub use jsonschema::{
+    Draft, Registry as JsonSchemaRegistry, ValidationError, Validator, error::ValidationErrorKind,
+};
 use serde_json::{Value, json};
 
 pub mod agent_limits_generated;
@@ -311,6 +313,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         include_bytes!("schemas/analytics-history.schema.json"),
     ),
     (
+        "https://codex-studio.invalid/analytics-history-importer.schema.json",
+        include_bytes!("schemas/analytics-history-importer.schema.json"),
+    ),
+    (
         "https://codex-studio.invalid/analytics-item.schema.json",
         include_bytes!("schemas/analytics-item.schema.json"),
     ),
@@ -332,6 +338,7 @@ type SchemaResult<T> = Result<T, String>;
 
 struct CompiledSchemas {
     validators: BTreeMap<String, Validator>,
+    sync_entity_branches: BTreeMap<String, String>,
 }
 
 static COMPILED_SCHEMAS: OnceLock<SchemaResult<CompiledSchemas>> = OnceLock::new();
@@ -419,18 +426,184 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
     })
 }
 
-/// Return the first validation error's JSON pointer and keyword, if any.
-pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
+/// Return validation errors as JSON pointers and keywords.
+pub fn validation_errors(schema: &str, value: &Value) -> SchemaResult<Vec<(String, String)>> {
     let validator = compiled_schemas()?
         .validators
         .get(schema)
         .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
-    Ok(validator.iter_errors(value).next().map(|error| {
-        (
-            error.instance_path().to_string(),
-            error.kind().keyword().to_owned(),
-        )
-    }))
+    Ok(validator
+        .iter_errors(value)
+        .map(|error| {
+            (
+                error.instance_path().to_string(),
+                error.kind().keyword().to_owned(),
+            )
+        })
+        .collect())
+}
+
+/// Return the first validation error's JSON pointer and keyword, if any.
+pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
+    Ok(validation_errors(schema, value)?.into_iter().next())
+}
+
+/// Remove only extra fields rejected by the selected authoritative schema branch.
+///
+/// This preserves historical forward-compatible stored fields while refusing to
+/// strip a required/type/union error into a valid value.
+pub fn strip_stored_extra_fields(schema: &str, value: &mut Value) -> SchemaResult<()> {
+    let validator = compiled_schemas()?
+        .validators
+        .get(schema)
+        .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
+    strip_extra_fields_with_validator(validator, value);
+    Ok(())
+}
+
+/// Apply the stored-value extra-field policy to a validator owned by a consumer.
+pub fn strip_extra_fields_with_validator(validator: &Validator, value: &mut Value) {
+    let paths = validator
+        .iter_errors(value)
+        .flat_map(|error| extra_field_errors(&error))
+        .collect::<Vec<_>>();
+    for (pointer, keys) in paths {
+        let Some(target) = value.pointer_mut(&pointer).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for key in keys {
+            drop(target.remove(&key));
+        }
+    }
+}
+
+/// Normalize and validate one stored sync entity using the generated union contract.
+///
+/// Live records have their old extra fields stripped only after the collection branch
+/// is selected from the generated discriminator mapping. Tombstones are envelope-only
+/// and intentionally skip the live entity DTO.
+pub fn normalize_sync_entity_payload(
+    collection: &str,
+    id: &str,
+    deleted: bool,
+    payload: &mut Value,
+) -> SchemaResult<Option<(String, String)>> {
+    if !sync_entity_envelope_matches(collection, id, payload) {
+        return Ok(Some((String::new(), "identity".to_owned())));
+    }
+
+    let Some(schema) = sync_entity_branch(collection)? else {
+        return Ok(Some((
+            "/collection".to_owned(),
+            "unknownCollection".to_owned(),
+        )));
+    };
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(Some((String::new(), "identity".to_owned())));
+    };
+    object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
+
+    if deleted {
+        object.insert("value".to_owned(), json!({}));
+        return Ok(None);
+    }
+
+    strip_stored_extra_fields(&schema, payload)?;
+    first_error("SyncEntityPayload", payload)
+}
+
+/// Validate a sync entity that is about to be written without normalizing it.
+///
+/// Projection candidates must already match the exact envelope and strict live
+/// entity schema; only persisted historical rows may use extra-field stripping.
+pub fn validate_sync_entity_payload_strict(
+    collection: &str,
+    id: &str,
+    deleted: bool,
+    payload: &Value,
+) -> SchemaResult<bool> {
+    if !sync_entity_envelope_matches(collection, id, payload) {
+        return Ok(false);
+    }
+    let Some(object) = payload.as_object() else {
+        return Ok(false);
+    };
+    if object.len() != 3 || sync_entity_branch(collection)?.is_none() {
+        return Ok(false);
+    }
+    if deleted {
+        return Ok(object
+            .get("value")
+            .and_then(Value::as_object)
+            .is_some_and(serde_json::Map::is_empty));
+    }
+    Ok(first_error("SyncEntityPayload", payload)?.is_none())
+}
+
+fn sync_entity_envelope_matches(collection: &str, id: &str, payload: &Value) -> bool {
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    object.get("collection").and_then(Value::as_str) == Some(collection)
+        && object.get("id").and_then(Value::as_str) == Some(id)
+        && object.get("value").is_some_and(Value::is_object)
+}
+
+fn sync_entity_branch(collection: &str) -> SchemaResult<Option<String>> {
+    Ok(compiled_schemas()?
+        .sync_entity_branches
+        .get(collection)
+        .cloned())
+}
+
+fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)> {
+    match error.kind() {
+        ValidationErrorKind::AdditionalProperties { unexpected } => vec![(
+            error.instance_path().as_str().to_owned(),
+            unexpected.clone(),
+        )],
+        ValidationErrorKind::AnyOf { context } => context
+            .iter()
+            .map(|branch| extra_only_branch(branch))
+            .filter(|(other_errors, _)| *other_errors == 0)
+            .min_by_key(|(_, fields)| fields.len())
+            .map_or_else(Vec::new, |(_, fields)| fields),
+        ValidationErrorKind::OneOfNotValid { context } => {
+            let mut branches = context
+                .iter()
+                .map(|branch| extra_only_branch(branch))
+                .filter(|(other_errors, _)| *other_errors == 0);
+            let selected = branches.next();
+            if branches.next().is_none() {
+                selected.map_or_else(Vec::new, |(_, fields)| fields)
+            } else {
+                Vec::new()
+            }
+        }
+        ValidationErrorKind::OneOfMultipleValid { .. } => Vec::new(),
+        _ => Vec::new(),
+    }
+}
+
+fn extra_only_branch(branch: &[ValidationError<'_>]) -> (usize, Vec<(String, Vec<String>)>) {
+    (
+        branch.iter().map(non_extra_error_count).sum(),
+        branch.iter().flat_map(extra_field_errors).collect(),
+    )
+}
+
+fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
+    match error.kind() {
+        ValidationErrorKind::AdditionalProperties { .. } => 0,
+        ValidationErrorKind::AnyOf { context }
+        | ValidationErrorKind::OneOfNotValid { context }
+        | ValidationErrorKind::OneOfMultipleValid { context } => context
+            .iter()
+            .map(|branch| branch.iter().map(non_extra_error_count).sum::<usize>())
+            .min()
+            .unwrap_or(1),
+        _ => 1,
+    }
 }
 
 fn compiled_schemas() -> SchemaResult<&'static CompiledSchemas> {
@@ -455,6 +628,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "ServerIdentityResponse",
         "DiscoveryIdentity",
         "ServerOperationRequest",
+        "ServerOperationResponse",
+        "SyncEntityPayload",
         "AutoPairRequest",
         "DevicePairRequest",
         "AgentRecordResponse",
@@ -462,6 +637,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "AnnotationReceipt",
         "CheckpointSummary",
         "CheckpointsResponse",
+        "CreateInvite",
         "ComplaintRecordResponse",
         "FederationParticipant",
         "JsonObjectResponse",
@@ -470,6 +646,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "MessageRequest",
         "MonitorRecordResponse",
         "PlanView",
+        "PairRequest",
         "ProfileRecord",
         "PullRequest",
         "PullResult",
@@ -492,6 +669,28 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         let validator = compile(&registry, json!({"$ref": reference}), name)?;
         validators.insert(name.to_owned(), validator);
     }
+    let sync_mapping = openapi
+        .pointer("/components/schemas/SyncEntityPayload/discriminator/mapping")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "SyncEntityPayload has no discriminator mapping".to_owned())?;
+    let mut sync_entity_branches = BTreeMap::new();
+    for (collection, reference) in sync_mapping {
+        let reference = reference.as_str().ok_or_else(|| {
+            "SyncEntityPayload discriminator reference is not a string".to_owned()
+        })?;
+        let name = reference
+            .strip_prefix("#/components/schemas/")
+            .ok_or_else(|| "SyncEntityPayload discriminator reference is not local".to_owned())?;
+        sync_entity_branches.insert(collection.clone(), name.to_owned());
+        if !validators.contains_key(name) {
+            let validator = compile(
+                &registry,
+                json!({"$ref": format!("{OPENAPI_URI}{reference}")}),
+                name,
+            )?;
+            validators.insert(name.to_owned(), validator);
+        }
+    }
     for (name, uri) in [
         (
             "BudgetCapture",
@@ -512,6 +711,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         (
             "AnalyticsHistory",
             "https://codex-studio.invalid/analytics-history.schema.json",
+        ),
+        (
+            "AnalyticsHistoryImporterDiagnostic",
+            "https://codex-studio.invalid/analytics-history-importer.schema.json",
         ),
         (
             "AnalyticsItem",
@@ -648,7 +851,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         &continuation,
         &mut validators,
     )?;
-    Ok(CompiledSchemas { validators })
+    Ok(CompiledSchemas {
+        validators,
+        sync_entity_branches,
+    })
 }
 
 fn compile_definitions(
@@ -690,7 +896,10 @@ fn escape_pointer(value: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{initialize, registry_for_document, table_schema, validate};
+    use super::{
+        first_error, initialize, normalize_sync_entity_payload, registry_for_document,
+        table_schema, validate,
+    };
 
     #[test]
     fn generated_agent_contracts_supply_runtime_capacity_values() {
@@ -778,6 +987,23 @@ mod tests {
                     "status":"idle",
                     "sandbox":{},
                     "approvalPolicy":"never"
+                })
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
+            validate(
+                "PersistedAgentRecord",
+                &json!({
+                    "id":"agent-1",
+                    "rootId":"agent-1",
+                    "epoch":0,
+                    "status":"running",
+                    "startAttempt":{
+                        "id":"attempt-1",
+                        "submitted":true,
+                        "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"
+                    }
                 })
             )
             .expect("persisted agent schema exists")
@@ -935,5 +1161,87 @@ mod tests {
     #[test]
     fn unknown_schema_names_are_configuration_errors() {
         assert!(validate("MissingRecordSchema", &json!({})).is_err());
+    }
+
+    #[test]
+    fn server_operation_response_schema_is_available_at_http_boundary() {
+        assert_eq!(
+            first_error(
+                "ServerOperationResponse",
+                &json!({"requestId":"request-1","outcome":"applied","value":{"ok":true}})
+            )
+            .expect("response schema is compiled"),
+            None
+        );
+        assert!(
+            first_error("ServerOperationResponse", &json!({"outcome":"applied"}))
+                .expect("response schema is compiled")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn stored_sync_payload_selects_generated_branch_before_stripping() {
+        let mut valid_task = json!({
+            "collection":"task",
+            "id":"task-1",
+            "legacyEnvelopeField":true,
+            "value":{"id":"task-1","legacyField":true}
+        });
+        assert_eq!(
+            normalize_sync_entity_payload("task", "task-1", false, &mut valid_task)
+                .expect("generated sync schemas compile"),
+            None
+        );
+        assert_eq!(
+            valid_task,
+            json!({
+                "collection":"task",
+                "id":"task-1",
+                "value":{"id":"task-1"}
+            })
+        );
+
+        let mut malformed_task = json!({
+            "collection":"task",
+            "id":"task-invalid",
+            "value":{"id":17,"legacyField":true}
+        });
+        assert!(
+            normalize_sync_entity_payload("task", "task-invalid", false, &mut malformed_task)
+                .expect("stored payload validation runs")
+                .is_some()
+        );
+
+        let mut tombstone = json!({
+            "collection":"room",
+            "id":"room-1",
+            "legacyEnvelopeField":true,
+            "value":{"not-a-live-room":17}
+        });
+        assert_eq!(
+            normalize_sync_entity_payload("room", "room-1", true, &mut tombstone)
+                .expect("tombstone envelope validates"),
+            None
+        );
+        assert_eq!(
+            tombstone,
+            json!({
+                "collection":"room",
+                "id":"room-1",
+                "value":{}
+            })
+        );
+
+        let mut unknown = json!({
+            "collection":"not-supported",
+            "id":"unknown-1",
+            "value":{"id":"unknown-1"}
+        });
+        assert_eq!(
+            normalize_sync_entity_payload("not-supported", "unknown-1", false, &mut unknown)
+                .expect("unknown collection is a row failure"),
+            Some(("/collection".to_owned(), "unknownCollection".to_owned()))
+        );
     }
 }

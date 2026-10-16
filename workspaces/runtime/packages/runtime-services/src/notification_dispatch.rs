@@ -2,11 +2,12 @@
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
 use studio_runtime_store::{
-    NotificationDispatchRepository, StoreError, SyncDocumentsRepository, Transaction, sha256_hex,
+    MonitorRecord, NotificationDispatchRepository, RuntimeStore, StoreError,
+    SyncDocumentsRepository, Table, Transaction, sha256_hex,
 };
 use thiserror::Error;
 
@@ -25,7 +26,7 @@ mod snapshot;
 pub use effects::{
     NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
-    UnavailableNotificationEffects,
+    RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
 };
 
 #[path = "notification_dispatch/stream.rs"]
@@ -56,9 +57,9 @@ pub struct PublicationContext {
     server_id: Option<String>,
 }
 impl PublicationContext {
-    pub fn load(root: &std::path::Path) -> Result<Self, NotificationDispatchError> {
+    pub fn load(store: &RuntimeStore) -> Result<Self, NotificationDispatchError> {
         Ok(Self {
-            server_id: crate::sync_entity_context::local_server_id(&root.to_string_lossy())?,
+            server_id: store.local_server_id()?,
         })
     }
 }
@@ -87,6 +88,7 @@ pub struct PreparedSubmission {
     pub text: String,
     pub inputs: Vec<SubmittedInput>,
     pub assets: Value,
+    pub radio_authorized: bool,
 }
 
 #[derive(Debug, Error)]
@@ -205,6 +207,17 @@ pub fn record_user_submission(
     })
 }
 
+/// Transaction-aware read/respond service for model-authored complaints.
+pub(crate) fn agent_complaint_action(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    args: &Value,
+    request_id: &str,
+    now: f64,
+) -> Result<Value, NotificationDispatchError> {
+    questions::agent_complaint_action(tx, agent, args, request_id, now)
+}
+
 /// Stored outcome and a staged connection-buffer replacement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotificationDispatchResult {
@@ -255,10 +268,11 @@ pub fn dispatch_notification_with_effects(
     effects: &dyn NotificationEffects,
 ) -> Result<NotificationDispatchResult, NotificationDispatchError> {
     let mut next_streams = streams.clone();
-    let (kind, params, payload) = notification_parts(notification)?;
+    let (kind, params) = notification_parts(notification)?;
     let mut before = None;
     let mut fresh = false;
     let mut post_commit = NotificationPublicationBatch::default();
+    let mut command_output_monitor_present = None;
     let result = in_savepoint(transaction, || {
         let outcome = (|| {
             if !observed_at.is_finite()
@@ -272,8 +286,7 @@ pub fn dispatch_notification_with_effects(
             {
                 return Err(NotificationDispatchError::InvalidNotification);
             }
-            let content_signature =
-                sha256_json(&json!({"agent": agent_id, "notification": payload}))?;
+            let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
                 "providerHandle": identity.provider_handle,
                 "generation": identity.generation,
@@ -290,11 +303,11 @@ pub fn dispatch_notification_with_effects(
             }
 
             fresh = true;
-            if let Some(notice) = notices::NoticeKind::parse(&kind)
+            if let Some(notice) = notices::NoticeKind::parse(kind)
                 && notice.is_account_notice()
                 && params["threadId"].as_str().is_none_or(str::is_empty)
             {
-                effects.account_notice(transaction, &kind, &params, identity, observed_at)?;
+                effects.account_notice(transaction, kind, params, identity, observed_at)?;
                 return save_outcome(
                     transaction,
                     &receipt_id,
@@ -303,6 +316,32 @@ pub fn dispatch_notification_with_effects(
                 );
             }
             if kind == "provider/generationStarted" {
+                let Some(agent) =
+                    NotificationDispatchRepository::agent_record(transaction, agent_id)?
+                else {
+                    // Python applies generationStarted to the account/thread rate
+                    // table and returns when no active rate entry exists. A
+                    // notification can therefore be valid without an agent row,
+                    // but the token-rate service is still required.
+                    effects.generation_started()?;
+                    return save_outcome(
+                        transaction,
+                        &receipt_id,
+                        &content_signature,
+                        DispatchOutcome::Written,
+                    );
+                };
+                if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+                    return save_outcome(
+                        transaction,
+                        &receipt_id,
+                        &content_signature,
+                        DispatchOutcome::Ignored {
+                            reason: "deleted-agent".to_owned(),
+                        },
+                    );
+                }
+                before = Some(agent);
                 effects.generation_started()?;
                 return save_outcome(
                     transaction,
@@ -323,19 +362,34 @@ pub fn dispatch_notification_with_effects(
                     },
                 );
             }
-            validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
+            validate_agent(&agent, agent_id, &identity.provider_handle, kind, params)?;
             before = Some(agent.clone());
+            if kind == "command/exec/outputDelta" {
+                command_output_monitor_present = Some(
+                    if let Some(process_id) = params
+                        .get("processId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    {
+                        Table::<MonitorRecord>::new(transaction)
+                            .get(&process_id.to_owned())?
+                            .is_some_and(|monitor| monitor.value()["status"] == "running")
+                    } else {
+                        false
+                    },
+                );
+            }
             if matches!(
-                kind.as_str(),
+                kind,
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
             ) {
-                let key = command_key(agent_id, identity, &params)?;
+                let key = command_key(agent_id, identity, params)?;
                 let mut key = key;
-                key.method = kind.clone();
+                key.method = kind.to_owned();
                 for effect in effects.post_commit(
                     Some(&agent),
                     Some(&agent),
-                    &payload,
+                    &notification_payload(notification),
                     identity,
                     observed_at,
                     &DispatchOutcome::Written,
@@ -347,7 +401,7 @@ pub fn dispatch_notification_with_effects(
             }
             let unload = kind == "thread/closed"
                 || (kind == "thread/status/changed" && params["status"]["type"] == "notLoaded");
-            if (unload || matches!(kind.as_str(), "error" | "model/safetyBuffering/updated"))
+            if (unload || matches!(kind, "error" | "model/safetyBuffering/updated"))
                 && let Some(thread) = params["threadId"].as_str().filter(|v| !v.is_empty())
             {
                 let before = agent.clone();
@@ -374,11 +428,11 @@ pub fn dispatch_notification_with_effects(
                 }
             }
             if kind == "item/commandExecution/outputDelta" {
-                let key = command_key(agent_id, identity, &params)?;
+                let key = command_key(agent_id, identity, params)?;
                 let delta = params["delta"]
                     .as_str()
                     .ok_or(NotificationDispatchError::InvalidNotification)?;
-                let outcome = match next_streams.enqueue_delta(key, delta, &params) {
+                let outcome = match next_streams.enqueue_delta(key, delta, params) {
                     EnqueueResult::Buffered => DispatchOutcome::Written,
                     EnqueueResult::Closed => DispatchOutcome::Ignored {
                         reason: "closed-stream".into(),
@@ -391,7 +445,7 @@ pub fn dispatch_notification_with_effects(
                 return save_outcome(transaction, &receipt_id, &content_signature, outcome);
             }
             if kind == "item/completed" && params["item"]["type"] != "agentMessage" {
-                let mut scoped = params.clone();
+                let mut scoped = params.to_owned();
                 scoped["itemId"] = params["item"]["id"].clone();
                 let key = command_key(agent_id, identity, &scoped)?;
                 flush_selected(
@@ -404,7 +458,7 @@ pub fn dispatch_notification_with_effects(
                 )?;
             }
             if kind == "item/started" && params["item"]["type"] == "commandExecution" {
-                let mut scoped = params.clone();
+                let mut scoped = params.to_owned();
                 scoped["itemId"] = params["item"]["id"].clone();
                 let key = command_key(agent_id, identity, &scoped)?;
                 kinds::preserve_command_base(transaction, agent_id, &mut next_streams, &key)?;
@@ -413,8 +467,8 @@ pub fn dispatch_notification_with_effects(
             if let Some(outcome) = kinds::apply(
                 transaction,
                 &mut agent,
-                &kind,
-                &params,
+                kind,
+                params,
                 identity,
                 publication,
                 observed_at,
@@ -430,7 +484,7 @@ pub fn dispatch_notification_with_effects(
                     .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn));
 
             let before = agent.clone();
-            let outcome = match kind.as_str() {
+            let outcome = match kind {
                 "item/agentMessage/delta" => {
                     if stale_item {
                         DispatchOutcome::Ignored {
@@ -453,7 +507,7 @@ pub fn dispatch_notification_with_effects(
                                             .strip_prefix("account:")
                                             .unwrap_or_default(),
                                         generation: identity.generation,
-                                        params: &params,
+                                        params,
                                         item_id,
                                         observed_at,
                                         update: TextUpdate::Delta(delta),
@@ -513,7 +567,7 @@ pub fn dispatch_notification_with_effects(
                                         .strip_prefix("account:")
                                         .unwrap_or_default(),
                                     generation: identity.generation,
-                                    params: &params,
+                                    params,
                                     item_id,
                                     observed_at,
                                     update,
@@ -521,12 +575,7 @@ pub fn dispatch_notification_with_effects(
                             )? {
                                 if kind == "item/completed" && has_questions(item.get("questions"))
                                 {
-                                    questions::completed(
-                                        transaction,
-                                        &agent,
-                                        &params,
-                                        observed_at,
-                                    )?;
+                                    questions::completed(transaction, &agent, params, observed_at)?;
                                 }
                                 DispatchOutcome::Written
                             } else {
@@ -538,11 +587,11 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    effects.capture_usage(transaction, &mut agent, &params, observed_at)?;
+                    effects.capture_usage(transaction, &mut agent, params, observed_at)?;
                     if crate::event_write::truthy(agent.get("movedFrom")) {
-                        effects.capture_move_cache(transaction, &agent, &params, observed_at)?;
+                        effects.capture_move_cache(transaction, &agent, params, observed_at)?;
                     }
-                    apply_token_usage(&mut agent, &params, observed_at)?
+                    apply_token_usage(&mut agent, params, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
             };
@@ -561,7 +610,7 @@ pub fn dispatch_notification_with_effects(
                     DispatchOutcome::Ignored { .. } | DispatchOutcome::Unhandled { .. }
                 )
             {
-                update_common_agent_fields(&mut agent, &kind, &params, observed_at)?;
+                update_common_agent_fields(&mut agent, kind, params, observed_at)?;
             }
             if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
                 persist_agent(transaction, agent_id, &agent, publication)?;
@@ -575,12 +624,12 @@ pub fn dispatch_notification_with_effects(
                 None
             };
             if matches!(
-                kind.as_str(),
+                kind,
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
             ) && matches!(&outcome, DispatchOutcome::Ignored { reason } if reason == "stale-turn-item")
             {
-                let mut key = command_key(agent_id, identity, &params)?;
-                key.method = kind.clone();
+                let mut key = command_key(agent_id, identity, params)?;
+                key.method = kind.to_owned();
                 if let Some(agent) = &before {
                     next_streams.flush_analytics(&key, agent);
                 }
@@ -588,13 +637,17 @@ pub fn dispatch_notification_with_effects(
             let mut current = effects.post_commit(
                 before.as_ref(),
                 after.as_ref(),
-                &payload,
+                &notification_payload(notification),
                 identity,
                 observed_at,
                 &outcome,
             );
+            if command_output_monitor_present == Some(false) {
+                current
+                    .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
+            }
             if matches!(
-                kind.as_str(),
+                kind,
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
             ) {
                 current
@@ -614,7 +667,10 @@ pub fn dispatch_notification_with_effects(
     });
     result.map(|outcome| NotificationDispatchResult {
         outcome,
-        stream_update: (next_streams != *streams).then_some(next_streams),
+        // The cloned buffer is a shallow transactional snapshot. Any mutated
+        // entries have detached; a fresh receipt can safely return it without
+        // comparing every retained stream tree to find changed entries.
+        stream_update: (fresh && next_streams.changed_from(streams)).then_some(next_streams),
         post_commit,
     })
 }
@@ -821,30 +877,148 @@ fn saved_text(
         .ok_or_else(|| stored("runtime_items", id))
 }
 
-fn notification_parts(
-    notification: &Frame,
-) -> Result<(String, Value, Value), NotificationDispatchError> {
-    let (kind, params, fields) = match notification {
+fn notification_parts(notification: &Frame) -> Result<(&str, &Value), NotificationDispatchError> {
+    static NULL: Value = Value::Null;
+    let (kind, params) = match notification {
         Frame::Notification(frame) => (
-            frame.method.as_str().to_owned(),
-            frame.params.clone().unwrap_or(Value::Null),
-            frame.fields.clone(),
+            frame.method.as_str(),
+            frame.params.as_ref().unwrap_or(&NULL),
         ),
         Frame::UnknownMethod(frame) => (
-            frame.method.clone(),
-            frame.fields.get("params").cloned().unwrap_or(Value::Null),
-            frame.fields.clone(),
+            frame.method.as_str(),
+            frame.fields.get("params").unwrap_or(&NULL),
         ),
         Frame::Request(_) | Frame::Response { .. } => {
             return Err(NotificationDispatchError::InvalidNotification);
         }
     };
-    let mut payload = fields;
-    payload.insert("method".to_owned(), Value::String(kind.clone()));
-    if !params.is_null() {
-        payload.insert("params".to_owned(), params.clone());
+    Ok((kind, params))
+}
+
+fn notification_payload(notification: &Frame) -> Value {
+    let (method, params, mut fields, include_params) = match notification {
+        Frame::Notification(frame) => (
+            frame.method.as_str(),
+            frame.params.as_ref(),
+            frame.fields.clone(),
+            true,
+        ),
+        Frame::UnknownMethod(frame) => (
+            frame.method.as_str(),
+            frame.fields.get("params"),
+            frame.fields.clone(),
+            false,
+        ),
+        Frame::Request(_) | Frame::Response { .. } => return Value::Null,
+    };
+    fields.insert("method".to_owned(), Value::String(method.to_owned()));
+    if include_params && let Some(params) = params.filter(|params| !params.is_null()) {
+        fields.insert("params".to_owned(), params.clone());
     }
-    Ok((kind, params, Value::Object(payload)))
+    Value::Object(fields)
+}
+
+#[derive(Clone, Copy)]
+enum NotificationValue<'a> {
+    Json(&'a Value),
+    Text(&'a str),
+}
+
+impl Serialize for NotificationValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Json(value) => value.serialize(serializer),
+            Self::Text(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+struct BorrowedNotification<'a> {
+    entries: Vec<(&'a str, NotificationValue<'a>)>,
+}
+
+impl<'a> BorrowedNotification<'a> {
+    fn new(notification: &'a Frame) -> Option<Self> {
+        let (fields, method, params) = match notification {
+            Frame::Notification(frame) => (
+                &frame.fields,
+                frame.method.as_str(),
+                frame.params.as_ref().filter(|value| !value.is_null()),
+            ),
+            Frame::UnknownMethod(frame) => (
+                &frame.fields,
+                frame.method.as_str(),
+                frame.fields.get("params").filter(|value| !value.is_null()),
+            ),
+            Frame::Request(_) | Frame::Response { .. } => return None,
+        };
+        let mut entries = fields
+            .iter()
+            .map(|(key, value)| (key.as_str(), NotificationValue::Json(value)))
+            .collect::<Vec<_>>();
+        Self::set(&mut entries, "method", NotificationValue::Text(method));
+        if let Some(params) = params {
+            Self::set(&mut entries, "params", NotificationValue::Json(params));
+        }
+        Some(Self { entries })
+    }
+
+    fn set(
+        entries: &mut Vec<(&'a str, NotificationValue<'a>)>,
+        key: &'a str,
+        value: NotificationValue<'a>,
+    ) {
+        match entries.binary_search_by(|(existing, _)| existing.cmp(&key)) {
+            Ok(index) => entries[index].1 = value,
+            Err(index) => entries.insert(index, (key, value)),
+        }
+    }
+}
+
+impl Serialize for BorrowedNotification<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in &self.entries {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+struct NotificationContentSignature<'a> {
+    agent: &'a str,
+    notification: BorrowedNotification<'a>,
+}
+
+impl Serialize for NotificationContentSignature<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("agent", self.agent)?;
+        map.serialize_entry("notification", &self.notification)?;
+        map.end()
+    }
+}
+
+fn notification_content_signature(
+    agent: &str,
+    notification: &Frame,
+) -> Result<String, NotificationDispatchError> {
+    let payload = BorrowedNotification::new(notification)
+        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let bytes = serde_json::to_vec(&NotificationContentSignature {
+        agent,
+        notification: payload,
+    })?;
+    Ok(sha256_hex(&bytes))
 }
 
 fn validate_agent(
@@ -1675,10 +1849,37 @@ mod tests {
 
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
-        PublicationContext, SubmittedInput, record_user_submission,
+        PublicationContext, SubmittedInput, notification_content_signature, notification_payload,
+        record_user_submission, sha256_json,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
     use studio_runtime_store::{NotificationDispatchRepository, TranscriptRepository};
+
+    #[test]
+    fn borrowed_notification_signature_matches_owned_payload_with_unknown_fields() {
+        let mut decoder = LineDecoder::new();
+        let frames = decoder
+            .push(
+                b"{\"method\":\"future/notice\",\"params\":{\"nested\":[1,2]},\"futureField\":{\"keep\":true}}\n",
+            )
+            .expect("unknown notification decodes");
+        decoder.finish().expect("fixture is complete");
+        let frame = &frames[0];
+        let payload = notification_payload(frame);
+        assert_eq!(
+            payload,
+            json!({
+                "method":"future/notice",
+                "params":{"nested":[1,2]},
+                "futureField":{"keep":true}
+            })
+        );
+        assert_eq!(
+            notification_content_signature("agent-1", frame).expect("borrowed signature"),
+            sha256_json(&json!({"agent":"agent-1","notification":payload}))
+                .expect("owned signature")
+        );
+    }
 
     // Legacy fixtures model a transaction-local buffer with an immediate timer.
     // The corpus exercises the caller's commit/apply and rollback/drop boundary.
@@ -1789,6 +1990,29 @@ mod tests {
             .query_row("SELECT count(*) FROM runtime_items", [], |r| r.get(0))
             .expect("count");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn fresh_no_op_receipt_does_not_return_stream_update() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let result = super::dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &NotificationStreamBuffer::default(),
+            &identity(1),
+            &frame(&json!({
+                "method":"model/safetyBuffering/updated",
+                "params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}
+            })),
+            1234.5,
+        )
+        .expect("no-op safety notice records a receipt");
+        assert!(
+            result.stream_update.is_none(),
+            "a fresh receipt without stream changes must not replace the buffer"
+        );
     }
 
     #[test]
@@ -2201,6 +2425,7 @@ mod tests {
                 },
             ],
             assets: json!([{"id":"asset-1","name":"file.txt"}]),
+            radio_authorized: false,
         };
         let transaction = connection
             .transaction()
@@ -2284,6 +2509,7 @@ mod tests {
                 assets: json!([]),
             }],
             assets: json!([]),
+            radio_authorized: false,
         };
         let transaction = connection
             .transaction()
@@ -2407,7 +2633,10 @@ mod tests {
             2.0,
         )
         .expect_err("malformed stored epoch is refused");
-        assert!(error.to_string().contains("runtime_agents:agent"));
+        assert!(error.to_string().contains("runtime_agents/agent"));
+        assert!(error.to_string().contains("/epoch"));
+        assert!(error.to_string().contains("value type string"));
+        assert!(error.to_string().contains("length"));
         assert!(!error.to_string().contains("SECRET_STORED_SENTINEL"));
         transaction
             .commit()

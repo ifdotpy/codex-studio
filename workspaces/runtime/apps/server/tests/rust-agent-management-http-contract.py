@@ -15,7 +15,11 @@ from pathlib import Path
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    no_write_snapshot,
+    start_contract_backend,
+)
 
 
 class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -86,18 +90,18 @@ class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(self.record(identity)["deletedAt"], before["deletedAt"])
         self.assertFalse(self.record(identity)["autoWake"])
 
-    def test_native_action_refusal_no_write(self):
+    def test_native_action_rejects_stopped_draft_without_writes(self):
+        # Rust now has the preparation, repair, and broker consumers. Like the
+        # Python native_action owner, it rejects a threadless stopped draft.
         identity = self.draft()
         self.assertEqual(self.post("/api/stop", {"id": identity}).status, 200)
         before = self.record(identity)
+        before_state = no_write_snapshot(self.backend.state)
         for action in ("review", "compact"):
             response = self.post("/api/action", {"id": identity, "action": action, "request_id": "native-"+action})
-            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                self.assertEqual(response.status, 501, response.body)
-                self.assertEqual(response.json(), {"error": "Not implemented: requires account-worker/native-action"})
-            else:
-                self.assertEqual(response.status, 400, response.body)
+            self.assertEqual(response.status, 400, response.body)
             self.assertEqual(self.record(identity), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before_state)
 
     def test_missing_request_id_and_unknown_agent_have_no_writes(self):
         identity = self.draft()

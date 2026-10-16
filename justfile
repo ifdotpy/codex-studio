@@ -60,6 +60,16 @@ test-server-shard index count:
 [doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
 test-rust-runtime-corpora *args:
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/) | test(every_scenario_recovers_at_every_bridge_boundary) | binary(/^claude_/) | binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/) | package(studio-process-supervisor) | binary(/^continuation_recovery$/) | binary(/^analytics_history_checkpoint$/) | binary(/^portable_history_python_parity$/) | binary(/^payload_safety_oracle$/) | binary(provider_binaries_differential) | binary(/^wave7_p03_message_ingress$/)' {{args}}
+[doc("Run the full account-worker crash matrix at every bridge boundary.")]
+test-crash-matrix-full *args:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo test -p studio-runtime-services --lib account_worker::tests::crash_matrix::every_scenario_recovers_at_every_bridge_boundary -- --exact {{args}}
+[doc("Run isolated Rust corpus mutations in an external target directory; no load generators.")]
+test-rust-runtime-corpora-mutations *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
+
+[doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
+test-rust-session-fairness:
+    @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
@@ -98,13 +108,6 @@ test-browser-smoke:
 test-heavy:
     @node {{quote(facade)}} test-heavy
 
-[doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
-test-rust-runtime-corpora-mutations *args:
-    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
-
-[doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
-test-rust-session-fairness:
-    @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 [doc("Run seeded monitor mutations in an external isolated target directory.")]
 test-rust-monitors-mutations target:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/monitors/mutations.json --filter 'binary(/monitor_(corpus|recovery)/)'

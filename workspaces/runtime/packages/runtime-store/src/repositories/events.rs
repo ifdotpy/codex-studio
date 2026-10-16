@@ -29,6 +29,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             table: "runtime_events",
         },
         TriggerRequirement {
+            name: "sync_entity_event_UPDATE_WINDOW",
+            table: "runtime_events",
+        },
+        TriggerRequirement {
             name: "sync_entity_event_DELETE",
             table: "runtime_events",
         },

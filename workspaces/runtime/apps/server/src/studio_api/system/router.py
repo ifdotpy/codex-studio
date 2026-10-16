@@ -23,6 +23,36 @@ from .models import (
     LinuxVMSettingsResponse,
 )
 
+
+_DIAGNOSTIC_UNTRUSTED_FIELDS = frozenset({
+    "error", "previousError", "detail", "reason", "result", "outcome",
+    "notSubmittedReason", "prepareError", "responseError", "stdoutReaderError",
+    "persistenceErrors", "stateReadError", "lastError", "claudeInputRequest",
+    "input", "source", "configuration", "reviewTarget", "modelSettings",
+    "searchMigrationError",
+})
+
+
+def _redact_diagnostic_values(value: JsonValue) -> JsonValue:
+    """Remove free-form errors and request content from operator diagnostics."""
+    if isinstance(value, dict):
+        redacted: dict[str, JsonValue] = {}
+        for key, child in value.items():
+            if key == "error":
+                redacted[key] = "Details redacted"
+            elif key == "searchMigrationError":
+                redacted[key] = None
+            elif key in _DIAGNOSTIC_UNTRUSTED_FIELDS and not (
+                key == "outcome" and child == "not_applied"
+            ):
+                continue
+            else:
+                redacted[key] = _redact_diagnostic_values(child)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_diagnostic_values(child) for child in value]
+    return value
+
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
@@ -216,7 +246,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/diagnostics",
         response_model=DiagnosticsResponse,
-        responses=api_read_responses(errors=(404,)),
+        responses=api_read_responses(errors=(404, 501)),
     )
     def diagnostics(request: Request) -> Response:
         runtime = context.runtime
@@ -245,7 +275,8 @@ def create_router(context: ApiContext) -> APIRouter:
             except (OSError, RuntimeError, ValueError) as error:
                 supervisor["health"] = {"error": str(error)[:300]}
         result["supervisor"] = supervisor
-        return context.send(request, result)
+        result["searchMigrationError"] = None
+        return context.send(request, cast(dict[str, JsonValue], _redact_diagnostic_values(result)))
 
     @router.get(
         "/api/directories",

@@ -11,6 +11,8 @@ use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
 
+pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -272,6 +274,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("revoked claim cannot submit")
@@ -368,6 +371,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("submitted marker persists")
@@ -385,7 +389,7 @@ mod tests {
 
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent is queued with unresolved attempt");
@@ -422,7 +426,7 @@ mod tests {
             .expect("claim executes");
         transaction
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent epoch advances");
@@ -522,6 +526,36 @@ mod tests {
     }
 
     #[test]
+    fn invalid_agent_hold_receipt_excludes_agent_from_wake_page() {
+        let connection = database();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_operation_receipts(
+                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL
+                 );",
+            )
+            .expect("receipt table creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    r#"{"held":true}"#,
+                ],
+            )
+            .expect("invalid agent hold receipt writes");
+
+        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8)
+            .expect("wake page skips held agent");
+
+        assert!(
+            page.is_empty(),
+            "held agent must not be eligible for wake selection"
+        );
+    }
+
+    #[test]
     fn native_failure_hold_added_after_claim_blocks_submission() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");
@@ -547,6 +581,7 @@ mod tests {
                 "ticket-held",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("hold refuses submission")
@@ -648,7 +683,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false'))",
                 [],
             )
             .expect("disabled autowake writes");

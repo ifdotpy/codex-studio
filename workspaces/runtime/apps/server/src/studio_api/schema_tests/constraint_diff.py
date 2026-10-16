@@ -640,6 +640,30 @@ def constraint_changes(
                 continue
             constraint_direction = None
             if (
+                key == "@anyOf"
+                and isinstance(old, list)
+                and new is None
+                and isinstance(new_schema.get("type"), str)
+            ):
+                # A union can be represented by one stricter schema after
+                # generation (for example JsonValue -> string). Compare the
+                # surviving schema with the old branches instead of treating
+                # the removed anyOf keyword as an unconstrained schema.
+                old_branches = [
+                    json.loads(branch)
+                    for branch in old
+                    if isinstance(branch, str)
+                ]
+                replacement_branch = {
+                    name: value
+                    for name, value in new_schema.items()
+                    if not name.startswith("@")
+                }
+                constraint_direction = union_direction(
+                    [_canonical(branch) for branch in old_branches],
+                    [_canonical(replacement_branch)],
+                )
+            if (
                 key in {"@anyOf", "@nullableBranch"}
                 and isinstance(old, list)
                 and all(isinstance(branch, str) for branch in old)

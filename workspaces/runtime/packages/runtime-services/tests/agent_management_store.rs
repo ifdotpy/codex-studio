@@ -5,10 +5,11 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
+    agent_lifecycle_runtime::{self, LifecycleEffect, LifecyclePorts},
     agent_management::{Action, ManagementError, Records},
     agent_management_store::execute,
 };
-use studio_runtime_store::{RuntimeStore, agent_management};
+use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
@@ -97,6 +98,45 @@ fn state(store: &RuntimeStore) -> Value {
         .collect::<Result<Vec<_>, _>>()
         .expect("sync rows");
     json!({"tables":records,"sync":sync})
+}
+
+struct AcceptLifecycleEffects;
+impl LifecyclePorts for AcceptLifecycleEffects {
+    fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+        Ok(())
+    }
+
+    fn committed(&self) -> Result<(), ManagementError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "stop-capacity-retry-unsubmitted")
+        .expect("Python retry-stop case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    let result = agent_lifecycle_runtime::execute(
+        &store,
+        &action,
+        case["now"].as_f64().expect("time"),
+        &AcceptLifecycleEffects,
+    )
+    .expect("stop");
+    assert_eq!(result, case["expected"]["result"]);
+    assert_eq!(
+        state(&store)["tables"]["runtime_agents"],
+        case["expected"]["records"]["tables"]["runtime_agents"]
+    );
 }
 
 #[test]
@@ -340,10 +380,24 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 Action::Stop {
                     target: "worker".into(),
                     descendants: true,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
                 }
             };
             let before = state(&store);
             let result = execute(&store, &action, 1234567.5);
+            if delete && effect.starts_with("voice-") {
+                // This fixture has no native thread or connection identity to
+                // cancel. Deletion can remove its stale session row; live
+                // provider sessions are covered by the production-port tests.
+                assert_eq!(
+                    result.expect("delete stale voice session"),
+                    json!({"deleted":["worker"]})
+                );
+                assert_eq!(state(&store)["tables"]["voice_sessions"], json!([]));
+                continue;
+            }
             if delete && effect == "child-stop" {
                 // Python tombstones the worker before stopping it, suppressing the parent event.
                 assert_eq!(
@@ -367,7 +421,7 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
 }
 
 #[test]
-fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists() {
+fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
     let case = cases()
         .into_iter()
         .find(|case| case["name"] == "stop-ended-voice")
@@ -388,6 +442,9 @@ fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists
         &Action::Stop {
             target: "lead".into(),
             descendants: true,
+            reason: None,
+            sender: None,
+            sender_epoch: None,
         },
         1234567.5,
     )
@@ -406,10 +463,23 @@ fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists
             target: "lead".into(),
         },
         1234568.0,
-    );
-    assert!(matches!(
-        result,
-        Err(ManagementError::Unavailable("voice-driver/agent-stop"))
-    ));
-    assert_eq!(state(&store), saved);
+    )
+    .expect("ended voice history is removed with the conversation");
+    assert_eq!(result["deleted"], json!(["lead", "worker"]));
+    let after_delete = state(&store);
+    for table in [
+        "voice_sessions",
+        "voice_records",
+        "voice_deliveries",
+        "voice_approvals",
+    ] {
+        assert!(
+            after_delete["tables"][table]
+                .as_array()
+                .expect("voice table")
+                .is_empty(),
+            "{table}"
+        );
+    }
+    assert_ne!(after_delete, saved);
 }

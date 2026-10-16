@@ -21,7 +21,9 @@ use std::{fs, io::Write, path::Path, sync::Mutex};
 use studio_runtime_store::{FederationCredentialsRepository as Journal, RuntimeStore, StoreError};
 use thiserror::Error;
 
-use crate::remote_transport::{self, RemoteTransportError, StoredMultiServerIdentity};
+use crate::remote_transport::{
+    self, RemoteIdentity, RemoteTransportError, StoredMultiServerIdentity,
+};
 
 #[derive(Debug, Error)]
 pub enum CredentialError {
@@ -48,6 +50,60 @@ pub struct Credentials {
 }
 
 impl Credentials {
+    /// Create Python-compatible federation signing keys in the existing identity row.
+    /// Key material is generated before the transaction; an insert race keeps the
+    /// first committed identity and never replaces it.
+    pub fn ensure_federation_identity(
+        store: &RuntimeStore,
+        label: &str,
+        lead_name: &str,
+        created: f64,
+    ) -> Result<RemoteIdentity, CredentialError> {
+        validate_federation_label(label)?;
+        let exists = store.read_transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(StoreError::from)
+        })?;
+        if exists {
+            return remote_transport::load_federation_identity(store)
+                .map_err(CredentialError::Identity);
+        }
+
+        let generated = generate()?;
+        let state_id = uuid::Uuid::new_v4().to_string();
+        let record = json!({
+            "stateId": state_id,
+            "privateKey": generated.private_key,
+            "publicKey": generated.public_key,
+            "label": label,
+            "leadName": lead_name,
+            "created": created,
+        });
+        store.transaction_with(|tx| -> Result<(), CredentialError> {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StoreError::from)?;
+            if !exists {
+                tx.execute(
+                    "INSERT INTO runtime_federation_identity(id,record) VALUES('local',?1)",
+                    [record.to_string()],
+                )
+                .map_err(StoreError::from)?;
+            }
+            Ok(())
+        })?;
+        remote_transport::load_federation_identity(store).map_err(CredentialError::Identity)
+    }
+
     pub fn identity(
         &self,
         store: &RuntimeStore,
@@ -127,6 +183,7 @@ impl Credentials {
             }
             let mut identity = remote_transport::read_multi_server_identity(store.root())?;
             self.recover(store, &mut identity)?;
+            store.set_local_server_id(Some(identity.server_id.clone()))?;
             *saved = Some(identity);
         }
         saved.as_mut().ok_or(CredentialError::Storage)
@@ -137,27 +194,43 @@ impl Credentials {
         store: &RuntimeStore,
         identity: &mut StoredMultiServerIdentity,
     ) -> Result<(), CredentialError> {
-        // The outer credential mutex and the store's single writer serialize
-        // recovery; no HTTP call can observe an applied journal with stale keys.
+        // File access stays outside store transactions; the writer rechecks
+        // the journal before marking each recovery complete.
+        let pending = store.read_transaction_with_error(Journal::pending_names)?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        for (_, label, _) in &pending {
+            validate_stored_name(label)?;
+        }
+        let mut updates = Vec::with_capacity(pending.len());
+        let mut updated = identity.clone();
+        for (id, label, actor) in pending {
+            updated.label = label;
+            write_identity(store.root(), &updated, false)?;
+            updates.push((id, actor, updated.label.clone()));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CredentialError::Storage)?
+            .as_secs_f64();
         store.transaction_with(|tx| -> Result<(), CredentialError> {
-            let pending = Journal::pending_names(tx)?;
-            // Refuse malformed journal rows before changing any file.
-            for (_, label, _) in &pending {
-                validate_stored_name(label)?;
-            }
-            for (id, label, actor) in pending {
-                let mut updated = identity.clone();
-                updated.label = label;
-                write_identity(store.root(), &updated, false)?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|_| CredentialError::Storage)?
-                    .as_secs_f64();
-                Journal::complete_name(tx, &id, &updated.server_id, &actor, now)?;
-                *identity = updated;
+            let current = Journal::pending_names(tx)?;
+            for (id, actor, label) in &updates {
+                if !current
+                    .iter()
+                    .any(|(current_id, current_label, current_actor)| {
+                        current_id == id && current_label == label && current_actor == actor
+                    })
+                {
+                    return Err(CredentialError::InvalidJournal);
+                }
+                Journal::complete_name(tx, id, &updated.server_id, actor, now)?;
             }
             Ok(())
-        })
+        })?;
+        *identity = updated;
+        Ok(())
     }
 }
 
@@ -176,6 +249,13 @@ fn validate_stored_name(label: &str) -> Result<(), CredentialError> {
     } else {
         Err(CredentialError::InvalidJournal)
     }
+}
+
+fn validate_federation_label(label: &str) -> Result<(), CredentialError> {
+    if label.trim().is_empty() || label.trim().chars().count() > 80 {
+        return Err(CredentialError::Storage);
+    }
+    Ok(())
 }
 
 fn supported_platform() -> Result<(), CredentialError> {

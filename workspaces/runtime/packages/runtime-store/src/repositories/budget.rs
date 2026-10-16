@@ -39,7 +39,7 @@ impl BudgetRepository {
             .ok_or_else(|| StoreError::SchemaMismatch("budget agent is missing".into()))
     }
     pub fn team(db: &Connection, root: &str) -> StoreResult<Vec<Value>> {
-        let mut statement=db.prepare("SELECT id FROM runtime_agents WHERE coalesce(nullif(json_extract(record,'$.rootId'),''),id)=?1 ORDER BY id")?;
+        let mut statement=db.prepare_cached("SELECT id FROM runtime_agents WHERE coalesce(nullif(json_extract(record,'$.rootId'),''),id)=?1 ORDER BY id")?;
         let ids = statement
             .query_map([root], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -105,7 +105,7 @@ impl BudgetRepository {
     }
     pub fn events(db: &Connection, ids: &[String]) -> StoreResult<Vec<Value>> {
         let mut rows = Vec::new();
-        let mut query=db.prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE id=?1")?;
+        let mut query=db.prepare_cached("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE id=?1")?;
         for id in ids {
             if let Some(row)=query.query_row([id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?}))).optional()? {rows.push(row);}
         }
@@ -170,7 +170,8 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
         failures: vec![],
     };
     if !db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_budget_usage')",[],|r|r.get::<_,bool>(0))? {return Ok(report);}
-    let mut statement = db.prepare("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
+    let mut statement =
+        db.prepare_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
     let mut rows = statement.query([])?;
     let mut failures = std::collections::BTreeMap::new();
     while let Some(row) = rows.next()? {

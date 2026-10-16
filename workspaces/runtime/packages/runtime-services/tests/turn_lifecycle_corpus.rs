@@ -10,6 +10,7 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -17,7 +18,31 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
-use studio_runtime_store::{RuntimeStore, SchedulerRepository, TurnAttemptIdentity};
+use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError, TurnAttemptIdentity};
+
+const ORACLE_ENVIRONMENT_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+];
+
+fn isolated_oracle_environment(
+    environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(name, _)| {
+            ORACLE_ENVIRONMENT_ALLOWLIST
+                .iter()
+                .any(|allowed| name == OsStr::new(allowed))
+        })
+        .collect()
+}
 
 struct Oracle {
     child: Child,
@@ -32,6 +57,11 @@ impl Oracle {
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(root)
+            // The oracle constructs fixture Runtime state, never the live
+            // Studio agent's prompt, skills, or provider-home configuration.
+            // Its Python bootstrap installs disposable homes before imports.
+            .env_clear()
+            .envs(isolated_oracle_environment(std::env::vars_os()))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -55,6 +85,32 @@ impl Oracle {
         assert!(response.get("error").is_none(), "{}", response["error"]);
         response["result"].clone()
     }
+}
+
+#[test]
+fn oracle_environment_keeps_python_loader_path_and_strips_provider_homes() {
+    let filtered = isolated_oracle_environment([
+        ("PATH".into(), "/toolchain/bin".into()),
+        ("LD_LIBRARY_PATH".into(), "/toolchain/lib".into()),
+        ("CODEX_HOME".into(), "/live/codex".into()),
+        ("CLAUDE_CONFIG_DIR".into(), "/live/claude".into()),
+        ("OPENAI_API_KEY".into(), "secret".into()),
+    ]);
+    let filtered = filtered
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert_eq!(
+        filtered.get(OsStr::new("PATH")),
+        Some(&OsString::from("/toolchain/bin"))
+    );
+    assert_eq!(
+        filtered.get(OsStr::new("LD_LIBRARY_PATH")),
+        Some(&OsString::from("/toolchain/lib"))
+    );
+    assert!(!filtered.contains_key(OsStr::new("CODEX_HOME")));
+    assert!(!filtered.contains_key(OsStr::new("CLAUDE_CONFIG_DIR")));
+    assert!(!filtered.contains_key(OsStr::new("OPENAI_API_KEY")));
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
@@ -90,24 +146,78 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
         "claim" => claim_intent(store, "agent", 0, "attempt", 10.0)
             .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
-        "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"thread").map(|v|json!(v))).map_err(|e|e.to_string()),
+        "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string()),
         "submission" | "reconcile_submission" => {
-            use studio_runtime_services::{account_worker::preparation::{prepare_turn,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
+            use studio_runtime_services::{account_worker::preparation::{prepare_turn_with_connection_id,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
             use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
             let (intent,submitted)=lifecycle_transaction(store, |tx| {
                 let agent=AgentRepository::get(tx,&AgentId::from("agent"))?.expect("seed agent").value();
                 let event=QueueEventRepository::get(tx,&QueueEventId::from("event"))?.expect("seed input");
                 let metadata=studio_runtime_store::NotificationDispatchRepository::event_metadata(tx,"event")?.unwrap_or_else(||json!({}));
-                Ok((TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:agent["threadId"].as_str().map(str::to_owned),cwd:agent["cwd"].as_str().map(str::to_owned),model:agent["model"].as_str().map(str::to_owned),events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata}]},agent["startAttempt"]["submitted"]==true))
+                Ok((TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:agent["threadId"].as_str().map(str::to_owned),cwd:agent["cwd"].as_str().map(str::to_owned),model:agent["model"].as_str().map(str::to_owned),radio_authorized:false,events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata}]},agent["startAttempt"]["submitted"]==true))
             }).map_err(|e|e.to_string())?;
             // Replays test the durable identity boundary without recompiling delivered input.
             if submitted {
-                return lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"thread").map(|v|json!(v))).map_err(|e|e.to_string());
+                return lifecycle_transaction(store, |tx| {
+                    let agent = AgentRepository::get(tx, &AgentId::from("agent"))?
+                        .expect("seed agent");
+                    let attempt = &agent.extra["startAttempt"];
+                    SchedulerRepository::mark_submitted_identity(
+                        tx,
+                        "agent",
+                        0,
+                        "attempt",
+                        case["ticket"].as_str().unwrap_or("ticket"),
+                        attempt["accountKey"].as_str().unwrap_or("default"),
+                        attempt["connectionGeneration"].as_u64().unwrap_or(0),
+                        attempt["connectionId"].as_str().unwrap_or(""),
+                        attempt["threadId"].as_str().unwrap_or("thread"),
+                    )
+                    .map(|value| json!(value))
+                })
+                .map_err(|e| e.to_string());
             }
-            let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None),prepared_python::prepared_python(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"))).map_err(|e|e.to_string())?;
-            let prepared=prepare_turn(store,&resources,&intent,1).map_err(|e|e.to_string())?;
+            let guidance_root = tempfile::tempdir().map_err(|error| error.to_string())?;
+            for (relative, content) in [
+                ("codex-orchestrator/SKILL.md", "fixture orchestrator skill"),
+                ("codex-subagent/SKILL.md", "fixture subagent skill"),
+                ("codex-orchestrator/references/native-role.md", "fixture native role"),
+                ("codex-orchestrator/references/legacy-move-role.md", "fixture legacy role"),
+                ("codex-subagent/references/native-role.md", "fixture subagent role"),
+            ] {
+                let path = guidance_root.path().join(".agents/skills").join(relative);
+                std::fs::create_dir_all(path.parent().expect("guidance parent"))
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(path, content).map_err(|error| error.to_string())?;
+            }
+            let mut resources = PreparationResources::bundled_at(
+                String::new(),
+                studio_runtime_services::model_catalog::ModelCatalogService::new(None),
+                guidance_root.path().to_path_buf(),
+                guidance_root.path().to_path_buf(),
+            )
+            .map_err(|e| e.to_string())?;
+            assert!(resources
+                .role_guidance
+                .values()
+                .all(|guidance| guidance.starts_with("fixture ")));
+            assert!(resources.skills_root.starts_with(guidance_root.path()));
+            // The request-compilation witness has no progress-file behavior;
+            // keeping this empty prevents even a generated live progress path
+            // from entering the captured provider input.
+            resources.progress_template.clear();
+            let prepared=prepare_turn_with_connection_id(store,&resources,&intent,1,"fixture-connection").map_err(|e|e.to_string())?;
             if case["transition"] == "submission" {
-                assert_eq!(prepared.native_request(),case["nativeRequest"],"{}: native method and params",case["id"]);
+                let actual = prepared.native_request();
+                let expected = &case["nativeRequest"];
+                let actual_text = actual["params"]["input"][0]["text"]
+                    .as_str()
+                    .expect("prepared input text");
+                let expected_text = expected["params"]["input"][0]["text"]
+                    .as_str()
+                    .expect("oracle input text");
+                assert_eq!(actual_text, expected_text, "{}: no live or fixture guidance is appended", case["id"]);
+                assert_eq!(actual, *expected,"{}: native method and params",case["id"]);
             }
             let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).map_err(|e|e.to_string())?;
             if submitted {
@@ -121,7 +231,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }
             Ok(json!(submitted))
         },
-        "accepted" => lifecycle_transaction(store, |tx| {
+        "accepted" => match lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
                 tx,
                 "agent",
@@ -129,10 +239,30 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 "attempt",
                 case["turnId"].as_str().unwrap_or("turn"),
             )
-            .map(|value| json!(value))
-        })
-        .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
+        }) {
+            Ok(value) => Ok(json!(value)),
+            Err(error) => {
+                if let Some(refusal) = case.get("expectRefusal") {
+                    let table = refusal["table"].as_str().expect("refusal table");
+                    let stored_id = refusal["id"].as_str().expect("refusal ID");
+                    let pointer = refusal["pointer"].as_str().expect("refusal pointer");
+                    assert!(
+                        matches!(
+                            &error,
+                            StoreError::InvalidSyncObjectField { scope, id, pointer: actual_pointer, reason }
+                                if scope == table
+                                    && id == stored_id
+                                    && actual_pointer == pointer
+                                    && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                                    && !reason.contains("SECRET_STORED_SENTINEL")
+                        ),
+                        "{}: acceptance must return the expected typed stored-field refusal: {error:?}",
+                        case["id"]
+                    );
+                }
+                Err(error.to_string())
+            }
+        },
         "unknown" | "not_sent" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_start_outcome(
                 tx,
@@ -481,15 +611,20 @@ fn python_written_turn_lifecycle_corpus() {
                 let refusal = case
                     .get("expectRefusal")
                     .unwrap_or_else(|| panic!("{id}: open Python-written state: {error}"));
-                let location = format!(
-                    "{}/{}",
-                    refusal["table"].as_str().expect("table"),
-                    refusal["id"].as_str().expect("id")
-                );
+                let table = refusal["table"].as_str().expect("table");
+                let stored_id = refusal["id"].as_str().expect("id");
                 let message = error.to_string();
                 assert!(
-                    message.contains(&location),
-                    "{id}: startup refusal must locate {location}: {message}"
+                    matches!(
+                        &error,
+                        StoreError::InvalidSyncObjectField { scope, id, pointer, reason }
+                            if scope == table
+                                && id == stored_id
+                                && pointer == refusal["pointer"].as_str().expect("pointer")
+                                && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                                && !reason.contains("SECRET_STORED_SENTINEL")
+                    ),
+                    "{id}: startup refusal must preserve its structured stored-field cause: {message} ({error:?})"
                 );
                 assert!(
                     !message.contains("CORPUS_PRIVATE_PAYLOAD")
@@ -625,18 +760,35 @@ fn python_written_turn_lifecycle_corpus() {
             let message = error
                 .take()
                 .expect("malformed or conflicting stored evidence must be refused");
-            assert!(
-                message
-                    == refusal["message"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!(
-                            "invalid stored sync object {}/{}",
-                            refusal["table"].as_str().expect("refusal table"),
-                            refusal["id"].as_str().expect("refusal id")
-                        )),
-                "{id}: error must locate table and stored id only: {message}"
-            );
+            if let Some(pointer) = refusal["pointer"].as_str() {
+                let prefix = format!(
+                    "invalid stored sync object {}/{} at {pointer}: ",
+                    refusal["table"].as_str().expect("refusal table"),
+                    refusal["id"].as_str().expect("refusal ID")
+                );
+                assert!(
+                    message.starts_with(&prefix),
+                    "{id}: wrong typed refusal body: {message}"
+                );
+                assert!(
+                    !message.contains("CORPUS_PRIVATE_PAYLOAD")
+                        && !message.contains("SECRET_STORED_SENTINEL"),
+                    "{id}: refusal body exposed planted data: {message}"
+                );
+            } else {
+                assert!(
+                    message
+                        == refusal["message"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!(
+                                "invalid stored sync object {}/{}",
+                                refusal["table"].as_str().expect("refusal table"),
+                                refusal["id"].as_str().expect("refusal ID")
+                            )),
+                    "{id}: error must locate table and stored id only: {message}"
+                );
+            }
             &expected["before"]
         } else {
             &expected["after"]

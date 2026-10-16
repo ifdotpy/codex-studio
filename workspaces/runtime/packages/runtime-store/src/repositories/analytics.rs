@@ -823,7 +823,7 @@ fn item_grouped(filter: &ScopeFilter, key: &str, kind: &str) -> Result<ItemGroup
             SUM(duration),boundary,COALESCE(d.n,0),d.low,d.high,d.mean,d.median,d.p95
         FROM population p LEFT JOIN durations d ON p.k=d.k AND p.t=d.t GROUP BY p.k,p.t
         ORDER BY COALESCE(SUM(json_extract(record,'$.output.bytes')),0) DESC,MIN(position)",filter.sql);
-    let mut stmt = db.prepare(&sql)?;
+    let mut stmt = db.prepare_cached(&sql)?;
     Ok(stmt
         .query_map(params_from_iter(&filter.params), |r| {
             Ok((
@@ -917,7 +917,7 @@ fn query<T, P: rusqlite::Params>(
     read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Vec<T>, AnalyticsError> {
     Ok(db
-        .prepare(sql)?
+        .prepare_cached(sql)?
         .query_map(params, read)?
         .collect::<Result<_, _>>()?)
 }
@@ -1095,7 +1095,7 @@ impl<'a> ScopeFilter<'a> {
     fn rates(&self, limit: i64, offset: i64) -> Result<Vec<RateLimit>, AnalyticsError> {
         let mut params = self.params.clone();
         params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
-        let mut stmt = self.db.prepare(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
+        let mut stmt = self.db.prepare_cached(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
         let rows = stmt.query_map(params_from_iter(params), |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -1377,7 +1377,7 @@ fn raw_records<P: rusqlite::Params>(
     table: &'static str,
 ) -> Result<Vec<Value>, AnalyticsError> {
     let sql = sql.replacen("SELECT record FROM", "SELECT id,record FROM", 1);
-    let mut stmt = db.prepare(&sql)?;
+    let mut stmt = db.prepare_cached(&sql)?;
     let values = stmt.query_map(params, |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;

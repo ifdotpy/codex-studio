@@ -18,7 +18,10 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    TimedHTTPContractTest, assert_stored_data_unavailable, start_contract_backend,
+    no_write_snapshot,
+)
 from codex_progress import provision_progress
 
 
@@ -332,10 +335,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     )
                 before = no_write_snapshot(state)
                 refused = self.backend.request("GET", "/api/profiles", headers=self.headers())
-                self.assertEqual(refused.status, 500, refused.body[:1000])
-                self.assertEqual(
-                    refused.json()["error"], "Invalid stored object profiles/python-profile",
-                )
+                assert_stored_data_unavailable(self, refused, "profiles/python-profile")
                 self.assertEqual(no_write_snapshot(state), before)
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:
@@ -361,10 +361,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body={"id": "python-profile", "name": "Replacement", "model": "M"},
                 headers=self.headers(),
             )
-            self.assertEqual(refused.status, 500, refused.body[:1000])
-            self.assertEqual(
-                refused.json()["error"], "Invalid stored object profiles/python-profile",
-            )
+            assert_stored_data_unavailable(self, refused, "profiles/python-profile")
             self.assertEqual(no_write_snapshot(state), before)
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:
@@ -382,7 +379,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DROP TABLE runtime_profiles")
         try:
             listed = self.backend.request("GET", "/api/profiles", headers=self.headers())
-            self.assertEqual(listed.status, 500, listed.body[:1000])
+            self.assertEqual(listed.status, 503, listed.body[:1000])
 
             refused = self.backend.request(
                 "POST",
@@ -397,7 +394,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 },
                 headers=self.headers(),
             )
-            self.assertEqual(refused.status, 500, refused.body[:1000])
+            self.assertEqual(refused.status, 503, refused.body[:1000])
             self.assertIsNone(profile_table(state))
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:

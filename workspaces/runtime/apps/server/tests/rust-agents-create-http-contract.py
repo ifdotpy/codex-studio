@@ -10,11 +10,15 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
 import unittest
 import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 isolate_supervisor_environment()
@@ -24,7 +28,94 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 REVIEW_CORPUS = json.loads((HERE / "fixtures/rust-agents-create/review-corpus.json").read_text())
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess,
+    HTTP_WAIT_GUARD_SECONDS,
+    TimedHTTPContractTest,
+    start_contract_backend,
+    no_write_snapshot as _no_write_snapshot,
+)
+
+# These routes can write these application rows. Their dispatcher wakes the
+# scheduler only after success; meanwhile it can reserve an earlier queued
+# event, so that event's status is treated as background-owned by the harness.
+AGENT_CREATE_WRITE_TABLES = frozenset({
+    "runtime_agents",
+    "runtime_events",
+    "runtime_event_meta",
+    "runtime_lead_requests",
+    "runtime_operation_receipts",
+    "runtime_projects",
+    "runtime_tasks",
+    "sync_entities",
+})
+
+
+def no_write_snapshot(
+    state: Path, *, before: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
+    return _no_write_snapshot(
+        state, include_tables=AGENT_CREATE_WRITE_TABLES, baseline_snapshot=before,
+    )
+
+
+def describe_snapshot_delta(before, after):
+    old_databases = dict(before)
+    changes = []
+    for database, tables in after:
+        old_tables = {table: (columns, rows) for table, columns, rows in old_databases.get(database, ())}
+        for table, columns, rows in tables:
+            old_columns, old_rows = old_tables.get(table, (columns, ()))
+            key_columns = tuple(column for column in ("collection", "id") if column in columns)
+            if not key_columns and "id" in columns:
+                key_columns = ("id",)
+            key_indexes = tuple(columns.index(column) for column in key_columns)
+            old_by_key = {
+                tuple(row[old_columns.index(column)] for column in key_columns): row
+                for row in old_rows
+            } if key_columns else {row: row for row in old_rows}
+            for row in rows:
+                key = tuple(row[index] for index in key_indexes) if key_columns else row
+                prior = old_by_key.pop(key, None)
+                if prior is None:
+                    changes.append(f"{database}/{table} added {key!r}")
+                    continue
+                if table == "sync_entities" and "payload" in columns:
+                    try:
+                        old_projection = json.loads(prior[old_columns.index("payload")])["value"]
+                        new_projection = json.loads(row[columns.index("payload")])["value"]
+                    except (KeyError, TypeError, ValueError):
+                        old_projection = new_projection = None
+                    if isinstance(old_projection, dict) and isinstance(new_projection, dict):
+                        old_stable = {name: value for name, value in old_projection.items() if name not in BACKGROUND_AGENT_FIELDS}
+                        new_stable = {name: value for name, value in new_projection.items() if name not in BACKGROUND_AGENT_FIELDS}
+                        deleted_same = "deleted" not in columns or prior[old_columns.index("deleted")] == row[columns.index("deleted")]
+                        if old_stable == new_stable and deleted_same:
+                            continue
+                for index, column in enumerate(columns):
+                    if index >= len(old_columns) or column not in old_columns:
+                        continue
+                    old_value = prior[old_columns.index(column)]
+                    if old_value == row[index]:
+                        continue
+                    if column in {"record", "payload"}:
+                        try:
+                            old_json, new_json = json.loads(old_value), json.loads(row[index])
+                        except (TypeError, ValueError):
+                            changes.append(f"{database}/{table}/{key}/{column} changed")
+                            continue
+                        old_fields = old_json.get("value", old_json) if isinstance(old_json, dict) else old_json
+                        new_fields = new_json.get("value", new_json) if isinstance(new_json, dict) else new_json
+                        field_names = set(old_fields) | set(new_fields) if isinstance(old_fields, dict) and isinstance(new_fields, dict) else {"<json>"}
+                        changed = [name for name in sorted(field_names) if old_fields.get(name) != new_fields.get(name) and name not in BACKGROUND_AGENT_FIELDS] if isinstance(old_fields, dict) and isinstance(new_fields, dict) else ["<json>"]
+                        if not changed:
+                            continue
+                        changes.append(f"{database}/{table}/{key}/{column} fields={changed[:20]!r}")
+                    else:
+                        changes.append(f"{database}/{table}/{key}/{column}: {old_value!r} -> {row[index]!r}")
+                if len(changes) >= 30:
+                    return changes
+    return changes
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "agents_create_runtime_fixture", HERE / "runtime-contract.py"
@@ -86,12 +177,52 @@ def rename_state(state: Path, agent_id: str, request_id: str):
 def normalized_agent(value):
     result = dict(value)
     result.pop("creationIntent", None)
+    own_id = result.get("id")
     result["id"] = "<agent>"
-    result["rootId"] = "<agent>"
+    if result.get("rootId") == own_id:
+        result["rootId"] = "<agent>"
     result["created"] = 0
     if "serverId" in result:
         result["serverId"] = "<server>"
     return result
+
+
+def agent_delta(actual, expected):
+    return {
+        key: (actual.get(key, "<missing>"), expected.get(key, "<missing>"))
+        for key in sorted(actual.keys() | expected.keys())
+        if actual.get(key, "<missing>") != expected.get(key, "<missing>")
+    }
+
+
+BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
+    "status", "inFlight", "startAttempt", "turnId", "turnEpoch",
+    "workspaceOperation", "workspaceReservationId", "worktreePreparation",
+    "activeTools", "activity", "checkpointError", "checkpointHistoryHead",
+    "complaintMisses", "complaintsPresented", "events", "lastAnswer",
+    "lastCompletedTurn", "lastCompletedTurnError", "lastCompletedTurnStatus",
+    "lastEvent", "nativeRoleGuidance", "nativeTeleportTool", "nativeToolCatalog",
+    "nativeToolSource", "prepareAttempt", "preparedContext", "tail",
+    "threadId", "worktreeReady", "branch", "cwd",
+    # Python's reviewer archive scheduler writes/retries these after delivering
+    # child results (codex_agent_management.py:789, 818-826); the quiet draft
+    # oracle does not run that scheduler.
+    "reviewArchiveAttempts", "reviewArchiveError", "reviewArchiveNextAt",
+    "reviewArchiveScheduled",
+    # Native provider response callbacks mark the in-flight turn here
+    # (native_notifications/dispatch.py:advance_native_status).
+    "nativeResponseTurn",
+    # Python's successful thread preparation callback records these even when
+    # the provider reply omits them (codex_runtime.py:6477-6478).
+    "approvalPolicy", "profile", "sandbox",
+})
+
+BACKGROUND_AGENT_FIELDS = BACKGROUND_CHILD_COMPLETION_FIELDS | frozenset({
+    "status", "inFlight", "turnId", "turnEpoch", "events", "lastEvent",
+    "lastCompletedTurnError", "complaintMisses", "worktree",
+    "workspaceInGit", "canSend", "empty", "launcherAlive", "source",
+    "nextTurnSettingsSupported", "readStateSupported",
+})
 
 
 def python_draft(backend, request, draft=True):
@@ -116,10 +247,33 @@ def python_draft(backend, request, draft=True):
         runtime.close()
 
 
+def python_worker_draft(backend, request, parent_id):
+    """Capture Python's complete child record, then remove its fixture writes."""
+    backend.stop()
+
+    class QuietRuntime(_fixture.Runtime):
+        def schedule(self):
+            pass
+
+    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    child_id = request["id"]
+    try:
+        created = runtime.create(request, parent=parent_id, defer=False)
+        with runtime.db() as database:
+            expected = runtime.agent(created["id"], database)
+            database.execute("DELETE FROM runtime_agents WHERE id=?", (child_id,))
+            database.execute("DELETE FROM sync_entities WHERE collection='agent' AND id=?", (child_id,))
+            database.execute("DELETE FROM runtime_events WHERE agent=?", (child_id,))
+            database.execute("DELETE FROM runtime_event_meta WHERE id=?", (child_id + ":initial",))
+        return expected
+    finally:
+        runtime.close()
+
+
 class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.backend = start_contract_backend(cls)
+        cls.backend = start_contract_backend(cls, fake_version_output="codex-cli 999.0.0")
         cls.agent_id = seed_python_agent(cls.backend)
         cls.backend.start()
 
@@ -133,6 +287,127 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def background_work_pending(self, agent_id=None):
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            active_turn = "SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.autoWake')=1 " \
+                "AND json_extract(record,'$.status')='running' " \
+                "AND json_extract(record,'$.inFlight')=1 AND id=?"
+            if agent_id is not None and database.execute(active_turn, (agent_id,)).fetchone():
+                return True
+            event_scope = " AND e.agent=?" if agent_id is not None else ""
+            event_query = (
+                "SELECT 1 FROM runtime_events e JOIN runtime_agents a ON a.id=e.agent "
+                "WHERE e.status IN ('pending','reserved','dispatching') "
+                "AND e.kind!='child_result' "
+                "AND json_extract(a.record,'$.autoWake')=1 "
+                "AND json_extract(a.record,'$.status') NOT IN ('failed','interrupted','paused')"
+                + event_scope + " LIMIT 1"
+            )
+            if database.execute(event_query, (agent_id,) if agent_id is not None else ()).fetchone():
+                return True
+            if agent_id is not None:
+                return False
+            for row_agent_id, encoded in database.execute("SELECT id,record FROM runtime_agents"):
+                agent = json.loads(encoded)
+                if agent.get("workspaceOperation") or agent.get("worktreePreparation") in {"waiting", "preparing"}:
+                    return True
+            for (encoded,) in database.execute("SELECT record FROM runtime_tasks"):
+                task = json.loads(encoded)
+                if (task.get("status") == "running"
+                        and (agent_id is None or task.get("agent") == agent_id)):
+                    return True
+        return False
+
+    def await_background_quiescence(self, agent_id=None, *, settled=None):
+        """Wait for background work, or until a caller's durable state settles."""
+        def is_pending():
+            return not settled() if settled is not None else self.background_work_pending(agent_id)
+
+        if not is_pending():
+            return
+        self.backend.wait_until(
+            lambda: not is_pending(), "background scheduler/workspace work",
+        )
+
+    def await_provider_version_projection(self):
+        """Wait for the monitor that owns workspace.nativeNotices to finish its pass."""
+        def projection_settled():
+            response = self.backend.request("GET", "/api/desktop", headers=self.headers())
+            self.assertEqual(response.status, 200, response.body[:1000])
+            checked_at = response.json().get("providerVersions", {}).get("checkedAt")
+            return isinstance(checked_at, (int, float))
+
+        self.backend.wait_until(projection_settled, "provider-version workspace projection")
+
+    def creation_preparation_settled(self, agent_id):
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+            ).fetchone()
+            event = database.execute(
+                "SELECT status FROM runtime_events WHERE id=?", (agent_id + ":initial",)
+            ).fetchone()
+        if row is None or event is None:
+            return False
+        attempt = json.loads(row[0]).get("startAttempt") or {}
+        connection_id = attempt.get("connectionId")
+        return (
+            attempt.get("submitted") is True
+            and isinstance(connection_id, str)
+            and bool(connection_id)
+            and event[0] == "delivered"
+        )
+
+    def snapshot_no_write(self, *, before=None):
+        self.await_background_quiescence()
+        snapshot = no_write_snapshot(self.backend.state, before=before)
+        if before is not None and snapshot != before:
+            delta = describe_snapshot_delta(before, snapshot)
+            if delta:
+                self.fail(f"No-write snapshot changed: {delta!r}")
+            return before
+        return snapshot
+
+    def await_model_catalog(self, account_key):
+        backend = self.backend
+        query = urlencode({
+            "protocol": "3",
+            "apiSchema": backend.schema_hash,
+            "resources": json.dumps([{"kind": "models"}], separators=(",", ":")),
+        })
+        request = Request(
+            f"{backend.origin}/api/sync/stream?{query}",
+            headers=self.headers(),
+        )
+
+        def next_resource_event(response, deadline):
+            event = None
+            raw_socket = response.fp.raw._sock
+            while time.monotonic() < deadline:
+                raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
+                line = response.readline().decode("utf-8").rstrip("\r\n")
+                if line.startswith("event: "):
+                    event = line.removeprefix("event: ")
+                elif not line and event is not None:
+                    if event == "resources":
+                        return
+            raise TimeoutError("Model catalog readiness event did not arrive")
+
+        with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
+            deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
+            catalog_query = urlencode({"account_key": account_key})
+            while time.monotonic() < deadline:
+                result = backend.request(
+                    "GET", f"/api/models?{catalog_query}", headers=self.headers(),
+                    timeout=max(0.01, deadline - time.monotonic()),
+                )
+                if result.status == 200:
+                    return
+                self.assertEqual(result.status, 400, result.body[:1000])
+                self.assertTrue(result.json().get("catalogPending"), result.body[:1000])
+                next_resource_event(response, deadline)
+            self.fail("Model catalog did not become ready before the shared deadline")
 
     def test_draft_creation_replays_same_content_and_syncs_python_shape(self):
         reference_request = {
@@ -194,10 +469,13 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertTrue(stored_record["quickCreate"])
         self.assertTrue(stored_record["needsTitle"])
         self.assertEqual(stored_record["cwd"], str(self.backend.cwd))
-        self.assertEqual(normalized_agent(stored_record), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(stored_record)
+        expected_record = normalized_agent(reference["record"])
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(events, 0)
         self.assertIsNotNone(projection)
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
+
         replay = self.backend.request(
             "POST", "/api/leads", body=request, headers=self.headers()
         )
@@ -239,6 +517,21 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             after.close()
 
+    def test_creation_with_needs_title_succeeds_without_title_port(self):
+        request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        response = self.backend.request(
+            "POST", "/api/leads", body=request, headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["id"], request["id"])
+        record = self.stored(request["id"])
+        self.assertTrue(record["needsTitle"])
+        self.assertEqual(record["name"], "New chat")
+
     def test_persisted_configure_and_exclusions_update_python_written_agent(self):
         configure = self.backend.request(
             "POST",
@@ -274,54 +567,43 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ["other-account"],
         )
 
-    def test_rust_dependency_refusal_writes_nothing(self):
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("Python reference backend implements provider settings")
-        previous = self.draft()
+    def test_p10_delete_commits_without_account_worker(self):
+        victim = self.draft()
+        victim_id = victim["id"]
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            before = database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'runtime_%' ORDER BY name"
-            ).fetchall()
-            records = {
-                table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
-                for table in before
-            }
+            before_sequence = database.execute(
+                "SELECT coalesce(max(seq), 0) FROM sync_entities"
+            ).fetchone()[0]
         response = self.backend.request(
             "POST",
             "/api/conversation/delete",
-            body={"id": self.agent_id},
+            body={"id": victim_id},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
+        self.assertEqual(response.status, 200, response.body[:1000])
+        result = response.json()
+        self.assertEqual(result["deleted"], [victim_id])
+        self.assertEqual(result["_syncEntitiesAfter"], before_sequence)
+        tombstones = [
+            entity
+            for entity in result["_syncEntities"]
+            if entity["id"] == f"entity:agent:{victim_id}"
+        ]
+        self.assertEqual(len(tombstones), 1)
         self.assertEqual(
-            response.json(),
-            {"error": "Not implemented: requires work-driver/deletion-release"},
+            tombstones[0],
+            {
+                "_deleted": True,
+                "id": f"entity:agent:{victim_id}",
+                "payload": json.dumps(
+                    {"collection": "agent", "id": victim_id, "value": {}},
+                    separators=(",", ":"),
+                ),
+                "seq": tombstones[0]["seq"],
+            },
         )
-        reuse = self.backend.request(
-            "POST",
-            "/api/leads",
-            body={"reuse_empty": True, "previous": previous["id"]},
-            headers=self.headers(),
-        )
-        self.assertEqual(reuse.status, 501, reuse.body[:1000])
-        self.assertEqual(
-            reuse.json(),
-            {"error": "Not implemented: requires agent-management/empty-chat-reuse"},
-        )
-        with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            after = database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'runtime_%' ORDER BY name"
-            ).fetchall()
-            self.assertEqual(after, before)
-            self.assertEqual(
-                {
-                    table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
-                    for table in after
-                },
-                records,
-            )
+        self.assertGreater(tombstones[0]["seq"], before_sequence)
+        self.assertTrue(self.stored(victim_id)["deletedAt"])
 
     def test_rust_agent_creation_writes_one_pending_event_and_replays(self):
         request = {
@@ -357,7 +639,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
                 (request["id"],),
             ).fetchone()
-        self.assertEqual(normalized_agent(json.loads(agent[0])), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(json.loads(agent[0]))
+        expected_record = normalized_agent(reference["record"])
+        # Worktree readiness is a later scheduler-owned field.
+        actual_record.pop("worktree", None)
+        expected_record.pop("worktree", None)
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
         self.assertEqual(
             event,
@@ -377,26 +664,211 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(explicit_max.status, 400, explicit_max.body[:1000])
         changed = {**request, "prompt": "Different content must not replace the task."}
-        before = (agent, event, projection)
+        self.await_background_quiescence(
+            settled=lambda: self.creation_preparation_settled(request["id"])
+        )
+        before = self.creation_identity_snapshot(request["id"])
         conflict = self.backend.request(
             "POST", "/api/agents", body=changed, headers=self.headers()
         )
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(self.creation_identity_snapshot(request["id"]), before)
+
+    def test_child_creation_freezes_git_base_and_replays_one_agent_and_event(self):
+        self.rust_only()
+        subprocess.run(["git", "config", "user.name", "P02 contract"], cwd=self.backend.cwd, check=True)
+        subprocess.run(["git", "config", "user.email", "p02@example.test"], cwd=self.backend.cwd, check=True)
+        (self.backend.cwd / "README.md").write_text("frozen base\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.backend.cwd, check=True)
+        subprocess.run(["git", "commit", "-m", "fixture base"], cwd=self.backend.cwd, check=True, capture_output=True)
+        base_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{commit}"], cwd=self.backend.cwd, text=True
+        ).strip()
+        parent_request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        parent = python_draft(self.backend, parent_request)
+        request = {
+            "id": str(uuid.uuid4()),
+            "parent": parent_request["id"],
+            "cwd": str(self.backend.cwd),
+            "name": REVIEW_CORPUS["childNameCases"]["trimmedInput"],
+            "prompt": "  Use the frozen base.  ",
+            "workspaceMode": "worktree",
+        }
+        expected = python_worker_draft(
+            self.backend,
+            {
+                **{key: value for key, value in request.items() if key != "workspaceMode"},
+                "_workerBaseRef": "HEAD",
+                "_workerBaseCommit": base_commit,
+                "_workspaceMode": "worktree",
+                "_workspaceExplicit": True,
+            },
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        account_key = parent["record"].get("accountKey", "default")
+        registry = json.loads((self.backend.state / "accounts/registry.json").read_text())
+        account_row = registry["accounts"][account_key]
+        self.assertIsInstance(account_row.get("home"), str)
+        self.assertIsNone(account_row.get("provider"))
+        self.await_model_catalog(account_key)
+        before = self.snapshot_no_write()
+        first = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        self.assertEqual(first.status, 200, first.body[:1000])
+        self.assertNotEqual(self.snapshot_no_write(), before)
+        self.assertEqual(first.json()["id"], request["id"])
+        self.backend.stop()
+        self.backend.start()
+        replay = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            after = (
-                database.execute(
-                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
-                ).fetchone(),
-                database.execute(
-                    "SELECT kind,text,status FROM runtime_events WHERE id=?",
-                    (request["id"] + ":initial",),
-                ).fetchone(),
-                database.execute(
-                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
-                    (request["id"],),
-                ).fetchone(),
+            self.assertEqual(
+                database.execute("SELECT COUNT(*) FROM runtime_agents WHERE id=?", (request["id"],)).fetchone()[0],
+                1,
             )
-        self.assertEqual(after, before)
+            self.assertEqual(
+                database.execute("SELECT COUNT(*) FROM runtime_events WHERE id=?", (request["id"] + ":initial",)).fetchone()[0],
+                1,
+            )
+            saved = json.loads(database.execute("SELECT record FROM runtime_agents WHERE id=?", (request["id"],)).fetchone()[0])
+        self.assertEqual(saved["workerBaseRef"], "HEAD")
+        self.assertEqual(saved["workerBaseCommit"], base_commit)
+        self.assertTrue(saved["worktree"])
+        self.assertEqual(saved["branch"], "codex-agent/" + request["id"])
+        self.assertEqual(
+            Path(saved["cwd"]),
+            self.backend.cwd / ".worktrees" / "codex-agents" / request["id"],
+        )
+        self.assertEqual(saved["parentId"], parent["record"]["id"])
+        self.assertEqual(saved["rootId"], parent["record"]["rootId"])
+        expected_fields = REVIEW_CORPUS["childStoredFields"]
+        self.assertEqual(saved["name"], expected_fields["name"])
+        self.assertEqual(saved["prompt"], expected_fields["prompt"])
+        # The oracle draft uses QuietRuntime.schedule(), while the live Rust
+        # backend has already scheduled the child. Python Runtime.schedule()
+        # also reserves queued workers (codex_runtime.py around 6503/7036),
+        # changing only these lifecycle fields after create.
+        # The Python draft reference is captured before execution; the live
+        # fake-provider child has completed it by this point. These fields are
+        # separate from no-write refusal snapshots.
+        saved_for_creation = normalized_agent(saved)
+        expected_for_creation = normalized_agent(expected)
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
+            saved_for_creation.pop(field, None)
+            expected_for_creation.pop(field, None)
+        creation_delta = agent_delta(saved_for_creation, expected_for_creation)
+        self.assertEqual(creation_delta, {}, f"field deltas: {creation_delta!r}")
+
+        maximum_name_request = {
+            **request,
+            "id": str(uuid.uuid4()),
+            "name": "x" * REVIEW_CORPUS["childNameCases"]["maximumLength"],
+        }
+        expected_maximum_name = python_worker_draft(
+            self.backend,
+            {
+                **{key: value for key, value in maximum_name_request.items() if key != "workspaceMode"},
+                "_workerBaseRef": "HEAD",
+                "_workerBaseCommit": base_commit,
+                "_workspaceMode": "worktree",
+                "_workspaceExplicit": True,
+            },
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        self.await_model_catalog(account_key)
+        maximum_name_response = self.backend.request(
+            "POST", "/api/agents", body=maximum_name_request, headers=self.headers()
+        )
+        self.assertEqual(maximum_name_response.status, 200, maximum_name_response.body[:1000])
+        self.await_background_quiescence()
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            saved_maximum_name = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?",
+                    (maximum_name_request["id"],),
+                ).fetchone()[0]
+            )
+        maximum_actual = normalized_agent(saved_maximum_name)
+        maximum_expected = normalized_agent(expected_maximum_name)
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
+            maximum_actual.pop(field, None)
+            maximum_expected.pop(field, None)
+        self.assertEqual(agent_delta(maximum_actual, maximum_expected), {})
+
+        self.backend.stop()
+        self.backend.start()
+        replay = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            self.assertEqual(
+                database.execute(
+                    "SELECT COUNT(*) FROM runtime_agents WHERE id=?",
+                    (maximum_name_request["id"],),
+                ).fetchone()[0],
+                1,
+            )
+        self.quiesce_fixture_agent(request["id"])
+        self.quiesce_fixture_agent(maximum_name_request["id"])
+
+    def test_reviewer_child_uses_shared_workspace_and_read_only_permissions(self):
+        parent_request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "yolo_mode": False,
+        }
+        parent = python_draft(self.backend, parent_request)
+        request = {
+            "id": str(uuid.uuid4()),
+            "parent": parent["record"]["id"],
+            "name": "Reviewer workspace contract",
+            "prompt": "Review the shared workspace read-only.",
+            "role": "reviewer",
+        }
+        expected = python_worker_draft(
+            self.backend,
+            {**request, "_workspaceMode": "shared", "_workspaceExplicit": False},
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        account_key = parent["record"].get("accountKey", "default")
+        self.await_model_catalog(account_key)
+        response = self.backend.request(
+            "POST", "/api/agents", body=request, headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.await_background_quiescence()
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            saved = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (request["id"],),
+            ).fetchone()[0])
+        self.assertEqual(saved["role"], "reviewer")
+        self.assertEqual(saved["workspaceMode"], "shared")
+        self.assertIs(saved["worktree"], False)
+        self.assertIs(saved["yoloMode"], False)
+        turn = next(
+            frame for frame in reversed(self.backend.received_provider_frames())
+            if frame.get("method") == "turn/start"
+            and frame.get("params", {}).get("threadId") == saved.get("threadId")
+            and frame.get("params", {}).get("input")
+        )
+        self.assertEqual(turn["params"]["sandboxPolicy"], {"type": "readOnly"})
+        saved_for_creation = normalized_agent(saved)
+        expected_for_creation = normalized_agent(expected)
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
+            saved_for_creation.pop(field, None)
+            expected_for_creation.pop(field, None)
+        self.assertEqual(
+            agent_delta(saved_for_creation, expected_for_creation),
+            {},
+        )
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")
@@ -422,12 +894,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             },
         )
         after = rename_state(self.backend.state, self.agent_id, "title-request-1")
-        self.assertEqual(
-            response_body["_syncEntitiesAfter"], before["projection"][0]
-        )
         self.assertEqual(len(response_body["_syncEntities"]), 1)
         entity = response_body["_syncEntities"][0]
         self.assertEqual(entity["id"], f"entity:agent:{self.agent_id}")
+        self.assertEqual(entity["seq"], response_body["_syncEntitiesAfter"] + 1)
         self.assertEqual(entity["seq"], after["projection"][0])
         self.assertFalse(entity["_deleted"])
         self.assertEqual(
@@ -532,29 +1002,107 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
         )
 
-    def test_smart_title_reports_named_501_without_writing(self):
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("the Python reference backend implements live title generation")
-        before = rename_state(self.backend.state, self.agent_id, "smart-title-id")
-        response = self.backend.request(
+    def test_smart_title_returns_pending_then_settles_failure_without_rename(self):
+        # Make catalog failure explicit and hold its response until after the
+        # HTTP request proves it returned a pending receipt. This keeps the
+        # terminal failure assertion independent of catalog-cache state.
+        # Keep the replay executable immutable after its native approval: the
+        # account updater hashes the executable and may reserve the app-server
+        # while replacing a live backend's fixture.
+        backend = BackendProcess(Path(os.environ["TMPDIR"]))
+        backend.hold_provider("model/list")
+        backend.create_codex_replay(
+            "smart-title-model-list-error.json", fake_version_output="codex-cli 999.0.0",
+        )
+        self.addCleanup(backend.close)
+        agent_id = seed_python_agent(backend)
+        backend.start()
+        headers = {
+            "Origin": backend.origin or "",
+            "X-Canvas-Token": backend.session["token"],
+            "X-Studio-API-Schema": backend.schema_hash,
+        }
+        catalog_response = backend.request(
+            "GET", "/api/models?account_key=default", headers=headers,
+        )
+        self.assertEqual(catalog_response.status, 400, catalog_response.body[:1000])
+        self.assertTrue(
+            catalog_response.json().get("catalogPending"), catalog_response.body[:1000],
+        )
+        backend.wait_until(
+            backend.provider_gate_started, "smart-title model/list response gate",
+        )
+        before = rename_state(backend.state, agent_id, "smart-title-id")
+        response = backend.request(
             "POST",
             "/api/rename",
-            body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
-            headers=self.headers(),
+            body={"id": agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=headers,
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json(),
-            {"error": "Not implemented: requires provider-session/title-generation"},
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertEqual(response.json()["request_id"], "smart-title-id")
+        backend.release_provider_gate()
+
+        def failure_settled():
+            receipt = rename_state(
+                backend.state, agent_id, "smart-title-id",
+            )["receipt"]
+            if receipt is None:
+                return False
+            result = json.loads(receipt[1])
+            return result.get("status", result.get("state")) in {
+                "failed", "invalid", "not_sent",
+            }
+
+        backend.wait_until(
+            failure_settled,
+            "smart-title failure receipt",
         )
-        self.assertEqual(
-            rename_state(self.backend.state, self.agent_id, "smart-title-id"), before
+        after = rename_state(backend.state, agent_id, "smart-title-id")
+        self.assertIsNotNone(after["receipt"])
+        result = json.loads(after["receipt"][1])
+        self.assertIn(result.get("status", result.get("state")), {"failed", "invalid", "not_sent"})
+        # Python admits the receipt before scheduling `_finish`, then records a
+        # failure without renaming if generation cannot start: codex_rename.py:128-146,195-207.
+        self.assertEqual(after["agent"], before["agent"])
+        self.assertEqual(after["projection"], before["projection"])
+        replay = backend.request(
+            "POST",
+            "/api/rename",
+            body={"id": agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=headers,
         )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["request_id"], "smart-title-id")
+        self.assertEqual(replay.json()["status"], "failed")
+        replayed = rename_state(backend.state, agent_id, "smart-title-id")
+        self.assertEqual(replayed["agent"], before["agent"])
+        self.assertEqual(replayed["projection"], before["projection"])
 
     def post(self, path, body, status=200):
         response = self.backend.request("POST", path, body=body, headers=self.headers())
         self.assertEqual(response.status, status, response.body[:1500])
         return response.json()
+
+    @unittest.skipIf(sys.platform == "darwin", "ASIF provisioning uses its separate fake fixture")
+    def test_non_worktree_lead_creation_matches_python_platform_refusal(self):
+        for workspace in ("image", "layr"):
+            with self.subTest(workspace=workspace):
+                before = self.snapshot_no_write()
+                response = self.backend.request(
+                    "POST",
+                    "/api/leads",
+                    body={
+                        "id": str(uuid.uuid4()),
+                        "cwd": str(self.backend.cwd),
+                        "workspaceMode": workspace,
+                    },
+                    headers=self.headers(),
+                )
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertIn("supports only worktree chats", response.json()["error"])
+                self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def draft(self, **fields):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "worktree", **fields}
@@ -573,6 +1121,47 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), record["id"]))
 
+    def quiesce_fixture_agent(self, agent_id, *, status="paused"):
+        """Make a test-owned queued turn inert before unrelated refusal checks."""
+        with database_connection(self.backend.state / "canvas.sqlite3") as db:
+            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+            if row is None:
+                return
+            record = json.loads(row[0])
+            record.update(autoWake=False, status=status, inFlight=False, turnId=None)
+            db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id))
+
+    def creation_identity_snapshot(self, agent_id):
+        """Capture writes owned by one creation identity, excluding scheduler rows."""
+        background_fields = {
+            "status", "inFlight", "turnId", "turnEpoch", "events", "lastEvent",
+            "lastCompletedTurn", "lastCompletedTurnStatus", "lastCompletedTurnError",
+            "complaintMisses", "nativeResponseTurn", "worktree", "worktreeReady",
+            "branch", "cwd", "startAttempt", "activity", "workspaceOperation",
+            "prepareAttempt", "preparedContext", "threadId", "tail",
+        }
+
+        def stable_agent(raw):
+            if raw is None:
+                return None
+            value = json.loads(raw)
+            for field in background_fields:
+                value.pop(field, None)
+            return value
+
+        with database_connection(self.backend.state / "canvas.sqlite3") as db:
+            projection = db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (agent_id,),
+            ).fetchone()
+            projection_value = json.loads(projection[0])["value"] if projection else None
+            return (
+                stable_agent((db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone() or [None])[0]),
+                db.execute("SELECT id,kind,text FROM runtime_events WHERE agent=? ORDER BY id", (agent_id,)).fetchall(),
+                db.execute("SELECT signature,result FROM runtime_operation_receipts WHERE id=?", (agent_id,)).fetchone(),
+                stable_agent(json.dumps(projection_value)) if projection_value is not None else None,
+            )
+
     def rust_only(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust strict persisted validation or unavailable service boundary")
@@ -580,14 +1169,29 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_probe_correction_all_creation_values_and_immutable_replay(self):
         self.rust_only()
+        previous_backend, previous_agent_id = self.backend, self.agent_id
+        backend = start_contract_backend(type(self), fake_version_output="codex-cli 999.0.0")
+        self.addCleanup(backend.stop)
+
+        def restore_class_fixture():
+            self.backend, self.agent_id = previous_backend, previous_agent_id
+
+        self.addCleanup(restore_class_fixture)
+        self.backend = backend
+        self.agent_id = seed_python_agent(backend)
+        backend.start()
+        self.quiesce_fixture_agent(self.agent_id)
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "maxAgents": 64}
         self.post("/api/agents", body)
+        self.await_background_quiescence(body["id"])
+        self.quiesce_fixture_agent(body["id"])
         variations = {**REVIEW_CORPUS["replayChanges"], "cwd": str(self.backend.root), "parent": self.agent_id}
+        self.await_background_quiescence(self.agent_id)
         for field, value in variations.items():
             with self.subTest(field=field):
-                before = no_write_snapshot(self.backend.state)
+                before = self.creation_identity_snapshot(body["id"])
                 self.post("/api/agents", {**body, field: value}, 400)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                self.assertEqual(self.creation_identity_snapshot(body["id"]), before)
         self.post("/api/rename", {"id": body["id"], "name": "Changed"})
         self.assertEqual(self.post("/api/agents", body)["name"], "Changed")
         draft = self.draft()
@@ -599,10 +1203,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "worktree"}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_lead_requests VALUES(?,?,?)", (body["id"], str(uuid.uuid4()), "{}"))
-        before = no_write_snapshot(self.backend.state)
-        result = self.post("/api/leads", body, 500)
+        before = self.snapshot_no_write()
+        result = self.post("/api/leads", body, 503)
         self.assertIn("runtime_lead_requests/" + body["id"], result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_admission_invalid_stored_agent_is_refused_by_rename(self):
         self.rust_only()
@@ -610,10 +1214,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         record = self.stored(body["id"])
         try:
             self.save({**record, "cwd": 42})
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 500)
+            before = self.snapshot_no_write()
+            result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(record)
 
@@ -624,10 +1228,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             original = db.execute("SELECT record FROM runtime_projects WHERE id=?", (str(self.backend.cwd),)).fetchone()[0]
             db.execute("UPDATE runtime_projects SET record='{' WHERE id=?", (str(self.backend.cwd),))
         try:
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 500)
+            before = self.snapshot_no_write()
+            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 503)
             self.assertIn("runtime_projects/" + str(self.backend.cwd), result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_projects SET record=? WHERE id=?", (original, str(self.backend.cwd)))
@@ -657,10 +1261,21 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         for field in REVIEW_CORPUS["catalogNulls"]:
             with self.subTest(field=field):
-                before = no_write_snapshot(self.backend.state)
-                result = self.post("/api/conversation", {"id": self.agent_id, field: None}, 501)
-                self.assertIn("agent-management/conversation-settings", result["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                before = self.snapshot_no_write()
+                expected = (
+                    400
+                    if field in {"model", "fast_mode", "worker_defaults", "review_defaults"}
+                    else 200
+                    if field in {"daybreak_enabled", "effort"}
+                    else 501
+                )
+                result = self.post("/api/conversation", {"id": self.agent_id, field: None}, expected)
+                if expected == 501:
+                    self.assertIn("provider-session/model-list", result["error"])
+                if field == "effort":
+                    self.assertEqual(self.stored(self.agent_id)["nativeEffort"], "medium")
+                else:
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
         corpus = [("/api/leads", {"cwd": str(self.backend.cwd)}, ("reuse_empty", "yolo_mode", "cwd", "account_key", "workspaceMode")),
@@ -694,6 +1309,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "prompt": "Task", "cwd": "~/project"}
         result = self.post("/api/agents", body)
         self.assertEqual(result["cwd"], str(self.backend.home / "project"))
+        self.quiesce_fixture_agent(result["id"])
         self.post("/api/agents", {"id": str(uuid.uuid4()), "prompt": "Task"}, 400)
 
     def test_probe_extra_legacy_single_mode_and_deleted_root_keep_tombstones(self):
@@ -715,23 +1331,31 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         saved = self.stored(body["id"])
         for field in ("concurrency", "agentMode", "subagentConcurrencyVersion"):
             self.assertNotIn(field, saved)
-        self.post("/api/conversation", {"id": body["id"]})
+        # The live scheduler can reserve the queued worker before this request.
+        # Make the Python owner's active-turn precondition explicit rather
+        # than depending on scheduler timing (codex_runtime.py:5331, 5353).
+        active = self.stored(body["id"])
+        active.update(status="running", inFlight=True)
+        self.save(active)
+        self.post("/api/conversation", {"id": body["id"]}, 400)
 
     def test_probe_extra_null_creation_effort_and_invalid_stored_name(self):
         self.rust_only()
         for route, body in (("/api/leads", {"cwd": str(self.backend.cwd)}), ("/api/agents", {"cwd": str(self.backend.cwd), "prompt": "Task"})):
             for field in REVIEW_CORPUS["creationCatalogNulls"]:
-                before = no_write_snapshot(self.backend.state)
-                self.post(route, {**body, "id": str(uuid.uuid4()), field: None}, 501)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                agent_id = str(uuid.uuid4())
+                if field in REVIEW_CORPUS["creationCatalogNulls"]:
+                    self.post(route, {**body, "id": agent_id, field: None}, 200)
+                    self.assertIsNotNone(self.stored(agent_id))
+                    self.quiesce_fixture_agent(agent_id)
         body = self.draft()
         original = self.stored(body["id"])
         try:
             self.save({**original, "name": 42})
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 500)
+            before = self.snapshot_no_write()
+            result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -746,32 +1370,179 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         path.write_text(json.dumps(registry))
         try:
             self.backend.start()
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             self.post("/api/leads", body)
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
+            refused_body = {
+                "id": str(uuid.uuid4()),
+                "cwd": str(self.backend.cwd),
+                "workspaceMode": "worktree",
+            }
+            with self.assertRaisesRegex(
+                ValueError, "Reconnect this account before creating a chat"
+            ):
+                python_draft(self.backend, refused_body)
+            self.backend.start()
+            before = self.snapshot_no_write()
+            response = self.backend.request(
+                "POST", "/api/leads", body=refused_body, headers=self.headers()
+            )
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(
+                response.json().get("error"),
+                "Reconnect this account before creating a chat",
+            )
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.backend.stop()
             path.write_bytes(original)
             self.backend.start()
 
-    def test_profiles_are_loaded_validated_and_only_catalog_profiles_are_partial(self):
+    def test_cached_model_and_settings_catalog_paths_create_without_refusal(self):
+        account_key = "default"
+        self.await_model_catalog(account_key)
+
+        model_body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "model": "gpt-6-astra",
+        }
+        model_created = self.post("/api/leads", model_body)
+        self.assertEqual(model_created["model"], "gpt-6-astra")
+        self.assertEqual(self.stored(model_body["id"])["model"], "gpt-6-astra")
+
+        settings_body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "worker_defaults": {
+                "model": "gpt-6-luna",
+                "effort": "high",
+                "fast_mode": False,
+            },
+            "review_defaults": {"model": "gpt-6-astra", "effort": "medium"},
+        }
+        settings_created = self.post("/api/leads", settings_body)
+        self.assertEqual(settings_created["workerDefaults"]["model"], "gpt-6-luna")
+        self.assertEqual(settings_created["reviewDefaults"]["model"], "gpt-6-astra")
+
+        conversation_body = {
+            "id": settings_body["id"],
+            "worker_defaults": {
+                "model": "gpt-6-astra",
+                "effort": "high",
+                "fast_mode": False,
+            },
+            "review_defaults": {"model": "gpt-6-luna", "effort": "medium"},
+        }
+        conversation_created = self.post("/api/conversation", conversation_body)
+        self.assertEqual(
+            conversation_created["workerDefaults"]["model"], "gpt-6-astra"
+        )
+        self.assertEqual(
+            conversation_created["reviewDefaults"]["model"], "gpt-6-luna"
+        )
+
+    def test_lead_replay_precedes_catalog_admission(self):
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/leads", body)
+        # Preserve the empty-lead renderer projection while preventing a queued
+        # scheduler wake; paused status would correctly change `empty` to false.
+        self.quiesce_fixture_agent(body["id"], status="idle")
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/leads", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(
+                    replayed.get(field),
+                    projection.get(field),
+                    f"replayed lead response lost canonical {field} projection",
+                )
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
+            self.backend.start()
+
+    def test_profiles_are_loaded_validated_and_resolved_from_fresh_catalog(self):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         self.post("/api/agents", body, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
         profile = {"id": "plain-profile", "name": "Plain", "role": "reviewer", "model": "gpt-6-astra", "effort": None, "instructions": "Follow the fixture instructions."}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_profiles VALUES(?,?)", (profile["id"], json.dumps(profile)))
-        before = no_write_snapshot(self.backend.state)
-        self.post("/api/agents", {**body, "profile_id": profile["id"]}, 501)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-        for model, status in (("gpt-6-astra", 501), (42, 500)):
+        self.post("/api/agents", {**body, "profile_id": profile["id"]}, 200)
+        self.assertEqual(self.stored(body["id"])["profileId"], profile["id"])
+        self.quiesce_fixture_agent(body["id"])
+        for model, status in (("gpt-6-astra", 200), (42, 503)):
+            agent_id = str(uuid.uuid4())
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_profiles SET record=? WHERE id=?", (json.dumps({**profile, "model": model}), profile["id"]))
-            before = no_write_snapshot(self.backend.state)
-            self.post("/api/agents", {**body, "id": str(uuid.uuid4()), "profile_id": profile["id"]}, status)
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            if status == 200:
+                self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
+                self.assertEqual(self.stored(agent_id)["model"], model)
+                self.quiesce_fixture_agent(agent_id)
+            else:
+                before = self.snapshot_no_write()
+                self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
+                self.assertEqual(self.snapshot_no_write(before=before), before)
+
+    def test_agent_replay_precedes_catalog_admission(self):
+        self.rust_only()
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "prompt": "Task",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/agents", body)
+        self.quiesce_fixture_agent(body["id"], status="idle")
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/agents", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            replayed = replay.json()
+            self.assertEqual(replayed["id"], body["id"])
+            projection = self.projection(body["id"])
+            for field in ("canSend", "empty", "serverId"):
+                self.assertEqual(replayed.get(field), projection.get(field))
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
+            self.backend.start()
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -783,16 +1554,108 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.post("/api/configure", {"id": body["id"], "maxAgents": 17})
         self.assertEqual(self.projection(child["id"])["overview"]["resultFile"], "/fixture/result.txt")
 
-    def test_every_declared_creation_settings_boundary_refuses_without_writes(self):
+    def test_creation_boundaries_and_paired_remote_project_binding(self):
         self.rust_only()
+        self.await_background_quiescence()
+        self.quiesce_fixture_agent(self.agent_id)
+        fixture_agent_ids = {self.agent_id}
+
+        def stable_snapshot():
+            self.await_provider_version_projection()
+            snapshot = no_write_snapshot(self.backend.state)
+            stable_databases = []
+            for database, tables in snapshot:
+                stable_tables = []
+                for table, columns, rows in tables:
+                    if table == "runtime_agents" and "id" in columns:
+                        rows = tuple(row for row in rows if row[columns.index("id")] not in fixture_agent_ids)
+                    elif table == "sync_entities" and {"collection", "id"}.issubset(columns):
+                        collection, entity_id = columns.index("collection"), columns.index("id")
+                        rows = tuple(
+                            row for row in rows
+                            if (row[collection], row[entity_id]) not in {
+                                ("agent", agent_id) for agent_id in fixture_agent_ids
+                            }
+                        )
+                    stable_tables.append((table, columns, rows))
+                stable_databases.append((database, tuple(stable_tables)))
+            return tuple(stable_databases)
+
         for path, preferences, dependency in REVIEW_CORPUS["boundaries"]:
             with self.subTest(path=path, preferences=preferences):
                 body = {"id": self.agent_id} if path in ("/api/configure", "/api/conversation") else {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd)}
                 if path == "/api/agents":
                     body["prompt"] = "Task"
-                before = no_write_snapshot(self.backend.state)
-                self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                if dependency == "cross-server-driver/project-binding":
+                    identity = self.backend.request(
+                        "GET", "/api/multi-server/v1/identity", headers=self.headers()
+                    ).json()
+                    local_server = identity["serverId"]
+                    peer_server = "paired-project-server"
+                    with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                        row = database.execute(
+                            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.path')=?",
+                            (str(self.backend.cwd),),
+                        ).fetchone()
+                        self.assertIsNotNone(row, "the local fixture project must be registered")
+                        project = json.loads(row[1])
+                        project["projectAliases"] = [{
+                            "serverId": peer_server,
+                            "projectId": "remote-project",
+                            "name": "Remote project",
+                        }]
+                        database.execute(
+                            "UPDATE runtime_projects SET record=? WHERE id=?",
+                            (json.dumps(project), row[0]),
+                        )
+                        database.execute(
+                            "INSERT INTO runtime_access_clients(id,record) VALUES(?,?)",
+                            (peer_server, json.dumps({"id": peer_server, "kind": "server", "status": "paired", "publicKey": "fixture-public-key"})),
+                        )
+                    response = self.post(path, {
+                        **body,
+                        "project_id": "remote-project",
+                        "project_server_id": peer_server,
+                    }, 200)
+                    self.assertEqual(response["projectId"], "remote-project")
+                    self.assertEqual(response["projectServerId"], peer_server)
+                    self.assertEqual(self.stored(body["id"])["projectServerId"], peer_server)
+                    self.assertNotEqual(local_server, peer_server)
+                    with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                        self.assertIsNotNone(database.execute(
+                            "SELECT 1 FROM runtime_agents WHERE id=?", (body["id"],)
+                        ).fetchone())
+                    fixture_agent_ids.add(body["id"])
+                    self.quiesce_fixture_agent(body["id"])
+                    continue
+                if dependency == "provider-session/model-list":
+                    self.await_model_catalog("default")
+                    result = self.post(path, {**body, **preferences}, 200)
+                    if path == "/api/leads":
+                        self.assertEqual(result["model"], "gpt-6-astra")
+                    else:
+                        self.quiesce_fixture_agent(body["id"])
+                    continue
+                if preferences == {"effort": None}:
+                    self.post(path, {**body, **preferences}, 200)
+                    fixture_agent_ids.add(body["id"])
+                    self.await_background_quiescence(body["id"])
+                    self.quiesce_fixture_agent(body["id"])
+                elif preferences.get("model") == "gpt-6-astra":
+                    self.await_background_quiescence()
+                    self.quiesce_fixture_agent(self.agent_id)
+                    before = stable_snapshot()
+                    response = self.post(path, {**body, **preferences}, 400)
+                    self.assertNotIn("Not implemented: requires", response["error"])
+                    after = stable_snapshot()
+                    self.assertEqual(after, before, describe_snapshot_delta(before, after))
+                else:
+                    self.await_background_quiescence()
+                    self.quiesce_fixture_agent(self.agent_id)
+                    before = stable_snapshot()
+                    self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
+                    after = stable_snapshot()
+                    self.assertEqual(after, before, describe_snapshot_delta(before, after))
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()
@@ -802,10 +1665,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         incomplete.pop("maxAgents")
         try:
             self.save(incomplete)
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
+            before = self.snapshot_no_write()
+            result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 503)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -816,11 +1679,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for change in ({"deletedAt": 1}, {"isLead": False}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
-                    before = no_write_snapshot(self.backend.state)
+                    before = self.snapshot_no_write()
                     self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
-                    self.assertEqual(no_write_snapshot(self.backend.state), before)
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
             self.save({**original, "prompt": "This conversation has content"})
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True})
+            reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
+            result = self.post("/api/leads", reuse_request)
             self.assertNotEqual(result["id"], previous["id"])
             self.assertEqual(result["cwd"], original["cwd"])
             self.assertFalse(result["yoloMode"])
@@ -833,10 +1697,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         previous = self.draft()
         original = self.stored(previous["id"])
         try:
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}, 501)
-            self.assertIn("agent-management/empty-chat-reuse", result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
+            result = self.post("/api/leads", reuse_request)
+            self.assertEqual(result["id"], previous["id"])
+            with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                aliases = database.execute(
+                    "SELECT agent FROM runtime_lead_requests WHERE id=?", (reuse_request["id"],)
+                ).fetchone()
+            self.assertEqual(aliases, (previous["id"],))
             for change in ({"layrReady": True}, {"workspaceMode": "image"}, {"provider": "claude"}, {"threadId": "existing-thread"}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
@@ -851,10 +1719,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save({**original, "status": "running", "inFlight": True})
             for field in ("next_turn", "request_id"):
-                before = no_write_snapshot(self.backend.state)
+                before = self.snapshot_no_write()
                 result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": [], field: None}, 400)
                 self.assertIn("Wait for this turn", result["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -862,11 +1730,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         original = self.stored(self.agent_id)
         self.assertNotIn("creationIntent", original)
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         result = self.post("/api/agents", {"id": self.agent_id, "name": original["name"], "prompt": original["prompt"], "cwd": original["cwd"]}, 400)
         self.assertIn("No saved creation intent", result["error"])
         self.assertIn("inspect the existing agent", result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_trim_creation_intent_and_rename_use_python_whitespace(self):
         self.rust_only()
@@ -875,22 +1743,25 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.backend.start()
         self.post("/api/agents", request)
         record = self.stored(request["id"])
-        self.assertEqual(normalized_agent(record), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(record)
+        expected_record = normalized_agent(reference["record"])
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(normalized_agent(self.projection(request["id"])), normalized_agent(reference["projection"]))
         self.assertEqual(record["creationIntent"]["name"], "Name")
         self.assertEqual(record["creationIntent"]["prompt"], "Task")
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             self.assertEqual(db.execute("SELECT text FROM runtime_events WHERE agent=?", (request["id"],)).fetchall(), [("Task",)])
         self.post("/api/agents", {**request, "name": "Name", "prompt": "Task"})
+        self.quiesce_fixture_agent(request["id"])
         rename = {"id": request["id"], "request_id": "python-trim-rename", "name": "\u001cRenamed\u001f"}
         result = self.post("/api/rename", rename)
         self.assertEqual(result["name"], "Renamed")
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         self.assertEqual(self.post("/api/rename", {**rename, "name": "Renamed"})["name"], "Renamed")
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-        before = no_write_snapshot(self.backend.state)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
+        before = self.snapshot_no_write()
         self.post("/api/rename", {"id": request["id"], "name": "\u001c\u001f"}, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_shared_projection_local_server_identity(self):
         body = self.draft()

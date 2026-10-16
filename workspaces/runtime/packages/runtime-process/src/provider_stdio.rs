@@ -1,10 +1,10 @@
 //! Temporary stdio children behind the async provider seam. A task owns the
 //! process group through bounded cleanup even if its caller drops. A reap timeout
 //! reports the child identity; it does not prove termination or cap surviving children.
-use crate::{provider_seam::*, *};
+use crate::{child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
-use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
+use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry_borrowed};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
@@ -15,6 +15,7 @@ use tokio::{
 // POSIX ESRCH: the process group exited before the stop signal.
 const NO_SUCH_PROCESS: i32 = 3;
 const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const STDERR_LINE_LIMIT: usize = 64 * 1024;
 
 async fn reap_with_deadline<T>(
     pid: Option<u32>,
@@ -34,6 +35,7 @@ pub struct StdioProviderTaskFactory {
     pub deadline: Instant,
     pub max_frame_bytes: usize,
     pub max_output_bytes: usize,
+    pub stderr_log: Option<OperationalLog>,
 }
 
 impl ProviderTaskFactory for StdioProviderTaskFactory {
@@ -42,6 +44,20 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
         handle: ProviderHandle,
         options: OpenOptions,
         shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        self.open_with_priority(handle, options, shutdown, ChildPriority::Normal)
+    }
+}
+
+impl StdioProviderTaskFactory {
+    /// Open a provider child with the caller's explicit scheduling policy.
+    /// Shared helper callers use the trait implementation's inherited priority.
+    pub fn open_with_priority(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+        priority: ChildPriority,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
             if Instant::now() >= self.deadline {
@@ -70,10 +86,10 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
             if let Some(cwd) = &options.launch.cwd {
                 command.current_dir(cwd);
             }
-            let mut child = CommandWrap::from(command)
-                .wrap(ProcessGroup::leader())
-                .spawn()
-                .map_err(process_error)?;
+            let mut wrapped = CommandWrap::from(command);
+            wrapped.wrap(ProcessGroup::leader());
+            priority.apply_before_spawn(&mut wrapped);
+            let mut child = wrapped.spawn().map_err(process_error)?;
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
             let (state, status) = watch::channel(AttachmentStatus {
@@ -91,8 +107,17 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
             let deadline = self.deadline;
             let frame_limit = self.max_frame_bytes;
             let output_limit = self.max_output_bytes;
+            let stderr_log = self.stderr_log.clone();
+            let stderr_log_for_flush = stderr_log.clone();
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
+                // Start the stderr owner before selecting on shutdown. Even an
+                // immediately cancelled exchange must retain and drain this pipe.
+                let stderr_drain = child.stderr().take().map(|mut stderr| {
+                    let log = stderr_log.clone();
+                    tokio::spawn(async move { drain_stderr(&mut stderr, log.as_ref()).await })
+                });
+                let stderr_available = stderr_drain.is_some();
                 let exchange = async {
                     let stdin = child
                         .stdin()
@@ -102,10 +127,9 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                         .stdout()
                         .take()
                         .ok_or(AdapterError::InvalidConfiguration)?;
-                    let mut stderr = child
-                        .stderr()
-                        .take()
-                        .ok_or(AdapterError::InvalidConfiguration)?;
+                    if !stderr_available {
+                        return Err(AdapterError::InvalidConfiguration);
+                    }
                     tokio::try_join!(
                         write_commands(stdin, inbox),
                         read_entries(
@@ -115,13 +139,7 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                             generation,
                             frame_limit,
                             output_limit
-                        ),
-                        async {
-                            tokio::io::copy(&mut stderr, &mut tokio::io::sink())
-                                .await
-                                .map_err(process_error)?;
-                            Ok(())
-                        },
+                        )
                     )?;
                     Ok(())
                 };
@@ -144,10 +162,31 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                     })
                     .and(reaped.map(|_| ()))
                     .map_err(process_error);
+                let stderr_result = match stderr_drain {
+                    Some(mut stderr_drain) => {
+                        match tokio::time::timeout(REAP_GRACE, &mut stderr_drain).await {
+                            Ok(Ok(result)) => result,
+                            Ok(Err(_)) => Err(AdapterError::TaskFailed),
+                            Err(_) => {
+                                stderr_drain.abort();
+                                Err(AdapterError::Timeout)
+                            }
+                        }
+                    }
+                    None => Ok(()),
+                };
+                // The log writer is a separate thread; completion includes its flush.
+                let stderr_flush = match stderr_log_for_flush {
+                    Some(log) => tokio::task::spawn_blocking(move || log.flush())
+                        .await
+                        .map_err(|_| AdapterError::TaskFailed)
+                        .and_then(|result| result.map_err(process_error)),
+                    None => Ok(()),
+                };
                 let cleanup_error = cleanup.as_ref().err().map(ToString::to_string);
                 drop(state);
                 TaskExit {
-                    result: cleanup.and(result),
+                    result: cleanup.and(result).and(stderr_result).and(stderr_flush),
                     cleanup_error,
                     recovery_needed: None,
                 }
@@ -156,6 +195,55 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                 commands, journal, status, shutdown, task,
             ))
         })
+    }
+}
+
+pub(crate) async fn drain_stderr(
+    stderr: &mut (impl AsyncRead + Unpin),
+    log: Option<&OperationalLog>,
+) -> Result<(), AdapterError> {
+    if log.is_none() {
+        tokio::io::copy(stderr, &mut tokio::io::sink())
+            .await
+            .map_err(process_error)?;
+        return Ok(());
+    }
+    let log = log.ok_or(AdapterError::InvalidConfiguration)?;
+    let mut reader = BufReader::new(stderr);
+    let mut bytes = [0_u8; 8192];
+    let mut line = Vec::new();
+    let mut discarding = false;
+    loop {
+        let count = tokio::io::AsyncReadExt::read(&mut reader, &mut bytes)
+            .await
+            .map_err(process_error)?;
+        if count == 0 {
+            if discarding {
+                log.note_dropped_line();
+            } else if !line.is_empty() {
+                log.write_line(&line);
+            }
+            return Ok(());
+        }
+        for byte in &bytes[..count] {
+            if !discarding {
+                if line.len() == STDERR_LINE_LIMIT {
+                    line.clear();
+                    discarding = true;
+                } else {
+                    line.push(*byte);
+                }
+            }
+            if *byte == b'\n' {
+                if discarding {
+                    log.note_dropped_line();
+                    discarding = false;
+                } else {
+                    log.write_line(&line);
+                    line.clear();
+                }
+            }
+        }
     }
 }
 
@@ -211,31 +299,21 @@ async fn read_entries(
     let mut reader = BufReader::new(stdout);
     let mut total = 0_usize;
     let mut cursor = 0_u64;
+    let mut line = Vec::new();
     loop {
-        let mut line = Vec::new();
-        loop {
-            let available = reader.fill_buf().await.map_err(process_error)?;
-            if available.is_empty() {
-                return Err(SupervisorError::ConnectionLost.into());
-            }
-            let count = available
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(available.len(), |end| end + 1);
-            total = total
-                .checked_add(count)
-                .ok_or(AdapterError::InvalidConfiguration)?;
-            if line.len() + count > frame_limit || total > output_limit {
-                return Err(AdapterError::InvalidConfiguration);
-            }
-            line.extend_from_slice(&available[..count]);
-            reader.consume(count);
-            if line.last() == Some(&b'\n') {
-                break;
-            }
+        if !read_stdout_line(
+            &mut reader,
+            &mut line,
+            &mut total,
+            frame_limit,
+            output_limit,
+        )
+        .await?
+        {
+            return Err(SupervisorError::ConnectionLost.into());
         }
         cursor += 1;
-        let decoded = decode_journal_entry(cursor, generation.0, line);
+        let decoded = decode_journal_entry_borrowed(cursor, generation.0, &line);
         let payload = match decoded.payload {
             DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
             DecodedJournalPayload::RawStdout { bytes, error } => {
@@ -254,6 +332,37 @@ async fn read_entries(
     }
 }
 
+async fn read_stdout_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    line: &mut Vec<u8>,
+    total: &mut usize,
+    frame_limit: usize,
+    output_limit: usize,
+) -> Result<bool, AdapterError> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf().await.map_err(process_error)?;
+        if available.is_empty() {
+            return Ok(false);
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |end| end + 1);
+        *total = total
+            .checked_add(count)
+            .ok_or(AdapterError::InvalidConfiguration)?;
+        if line.len() + count > frame_limit || *total > output_limit {
+            return Err(AdapterError::InvalidConfiguration);
+        }
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if line.last() == Some(&b'\n') {
+            return Ok(true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test(start_paused = true)]
@@ -267,6 +376,30 @@ mod tests {
     }
 
     use super::*;
+    #[tokio::test]
+    async fn stdout_line_buffer_reuses_its_allocation_between_frames() {
+        let mut reader = BufReader::new(&b"first\nsecond\n"[..]);
+        let mut line = Vec::new();
+        let mut total = 0;
+
+        assert!(
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+                .await
+                .expect("first bounded frame")
+        );
+        let allocation = (line.as_ptr(), line.capacity());
+        assert_eq!(line, b"first\n");
+
+        assert!(
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+                .await
+                .expect("second bounded frame")
+        );
+        assert_eq!(line, b"second\n");
+        assert_eq!((line.as_ptr(), line.capacity()), allocation);
+        assert_eq!(total, b"first\nsecond\n".len());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn raw_unknown_output_counts_toward_the_total_limit() {
         let (entries, mut journal) = mpsc::channel(LANE_CAPACITY);

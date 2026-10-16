@@ -3,7 +3,7 @@ use crate::continuation::{
     Decision, POLL_SECONDS, Result, Snapshot, account, flag, now_checked, patch, present, text,
 };
 use serde_json::{Value, json};
-const ERROR: &str = "Cannot read Claude Code sign-in status";
+pub const AUTH_TIMEOUT_ERROR: &str = "Cannot read Claude Code sign-in status";
 const SOURCE_FIELDS: [&str; 17] = [
     "id",
     "epoch",
@@ -161,7 +161,7 @@ fn eligible(s: &Snapshot, r: &Value, settings: &Value, closed: bool) -> bool {
     s.parents_running(true)
 }
 /// Capture before a local probe. The account layer injects before/after pins and timeout evidence.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Capture {
     source: Value,
     attempt: Value,
@@ -200,7 +200,7 @@ pub fn record_timeout(
     if s.agent.get("startAttempt") != Some(&expected) || account_pin(current_pin) != capture.pin {
         return Ok(Decision::default());
     }
-    let receipt = json!({"source":capture.source,"attempt":expected,"inputs":capture.inputs,"taskClaims":capture.claims,"accountPin":capture.pin,"id":format!("claude-auth-probe:{}",text(&capture.attempt,"id")),"agent":s.agent_id(),"error":ERROR,"accountKey":account(&s.agent),"status":"auth_probe_wait","cause":"claude_auth_probe","createdAt":now,"dueAt":now+POLL_SECONDS});
+    let receipt = json!({"source":capture.source,"attempt":expected,"inputs":capture.inputs,"taskClaims":capture.claims,"accountPin":capture.pin,"id":format!("claude-auth-probe:{}",text(&capture.attempt,"id")),"agent":s.agent_id(),"error":AUTH_TIMEOUT_ERROR,"accountKey":account(&s.agent),"status":"auth_probe_wait","cause":"claude_auth_probe","createdAt":now,"dueAt":now+POLL_SECONDS});
     if !eligible(s, &receipt, settings, false) {
         return Ok(Decision::default());
     }
@@ -220,7 +220,7 @@ pub fn retained(s: &Snapshot, settings: &Value, pin: &Value) -> bool {
         && text(r, "status") == "auth_probe_wait"
         && text(r, "cause") == "claude_auth_probe"
         && text(r, "agent") == s.agent_id()
-        && text(r, "error") == ERROR
+        && text(r, "error") == AUTH_TIMEOUT_ERROR
         && r["createdAt"].as_f64().is_some_and(|created| {
             created > 0.0 && r["dueAt"].as_f64().is_some_and(|due| due >= created)
         })

@@ -135,6 +135,44 @@ class TestStartupIsolation(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(connected, [], "a test component connected to the decoy supervisor")
 
+    def test_copy_read_replay_fixture_resolves_and_denies_provider_mutations(self):
+        from http_backend_harness import BackendProcess
+
+        fixture_path = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "provider-replay"
+            / "copy-read-only-replay.json"
+        )
+        with tempfile.TemporaryDirectory(prefix="copy-read-replay-fixture-") as root:
+            scratch = Path(root) / "scratch"
+            scratch.mkdir()
+            backend = BackendProcess(
+                scratch,
+                claude_bin=None,
+                initialize_workspace=False,
+            )
+            backend.create_codex_replay(fixture_path.name)
+
+            resolved_fixture = fixture_path.resolve(strict=True)
+            codex = (backend.root / "bin" / "codex").read_text(encoding="utf-8")
+            self.assertIn(str(resolved_fixture), codex)
+
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        self.assertIs(fixture.get("boundaryOnly"), True)
+        self.assertEqual(fixture.get("events", []), [])
+        self.assertEqual(fixture.get("eventsByThread", {}), {})
+        denied_methods = {
+            "thread/start", "thread/resume", "thread/name/set", "thread/metadata/update",
+            "turn/start", "turn/steer", "turn/interrupt", "command/exec",
+        }
+        self.assertEqual(set(fixture["rpcReplies"]), denied_methods)
+        for method, reply in fixture["rpcReplies"].items():
+            with self.subTest(method=method):
+                self.assertEqual(reply["responseFor"], method)
+                self.assertEqual(reply["message"]["error"]["code"], -32601)
+                self.assertNotIn("result", reply["message"])
+
 
 class RuntimeEnvironmentSafety(unittest.TestCase):
     def test_guard_blocks_file_metadata_and_execution_with_an_injected_home(self):

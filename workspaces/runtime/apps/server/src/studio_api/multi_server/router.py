@@ -205,12 +205,4 @@ def create_router(context: ApiContext) -> APIRouter:
         return StreamingResponse(chunks(), media_type="application/octet-stream", headers={
             "Content-Length": str(size - start), "X-Studio-Export-Size": str(size), "Cache-Control": "no-store"})
 
-    @router.get(
-        "/api/multi-server/v1/pair",
-        response_model=ErrorResponse,
-        status_code=404,
-    )
-    async def no_pair_get(request: Request) -> Response:
-        return context.send(request, {"error": "Not found"}, status=404)
-
     return router

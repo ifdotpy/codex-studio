@@ -118,18 +118,19 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.json()["rooms"][0]["id"], "room-a")
         self.assertEqual(response.json()["queued"], 1)
 
-    def test_federation_documented_get_counterparts_remain_404(self) -> None:
+    def test_retired_federation_and_pair_get_routes_are_method_not_allowed(self) -> None:
         for path in (
             "/api/federation",
             "/api/federation/v1/message",
             "/api/federation/v1/pair",
             "/api/federation/v1/pull",
             "/api/federation/v1/status",
+            "/api/multi-server/v1/pair",
         ):
             with self.subTest(path=path):
                 response = self.backend.request("GET", path, headers=self.headers())
-                self.assertEqual(response.status, 404, response.body[:1000])
-                self.assertEqual(response.json(), {"error": "Not found"})
+                self.assertEqual(response.status, 405, response.body[:1000])
+                self.assertEqual(response.headers.get("allow"), "POST")
 
     def test_federation_disable_is_a_local_state_write(self) -> None:
         response = self.backend.request(
@@ -153,7 +154,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_federation_settings SET record=? WHERE id='global'", ('{"enabled":true,"updated":1}',))
             database.execute("UPDATE runtime_federation_peers SET record=? WHERE id='peer-a'", ('{"stateId":"peer-a","label":42}',))
         response = self.backend.request("POST", "/api/federation", body={"action":"set_enabled","enabled":False}, headers=self.headers())
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             settings = __import__("json").loads(database.execute("SELECT record FROM runtime_federation_settings WHERE id='global'").fetchone()[0])
         self.assertTrue(settings["enabled"])
@@ -199,6 +200,11 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_federation_invitation_refusal_does_not_write_or_contact_peer(self) -> None:
+        status = self.backend.request(
+            "POST", "/api/federation", body={"action": "status"}, headers=self.headers()
+        )
+        self.assertEqual(status.status, 200, status.body[:1000])
+        self.assertTrue(status.json()["enabled"])
         before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
@@ -206,11 +212,13 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"action": "create_invite", "label": "Disposable test"},
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("tailscale-identity", response.json()["error"])
-        else:
-            self.assertEqual(response.status, 400, response.body[:1000])
+        # This enabled request has no Serve origin in the isolated fixture.
+        # Python masks service ValueErrors; Rust returns the specific refusal.
+        self.assertEqual(response.status, 400, response.body[:1000])
+        expected_error = (
+            "Configure Tailscale Serve" if self.rust_backend else "Invalid request"
+        )
+        self.assertIn(expected_error, response.json()["error"], response.body.decode())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_audit_reads_empty_local_state(self) -> None:
@@ -229,6 +237,20 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn("discovered-a",[peer["id"] for peer in body["servers"]])
         self.assertEqual(body["settings"]["autoPair"],True)
         self.assertNotIn("privateKey",response.body.decode())
+
+    def test_discover_without_serve_origin_returns_local_snapshot_without_host_access(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={"action": "discover", "requestId": "discover-local"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        body = response.json()
+        self.assertTrue(body["identity"]["serverId"])
+        self.assertIn("discovered-a", [peer["id"] for peer in body["servers"]])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_local_actions_commit_replay_and_conflict(self) -> None:
         revoked=self.backend.request("POST","/api/multi-server",body={"action":"revoke","requestId":"revoke-a","clientId":"client-a"},headers=self.headers())
@@ -269,14 +291,16 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ),
         ):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("remote-transport/signed-server-requests", response.json()["error"])
+            if path == "/api/multi-server":
+                self.assertEqual(response.status, 403, response.body[:1000])
+                self.assertEqual(response.json()["error"], "The server is not paired or is revoked")
+            else:
+                self.assertEqual(response.status, 403, response.body[:1000])
+                self.assertIn("signed paired-server request", response.json()["error"])
             self.assertEqual(no_write_snapshot(self.backend.state), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
-    def test_multi_server_invite_refusal_names_missing_dependencies_without_writes(self) -> None:
-        if not self.rust_backend:
-            self.skipTest("Python runtime owns the existing invite writer")
+    def test_multi_server_invite_refuses_without_serve_origin_or_writes(self) -> None:
         before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
@@ -284,8 +308,51 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"action": "create_invite", "requestId": "invite-a", "label": "Disposable test"},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertIn("multi-server-runtime/pairing", response.json()["error"])
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("Configure Tailscale Serve HTTPS", response.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_multi_server_accept_and_ui_invite_refuse_before_peer_io(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        accept = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={
+                "action": "accept_invite",
+                "requestId": "accept-without-serve",
+                "invitation": {
+                    "protocol": 1,
+                    "serverId": "fixture-server",
+                    "origin": "https://peer.example.ts.net",
+                    "label": "Fixture peer",
+                    "publicKey": (
+                        "-----BEGIN PUBLIC KEY-----\n"
+                        "MCowBQYDK2VwAyEAAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n"
+                        "-----END PUBLIC KEY-----"
+                    ),
+                    "tailscaleUser": "owner@example.test",
+                    "expires": 4102444800,
+                    "inviteId": "fixture-invite",
+                    "token": "fixture-token",
+                },
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(accept.status, 400, accept.body[:1000])
+        self.assertIn("Configure Tailscale Serve HTTPS", accept.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+        ui_invite = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={
+                "action": "ui_invite",
+                "serverId": "unpaired-fixture-server",
+                "requestId": "ui-invite-unpaired",
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(ui_invite.status, 403, ui_invite.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_pair_refusal_does_not_write_or_contact_another_server(self) -> None:
@@ -305,11 +372,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             },
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("signed-server-requests",response.json()["error"])
-        else:
-            self.assertEqual(response.status, 403, response.body[:1000])
+        self.assertEqual(response.status, 403, response.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 

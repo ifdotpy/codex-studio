@@ -3,7 +3,10 @@ import { test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSessionStore } from "./session-store.mjs";
+import {
+  createSessionStore,
+  ephemeralSessionOptions,
+} from "./session-store.mjs";
 
 const faultSessionId = "11111111-1111-4111-8111-111111111111";
 const makeFaultSession = () => ({
@@ -361,6 +364,40 @@ test("session store persists, restores and coordinates cached writes", async () 
     assert.equal(restored.turns[1].error.message, "not submitted");
     assert.equal(restored.turns[1].status, "failed");
   });
+});
+
+test("ephemeral title session stays live without writing durable session files", async () => {
+  const id = "22222222-2222-4222-8222-222222222222";
+  await withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root);
+    const ephemeral = {
+      id,
+      cwd: "/tmp/title",
+      ephemeral: true,
+      createdAt: 1,
+      turns: [{ id: "title-turn", status: "completed", items: [] }],
+    };
+    store.sessions.set(id, ephemeral);
+    await store.persist(ephemeral);
+    assert.equal(await store.get(id), ephemeral);
+    assert.equal((await store.metadata(id)).revision, `ephemeral:${id}`);
+    assert.deepEqual(await fs.readdir(path.join(root, "sessions")), []);
+    await store.evict(id);
+    await assert.rejects(store.get(id), { code: "ENOENT" });
+  });
+});
+
+test("ephemeral Claude title query matches Python's persistence and tool flags", () => {
+  assert.deepEqual(ephemeralSessionOptions({ ephemeral: true }), {
+    persistSession: false,
+    permissionMode: "dontAsk",
+    tools: [],
+    allowedTools: [],
+    settingSources: [],
+    strictMcpConfig: true,
+    mcpServers: {},
+  });
+  assert.deepEqual(ephemeralSessionOptions({ ephemeral: false }), {});
 });
 
 test("metadata write failure retries without a new journal change", async () =>

@@ -8,18 +8,23 @@ publish.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+bytes = "=1.10.1"
 chrono = { workspace = true }
 futures-util.workspace = true
+flate2 = "=1.1.10"
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
-nix = { workspace = true }
+http-body-util = "=0.1.3"
+hyper = { version = "=1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+nix = { workspace = true, features = ["signal"] }
 notify = { workspace = true }
 process-wrap = { workspace = true }
 regex = "=1.13.1"
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["event", "fs"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 serde_path_to_error = { workspace = true }
@@ -33,17 +38,27 @@ studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }
 studio-runtime-schema = { path = "../runtime-schema" }
 studio-runtime-store = { path = "../runtime-store" }
+sysinfo = { workspace = true }
 subtle = { workspace = true }
 tempfile = { workspace = true }
+tar = { version = "=0.4.46", default-features = false }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "net", "time", "test-util"] }
 ureq = { workspace = true }
 url = "=2.5.8"
-uuid = { workspace = true, features = ["v5"] }
+unicode-casefold = "=0.2.0"
+uuid = { workspace = true, features = ["v4", "v5"] }
 jsonschema = { version = "=0.49.9", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFString"] }
+# CoreServices FSEvents declarations replace handwritten ABI signatures in the isolated adapter.
+objc2-core-services = { version = "=0.3.2", default-features = false, features = ["FSEvents", "dispatch2"] }
 
 [target.'cfg(unix)'.dependencies]
 process-wrap = { workspace = true }
+socket2 = "=0.6.5"
 
 [dev-dependencies]
 rusqlite = { workspace = true }

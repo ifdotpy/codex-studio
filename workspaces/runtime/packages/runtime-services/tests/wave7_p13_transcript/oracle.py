@@ -41,6 +41,9 @@ def clone(runtime, destination):
     for name in ('canvas.sqlite3', 'analytics.sqlite3'):
         with sqlite3.connect(runtime.root / name) as source, sqlite3.connect(destination / name) as target:
             source.backup(target)
+    blobs = runtime.root / 'blobs'
+    if blobs.exists():
+        shutil.copytree(blobs, destination / 'blobs')
 
 
 def review_cases(runtime, root):
@@ -158,10 +161,11 @@ def review_cases(runtime, root):
         content = [{'type':'inputText','text':'external tool payload'}]
         ref = store_bytes(runtime.root, json.dumps(content).encode(), db=db)
         db.execute("UPDATE runtime_tool_results SET result=? WHERE id='thread:call'",(json.dumps({'success':True,'contentItems':[], '_payloadBlobs':{'contentItems':ref}}),))
-    snapshot('external-payload', pages=False, error='transcript operation requires transcript/payload-store')
+    snapshot('external-payload')
     with runtime.db() as db: db.execute("UPDATE runtime_tool_results SET result=? WHERE id='thread:call'",(tool,))
 
-    # Named Rust bounds intentionally differ from Python's unbounded projection.
+    # Exercise pages beyond the old Rust refusal bounds. Python projects all of
+    # these receipts and intervals, so the Rust reader must return the same page.
     with runtime.db() as db:
         for index in range(499):
             runtime.enqueue(db, runtime.agent('agent',db), 'user','bound receipt',f'bound-{index}')
@@ -169,7 +173,7 @@ def review_cases(runtime, root):
     snapshot('receipt-at-limit')
     with runtime.db() as db:
         runtime.enqueue(db, runtime.agent('agent',db), 'user','bound receipt','bound-over')
-    snapshot('receipt-over-limit', pages=False, error='transcript operation requires transcript/receipt-page')
+    snapshot('receipt-over-limit')
     with runtime.db() as db: db.execute("DELETE FROM runtime_events WHERE id LIKE 'bound-%'")
     with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
         saved = list(analytics.execute("SELECT * FROM analytics_items WHERE type='reasoning'"))
@@ -181,7 +185,7 @@ def review_cases(runtime, root):
     with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
         runtime.analytics_store_item(analytics, {'id':'bound-over','agentId':'agent','rootId':'agent','threadId':'thread',
             'turnId':'turn','at':201.0,'startedAt':201.0,'finishedAt':203.0,'type':'reasoning','name':'reasoning','isTool':False})
-    snapshot('reasoning-over-limit', pages=False, error='transcript operation requires transcript/reasoning-page')
+    snapshot('reasoning-over-limit')
     return cases
 
 

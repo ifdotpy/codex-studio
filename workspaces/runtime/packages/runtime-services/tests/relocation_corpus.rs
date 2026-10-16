@@ -60,6 +60,9 @@ impl Fixture {
                 ProjectsRepository::save_receipt(tx,"project-registration:/home-project","registration",&json!({"outcome":"unknown","projectId":"/home-project","requestId":outbox["id"]}))?;
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
+                AgentRepository::put(tx,&AgentRecord::from_value(json!({
+                    "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default"
+                })).expect("tool actor record"))?;
                 tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
                 tx.execute("INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",params![text(record,"id"),case["previous"].to_string()])?;
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox["result"].to_string()])?;
@@ -207,13 +210,21 @@ fn python_location_and_move_corpus_through_consumers() {
                 continue;
             }
             "tool" => {
-                let mut record = case["record"].clone();
-                let changed = store
+                let record = case["record"].clone();
+                let actor = text(&record, "agent").to_owned();
+                let tool_id = text(&record, "id").to_owned();
+                let actual = store
                     .transaction_with(|tx| {
-                        project_locations::refresh_tool_receipt(tx, &mut record, now)
+                        studio_runtime_services::tool_requests::execute(
+                            tx,
+                            &actor,
+                            studio_runtime_services::tool_requests::Action::Get(&tool_id),
+                            now,
+                        )
                     })
                     .expect("repair committed location receipt");
-                assert_eq!(changed, case["changed"].as_bool().expect("changed"));
+                assert_eq!(actual["outcome"], case["expected"]["record"]["outcome"]);
+                assert_eq!(actual["result"], case["expected"]["record"]["result"]);
                 let db = store.read().expect("read");
                 let stored = ProjectLocationsRepository::tool(&db, text(&record, "id"))
                     .expect("stored request")
@@ -233,15 +244,17 @@ fn python_location_and_move_corpus_through_consumers() {
                 let committed = snapshot(&store);
                 drop(store);
                 let store = RuntimeStore::open(Some(&path)).expect("restart");
-                assert!(
-                    !store
-                        .transaction_with(|tx| project_locations::refresh_tool_receipt(
+                let replay = store
+                    .transaction_with(|tx| {
+                        studio_runtime_services::tool_requests::execute(
                             tx,
-                            &mut record,
-                            now + 1.0
-                        ))
-                        .expect("already repaired")
-                );
+                            &actor,
+                            studio_runtime_services::tool_requests::Action::Get(&tool_id),
+                            now + 1.0,
+                        )
+                    })
+                    .expect("replay repaired location receipt");
+                assert_eq!(replay["outcome"], case["expected"]["record"]["outcome"]);
                 assert_eq!(snapshot(&store), committed);
                 continue;
             }

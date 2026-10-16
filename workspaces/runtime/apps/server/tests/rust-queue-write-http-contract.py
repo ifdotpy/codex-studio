@@ -455,7 +455,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.commit()
         try:
             event = self.get_queue()
-            self.assertEqual(event.status, 500, event.body[:1000])
+            self.assertEqual(event.status, 503, event.body[:1000])
             self.assertIn(f"runtime_event_meta/{self.queue_ids[0]}", event.json()["error"])
         finally:
             with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
@@ -484,7 +484,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.commit()
         before = no_write_snapshot(self.backend.state)
         receipt = self.request(broken_body)
-        self.assertEqual(receipt.status, 500, receipt.body[:1000])
+        self.assertEqual(receipt.status, 503, receipt.body[:1000])
         self.assertIn(f"runtime_operation_receipts/queue:{self.agent_id}:broken-receipt", receipt.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
@@ -505,7 +505,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         agent = self.request({
             "agent": self.agent_id, "action": "cancel", "message_id": self.queue_ids[0],
         })
-        self.assertEqual(agent.status, 500, agent.body[:1000])
+        self.assertEqual(agent.status, 503, agent.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", agent.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:

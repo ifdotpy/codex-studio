@@ -39,6 +39,7 @@ _KERNEL_SHA256 = '71fe6776ef591ea452661a5933e11d2044c5df6aaf76cf39b8d9655fa4e479
 _INITRD_URL = 'https://cloud-images.ubuntu.com/releases/noble/release-20260926/unpacked/ubuntu-24.04-server-cloudimg-arm64-initrd-generic'
 _INITRD_SHA256 = 'f77f65eccd619be537e44a7bb2664048e27f20fc8c8e7d4eeb5cf63d0c8cd213'
 _MAX_FRAME = 2 * 1024 * 1024
+GUEST_REQUEST_ID_MAX_CHARS = 128
 
 
 class LinuxVMError(RuntimeError):
@@ -1115,8 +1116,8 @@ class Client:
     def stream(self, method: str, params: dict[str, Any] | None = None, *, request_id: str | None = None,
                timeout: float = 60) -> Iterator[dict[str, Any]]:
         identity = request_id if request_id is not None else str(uuid.uuid4())
-        if not isinstance(identity, str) or not 1 <= len(identity) <= 128:
-            raise LinuxVMError('Guest request IDs must have 1 to 128 characters.')
+        if not isinstance(identity, str) or not 1 <= len(identity) <= GUEST_REQUEST_ID_MAX_CHARS:
+            raise LinuxVMError(f'Guest request IDs must have 1 to {GUEST_REQUEST_ID_MAX_CHARS} characters.')
         maximum = 9000 if method == 'host.exec' else 3600
         if not 0 < timeout <= maximum:
             raise LinuxVMError(f'Guest request timeout must be between 0 and {maximum} seconds.')

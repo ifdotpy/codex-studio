@@ -459,7 +459,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             path = "/api/transcript/item?" + urlencode({"id": self.agent, "message_id": identity})
             response = self.backend.request("GET", path, headers=self.headers)
             with self.subTest(case=name):
-                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.status, 503, response.body[:1000])
                 self.assertIn("runtime_items", response.json().get("error", ""))
             with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
                 database.execute("DELETE FROM runtime_items WHERE id=?", (identity,))
@@ -572,7 +572,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             database.commit()
         malformed = self.backend.request("GET", path, headers=self.headers)
-        self.assertEqual(malformed.status, 500, malformed.body[:1000])
+        self.assertEqual(malformed.status, 503, malformed.body[:1000])
         self.assertIn("runtime_items", malformed.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DELETE FROM runtime_items WHERE id='transcript-malformed-record'")
@@ -583,7 +583,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 )
             database.commit()
         invalid_search = self.backend.request("GET", path, headers=self.headers)
-        self.assertEqual(invalid_search.status, 500, invalid_search.body[:1000])
+        self.assertEqual(invalid_search.status, 503, invalid_search.body[:1000])
         self.assertIn("runtime_items", invalid_search.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute(
@@ -596,7 +596,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             database.commit()
         bad_column = self.backend.request("GET", path, headers=self.headers)
-        self.assertEqual(bad_column.status, 500, bad_column.body[:1000])
+        self.assertEqual(bad_column.status, 503, bad_column.body[:1000])
         self.assertIn("runtime_items", bad_column.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DELETE FROM runtime_items WHERE id='transcript-invalid-record-column'")
@@ -608,7 +608,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         bad_fulltext = self.backend.request(
             "GET", "/api/transcript/item?" + urlencode({"id": self.agent, "message_id": self.case_items["fulltext"]["id"]}), headers=self.headers
         )
-        self.assertEqual(bad_fulltext.status, 500, bad_fulltext.body[:1000])
+        self.assertEqual(bad_fulltext.status, 503, bad_fulltext.body[:1000])
         self.assertIn("runtime_item_fulltext", bad_fulltext.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute(
@@ -623,7 +623,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         bad_legacy = self.backend.request(
             "GET", "/api/transcript/item?" + urlencode({"id": self.agent, "message_id": self.case_items["legacy-truncated"]["id"]}), headers=self.headers
         )
-        self.assertEqual(bad_legacy.status, 500, bad_legacy.body[:1000])
+        self.assertEqual(bad_legacy.status, 503, bad_legacy.body[:1000])
         self.assertIn("runtime_search", bad_legacy.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute(
@@ -652,7 +652,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         event = self.backend.request(
             "GET", "/api/transcript/item?" + urlencode({"id": self.agent, "message_id": f"{self.agent}:bad-text-event"}), headers=self.headers
         )
-        self.assertEqual(event.status, 500, event.body[:1000])
+        self.assertEqual(event.status, 503, event.body[:1000])
         self.assertIn("runtime_events", event.json().get("error", ""))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DELETE FROM runtime_items WHERE id=?", (record["id"],))

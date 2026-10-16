@@ -2,6 +2,7 @@ use axum::extract::{FromRequest, FromRequestParts};
 use axum::http::request::Parts;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::error::ApiError;
 use crate::validation::ValidatedRequest;
@@ -80,7 +81,7 @@ where
 }
 
 /// Schema-validated scalar header parameters.
-pub(crate) struct ApiHeaders(pub serde_json::Map<String, Value>);
+pub(crate) struct ApiHeaders(pub Arc<serde_json::Map<String, Value>>);
 
 impl<S> FromRequestParts<S> for ApiHeaders
 where
@@ -100,7 +101,7 @@ where
 /// Raw query pairs plus values validated and typed from the registered schema.
 #[allow(dead_code, reason = "route modules consume shared query extraction")]
 pub(crate) struct QueryParams {
-    typed: serde_json::Map<String, Value>,
+    typed: Arc<serde_json::Map<String, Value>>,
 }
 
 impl QueryParams {
@@ -115,7 +116,7 @@ impl QueryParams {
             .filter(|value| !value.is_empty())
     }
 
-    pub(crate) fn into_typed(self) -> serde_json::Map<String, Value> {
+    pub(crate) fn into_typed(self) -> Arc<serde_json::Map<String, Value>> {
         self.typed
     }
 }
@@ -147,6 +148,7 @@ mod tests {
     use axum::{Json, Router};
     use serde::Deserialize;
     use serde_json::{Value, json};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     use crate::validation::ValidatedRequest;
@@ -205,7 +207,7 @@ mod tests {
         let app = with_validated(
             Router::new().route("/items", get(query_handler)),
             ValidatedRequest {
-                query: serde_json::Map::from_iter([("value".to_owned(), json!(1))]),
+                query: Arc::new(serde_json::Map::from_iter([("value".to_owned(), json!(1))])),
                 ..ValidatedRequest::default()
             },
         );
@@ -271,11 +273,12 @@ mod tests {
             std::fs::read(corpus_path).expect("generated request corpus is readable");
         let corpus: Vec<Value> =
             serde_json::from_slice(&corpus_bytes).expect("generated OpenAPI corpus parses");
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let app = crate::router::validation_probe_router(crate::router::HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
             None,
-            "state".to_owned(),
+            state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,
             None,

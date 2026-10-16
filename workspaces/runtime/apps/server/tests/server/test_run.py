@@ -116,6 +116,11 @@ def _without_server_jobs_override():
 
 
 class ServerSuiteRunner(unittest.TestCase):
+    def test_subtest_result_ids_match_the_selected_test_method(self):
+        base = "studio_api.tests.test_shutdown.BackendShutdownTests.test_hard_deadline"
+        self.assertEqual(RUNNER._base_unittest_id(base), base)
+        self.assertEqual(RUNNER._base_unittest_id(f"{base} (mode='loop')"), base)
+
     def test_server_shards_partition_runnable_entries_stably(self):
         entries = [
             (f"suite-{index:02d}.py", "safe" if index % 2 else "component")
@@ -166,9 +171,11 @@ class ServerSuiteRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="server-git-config-") as directory:
             suite_root = Path(directory) / "suite"
             suite_root.mkdir()
-            environment = RUNNER._suite_environment(ROOT, suite_root)
+            with mock.patch.dict(os.environ, {"PYTHONFAULTHANDLER": "0"}):
+                environment = RUNNER._suite_environment(ROOT, suite_root)
 
             self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(environment["PYTHONFAULTHANDLER"], "1")
             global_config = Path(environment["GIT_CONFIG_GLOBAL"])
             self.assertEqual(global_config, Path(environment["HOME"]) / ".gitconfig")
             self.assertTrue(global_config.is_file())

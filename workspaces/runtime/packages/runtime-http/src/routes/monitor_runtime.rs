@@ -2,42 +2,41 @@
 
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, router::HttpState};
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Extension, Json, extract::State, http::StatusCode};
 use serde_json::Value;
+use std::sync::Arc;
+use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
 use studio_runtime_services::{
     event_write,
     monitor_policy::{Input, MonitorError},
     monitor_runtime,
 };
 
-const DEPENDENCIES: [Dependency; 3] = [
-    Dependency::new(monitor_runtime::SESSION_DEPENDENCY),
-    Dependency::new(monitor_runtime::RULE_DEPENDENCY),
-    Dependency::new("cross-server/remote-events"),
-];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post(
-            "/api/monitor/cancel",
-            OperationStatus::partial(&DEPENDENCIES),
-            cancel,
-        ),
-        post(
-            "/api/monitor/input",
-            OperationStatus::partial(&DEPENDENCIES[..1]),
-            input,
-        ),
+        post("/api/monitor/cancel", OperationStatus::Implemented, cancel),
+        post("/api/monitor/input", OperationStatus::Implemented, input),
     ])
 }
 
 async fn cancel(
     State(state): State<HttpState>,
+    runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<crate::generated::MonitorId>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some(Extension(runtime)) = runtime {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let result = super::sync_delta::write_external(
+            store,
+            move || runtime.cancel(&body.id, None, event_write::unix_time()?),
+            error,
+        )
+        .await?;
+        return Ok(Json(result));
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = super::sync_delta::write(
         store,
@@ -62,6 +61,7 @@ async fn cancel(
 
 async fn input(
     State(state): State<HttpState>,
+    runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     if let Some((pointer, _)) = studio_runtime_schema::first_error("MonitorInput", &body)
@@ -84,10 +84,23 @@ async fn input(
     // Preserve field presence: a resize-only request is different from an empty write.
     let input: Input = serde_json::from_value(body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
+    if let Some(Extension(runtime)) = runtime {
+        return studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/monitor_runtime",
+            move || runtime.input_http(&id, &input, event_write::unix_time()?),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map(Json)
+        .map_err(error);
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    tokio::task::spawn_blocking(move || {
-        monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/monitor_runtime",
+        move || {
+            monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map(Json)
@@ -101,10 +114,7 @@ fn error(error: MonitorError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {name}"),
         ),
-        MonitorError::InvalidStored { id, location } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object monitors/{id} at {location}"),
-        ),
+        MonitorError::InvalidStored { id, .. } => ApiError::invalid_stored("monitors", &id),
         MonitorError::Event(event_write::EventWriteError::RemoteEventsUnavailable) => {
             ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
@@ -118,6 +128,6 @@ fn error(error: MonitorError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitor_runtime", routes: Some(routes),
-        dependencies: &["provider-session/monitor-commands", "rule-driver/monitor-finish", "cross-server/remote-events"],
+        dependencies: &["provider-session/monitor-commands"],
     }
 }

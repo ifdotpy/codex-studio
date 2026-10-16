@@ -113,6 +113,32 @@ pub fn drive_with_hooks(
     hooks.fault.at(Boundary::AfterCommit)?;
     Ok(decision)
 }
+pub(crate) fn apply_in_transaction(
+    tx: &Transaction<'_>,
+    snapshot: &Snapshot,
+    table: ContinuationTable,
+    decision: &Decision,
+    now: f64,
+) -> Result<()> {
+    let mut fault = NoFault;
+    let mut hooks = DriverHooks {
+        fault: &mut fault,
+        capacity_admission: &mut MissingCapacityAdmission,
+    };
+    apply(tx, snapshot, table, decision, now, &mut hooks)
+}
+
+pub(crate) fn apply_in_transaction_with_hooks(
+    tx: &Transaction<'_>,
+    snapshot: &Snapshot,
+    table: ContinuationTable,
+    decision: &Decision,
+    now: f64,
+    hooks: &mut DriverHooks<'_>,
+) -> Result<()> {
+    apply(tx, snapshot, table, decision, now, hooks)
+}
+
 fn apply(
     tx: &Transaction<'_>,
     snapshot: &Snapshot,
@@ -123,21 +149,10 @@ fn apply(
 ) -> Result<()> {
     // Preflight effect support before any write. A rollback is still required on later failures.
     for effect in &d.effects {
-        match effect {
-            Effect::CapacityStart { attempt } => {
-                hooks.fault.at(Boundary::BeforeCapacityAdmission)?;
-                hooks.capacity_admission.check(tx, snapshot, attempt)?;
-                hooks.fault.at(Boundary::AfterCapacityAdmission)?;
-            }
-            Effect::WorkerHold { .. }
-                if !crate::continuation::flag(&snapshot.agent, "isLead")
-                    && crate::continuation::present(&snapshot.agent, "parentId") =>
-            {
-                return Err(ContinuationError::Unavailable(
-                    "event-driver/permanent-worker-hold",
-                ));
-            }
-            _ => {}
+        if let Effect::CapacityStart { attempt } = effect {
+            hooks.fault.at(Boundary::BeforeCapacityAdmission)?;
+            hooks.capacity_admission.check(tx, snapshot, attempt)?;
+            hooks.fault.at(Boundary::AfterCapacityAdmission)?;
         }
     }
     // Validate all resulting stored records with the same constructor used for reads.
@@ -180,6 +195,28 @@ fn apply(
             .map_err(|e| {
                 ContinuationError::Store(studio_runtime_store::StoreError::SchemaMismatch(
                     e.to_string(),
+                ))
+            })?;
+        }
+        if let Effect::WorkerHold {
+            operation,
+            transition,
+            reason,
+        } = effect
+        {
+            let stopped = d.agent.as_ref().unwrap_or(&snapshot.agent);
+            crate::lifecycle_effects::notify_continuation_hold(
+                tx,
+                &snapshot.agent,
+                stopped,
+                operation,
+                transition,
+                reason,
+                now,
+            )
+            .map_err(|error| {
+                ContinuationError::Store(studio_runtime_store::StoreError::SchemaMismatch(
+                    error.to_string(),
                 ))
             })?;
         }

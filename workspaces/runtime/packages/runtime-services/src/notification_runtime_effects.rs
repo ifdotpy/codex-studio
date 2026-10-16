@@ -3,9 +3,11 @@
 use crate::budget::CaptureSource;
 use crate::notification_dispatch::{
     DispatchOutcome, NotificationDispatchError, NotificationEffects, NotificationObservation,
-    NotificationPostCommit, ProviderDeliveryIdentity,
+    NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
 };
 use serde_json::Value;
+use std::sync::Arc;
+use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::Transaction;
 
 pub struct RuntimeNotificationEffects;
@@ -61,10 +63,13 @@ impl NotificationEffects for RuntimeNotificationEffects {
         outcome: &DispatchOutcome,
     ) -> Vec<NotificationPostCommit> {
         let method = frame["method"].as_str().unwrap_or_default();
-        let observation = |agent: Option<&Value>| NotificationObservation {
+        let params = SharedJson::new(frame["params"].clone());
+        let before_observation = before.map(SharedJson::agent_projection);
+        let after_observation = after.map(SharedJson::agent_projection);
+        let observation = |agent: Option<&SharedJson>| NotificationObservation {
             agent: agent.cloned(),
             method: method.into(),
-            params: frame["params"].clone(),
+            params: params.clone(),
             delivery: identity.clone(),
             observed_at: at,
             provider_at: event_time(frame).filter(|time| *time != 0.0).unwrap_or(at),
@@ -72,9 +77,16 @@ impl NotificationEffects for RuntimeNotificationEffects {
         let mut result = Vec::new();
         if matches!(
             method,
-            "item/agentMessage/delta" | "item/reasoning/textDelta" | "provider/generationStarted"
+            "item/agentMessage/delta" | "item/reasoning/textDelta"
         ) {
-            result.push(NotificationPostCommit::TokenRateStream(observation(None)));
+            result.push(NotificationPostCommit::TokenRateStream(observation(
+                before_observation.as_ref().or(after_observation.as_ref()),
+            )));
+        }
+        if method == "provider/generationStarted" && matches!(outcome, DispatchOutcome::Written) {
+            result.push(NotificationPostCommit::TokenRateStream(observation(
+                before_observation.as_ref().or(after_observation.as_ref()),
+            )));
         }
         let Some(before) = before else {
             return result;
@@ -103,17 +115,28 @@ impl NotificationEffects for RuntimeNotificationEffects {
             .then(|| after.and_then(|agent| agent["tokensUsed"].as_u64()))
             .flatten();
         // Python captures the budget before freezing analytics arguments.
-        let mut analytics_agent = before.clone();
+        let mut analytics_agent = SharedJson::agent_projection(before);
         if captured.is_some()
             && let Some(after) = after
         {
-            analytics_agent["tokensUsed"] = after["tokensUsed"].clone();
-            analytics_agent["tokenUsageAccounting"] = after["tokenUsageAccounting"].clone();
+            for field in ["tokensUsed", "tokenUsageAccounting"] {
+                if let Some(value) = after.get(field) {
+                    analytics_agent[field] = value.clone();
+                }
+            }
         }
         result.push(NotificationPostCommit::Analytics {
             observation: observation(Some(&analytics_agent)),
             budget_capture_value: captured,
         });
+        if matches!(
+            method,
+            "turn/started" | "turn/completed" | "thread/tokenUsage/updated"
+        ) {
+            result.push(NotificationPostCommit::TokenRateUsage(observation(
+                after_observation.as_ref(),
+            )));
+        }
         if matches!(outcome, DispatchOutcome::Written)
             && matches!(
                 method,
@@ -121,7 +144,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
             )
         {
             result.push(NotificationPostCommit::TokenRateAssociation(observation(
-                after,
+                after_observation.as_ref(),
             )));
         }
         result
@@ -131,8 +154,164 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// The B7 consumer implements this port outside the SQLite transaction. It must
 /// deduplicate observations by delivery identity before publishing or capturing.
 /// The worker never calls it for an uncommitted result or a receipt replay.
-pub trait NotificationPostCommitSink {
+/// Implementations deduplicate by the effect's `observation.delivery`; a
+/// process may crash after publication and before the durable row is deleted.
+pub trait NotificationPostCommitSink: Send + Sync {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError>;
+
+    fn invalidate_state(&self, _request_id: &str) -> Result<(), NotificationDispatchError> {
+        Ok(())
+    }
+}
+
+pub struct UnavailablePostCommitSink;
+
+impl NotificationPostCommitSink for UnavailablePostCommitSink {
+    fn publish(&self, _effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+        // Non-host/test callers have no HTTP publication hubs attached.
+        Ok(())
+    }
+}
+
+/// Publishes committed notification effects to analytics and HTTP sync hubs.
+pub struct RuntimeNotificationPostCommitSink {
+    pub token_rates: std::sync::Arc<crate::token_rate::TokenRateHub>,
+    pub resources: std::sync::Arc<crate::resource_notify::ResourceNotifications>,
+    pub analytics_store: Arc<RuntimeStore>,
+}
+
+impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
+    fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+        if let NotificationPostCommit::Recovered { identity, .. } = effect {
+            self.resources
+                .publish_once(&serde_json::json!({
+                    "requestId": format!("recovered-provider-publication:{identity}"),
+                    "resources": [{"kind":"state"}],
+                }))
+                .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+            return Ok(());
+        }
+        match effect {
+            NotificationPostCommit::TokenRateStream(_)
+            | NotificationPostCommit::TokenRateAssociation(_)
+            | NotificationPostCommit::TokenRateUsage(_) => {
+                self.project_token_rate(effect)?;
+            }
+            NotificationPostCommit::Analytics {
+                observation,
+                budget_capture_value: _,
+            } => {
+                self.capture_analytics(effect, observation, None)?;
+                self.project_token_rate(effect)?;
+            }
+            NotificationPostCommit::AnalyticsStream {
+                observation,
+                metrics,
+            } => {
+                self.capture_analytics(effect, observation, Some(metrics))?;
+            }
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+        };
+        let observation = match effect {
+            NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::AnalyticsStream { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+        };
+        let delivery = &observation.delivery;
+        let kind = match effect {
+            NotificationPostCommit::Analytics { .. } => "analytics",
+            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
+            NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
+            NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
+            NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+        };
+        let request = serde_json::json!({
+            "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
+            "resources": [{"kind":"state"}],
+        });
+        // A repeated full-state invalidation is a set operation: it asks clients
+        // to re-read current state and cannot duplicate or mutate stored rows.
+        self.resources
+            .publish_once(&request)
+            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+        Ok(())
+    }
+
+    fn invalidate_state(&self, request_id: &str) -> Result<(), NotificationDispatchError> {
+        self.resources
+            .publish_once(&serde_json::json!({
+                "requestId": request_id,
+                "resources": [{"kind":"state"}],
+            }))
+            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+        Ok(())
+    }
+}
+
+impl RuntimeNotificationPostCommitSink {
+    fn project_token_rate(
+        &self,
+        effect: &NotificationPostCommit,
+    ) -> Result<(), NotificationDispatchError> {
+        if !matches!(
+            effect,
+            NotificationPostCommit::Analytics { .. }
+                | NotificationPostCommit::TokenRateStream(_)
+                | NotificationPostCommit::TokenRateAssociation(_)
+                | NotificationPostCommit::TokenRateUsage(_)
+        ) {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        self.token_rates
+            .publish_observation(effect.clone())
+            .map_err(|_| NotificationDispatchError::Dependency("sync/token-rates/publication"))?;
+        Ok(())
+    }
+
+    fn capture_analytics(
+        &self,
+        effect: &NotificationPostCommit,
+        observation: &NotificationObservation,
+        stream: Option<&crate::notification_dispatch::NotificationStreamMetrics>,
+    ) -> Result<bool, NotificationDispatchError> {
+        let agent = observation
+            .agent
+            .as_ref()
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        let prepared = crate::analytics_capture::PreparedCapture::notification_event(
+            agent,
+            &observation.method,
+            &observation.params,
+            observation.observed_at,
+            observation.observed_at,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))?;
+        let kind = match effect {
+            NotificationPostCommit::Analytics { .. } => "analytics",
+            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
+            _ => return Err(NotificationDispatchError::InvalidNotification),
+        };
+        crate::analytics_capture::capture_notification_effect(
+            &self.analytics_store,
+            &observation.delivery.provider_handle,
+            observation.delivery.generation,
+            observation.delivery.cursor,
+            kind,
+            &prepared,
+            stream,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))
+    }
 }
 
 /// Match the provider's event-time precedence; clocks are supplied, never read.
@@ -176,4 +355,66 @@ fn event_time(frame: &Value) -> Option<f64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observations_project_agents_and_share_immutable_params() {
+        let agent = serde_json::json!({
+            "id":"agent", "name":"Agent", "rootId":"root", "accountKey":"default",
+            "accountHistory":[], "provider":"codex", "threadId":"thread", "epoch":4,
+            "turnId":"turn", "inFlight":false, "model":"model", "effort":"high",
+            "fastMode":false, "daybreakEnabled":false, "cyberAccessProgram":false,
+            "cwd":"/workspace", "deletedAt":null, "unrelatedTranscript": "x".repeat(64 * 1024)
+        });
+        let frame = serde_json::json!({
+            "method":"turn/completed",
+            "params":{"threadId":"thread","turnId":"turn"}
+        });
+        let identity = ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 4,
+            cursor: 9,
+        };
+
+        let effects = RuntimeNotificationEffects.post_commit(
+            Some(&agent),
+            Some(&agent),
+            &frame,
+            &identity,
+            12.0,
+            &DispatchOutcome::Written,
+        );
+        let observations = effects
+            .iter()
+            .map(|effect| match effect {
+                NotificationPostCommit::Analytics { observation, .. }
+                | NotificationPostCommit::TokenRateUsage(observation) => observation,
+                _ => panic!("unexpected effect"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observations.len(), 2);
+        assert!(
+            observations[0]
+                .params
+                .shares_storage_with(&observations[1].params)
+        );
+        let analytics_agent = observations[0].agent.as_ref().expect("agent projection");
+        assert_eq!(analytics_agent["id"], "agent");
+        assert!(
+            !analytics_agent
+                .as_object()
+                .expect("analytics agent is an object")
+                .contains_key("unrelatedTranscript")
+        );
+        assert!(
+            serde_json::to_value(&effects[0])
+                .expect("journal serialization")
+                .pointer("/Analytics/observation/params/threadId")
+                .is_some()
+        );
+    }
 }

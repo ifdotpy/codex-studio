@@ -14,7 +14,14 @@ impl<T: Read + Write> SupervisorTransport for T {}
 
 pub(crate) fn write_frame(writer: &mut impl Write, value: &Value) -> Result<(), SupervisorError> {
     let frame = crate::provider_shared::serialize_frame(value)?;
-    writer.write_all(&frame)?;
+    write_frame_bytes(writer, &frame)
+}
+
+pub(crate) fn write_frame_bytes(
+    writer: &mut impl Write,
+    frame: &[u8],
+) -> Result<(), SupervisorError> {
+    writer.write_all(frame)?;
     writer.flush()?;
     Ok(())
 }

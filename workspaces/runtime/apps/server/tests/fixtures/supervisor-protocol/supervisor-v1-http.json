@@ -1,5 +1,5 @@
 {
-  "source": "Supervisor response projections were captured from the running disposable Python supervisor; processScenario records open, health snapshot, empty next snapshot, write, stdout/stderr stream, exit, final status, and acknowledgement of the complete event journal. The delayed child blocks on stdin until the recorded write frame releases it. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
+  "source": "Supervisor response projections were captured from the running disposable Python supervisor. The fixture uses a probe handshake so it can observe the supervisor without conflicting with the backend's active attachment. processScenario records open, health snapshot, empty next snapshot, write, stdout/stderr stream, exit, final status, and acknowledgement of the complete event journal. The delayed child blocks on stdin until the recorded write frame releases it. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
   "transport": {
     "linux": "unix-domain-socket",
     "windows": "named-pipe",
@@ -12,7 +12,8 @@
       "frame": {
         "protocol": 1,
         "stateDir": "$state",
-        "backendId": "provider-fixture-backend"
+        "backendId": "provider-fixture-backend",
+        "probe": true
       }
     },
     {

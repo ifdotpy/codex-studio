@@ -75,6 +75,28 @@ class Reports(unittest.TestCase):
         client.replies['ok'] = {**client.replies['ok'], 'lastPush': 1791721200}
         self.assertTrue(vault.check(client))
 
+    def test_project_vault_matches_the_shared_renderer_projection_corpus(self) -> None:
+        fixture = (Path(__file__).resolve().parents[5]
+                   / 'workspaces/runtime/packages/runtime-services/tests/vault/project-view-cases.json')
+        cases = json.loads(fixture.read_text())
+        from types import SimpleNamespace
+        from codex_vm_agents import project_vault
+
+        for case in cases:
+            project_id = case['projectId']
+            folder = self.state / 'layr-projects' / project_id
+            folder.mkdir(parents=True)
+            for name, value in case['records'].items():
+                (folder / name).write_text(json.dumps(value))
+            for name, contents in case.get('rawRecords', {}).items():
+                (folder / name).write_text(contents)
+            with patch('codex_linux_workspaces.client', return_value=SimpleNamespace(state_dir=self.state)):
+                if 'expectedError' in case:
+                    with self.assertRaises(KeyError):
+                        project_vault(None, case['project'])
+                else:
+                    self.assertEqual(project_vault(None, case['project']), case['expected'])
+
     def test_the_desk_link_needs_an_https_site(self) -> None:
         folder = project(self.state, 'p')
         (folder / 'vault.json').write_text(json.dumps({'configured': True, 'prefix': 'p'}))

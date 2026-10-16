@@ -122,10 +122,36 @@ impl SchedulerRepository {
                 .as_u64()
                 .is_none_or(|g| g == generation)
             {
-                disconnect_agent(transaction, &mut agent, at, restart)?;
+                disconnect_agent(transaction, &mut agent, at, restart, restart)?;
             }
         }
         Ok(())
+    }
+
+    /// Retire one VM actor after its provider session closes, preserving that
+    /// actor's recovery receipt without disconnecting sibling actors.
+    pub fn disconnect_vm_actor(
+        transaction: &Transaction<'_>,
+        id: &str,
+        epoch: i64,
+        account: &str,
+        generation: u64,
+        at: f64,
+    ) -> StoreResult<bool> {
+        for mut agent in account_agents(transaction, account, &unresolved_sql())? {
+            if agent.id.0 != id
+                || agent.epoch != epoch
+                || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+                || stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
+                    .as_u64()
+                    .is_some_and(|current| current != generation)
+            {
+                continue;
+            }
+            disconnect_agent(transaction, &mut agent, at, false, false)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// A new supervisor generation cannot prove an old turn's outcome. History reconciliation
@@ -139,7 +165,7 @@ impl SchedulerRepository {
         for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
-                disconnect_agent(transaction, &mut agent, at, true)?;
+                disconnect_agent(transaction, &mut agent, at, true, false)?;
             } else if restart_continuation_allowed(&agent) {
                 let previous_error = agent.extra.get("error").cloned().unwrap_or(Value::Null);
                 agent.status = AgentStatus::Running;
@@ -230,10 +256,18 @@ impl SchedulerRepository {
         let Some(attempt) = agent.extra.get("startAttempt") else {
             return Ok(false);
         };
-        if agent.extra.get("threadId").and_then(Value::as_str) != Some(thread)
-            || !["turnId", "observedTurnId"]
+        let active_turn = !turn.is_empty()
+            && ["turnId", "observedTurnId"]
                 .iter()
-                .any(|k| attempt[*k] == turn)
+                .any(|k| attempt[*k] == turn);
+        let active_review = turn.is_empty()
+            && agent.extra.get("nativeReview").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            && attempt.get("action").and_then(Value::as_str) == Some("review")
+            && attempt.get("submitted").and_then(Value::as_bool) == Some(true)
+            && attempt.get("threadId").and_then(Value::as_str) == Some(thread);
+        if agent.extra.get("threadId").and_then(Value::as_str) != Some(thread)
+            || !(active_turn || active_review)
             || interrupt_uncertain(attempt, thread, turn)
         {
             return Ok(false);
@@ -330,7 +364,7 @@ impl SchedulerRepository {
     pub fn accounts_with_unknown_submitted_turns(
         connection: &Connection,
     ) -> StoreResult<Vec<String>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') \
              FROM runtime_agents \
              WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' \
@@ -387,7 +421,7 @@ impl SchedulerRepository {
         thread_id: &str,
         turn_id: Option<&str>,
     ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_agents \
              WHERE json_extract(record,'$.threadId')=?1 \
              AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 \
@@ -538,9 +572,10 @@ impl SchedulerRepository {
         request_id: &str,
         account_key: &str,
         generation: u64,
+        connection_id: &str,
         thread_id: &str,
     ) -> StoreResult<bool> {
-        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"ticket":request_id,"account":account_key,"generation":generation,"thread":thread_id});
+        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"ticket":request_id,"account":account_key,"generation":generation,"connection":connection_id,"thread":thread_id});
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
@@ -595,7 +630,7 @@ impl SchedulerRepository {
             .and_then(Value::as_object_mut)
             .ok_or_else(|| invalid_agent(agent_id))?;
         attempt.extend(
-            json!({"submitted":true,"requestTicket":request_id,"nativeOperationId":format!("turn:{agent_id}:{}:attempt:{attempt_id}",attempt["events"][0].as_str().unwrap_or(attempt_id)),"connectionId":null,"supervisorIdentity":null,"settingsFixed":true,
+            json!({"submitted":true,"requestTicket":request_id,"nativeOperationId":format!("turn:{agent_id}:{}:attempt:{attempt_id}",attempt["events"][0].as_str().unwrap_or(attempt_id)),"connectionId":connection_id,"supervisorIdentity":null,"settingsFixed":true,
             "accountKey":account_key,"connectionGeneration":generation,"threadId":thread_id})
             .as_object()
             .into_iter()
@@ -619,7 +654,7 @@ impl SchedulerRepository {
 
     /// Return only event reservations whose persisted attempt proves no turn was submitted.
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        let mut statement = transaction.prepare("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
+        let mut statement = transaction.prepare_cached("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
         let accounts = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -689,12 +724,35 @@ impl SchedulerRepository {
         let query = format!(
             "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL})"
         );
-        let records = select_agents(transaction, &query, [])?;
-        for mut agent in records.iter().cloned() {
+        let mut statement = transaction.prepare_cached(&query)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut recovered = 0;
+        for (id, raw) in rows {
+            let mut agent = match decode_agent(&id, &raw) {
+                Ok(agent) => agent,
+                Err(StoreError::InvalidSyncObject { scope, .. }) if scope == "runtime_agents" => {
+                    eprintln!("scheduler startup skipped malformed submitted row id={id}");
+                    continue;
+                }
+                Err(StoreError::InvalidSyncObjectField { scope, .. })
+                    if scope == "runtime_agents" =>
+                {
+                    eprintln!("scheduler startup skipped invalid-field submitted row id={id}");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             clear_hold(&mut agent);
-            disconnect_agent(transaction, &mut agent, timestamp(), true)?;
+            disconnect_agent(transaction, &mut agent, timestamp(), true, true)?;
+            recovered += 1;
         }
-        Ok(records.len())
+        Ok(recovered)
     }
 
     /// Bind a provider turn to the exact submitted scheduler attempt.
@@ -756,6 +814,156 @@ impl SchedulerRepository {
         )?
         .ok_or_else(|| invalid_agent(agent_id))?;
         Ok(saved["interrupt"].as_bool())
+    }
+
+    /// Bind a safety retry start that has no queued Studio events. This mirrors
+    /// Python's safety `start_accepted` path while preserving the same provider
+    /// ticket, account, generation, thread, turn and stop-race checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_safety_started_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<Option<bool>> {
+        let receipt_input = acceptance_input(agent_id, epoch, turn_id);
+        if let Some(result) = ExecutionHistoryRepository::replay(
+            transaction,
+            attempt_id,
+            "startResult",
+            &receipt_input,
+        )? {
+            let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
+                .ok_or_else(|| invalid_agent(agent_id))?;
+            if saved["requestTicket"] != request_id
+                || saved["accountKey"] != account_key
+                || saved["connectionGeneration"].as_u64() != Some(generation)
+                || saved["threadId"] != thread_id
+            {
+                return Err(ExecutionHistoryRepository::invalid(
+                    "runtime_execution_attempts",
+                    attempt_id,
+                ));
+            }
+            return Ok(result["interrupt"].as_bool());
+        }
+        let Some(agent) = load_agent(transaction, agent_id)? else {
+            return Ok(None);
+        };
+        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+        if attempt["id"] != attempt_id
+            || attempt["epoch"] != epoch
+            || attempt["submitted"] != true
+            || attempt["accountKey"] != account_key
+            || attempt["threadId"] != thread_id
+            || agent
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != account_key
+            || agent.extra.get("threadId").and_then(Value::as_str) != Some(thread_id)
+            || attempt["requestTicket"] != request_id
+            || attempt["connectionGeneration"].as_u64() != Some(generation)
+            || attempt["events"]
+                .as_array()
+                .is_none_or(|events| !events.is_empty())
+        {
+            return Ok(None);
+        }
+        let authority = attempt_authority(&agent, epoch);
+        let interrupt = match acceptance_decision(&agent, epoch, turn_id, authority) {
+            AcceptanceDecision::Bind { interrupt, .. } => interrupt,
+            AcceptanceDecision::InterruptOnly => return Ok(Some(true)),
+            AcceptanceDecision::Ignore => return Ok(None),
+        };
+        ExecutionHistoryRepository::record(transaction, &agent)?;
+        let accepted = Self::apply_acceptance(
+            transaction,
+            ValidatedAttempt {
+                agent,
+                event_ids: ("[]".to_owned(), 0),
+                authority,
+            },
+            epoch,
+            attempt_id,
+            turn_id,
+        )?;
+        Ok(accepted.then_some(interrupt))
+    }
+
+    /// Reject a safety retry start that owns no queued Studio events. Keep this
+    /// path narrow so ordinary starts still require validated event batches.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_safety_start_rejected_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        message: &str,
+    ) -> StoreResult<bool> {
+        let input = json!({"error":{"message":message},"ticket":request_id,"account":account_key,"generation":generation,"thread":thread_id});
+        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"input":input});
+        if let Some(result) = ExecutionHistoryRepository::replay(
+            transaction,
+            attempt_id,
+            "startResult",
+            &receipt_input,
+        )? {
+            return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
+        }
+        let Some(mut agent) = load_agent(transaction, agent_id)? else {
+            return Ok(false);
+        };
+        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+        if attempt["id"] != attempt_id
+            || attempt["epoch"] != epoch
+            || attempt["submitted"] != true
+            || attempt["accountKey"] != account_key
+            || attempt["threadId"] != thread_id
+            || attempt["requestTicket"] != request_id
+            || attempt["connectionGeneration"].as_u64() != Some(generation)
+            || attempt["events"]
+                .as_array()
+                .is_none_or(|events| !events.is_empty())
+        {
+            return Ok(false);
+        }
+        let decision = start_error_decision(&agent, epoch, false, false);
+        if decision.return_busy_input {
+            return Err(ExecutionHistoryRepository::invalid(
+                "runtime_execution_attempts",
+                attempt_id,
+            ));
+        }
+        if let Some(status) = decision.visible {
+            agent.status = status;
+            agent.extra.insert("error".into(), json!(message));
+        }
+        agent.extra.insert("inFlight".into(), json!(false));
+        agent.extra.remove("startOutcomeHold");
+        agent
+            .extra
+            .get_mut("startAttempt")
+            .ok_or_else(|| invalid_agent(agent_id))?["executionOutcome"] = json!("rejected");
+        publish_agent(transaction, &agent)?;
+        ExecutionHistoryRepository::save_receipt(
+            transaction,
+            attempt_id,
+            "startResult",
+            receipt_input,
+            json!(true),
+        )?;
+        Ok(true)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -829,6 +1037,68 @@ impl SchedulerRepository {
         }
         let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {
             return Ok(false);
+        };
+        Self::apply_acceptance(transaction, validated, epoch, attempt_id, turn_id)
+    }
+
+    /// Accept a submitted attempt retained only in the durable restart marker.
+    /// Recheck the exact held snapshot and uncertain event rows before the
+    /// ordinary acceptance path writes any agent or event state.
+    pub fn settle_restart_started(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        expected_attempt: &Value,
+        expected_wait: &Value,
+        turn_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = load_agent(transaction, agent_id)? else {
+            return Ok(false);
+        };
+        let marker = agent.extra.get("restartRecovery").unwrap_or(&Value::Null);
+        let attempt_id = expected_attempt["id"]
+            .as_str()
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        if agent.epoch != epoch
+            || agent.extra.get("contextRepairWait") != Some(expected_wait)
+            || marker["stage"] != "held"
+            || marker["startAttempt"] != *expected_attempt
+            || agent
+                .extra
+                .get("startAttempt")
+                .is_some_and(|attempt| attempt != expected_attempt)
+            || expected_attempt["id"] != attempt_id
+            || expected_attempt["epoch"] != epoch
+            || expected_attempt["submitted"] != true
+            || expected_attempt["executionOutcome"] != "unknown"
+            || expected_attempt["accountKey"]
+                != agent
+                    .extra
+                    .get("accountKey")
+                    .cloned()
+                    .unwrap_or(json!("default"))
+            || expected_attempt["threadId"]
+                != agent.extra.get("threadId").cloned().unwrap_or(Value::Null)
+        {
+            return Ok(false);
+        }
+        let event_ids = validated_events(transaction, &agent, expected_attempt)?;
+        let expected_count = expected_attempt["events"].as_array().map_or(0, Vec::len);
+        let uncertain_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status='uncertain' AND turn_id IS NULL",
+            params![agent_id, epoch, event_ids],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(uncertain_count).ok() != Some(expected_count) {
+            return Ok(false);
+        }
+        agent
+            .extra
+            .insert("startAttempt".into(), expected_attempt.clone());
+        let validated = ValidatedAttempt {
+            authority: attempt_authority(&agent, epoch),
+            agent,
+            event_ids: (event_ids, expected_count),
         };
         Self::apply_acceptance(transaction, validated, epoch, attempt_id, turn_id)
     }
@@ -1266,20 +1536,40 @@ pub(super) fn account_agents(
     account: &str,
     predicate: &str,
 ) -> StoreResult<Vec<AgentRecord>> {
-    select_agents(
-        connection,
-        &format!(
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
-        ),
-        [account],
-    )
+    let sql = format!(
+        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement
+        .query_map([account], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    let mut agents = Vec::with_capacity(rows.len());
+    for (id, raw) in rows {
+        match decode_agent(&id, &raw) {
+            Ok(agent) => agents.push(agent),
+            Err(error) => {
+                let receipt_id = format!("{}{id}", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX);
+                let held = EventWriteRepository::receipt(connection, &receipt_id)?.is_some_and(
+                    |receipt| receipt.signature == crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                );
+                if !held {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(agents)
 }
 pub(super) fn select_agents(
     db: &Connection,
     sql: &str,
     args: impl rusqlite::Params,
 ) -> StoreResult<Vec<AgentRecord>> {
-    let mut statement = db.prepare(sql)?;
+    let mut statement = db.prepare_cached(sql)?;
     let rows = statement.query_map(args, |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;
@@ -1349,6 +1639,7 @@ pub(super) fn disconnect_agent(
     agent: &mut AgentRecord,
     at: f64,
     restart: bool,
+    auto_reconcile_unknown: bool,
 ) -> StoreResult<()> {
     let attempt = stored_attempt(agent).cloned().unwrap_or(Value::Null);
     let epoch = if attempt.is_null() {
@@ -1362,6 +1653,18 @@ pub(super) fn disconnect_agent(
     let legacy = attempt["connectionGeneration"].as_u64().is_none()
         || (attempt["turnId"].as_str().is_none() && attempt["requestTicket"].as_str().is_none());
     let unknown = attempt["turnId"].as_str().is_none();
+    let restart_input_wait = restart
+        && auto_reconcile_unknown
+        && !paused
+        && agent.extra.get("autoWake").is_some_and(truthy)
+        && attempt["submitted"] == true
+        && unknown
+        && agent
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.is_empty())
+        && restart_input_events_valid(transaction, &agent.id.0, epoch, &attempt["events"])?;
     let receipt = json!({"epoch":epoch,"accountKey":agent.extra.get("accountKey").unwrap_or(&json!("default")),
         "threadId":agent.extra.get("threadId"),"turnId":attempt.get("turnId").or_else(||agent.extra.get("turnId")),"startAttempt":attempt,
         "connectionId":agent.extra.get("connectionId"),"autoWake":agent.extra.get("autoWake"),
@@ -1371,36 +1674,75 @@ pub(super) fn disconnect_agent(
         .get("disconnectRecovery")
         .is_some_and(|old| same_recovery_scope(old, &receipt))
     {
-        agent.extra.insert("disconnectRecovery".into(), receipt);
+        agent
+            .extra
+            .insert("disconnectRecovery".into(), receipt.clone());
     } else if let Some(previous) = agent.extra.get_mut("disconnectRecovery") {
         // Binding a formerly unknown turn enriches the same receipt without revoking its saved authority.
         previous["turnId"] = receipt["turnId"].clone();
         previous["startAttempt"] = receipt["startAttempt"].clone();
     }
     if restart {
-        let mut marker = agent
-            .extra
-            .get("disconnectRecovery")
-            .unwrap_or(&Value::Null)
-            .clone();
-        marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
-        if unknown || legacy {
-            marker["reason"] = json!(if legacy {
-                LEGACY_RECOVERY
-            } else {
-                "Native input submission has no confirmed turn identity."
-            });
+        if restart_input_wait {
+            let mut marker = receipt.clone();
+            if let Some(object) = marker.as_object_mut() {
+                object.remove("connectionId");
+                object.remove("supervisor");
+            }
+            marker["stage"] = json!("held");
+            marker["reason"] = json!("Native input submission has no confirmed turn identity.");
+            agent.extra.insert("restartRecovery".into(), marker);
+            agent.extra.remove("disconnectRecovery");
+            let event_ids = attempt["events"].clone();
+            let first_event = event_ids
+                .as_array()
+                .and_then(|events| events.first())
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_agent(&agent.id.0))?;
+            let error =
+                format!("Context repair waits for a confirmed input receipt: {first_event}");
+            agent.extra.insert("contextRepairWait".into(), json!({
+                "error":error,
+                "scope":"native",
+                "source":{"id":agent.id.0,"accountKey":agent.extra.get("accountKey").unwrap_or(&json!("default")),"epoch":agent.epoch,"threadId":agent.extra.get("threadId"),"attemptId":null},
+                "events":event_ids,
+                "nextCheckAt":0
+            }));
+        } else {
+            let mut marker = agent
+                .extra
+                .get("disconnectRecovery")
+                .unwrap_or(&Value::Null)
+                .clone();
+            marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
+            if unknown || legacy {
+                marker["reason"] = json!(if legacy {
+                    LEGACY_RECOVERY
+                } else {
+                    "Native input submission has no confirmed turn identity."
+                });
+            }
+            agent.extra.insert("restartRecovery".into(), marker);
         }
-        agent.extra.insert("restartRecovery".into(), marker);
         if let Some(receipt) = agent.extra.get_mut("disconnectRecovery") {
             receipt["source"] = json!("restart");
         }
     }
-    if !paused {
+    if restart_input_wait {
+        agent.status = AgentStatus::Queued;
+    } else if !paused {
         agent.status = AgentStatus::Interrupted;
     }
-    agent.extra.insert("autoWake".into(), json!(false));
-    if legacy {
+    agent
+        .extra
+        .insert("autoWake".into(), json!(restart_input_wait));
+    if restart_input_wait {
+        agent.extra.remove("nativeFailureHold");
+        agent.extra.remove("startOutcomeHold");
+        let wait_error = agent.extra["contextRepairWait"]["error"].clone();
+        agent.extra.insert("error".into(), wait_error);
+        agent.extra.remove("startAttempt");
+    } else if legacy {
         agent.extra.insert("nativeFailureHold".into(), json!(true));
         agent.extra.insert(
             "startOutcomeHold".into(),
@@ -1424,10 +1766,42 @@ pub(super) fn disconnect_agent(
     }
     agent.extra.insert("inFlight".into(), json!(false));
     transaction.execute("UPDATE runtime_events SET status='uncertain',error=?3 WHERE agent=?1 AND epoch=?2 AND status='dispatching'", params![agent.id.0,epoch,if restart {"Server restarted before delivery acknowledgement"} else {"Codex disconnected"}])?;
+    if restart_input_wait {
+        transaction.execute("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,attempt["events"].to_string()])?;
+    }
     if !restart && !legacy {
         agent.extra.remove("startAttempt");
     }
     publish_agent(transaction, agent)
+}
+
+fn restart_input_events_valid(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    events: &Value,
+) -> StoreResult<bool> {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+        return Ok(false);
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for event in events {
+        let Some(id) = event.as_str().filter(|id| !id.is_empty()) else {
+            return Ok(false);
+        };
+        if !seen.insert(id) {
+            return Ok(false);
+        }
+        let exists = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2 AND epoch=?3 AND status IN ('reserved','dispatching','uncertain'))",
+            params![id, agent_id, epoch],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 const LEGACY_RECOVERY: &str = "Python submission identity requires native history reconciliation; input will not be replayed.";
@@ -1563,9 +1937,36 @@ pub(super) fn load_agent(db: &Connection, id: &str) -> StoreResult<Option<AgentR
     .transpose()
 }
 pub(super) fn decode_agent(id: &str, raw: &str) -> StoreResult<AgentRecord> {
-    let record: AgentRecord = serde_json::from_str(raw).map_err(|_| invalid_agent(id))?;
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+        crate::records::invalid_agent_field(
+            id,
+            "",
+            &format!("invalid_json; record length {} bytes", raw.len()),
+            None,
+        )
+    })?;
+    if !studio_runtime_schema::validate("PersistedAgentRecord", &value)
+        .map_err(StoreError::SchemaValidation)?
+    {
+        let (pointer, reason) = studio_runtime_schema::first_error("PersistedAgentRecord", &value)
+            .map_err(StoreError::SchemaValidation)?
+            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
+        return Err(crate::records::invalid_agent_field(
+            id,
+            &pointer,
+            &reason,
+            Some(&value),
+        ));
+    }
+    let record: AgentRecord = serde_json::from_value(value.clone())
+        .map_err(|_| crate::records::invalid_agent_field(id, "", "record_decode", Some(&value)))?;
     if record.id.0 != id {
-        return Err(invalid_agent(id));
+        return Err(crate::records::invalid_agent_field(
+            id,
+            "/id",
+            "row_id_mismatch",
+            Some(&value),
+        ));
     }
     Ok(record)
 }

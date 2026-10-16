@@ -38,6 +38,7 @@ pub(crate) fn accept_thread(
         &ticket.generation.to_string(),
         root,
         progress_directory,
+        None,
     )?;
     let receipt = thread::ProviderReceipt {
         identity: thread::ReceiptIdentity {

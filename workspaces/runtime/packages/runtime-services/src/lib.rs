@@ -10,9 +10,12 @@
 pub mod account_driver;
 pub mod account_policy;
 pub mod account_selection;
+pub mod account_session_runtime;
 pub mod account_transfer;
 pub mod account_transfer_driver;
+pub mod account_transfer_executor;
 pub mod account_worker;
+pub mod agent_lifecycle_runtime;
 pub mod agent_management;
 pub mod agent_management_store;
 pub mod agent_move;
@@ -25,7 +28,10 @@ pub mod analytics_history_schedule;
 pub mod analytics_measurements;
 pub mod analytics_rollout;
 pub mod bounded_child;
+pub mod browser;
+pub mod browser_answer;
 pub mod budget;
+pub mod budget_runtime;
 pub mod budget_service;
 pub mod budget_wait;
 pub mod callback_runtime;
@@ -33,6 +39,7 @@ pub mod capacity_retry;
 pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
+pub mod claude_auth_runtime;
 pub mod claude_auth_wait;
 pub mod claude_bridge;
 pub mod claude_controls;
@@ -41,12 +48,16 @@ pub mod claude_login;
 /// Receipt-scoped retained controls; worker submission uses claude_input_recovery::runtime.
 pub mod claude_runtime;
 pub mod context_repair;
+pub mod context_repair_files;
 pub mod continuation;
 pub mod continuation_driver;
+pub mod continuation_runtime;
+pub use continuation_runtime::ClaudeAttemptIdentity;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod cost_usage;
 pub mod costs;
+pub mod diagnostics;
 pub mod event_write;
 pub mod federation;
 pub mod federation_credentials;
@@ -55,39 +66,73 @@ pub mod federation_effects;
 pub mod federation_limits;
 pub mod federation_messaging;
 pub mod historical_input_receipts;
+pub mod host_project_runtime;
+pub mod host_worker_create;
+pub mod image_workspace;
+pub mod lifecycle_effects;
+pub mod limit_reset;
+pub mod linux_vm_guest;
+pub mod linux_vm_provider;
+pub mod linux_vm_settings;
+pub mod mac_sync;
+pub mod maintenance;
+#[allow(dead_code)] // The managed-tools callback caller is integrated by its owning package.
+pub(crate) mod managed_child_create;
+pub(crate) mod managed_host_tools;
+pub mod managed_status_watch;
 pub mod message_admission;
 pub mod model_catalog;
 pub mod monitor_driver;
+pub mod monitor_event_queue;
+pub mod monitor_lifecycle;
 pub mod monitor_output;
 pub mod monitor_policy;
 pub mod monitor_receipts;
 pub mod monitor_runtime;
+pub mod monitor_runtime_wiring;
 pub mod multi_server;
 pub mod multi_server_auth;
 pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
 pub mod multi_server_protocol_generated;
+/// Shared signed server-to-server transport API. Production callers use the
+/// durable HTTPS adapter; tests and transport alternatives implement
+/// `PairedTransport` with a local fake peer.
+pub mod multi_server_transport;
 pub mod multi_server_transport_limits;
+pub mod native_actions;
+pub mod native_review;
+pub mod native_runtime;
 pub mod notification_dispatch;
 pub mod notification_runtime_effects;
+pub mod organization_effects;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
+pub mod peer_conversion;
 pub mod portable_history;
 pub mod pricing;
 pub mod progress_panel;
 pub mod progress_watch;
 pub mod project_locations;
+pub mod project_secrets;
 pub mod projects;
 pub mod provider_binaries;
 pub mod provider_callbacks;
 pub(crate) mod provider_exchange;
 pub mod provider_session_task;
+pub mod provider_versions;
+pub mod python_tool;
 pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
+pub mod radio_runtime;
+pub use radio_runtime::{
+    Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
+    RadioCreation, handoff_interrupt,
+};
 pub mod recovery;
 pub mod recovery_absence;
 pub mod recovery_history;
@@ -104,14 +149,19 @@ pub mod safety_buffering;
 pub mod scheduler;
 pub mod submit_gates;
 pub mod sync_documents;
-pub(crate) mod sync_entity_context;
+pub mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod system_reads;
+pub mod tar_gzip;
 pub mod task_recovery;
 pub mod task_recovery_store;
 pub mod terminal_driver;
+#[cfg(unix)]
+pub mod terminal_pty;
+pub mod thread_fork_runtime;
 pub mod thread_prepare;
+pub mod title_generation;
 pub mod token_rate;
 pub mod tool_requests;
 pub mod transcript;
@@ -119,10 +169,15 @@ pub mod transcript_runtime;
 pub mod turn_prepare;
 pub mod usage;
 pub mod usage_resume;
+pub mod vault;
+pub mod vm_preparation;
 pub mod voice;
+pub mod voice_runtime;
 pub mod wakeups;
+pub mod work_assignment_runtime;
 pub mod work_policy;
 pub mod work_write;
+pub mod workspace_cleanup_runtime;
 pub mod workspace_files;
 pub mod workspace_operations;
 pub mod workspace_operations_effects;
@@ -152,6 +207,55 @@ mod registration_tests {
     #[test]
     fn service_modules_match_the_source_directory_in_alphabetical_order() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let path_included_children = fs::read_dir(&directory)
+            .expect("services source directory is readable")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                path.extension()
+                    .is_some_and(|extension| extension == "rs")
+                    .then_some(path)
+            })
+            .flat_map(|path| {
+                let source = fs::read_to_string(path).expect("services source file is readable");
+                source
+                    .lines()
+                    .filter_map(|line| {
+                        let target = line
+                            .trim()
+                            .strip_prefix("#[path = \"")?
+                            .strip_suffix("\"]")?;
+                        let target = Path::new(target);
+                        target
+                            .parent()
+                            .is_none_or(|parent| parent.as_os_str().is_empty())
+                            .then(|| target.file_stem()?.to_str().map(str::to_owned))?
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let nested_path_modules = fs::read_dir(&directory)
+            .expect("services source directory is readable")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if !path.extension().is_some_and(|extension| extension == "rs")
+                    || path.file_name().is_some_and(|name| name == "lib.rs")
+                {
+                    return None;
+                }
+                fs::read_to_string(path).ok()
+            })
+            .flat_map(|source| {
+                source
+                    .lines()
+                    .filter_map(|line| {
+                        line.trim()
+                            .strip_prefix("#[path = \"")
+                            .and_then(|path| path.strip_suffix("\"]"))
+                            .map(str::to_owned)
+                    })
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
         let mut source_modules = fs::read_dir(&directory)
             .expect("services source directory is readable")
             .map(|entry| {
@@ -159,10 +263,19 @@ mod registration_tests {
                     .expect("services source directory entry is readable")
                     .path()
             })
-            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
             .filter_map(|path| {
+                if path.is_dir() && path.join("mod.rs").is_file() {
+                    return path.file_name()?.to_str().map(str::to_owned);
+                }
+                if !path.extension().is_some_and(|extension| extension == "rs") {
+                    return None;
+                }
+                if nested_path_modules.contains(path.file_name()?.to_str()?) {
+                    return None;
+                }
                 let stem = path.file_stem()?.to_str()?;
-                (stem != "lib").then(|| stem.to_owned())
+                (stem != "lib" && !path_included_children.iter().any(|child| child == stem))
+                    .then(|| stem.to_owned())
             })
             .collect::<Vec<_>>();
         source_modules.sort_unstable();

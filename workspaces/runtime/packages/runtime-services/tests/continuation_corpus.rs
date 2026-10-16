@@ -28,11 +28,11 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
         "create" => {
             let limits = usage_resume::LimitsObservation::from_record(args["limits"].clone(), None)
                 .expect("limits");
-            let cause = match args["error"]["codexErrorInfo"].as_str().expect("kind") {
-                "usageLimitExceeded" => usage_resume::Cause::UsageLimit,
-                "rateLimitExceeded" => usage_resume::Cause::RateLimit,
-                _ => usage_resume::Cause::Auth,
-            };
+            let cause = studio_runtime_services::continuation_runtime::classify_usage_failure(
+                &args["error"],
+                case["input"]["agent"]["provider"].as_str().unwrap_or(""),
+            )
+            .unwrap_or_else(|| panic!("Python classified {} but Rust did not", case["name"]));
             usage_resume::record_failure(
                 s,
                 usage_resume::FailureObservation {
@@ -75,6 +75,7 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
             let action = match args["action"].as_str().expect("action") {
                 "claim" => capacity_retry::Action::Claim {
                     settings: &args["settings"],
+                    automatic: false,
                 },
                 "error" => capacity_retry::Action::Error {
                     attempt: &args["attempt"],
@@ -166,6 +167,24 @@ fn complete_outputs_match_real_python_functions() {
     for case in cases {
         let s = Snapshot::from_records(case["input"].clone())
             .unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
+        if case["family"] == "usage"
+            && case["args"]["limits"]["accountKey"] != case["input"]["record"]["accountKey"]
+        {
+            let limits = usage_resume::LimitsObservation::from_record(
+                case["args"]["limits"].clone(),
+                case["args"]["marker"].as_str().map(str::to_owned),
+            )
+            .expect("foreign limits observation shape");
+            assert!(matches!(
+                usage_resume::tick(&s, &limits, 1000.0),
+                Err(
+                    studio_runtime_services::continuation::ContinuationError::Unavailable(
+                        "usage-policy/limits-account-mismatch"
+                    )
+                )
+            ));
+            continue;
+        }
         let mut actual = apply(&case["input"], decision(case, &s));
         let mut expected = case["expected"].clone();
         normalize_projection(&mut actual);
@@ -253,7 +272,8 @@ fn unknown_capacity_and_stale_auth_ticket_never_resume() {
         capacity_retry::transition(
             &s,
             capacity_retry::Action::Claim {
-                settings: &json!({})
+                settings: &json!({}),
+                automatic: false,
             },
             1000.0
         )
@@ -293,6 +313,41 @@ fn unknown_capacity_and_stale_auth_ticket_never_resume() {
         .record
         .is_none()
     );
+}
+
+#[test]
+fn automatic_capacity_claim_and_late_completion_cannot_resurrect_cancelled_retry() {
+    let cases = oracle(&[]);
+    let case = cases
+        .as_array()
+        .expect("corpus cases")
+        .iter()
+        .find(|c| c["name"] == "capacity-claim-success")
+        .expect("scheduled retry");
+    let mut raw = case["input"].clone();
+    raw["record"]["status"] = json!("cancelled");
+    raw["record"]["dueAt"] = Value::Null;
+    raw["agent"]["capacityRetry"]["status"] = json!("cancelled");
+    let snapshot = Snapshot::from_records(raw).expect("cancelled retry snapshot");
+    for action in [
+        capacity_retry::Action::Claim {
+            settings: &json!({}),
+            automatic: true,
+        },
+        capacity_retry::Action::Completed {
+            turn_id: "stale-turn",
+            completed: true,
+        },
+    ] {
+        let decision =
+            capacity_retry::transition(&snapshot, action, 1000.0).expect("stale timer/completion");
+        assert!(
+            decision.record.is_none(),
+            "cancelled retry remains untouched"
+        );
+        assert!(decision.agent.is_none());
+        assert!(decision.effects.is_empty());
+    }
 }
 
 #[test]

@@ -1,4 +1,5 @@
 //! Regression callers for the canonical recovery and analytics staging ports.
+#![allow(clippy::unwrap_used)]
 use super::*;
 use crate::notification_dispatch::stream::{EnqueueResult, StreamKey};
 
@@ -22,7 +23,7 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
                 NotificationObservation {
                     agent: None,
                     method: key.method.clone(),
-                    params: params.clone(),
+                    params: SharedJson::new(params.clone()),
                     delivery: ProviderDeliveryIdentity {
                         provider_handle: "account:default".into(),
                         generation: 7,
@@ -60,6 +61,90 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
     };
     assert_eq!(metrics.hours[0].count, 8193);
     assert_eq!(metrics.bytes, 0);
+}
+
+#[test]
+fn generation_start_stages_token_rate_observation_with_its_agent() {
+    let mut db = super::tests::database();
+    let tx = db.transaction().expect("test transaction");
+    let frame = super::tests::frame(&json!({
+        "method":"provider/generationStarted",
+        "params":{"threadId":"thread","turnId":"turn"}
+    }));
+    let result = super::dispatch_notification_with_effects(
+        &tx,
+        "agent",
+        &PublicationContext::default(),
+        &NotificationStreamBuffer::default(),
+        &ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 7,
+            cursor: 1,
+        },
+        &frame,
+        1234.5,
+        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+    )
+    .expect("generation-start notification");
+    assert_eq!(result.outcome, DispatchOutcome::Written);
+    let Some(NotificationPostCommit::TokenRateStream(observation)) =
+        result.post_commit.effects.first()
+    else {
+        panic!("generation start stages a token-rate observation");
+    };
+    assert_eq!(observation.agent.as_ref().unwrap()["id"], "agent");
+}
+
+#[test]
+fn failed_notification_transaction_discards_staged_stream_changes() {
+    let mut db = super::tests::database();
+    let tx = db.transaction().expect("test transaction");
+    tx.execute_batch(
+        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_operation_receipts
+         BEGIN SELECT RAISE(ABORT, 'receipt failpoint'); END;",
+    )
+    .expect("receipt failpoint installs");
+    let key = StreamKey {
+        agent_id: "agent".into(),
+        account: "default".into(),
+        generation: 7,
+        thread: "thread".into(),
+        turn: Some("turn".into()),
+        item: "answer".into(),
+        method: "item/agentMessage/delta".into(),
+    };
+    let mut streams = NotificationStreamBuffer::default();
+    let original_params =
+        json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"old"});
+    assert!(matches!(
+        streams.enqueue_delta(key, "old", &original_params),
+        EnqueueResult::Buffered
+    ));
+    let frame = super::tests::frame(&json!({
+        "method":"item/agentMessage/delta",
+        "params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"new"}
+    }));
+
+    assert!(
+        dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &streams,
+            &ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 7,
+                cursor: 41,
+            },
+            &frame,
+            1234.5,
+        )
+        .is_err()
+    );
+    tx.rollback()
+        .expect("failed notification transaction rolls back");
+
+    assert_eq!(streams.pending_bytes(), "old".len());
 }
 
 #[test]

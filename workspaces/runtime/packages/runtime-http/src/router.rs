@@ -4,18 +4,67 @@ use axum::http::{Request, StatusCode};
 use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
+use serde_json::Value;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use studio_runtime_process::operational_log::OperationalLog;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
+
+const COST_REFRESH_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(9);
+
+#[derive(Default)]
+struct CostRefreshWorkers {
+    active: AtomicUsize,
+    idle: Notify,
+}
+
+pub(crate) struct CostRefreshWorkerGuard(Arc<CostRefreshWorkers>);
+
+impl Drop for CostRefreshWorkerGuard {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
+}
+
+impl CostRefreshWorkers {
+    fn track(self: &Arc<Self>) -> CostRefreshWorkerGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        CostRefreshWorkerGuard(Arc::clone(self))
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[cfg(unix)]
+use studio_runtime_services::terminal_driver::TerminalDriver;
+#[cfg(unix)]
+use studio_runtime_services::terminal_pty::PtyTerminalSession;
 
 use crate::error::error_response;
 use crate::middleware;
 use crate::routes::{self, compose};
 use crate::schema::{matching_template, operations};
 use crate::validation::Registry;
+
+pub(crate) const BROWSER_HOST_FOLDER_NAME: &str = "browser-host";
+pub(crate) const BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "control.sock";
 
 #[derive(Clone)]
 pub struct HttpState {
@@ -24,22 +73,61 @@ pub struct HttpState {
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub(crate) callback_runtime:
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
+    pub(crate) browser_forwarder: Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) browser_local_forwarder:
+        Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) browser_answer_guest:
+        Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
+    pub(crate) browser_answer_host_guest:
+        Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
+    pub(crate) browser_host_local_forwarder:
+        Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) orchestration_driver:
+        Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
+    pub(crate) server_discovery:
+        Option<Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>>,
+    pub(crate) tailscale_whoami: Option<Arc<dyn Fn() -> Option<Value> + Send + Sync>>,
+    pub(crate) project_secrets_guest:
+        Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
+    pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
+    pub(crate) vault_host_command: Option<studio_runtime_services::vault::VaultHostCommand>,
+    pub account_session:
+        Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
+    pub(crate) peer_link_advert: Arc<std::sync::RwLock<Option<String>>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
-    pub(crate) voice_provider:
-        Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
+    pub provider_versions:
+        Option<Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>>,
+    pub(crate) native_runtime: Option<Arc<studio_runtime_services::native_runtime::NativeRuntime>>,
+    pub(crate) title_request:
+        Option<Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>>,
+    pub(crate) voice_request_port:
+        Option<Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
     pub(crate) state_dir: String,
+    pub(crate) cost_scan_cancelled: Arc<std::sync::atomic::AtomicBool>,
+    cost_refresh_workers: Arc<CostRefreshWorkers>,
+    pub(crate) cost_scanner_build_script: Option<PathBuf>,
+    pub(crate) vm_state_dir: std::path::PathBuf,
+    pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
+    pub(crate) diagnostics_provider:
+        Option<Arc<dyn studio_runtime_services::diagnostics::ProviderDiagnosticsPort>>,
+    pub(crate) diagnostics_supervisor:
+        Option<Arc<dyn studio_runtime_services::diagnostics::SupervisorDiagnosticsPort>>,
+    #[cfg(unix)]
+    terminal_driver: Option<Arc<TerminalDriver<PtyTerminalSession>>>,
+    #[cfg(unix)]
+    terminal_write_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -50,10 +138,25 @@ pub struct HttpState {
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
+    pub(crate) continuation_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
 
 impl HttpState {
+    /// Open provider stderr logging at retained app-server construction time,
+    /// after the HTTP state itself has been assembled.
+    pub fn open_app_server_log(mut self) -> Self {
+        let log = OperationalLog::app_server(std::path::Path::new(&self.state_dir)).ok();
+        let changes = Arc::clone(&self.sync_changes);
+        self.model_catalog = studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
+            self.native_path.clone(),
+            Arc::new(move || changes.notify_one()),
+            log.clone(),
+        );
+        self.app_server_log = log;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,
@@ -65,33 +168,105 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
+        let vm_state_dir =
+            studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state_dir));
         let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let project_accounts = account_policy.as_ref().map(|policy| policy.accounts());
+        let orchestration_driver = store.as_ref().map(|store| {
+            Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
+                Arc::clone(store),
+                Arc::new(studio_runtime_services::multi_server_orchestration::HttpsPairedTransport::new(Arc::clone(store))),
+                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_project_accounts(
+                    Arc::clone(store),
+                    Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                    project_accounts.as_ref()
+                        .and_then(|snapshot| snapshot.default_account_key.as_str())
+                        .unwrap_or("default")
+                        .to_owned(),
+                    project_accounts.as_ref().map(|snapshot| snapshot.accounts.clone()).unwrap_or_default(),
+                )),
+            ))
+        });
+        let browser_forwarder = orchestration_driver
+            .as_ref()
+            .map(|driver| crate::routes::browser::new_forwarder(Arc::clone(driver)));
+        let browser_answer_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
+            Arc::new(
+                studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                    &vm_state_dir,
+                ),
+            );
+        let browser_answer_host_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
+            Arc::new(
+                studio_runtime_services::linux_vm_guest::UnixSocketGuestRpc::new(
+                    std::path::Path::new(&state_dir)
+                        .join(BROWSER_HOST_FOLDER_NAME)
+                        .join(BROWSER_HOST_CONTROL_SOCKET_NAME),
+                ),
+            );
+        let browser_local_forwarder = Some(crate::routes::browser::new_local_forwarder(
+            Arc::clone(&browser_answer_guest),
+        ));
+        let browser_host_local_forwarder = Some(crate::routes::browser::new_local_forwarder(
+            Arc::clone(&browser_answer_host_guest),
+        ));
         let model_changes = Arc::clone(&sync_changes);
         let model_catalog =
-            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
+            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
                 native_path.clone(),
                 Arc::new(move || model_changes.notify_one()),
+                None,
             );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
+            store.set_diagnostics_callback(Some(
+                studio_runtime_services::diagnostics::observe_store_event,
+            ));
         }
         Self {
             message_admission: None,
             callback_runtime: None,
+            browser_forwarder,
+            browser_local_forwarder,
+            browser_answer_guest: Some(browser_answer_guest),
+            browser_answer_host_guest: Some(browser_answer_host_guest),
+            browser_host_local_forwarder,
+            orchestration_driver,
+            server_discovery: None,
+            tailscale_whoami: None,
+            project_secrets_guest: None,
+            vault_job_client: None,
+            vault_host_command: None,
+            account_session: None,
             account_driver: None,
+            provider_versions: None,
+            native_runtime: None,
+            title_request: None,
             claude_login: None,
-            voice_provider: None,
+            voice_request_port: None,
             credentials: Arc::default(),
             multi_server_boundary: None,
+            peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
             token,
             workspace_id,
             native_path,
             state_dir,
+            cost_scan_cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cost_refresh_workers: Arc::new(CostRefreshWorkers::default()),
+            cost_scanner_build_script: None,
+            vm_state_dir,
+            app_server_log: None,
             port,
             public_origin,
             validators: Registry::default(),
             store,
+            diagnostics_provider: None,
+            diagnostics_supervisor: None,
+            #[cfg(unix)]
+            terminal_driver: None,
+            #[cfg(unix)]
+            terminal_write_gate: None,
             account_policy,
             tool_catalog: None,
             model_catalog,
@@ -104,6 +279,7 @@ impl HttpState {
             sync_changes: Arc::clone(&sync_changes),
             token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
+            continuation_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
     }
@@ -113,6 +289,100 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the host Tailscale status and discovery probe adapter.
+    pub fn with_server_discovery(
+        mut self,
+        discovery: Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>,
+    ) -> Self {
+        self.server_discovery = Some(discovery);
+        self
+    }
+
+    /// Attach the host Tailscale whoami probe used when creating federation invites.
+    pub fn with_tailscale_whoami(
+        mut self,
+        whoami: Arc<dyn Fn() -> Option<Value> + Send + Sync>,
+    ) -> Self {
+        self.tailscale_whoami = Some(whoami);
+        self
+    }
+
+    /// Advertise the running QUIC link to authenticated paired-server requests.
+    pub fn with_peer_link_advert(mut self, advert: Arc<std::sync::RwLock<Option<String>>>) -> Self {
+        self.peer_link_advert = advert;
+        self
+    }
+
+    /// Attach the Linux VM guest client used by project-secrets routes.
+    pub fn with_project_secrets_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::project_secrets::GuestRpc>,
+    ) -> Self {
+        self.project_secrets_guest = Some(guest);
+        self
+    }
+
+    /// Attach the guest bridge used to answer browser sign-in requests.
+    pub fn with_browser_answer_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+    ) -> Self {
+        self.browser_answer_guest = Some(guest);
+        self.browser_local_forwarder = self
+            .browser_answer_guest
+            .as_ref()
+            .map(|guest| crate::routes::browser::new_local_forwarder(Arc::clone(guest)));
+        self
+    }
+
+    pub fn with_browser_answer_host_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+    ) -> Self {
+        self.browser_answer_host_guest = Some(guest.clone());
+        self.browser_host_local_forwarder =
+            Some(crate::routes::browser::new_local_forwarder(guest));
+        self
+    }
+
+    /// Attach the runtime-owned vault job client used by setup and login routes.
+    pub fn with_vault_job_client(mut self, client: crate::routes::VaultJobClient) -> Self {
+        self.vault_job_client = Some(client);
+        self
+    }
+
+    /// Attach the optional host tool location used for vault setup.
+    pub fn with_vault_host_command(mut self, server_source: std::path::PathBuf) -> Self {
+        self.vault_host_command = Some(studio_runtime_services::vault::VaultHostCommand::new(
+            server_source,
+        ));
+        self
+    }
+
+    /// Override the VM data directory for an isolated runtime or test fixture.
+    pub fn with_vm_state_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.vm_state_dir = path;
+        self
+    }
+
+    /// Attach the cached provider and loaded-thread diagnostics source.
+    pub fn with_diagnostics_provider(
+        mut self,
+        provider: Arc<dyn studio_runtime_services::diagnostics::ProviderDiagnosticsPort>,
+    ) -> Self {
+        self.diagnostics_provider = Some(provider);
+        self
+    }
+
+    /// Attach runtime-server's current supervisor state.
+    pub fn with_diagnostics_supervisor(
+        mut self,
+        supervisor: Arc<dyn studio_runtime_services::diagnostics::SupervisorDiagnosticsPort>,
+    ) -> Self {
+        self.diagnostics_supervisor = Some(supervisor);
         self
     }
 
@@ -134,13 +404,53 @@ impl HttpState {
         self
     }
 
-    /// Attach the account worker's generic provider-session voice adapter.
-    pub fn with_voice_provider(
+    /// Attach the single retained provider-version monitor used by desktop reads.
+    pub fn with_provider_versions(
         mut self,
-        provider: Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>,
+        monitor: Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>,
     ) -> Self {
-        self.voice_provider = Some(provider);
+        self.provider_versions = Some(monitor);
         self
+    }
+
+    /// Attach the native executable runtime used for lease and desktop status.
+    pub fn with_native_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::native_runtime::NativeRuntime>,
+    ) -> Self {
+        self.native_runtime = Some(runtime);
+        self
+    }
+
+    pub fn with_credentials(
+        mut self,
+        credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
+    ) -> Self {
+        self.credentials = credentials;
+        self
+    }
+
+    pub fn with_title_request_port(
+        mut self,
+        port: Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>,
+    ) -> Self {
+        self.title_request = Some(port);
+        self
+    }
+
+    /// Attach the account worker's generic provider-session voice adapter.
+    pub fn with_voice_request_port(
+        mut self,
+        provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>,
+    ) -> Self {
+        self.voice_request_port = Some(provider);
+        self
+    }
+
+    pub fn voice_request_port_handle(
+        &self,
+    ) -> Option<Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>> {
+        self.voice_request_port.clone()
     }
 
     /// Attach the full selected native tool catalog for capabilities reads.
@@ -153,16 +463,105 @@ impl HttpState {
     }
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        self.cost_scan_cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let cost_refresh = tokio::time::timeout(
+            COST_REFRESH_SHUTDOWN_WAIT,
+            self.cost_refresh_workers.wait_idle(),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "local cost refresh workers did not stop within their shutdown bound",
+            )
+        });
         let model = self.model_catalog.shutdown().await;
+        if let Some(monitor) = &self.provider_versions {
+            monitor.shutdown();
+        }
         if let Some(login) = &self.claude_login {
             login.shutdown().await.map_err(std::io::Error::other)?;
         }
+        cost_refresh?;
         model
+    }
+
+    /// Cancellation shared with blocking local cost scans during shutdown.
+    pub fn cost_scan_cancellation_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.cost_scan_cancelled)
+    }
+
+    pub(crate) fn track_cost_refresh_worker(&self) -> CostRefreshWorkerGuard {
+        self.cost_refresh_workers.track()
+    }
+
+    pub fn with_cost_scanner_build_script(mut self, path: PathBuf) -> Self {
+        self.cost_scanner_build_script = Some(path);
+        self
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    /// Share the continuation scheduler wake with owners that persist durable
+    /// work before the HTTP state has finished being assembled.
+    pub fn with_continuation_wake_handle(mut self, wake: Arc<Notify>) -> Self {
+        self.continuation_wake = wake;
+        self
+    }
+
+    pub fn continuation_wake_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.continuation_wake)
+    }
+
+    pub fn orchestration_driver_handle(
+        &self,
+    ) -> Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>> {
+        self.orchestration_driver.clone()
+    }
+
+    pub fn with_lifecycle_ports(
+        mut self,
+        lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>,
+    ) -> Self {
+        if let Some(store) = self.store.as_ref() {
+            let accounts = self.account_policy.as_ref().map(|policy| policy.accounts());
+            let default_account = accounts
+                .as_ref()
+                .and_then(|snapshot| snapshot.default_account_key.as_str())
+                .unwrap_or("default")
+                .to_owned();
+            let known_accounts = accounts
+                .as_ref()
+                .map(|snapshot| snapshot.accounts.clone())
+                .unwrap_or_default();
+            let driver = Arc::new(
+                studio_runtime_services::multi_server_transport::OrchestrationDriver::new(
+                    Arc::clone(store),
+                    Arc::new(
+                        studio_runtime_services::multi_server_transport::HttpsPairedTransport::new(
+                            Arc::clone(store),
+                        ),
+                    ),
+                    Arc::new(
+                        studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_project_accounts_and_lifecycle_ports(
+                            Arc::clone(store),
+                            Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                            default_account,
+                            known_accounts,
+                            lifecycle_ports,
+                        ),
+                    ),
+                ),
+            );
+            self.browser_forwarder =
+                Some(crate::routes::browser::new_forwarder(Arc::clone(&driver)));
+            self.orchestration_driver = Some(driver);
+        }
+        self
     }
 
     pub fn model_catalog_handle(
@@ -181,9 +580,31 @@ impl HttpState {
         Arc::clone(&self.sync_changes)
     }
 
+    #[cfg(unix)]
+    pub fn with_terminal_driver(mut self, driver: Arc<TerminalDriver<PtyTerminalSession>>) -> Self {
+        self.terminal_driver = Some(driver);
+        self
+    }
+
+    #[cfg(unix)]
+    pub fn with_terminal_write_gate(mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.terminal_write_gate = Some(gate);
+        self
+    }
+
     /// Shared publisher used by the provider account worker to publish token rates.
     pub fn token_rate_handle(&self) -> Arc<TokenRateHub> {
         Arc::clone(&self.token_rates)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_driver_handle(&self) -> Option<Arc<TerminalDriver<PtyTerminalSession>>> {
+        self.terminal_driver.clone()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_write_gate_handle(&self) -> Option<Arc<dyn Fn() -> bool + Send + Sync>> {
+        self.terminal_write_gate.clone()
     }
 }
 
@@ -341,8 +762,11 @@ async fn probe_echo(state: HttpState, request: Request<Body>, body_kind: u8) -> 
     if let Some(body) = body_value {
         value.insert("body".to_owned(), body);
     }
-    value.insert("query".to_owned(), Value::Object(query.into_typed()));
-    value.insert("headers".to_owned(), Value::Object(headers.0));
+    value.insert(
+        "query".to_owned(),
+        Value::Object((*query.into_typed()).clone()),
+    );
+    value.insert("headers".to_owned(), Value::Object((*headers.0).clone()));
     axum::Json(Value::Object(value)).into_response()
 }
 
@@ -350,6 +774,16 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
     router
         .method_not_allowed_fallback(any(dispatch))
         .fallback(any(dispatch))
+        .layer(axum_middleware::from_fn(
+            middleware::diagnostics_http_timing,
+        ))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            crate::mutation_sync::envelope,
+        ))
+        // Boundary schema validation runs first, so malformed object requests are not sampled.
+        // Python samples before route validation, but the difference is unobservable: both
+        // responses are errors without envelopes, and Rust envelope reads never reject them.
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::boundary,
@@ -391,8 +825,8 @@ async fn dispatch(request: Request<Body>) -> Response {
         )
         .is_some()
     });
-    if documented_path && method != "GET" {
-        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+    if documented_path {
+        return crate::error::method_not_allowed_response(&path);
     }
     error_response(StatusCode::NOT_FOUND, "Not found")
 }
@@ -414,8 +848,12 @@ mod tests {
 
     use super::{HttpState, router};
 
-    fn probe_app() -> Router {
-        super::validation_probe_router(state()).expect("probe router starts")
+    fn probe_app() -> (Router, tempfile::TempDir) {
+        let (state, directory) = state();
+        (
+            super::validation_probe_router(state).expect("probe router starts"),
+            directory,
+        )
     }
 
     async fn value_handler(
@@ -424,22 +862,27 @@ mod tests {
         Json(value)
     }
 
-    fn state() -> HttpState {
-        HttpState::new(
-            "token".to_owned(),
-            "workspace".to_owned(),
-            None,
-            "state".to_owned(),
-            4620,
-            None,
-            None,
-            None,
+    fn state() -> (HttpState, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        (
+            HttpState::new(
+                "token".to_owned(),
+                "workspace".to_owned(),
+                None,
+                directory.path().to_string_lossy().into_owned(),
+                4620,
+                None,
+                None,
+                None,
+            ),
+            directory,
         )
     }
 
     #[tokio::test]
     async fn startup_compiles_registered_validators_and_matches_python_methods() {
-        let app = router(state()).expect("router and registered OpenAPI validators start");
+        let (state, _directory) = state();
+        let app = router(state).expect("router and registered OpenAPI validators start");
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let request = Request::builder()
             .method("GET")
@@ -464,7 +907,8 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_early_returns_include_api_headers() {
-        let app = router(state()).expect("router starts");
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
         let request = Request::builder()
             .method("GET")
             .uri("/api/session")
@@ -514,7 +958,7 @@ mod tests {
 
     #[tokio::test]
     async fn huge_integer_body_and_query_return_located_client_errors() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let huge = "9".repeat(401);
         let body = format!("{{\"prompt\":\"x\",\"concurrency\":{huge}}}");
@@ -564,7 +1008,7 @@ mod tests {
     #[tokio::test]
     async fn deeply_nested_registered_json_body_is_rejected_before_value_extraction() {
         let authority = crate::schema::operations().expect("schema parses");
-        let mut app_state = state();
+        let (mut app_state, _directory) = state();
         app_state.validators =
             crate::validation::Registry::compile(&authority.iter().cloned().collect::<Vec<_>>())
                 .expect("registered schema validators compile");
@@ -608,7 +1052,7 @@ mod tests {
 
     #[tokio::test]
     async fn optional_required_and_chunked_json_bodies_follow_openapi_contract() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let build = |method: &str, uri: &str, body: Body, content_type: Option<&str>| {
             let mut request = Request::builder()
@@ -678,7 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn encoded_repeated_scalar_query_parameter_is_refused_by_router() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let request = Request::builder()
             .method("GET")
@@ -725,19 +1169,12 @@ mod tests {
         ];
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         for (path, valid_json, limit) in cases {
-            let app = router(state()).expect("router starts");
-            let at_limit_status = if path == "/api/assets" {
-                StatusCode::BAD_REQUEST
-            } else if path == "/api/voice/audio" {
-                // This route is implemented; the boundary-only fixture has no store.
-                StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                StatusCode::NOT_IMPLEMENTED
-            };
-            for (length, expected) in [
-                (limit, at_limit_status),
-                (limit + 1, StatusCode::PAYLOAD_TOO_LARGE),
-            ] {
+            let (state, _directory) = state();
+            let app = router(state).expect("router starts");
+            // At the exact limit, assert the size layer accepts the body and let
+            // the route return its fixture-dependent status. One byte above the
+            // limit must be rejected by the size layer with 413.
+            for (length, over_limit) in [(limit, false), (limit + 1, true)] {
                 let opaque_scans_before = crate::validation::opaque_body_scan_count();
                 let mut body = Vec::with_capacity(length);
                 body.extend_from_slice(valid_json.as_bytes());
@@ -757,7 +1194,19 @@ mod tests {
                     .body(Body::from(body))
                     .expect("request builds");
                 let response = app.clone().oneshot(request).await.expect("response");
-                assert_eq!(response.status(), expected, "{path} with {length} bytes");
+                if over_limit {
+                    assert_eq!(
+                        response.status(),
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "{path} with {length} bytes"
+                    );
+                } else {
+                    assert_ne!(
+                        response.status(),
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "size layer rejected {path} at its {limit}-byte limit"
+                    );
+                }
                 if path == "/api/assets" && length == limit {
                     assert_eq!(
                         crate::validation::opaque_body_scan_count(),
@@ -767,5 +1216,41 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cost_refresh_worker_tests {
+    use super::HttpState;
+    use std::sync::{Arc, atomic::Ordering};
+
+    #[tokio::test]
+    async fn shutdown_waits_until_cost_refresh_worker_finishes_cleanup() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            None,
+            None,
+        );
+        let cancelled = Arc::clone(&state.cost_scan_cancelled);
+        let guard = state.track_cost_refresh_worker();
+        let shutdown = tokio::spawn(async move { state.shutdown_services().await });
+        tokio::task::yield_now().await;
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown waits for the refresh worker"
+        );
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), shutdown)
+            .await
+            .expect("shutdown waiter completes")
+            .expect("shutdown task succeeds")
+            .expect("shutdown services succeed");
     }
 }

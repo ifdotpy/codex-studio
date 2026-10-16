@@ -3,6 +3,7 @@ use crate::{event_write::truthy, transcript::TranscriptError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 use studio_runtime_store::python_json_utf8 as python_json;
 use studio_runtime_store::{
     AnalyticsRepository, RuntimeStore, TranscriptRepository, system_reads as records,
@@ -10,8 +11,6 @@ use studio_runtime_store::{
 
 pub const PAGE_SIZE: i64 = 120;
 const MAX_PAGE_SIZE: i64 = 500;
-const MAX_PENDING_RECEIPTS: i64 = 500;
-const MAX_REASONING_INTERVALS: i64 = 8192;
 
 #[derive(Clone, Debug, Default)]
 pub struct PageRequest {
@@ -44,7 +43,10 @@ pub fn page_at(
         .open_read_only()
         .map_err(|_| TranscriptError::Store)?;
     let transaction = connection.transaction()?;
-    project(&transaction, &analytics, agent, request, now)
+    let mut value = project(&transaction, &analytics, agent, request, now)?;
+    drop(transaction);
+    project_tool_results(store, &mut value, now)?;
+    Ok(value)
 }
 
 struct PageRow {
@@ -114,7 +116,7 @@ fn rows(
     let sql = format!(
         "SELECT id,created,record FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL{filter} ORDER BY {order} LIMIT ?2"
     );
-    let mut statement = connection.prepare(&sql)?;
+    let mut statement = connection.prepare_cached(&sql)?;
     let mut values = vec![rusqlite::types::Value::Text(agent.to_owned()), limit.into()];
     if let Some((at, id)) = anchor {
         values.extend([at.into(), id.into()]);
@@ -220,7 +222,9 @@ pub(crate) fn project(
             item["turnError"] = turn_errors.get(turn).cloned().unwrap_or(Value::Null);
             item["turnErrorResolved"] = json!(true);
         }
-        tool_result(connection, &actor, item, now)?;
+        // Inline receipts are projected within the snapshot. Local blobs are
+        // resolved later by page_at, after this transaction has closed.
+        tool_result(connection, None, &actor, item, now)?;
         if !live || item["turnId"] != actor["turnId"] {
             if item["streaming"] == true {
                 item["streaming"] = json!(false);
@@ -292,9 +296,9 @@ fn receipts(
     let mut locations = represented(items, agent);
     if outstanding {
         let lower = items.first().and_then(|i| i["at"].as_f64()).unwrap_or(0.0);
-        let mut statement=connection.prepare("SELECT id,text,created,status FROM runtime_events WHERE agent=?1 AND kind='user' AND (status IN ('pending','reserved','dispatching','uncertain') OR (status='failed' AND created>=?2)) ORDER BY created LIMIT ?3")?;
+        let mut statement=connection.prepare_cached("SELECT id,text,created,status FROM runtime_events WHERE agent=?1 AND kind='user' AND (status IN ('pending','reserved','dispatching','uncertain') OR (status='failed' AND created>=?2)) ORDER BY created")?;
         let events = statement
-            .query_map(params![agent, lower, MAX_PENDING_RECEIPTS + 1], |r| {
+            .query_map(params![agent, lower], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -303,11 +307,6 @@ fn receipts(
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        if events.len() > MAX_PENDING_RECEIPTS as usize {
-            return Err(TranscriptError::RequiresDependency(
-                "transcript/receipt-page",
-            ));
-        }
         for (id, text, created, status) in events {
             if locations.contains_key(&id) {
                 continue;
@@ -391,6 +390,7 @@ fn receipts(
 
 fn tool_result(
     connection: &Connection,
+    state_root: Option<&Path>,
     actor: &Value,
     item: &mut Value,
     now: f64,
@@ -398,7 +398,7 @@ fn tool_result(
     if item["title"] != "dynamicToolCall" {
         return Ok(());
     }
-    let Some(mut payload) = item["text"]
+    let Some(payload) = item["text"]
         .as_str()
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .filter(Value::is_object)
@@ -421,7 +421,7 @@ fn tool_result(
     {
         return Ok(());
     }
-    let mut aliases = connection.prepare(
+    let mut aliases = connection.prepare_cached(
         "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
     )?;
     let aliases = aliases
@@ -448,10 +448,32 @@ fn tool_result(
         return Ok(());
     };
     if truthy(result.get("_payloadBlobs")) {
-        return Err(TranscriptError::RequiresDependency(
-            "transcript/payload-store",
-        ));
+        let Some(state_root) = state_root else {
+            item["_transcriptPendingBlobResult"] = json!({
+                "result": result,
+                "projected": projected,
+            });
+            return Ok(());
+        };
+        result = crate::payload_blobs::resolve_record(state_root, &result)
+            .map_err(|_| TranscriptError::Store)?;
     }
+    apply_tool_result(result, item, now, projected)
+}
+
+fn apply_tool_result(
+    mut result: Value,
+    item: &mut Value,
+    now: f64,
+    projected: bool,
+) -> Result<(), TranscriptError> {
+    let Some(mut payload) = item["text"]
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .filter(Value::is_object)
+    else {
+        return Ok(());
+    };
     crate::tool_requests::expire(&mut result, now);
     let Some(success) = result["success"].as_bool() else {
         return Ok(());
@@ -468,6 +490,32 @@ fn tool_result(
     payload["success"] = json!(success);
     payload["contentItems"] = content;
     item["text"] = json!(python_json(&payload));
+    Ok(())
+}
+
+fn project_tool_results(
+    store: &RuntimeStore,
+    page: &mut Value,
+    now: f64,
+) -> Result<(), TranscriptError> {
+    if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            let pending = item
+                .as_object_mut()
+                .and_then(|item| item.remove("_transcriptPendingBlobResult"));
+            let Some(pending) = pending else {
+                continue;
+            };
+            let result = crate::payload_blobs::resolve_record(store.root(), &pending["result"])
+                .map_err(|_| TranscriptError::Store)?;
+            apply_tool_result(
+                result,
+                item,
+                now,
+                pending["projected"].as_bool().unwrap_or(false),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -513,23 +561,12 @@ fn reasoning(
         return Ok(items);
     };
     let upper=connection.query_row("SELECT created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)>(?2,?3) ORDER BY created,id LIMIT 1",params![actor["id"].as_str(),last.created,last.id],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(now);
-    let mut statement=analytics.prepare("SELECT id,record FROM analytics_items WHERE agent=?1 AND at>=?2 AND at<?3 AND type='reasoning' ORDER BY at,id LIMIT ?4")?;
+    let mut statement=analytics.prepare_cached("SELECT id,record FROM analytics_items WHERE agent=?1 AND at>=?2 AND at<?3 AND type='reasoning' ORDER BY at,id")?;
     let records = statement
-        .query_map(
-            params![
-                actor["id"].as_str(),
-                first.created,
-                upper,
-                MAX_REASONING_INTERVALS + 1
-            ],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )?
+        .query_map(params![actor["id"].as_str(), first.created, upper,], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
-    if records.len() > MAX_REASONING_INTERVALS as usize {
-        return Err(TranscriptError::RequiresDependency(
-            "transcript/reasoning-page",
-        ));
-    }
     let mut groups = BTreeMap::<(usize, String), ReasoningGroup>::new();
     for (id, raw) in records {
         let record: ReasoningRecord =

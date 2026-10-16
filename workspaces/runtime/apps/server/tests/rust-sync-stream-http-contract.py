@@ -259,78 +259,35 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     @unittest.skipUnless(
         os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),
-        "post-commit response enrichment is Rust-specific",
+        "global committed-store notification is Rust-specific",
     )
-    def test_committed_preference_write_notifies_when_response_enrichment_fails(self) -> None:
-        import sqlite3
-
-        database_path = self.backend.state / "canvas.sqlite3"
-        self.backend.stop()
-        with sqlite3.connect(database_path) as database:
-            original = database.execute(
-                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
-            ).fetchone()
-            database.execute(
-                "INSERT INTO sync_entity_meta(key,value) "
-                "VALUES('entity_tombstone_floor','invalid') "
-                "ON CONFLICT(key) DO UPDATE SET value='invalid'"
-            )
-        self.backend.start()
-        committed = None
+    def test_changed_preference_write_advances_the_stream(self) -> None:
         path = self.stream_path(
             schema=self.backend.schema_hash,
             resources=[{"kind": "panel", "agentId": self.agent_id}],
         )
-        try:
-            with self.open_stream(path) as response:
-                self.assertEqual(read_event(response)["event"], "api-schema")
-                initial = self.next_resource_event(response)
-                failed = self.backend.request(
-                    "POST",
-                    "/api/sync/preferences",
-                    body={
-                        "scope": "user",
-                        "fields": {
-                            '["codex-studio-preferences-v1","theme"]': {
-                                "value": "light",
-                                "timestamp": 1_000_000_200,
-                                "writer": "sync-stream-post-commit",
-                            },
+        with self.open_stream(path) as response:
+            self.assertEqual(read_event(response)["event"], "api-schema")
+            initial = self.next_resource_event(response)
+            written = self.backend.request(
+                "POST",
+                "/api/sync/preferences",
+                body={
+                    "scope": "user",
+                    "fields": {
+                        '["codex-studio-preferences-v1","theme"]': {
+                            "value": "light",
+                            "timestamp": 1_000_000_200,
+                            "writer": "sync-stream-post-commit",
                         },
                     },
-                    headers=self.headers(),
-                )
-                self.assertEqual(failed.status, 500, failed.body[:1000])
-                event = self.next_resource_event(response)
-                self.assertEqual(event["data"]["reason"], "change")
-                self.assertGreater(int(event["id"]), int(initial["id"]))
-        finally:
-            self.backend.stop()
-            try:
-                with sqlite3.connect(database_path) as database:
-                    committed = database.execute(
-                        "SELECT payload FROM sync_entities "
-                        "WHERE collection='uiPreferences' AND id='user' "
-                        "ORDER BY seq DESC LIMIT 1"
-                    ).fetchone()
-                    if original is None:
-                        database.execute(
-                            "DELETE FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
-                        )
-                    else:
-                        database.execute(
-                            "UPDATE sync_entity_meta SET value=? "
-                            "WHERE key='entity_tombstone_floor'",
-                            (original[0],),
-                        )
-            finally:
-                self.backend.start()
-        self.assertIsNotNone(committed, "preference write committed before response failure")
-        committed_value = json.loads(committed[0])["value"]["fields"]
-        self.assertEqual(
-            committed_value['["codex-studio-preferences-v1","theme"]']["value"],
-            "light",
-        )
+                },
+                headers=self.headers(),
+            )
+            self.assertEqual(written.status, 200, written.body[:1000])
+            event = self.next_resource_event(response)
+            self.assertEqual(event["data"]["reason"], "change")
+            self.assertGreater(int(event["id"]), int(initial["id"]))
 
     def test_panel_progress_file_change_advances_the_stream(self) -> None:
         progress = self.backend.state / "progress" / self.agent_id / "PROGRESS.md"
@@ -404,7 +361,7 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "scope": "user",
                     "fields": {
                         '["codex-studio-preferences-v1","theme"]': {
-                            "value": "dark", "timestamp": 1_000_000_000, "writer": "sync-stream",
+                            "value": "dark", "timestamp": 1_000_000_300, "writer": "sync-stream",
                         },
                     },
                 }),

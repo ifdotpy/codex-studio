@@ -4,7 +4,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from contextlib import ExitStack, closing
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +32,192 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_vault_operation_probes_use_a_closed_local_fake_desk(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch_name:
+            scratch = Path(scratch_name)
+            backend = SimpleNamespace(
+                scratch_root=scratch,
+                vm_state=scratch / "vm-state",
+                cwd=scratch / "workspace",
+            )
+            backend.vm_state.mkdir()
+            backend.cwd.mkdir()
+            fake_desk = ledger.seed_vault_probe_fixture(backend)
+
+            project = backend.vm_state / "layr-projects" / "ledger-project"
+            self.assertEqual(
+                json.loads((project / "vault.json").read_text()),
+                {"configured": True, "prefix": "ledger"},
+            )
+            self.assertEqual(
+                json.loads((project / "vault-site.json").read_text()),
+                {"site": "https://desk.example/"},
+            )
+            self.assertTrue(fake_desk.is_relative_to(scratch))
+            self.assertEqual(fake_desk.stat().st_mode & 0o777, 0o700)
+
+            unlock = subprocess.run(
+                [str(fake_desk), "unlock", "--site", "https://desk.example/",
+                 "--project", "ledger", "--paper-file", "-"],
+                input=b"fixture paper words", capture_output=True, check=False,
+            )
+            self.assertEqual(unlock.returncode, 0, unlock.stderr)
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "service", "status"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"installed":false}\n',
+            )
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "status", "--site", "https://desk.example/", "--json"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"projects":[{"name":"ledger","unlocked":true}]}\n',
+            )
+            self.assertEqual(
+                subprocess.run(
+                    [str(fake_desk), "pull", "--site", "https://desk.example/",
+                     "--project", "ledger", "--to", str(scratch), "--json"],
+                    capture_output=True, text=True, check=True,
+                ).stdout,
+                '{"seq":7,"files":2,"bytes":1024}\n',
+            )
+            rejected = subprocess.run(
+                [str(fake_desk), "provider-login"], capture_output=True, check=False,
+            )
+            self.assertEqual(rejected.returncode, 96)
+
+        self.assertEqual(
+            ledger.PROBE_CASES[("POST", "/api/vault/pull")]["primary"]["expected"],
+            "2xx",
+        )
+        self.assertEqual(
+            ledger.PROBE_CASES[("POST", "/api/vault/unlock")]["primary"]["expected"],
+            "2xx",
+        )
+
+    def create_marked_copy(self, root: Path, *, with_agent: bool = True) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+        with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            if with_agent:
+                connection.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("stored-agent", json.dumps({
+                        "id": "stored-agent", "cwd": "/copied/project", "executionMode": "host",
+                    })),
+                )
+            connection.commit()
+        with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+            connection.execute(
+                "CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)"
+            )
+            connection.commit()
+        return root
+
+    def create_runtime_backed_marked_copy(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        template = root / "template-state"
+        template.mkdir()
+        harness_root = root / "fixture-harness"
+        harness_root.mkdir()
+        sys.path.insert(0, str(ledger.TESTS))
+        from http_backend_harness import BackendProcess
+
+        backend = BackendProcess(
+            harness_root,
+            claude_bin=None,
+            initialize_workspace=False,
+            state_root=template,
+        )
+        try:
+            backend.create_codex_replay("copy-read-only-replay.json")
+            backend.codex_home.joinpath("auth.json").write_text("{}", encoding="utf-8")
+            environment = backend._environment()
+            source = ROOT / "workspaces/runtime/apps/server/src"
+            tests = ledger.TESTS
+            environment["PYTHONPATH"] = os.pathsep.join(
+                filter(None, (str(source), str(tests), environment.get("PYTHONPATH", "")))
+            )
+            python = environment.get("CODEX_AGENTS_PYTHON") or sys.executable
+            fixture_script = r"""
+import importlib.util, json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+spec = importlib.util.spec_from_file_location("copy_runtime_fixture", Path(sys.argv[2]) / "runtime-contract.py")
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+sys.path.insert(0, sys.argv[3])
+from runtime_test_environment import make_runtime
+class QuietRuntime(fixture.Runtime):
+    def schedule(self):
+        pass
+state = Path(sys.argv[1])
+runtime = make_runtime(QuietRuntime, state, fixture.FakeServer)
+try:
+    agent = runtime.create({
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "Copied native agent witness",
+        "cwd": sys.argv[4],
+        "prompt": "Fixture record for a read-only copied-state HTTP check.",
+        "autoWake": False,
+    }, defer=True)
+    agent.update({
+        "cwd": sys.argv[4],
+        "executionMode": "host",
+        "status": "completed",
+        "autoWake": False,
+        "inFlight": False,
+    })
+    with runtime.db() as database:
+        runtime.put(database, "agents", agent)
+finally:
+    runtime.close()
+"""
+            subprocess.run(
+                [python, "-B", "-c", fixture_script, str(template), str(tests), str(source), str(backend.cwd)],
+                cwd=backend.cwd,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        finally:
+            backend.close()
+
+        # Keep this regression focused on durable rows rather than the obsolete
+        # legacy FTS table, which SqliteSnapshot intentionally cannot compare.
+        # Rust startup rebuilds it from runtime_search_rows. Preserve the known
+        # contentless runtime_search_next index present in copied-state fixtures.
+        with closing(sqlite3.connect(template / "canvas.sqlite3")) as connection:
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runtime_search'"
+            ).fetchone()
+            if row is not None:
+                definition = row[0] or ""
+                self.assertRegex(definition, r"(?is)^CREATE VIRTUAL TABLE.*USING\s+fts5\s*\(")
+                connection.execute('DROP TABLE "runtime_search"')
+            connection.commit()
+
+        copy = root / "copy"
+        copy.mkdir()
+        for name in ("canvas.sqlite3", "analytics.sqlite3"):
+            source = template / name
+            target = copy / name
+            with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as reader:
+                with closing(sqlite3.connect(target)) as writer:
+                    reader.backup(writer, pages=-1)
+        (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+        self.assertEqual(
+            {path.name for path in copy.iterdir()},
+            {ledger.COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"},
+        )
+        return copy
+
     def test_native_p04_http_suite_is_registered_as_python_baseline_only(self) -> None:
         relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
         selected = {str(path.relative_to(ROOT)) for path in ledger.consumer_suites()}
@@ -77,6 +265,681 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertEqual(result["failures"][0]["context"], "__main__.NativeNullHTTP")
             self.assertNotIn("STUDIO_HTTP_BACKEND_COMMAND", run.call_args.kwargs["env"])
             self.assertNotIn("STUDIO_HTTP_LEDGER_TRACE", run.call_args.kwargs["env"])
+
+    def test_copy_state_root_rejects_live_paths_and_requires_marked_database_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            copy = root / "copy"
+            self.create_marked_copy(copy)
+
+            self.assertEqual(ledger.validate_copy_state_root(copy), copy.resolve())
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            nested = copy / "nested"
+            nested.mkdir()
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(nested, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, configured_state_root=str(copy))
+
+            unexpected = copy / "accounts"
+            unexpected.mkdir()
+            with self.assertRaisesRegex(ValueError, "unexpected entries"):
+                ledger.validate_copy_state_root(copy)
+
+    @unittest.skipUnless(
+        os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),
+        "copied-state HTTP regression requires the Rust backend command",
+    )
+    def test_copied_existing_agent_http_read_seeds_signed_out_registry(self) -> None:
+        command = os.environ["STUDIO_HTTP_BACKEND_COMMAND"]
+        ledger.validate_ephemeral_backend_command(command)
+        scratch_root = os.environ.get("TMPDIR")
+        self.assertTrue(scratch_root, "server runner must provide private scratch TMPDIR")
+        with tempfile.TemporaryDirectory(prefix="copy-existing-agent-", dir=scratch_root) as scratch_name:
+            copy = self.create_runtime_backed_marked_copy(Path(scratch_name))
+            # Validation must accept the untouched copy before the registry
+            # fixture is added; it must still reject that copy after seeding.
+            ledger.validate_copy_state_root(copy)
+            witness = ledger.copied_agent_witness(copy)
+            with ExitStack() as stack:
+                snapshots = {
+                    name: stack.enter_context(ledger.sqlite_snapshot(copy / name))
+                    for name in ("canvas.sqlite3", "analytics.sqlite3")
+                }
+                result = ledger.probe_copied_data(copy, witness)
+                shutdown_preservation = {
+                    name: snapshot.preserved_existing_rows()
+                    for name, snapshot in snapshots.items()
+                }
+            self.assertEqual(
+                result["accountRegistrySeed"],
+                {
+                    "defaultAccountKey": "default",
+                    "status": "signedOut",
+                    "accountId": None,
+                    "credentialIdentityPresent": False,
+                    "homeUnderScratch": True,
+                },
+            )
+            self.assertEqual(result["existingRowReads"][0]["observedStatus"], 200)
+            self.assertTrue(result["existingRowReads"][0]["matched"])
+            self.assertTrue(result["preexistingRowsPreservedFromBeforeStartup"])
+            self.assertTrue(result["unchangedDuringFinderRead"])
+            self.assertTrue(
+                all(report["preserved"] is True for report in shutdown_preservation.values()),
+                shutdown_preservation,
+            )
+            with self.assertRaisesRegex(ValueError, "unexpected entries"):
+                ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_home_state_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch) / "home"
+            copy = home / ".local/state/codex-agents/rehearsal"
+            self.create_marked_copy(copy)
+            with patch.object(Path, "home", return_value=home):
+                with self.assertRaisesRegex(ValueError, "live state"):
+                    ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_missing_marker_and_database_files(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            with self.assertRaisesRegex(ValueError, "marker"):
+                ledger.validate_copy_state_root(root)
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            with self.assertRaisesRegex(ValueError, "canvas.sqlite3"):
+                ledger.validate_copy_state_root(root)
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "analytics.sqlite3"):
+                ledger.validate_copy_state_root(root)
+
+    def test_copy_state_root_rejects_database_hardlinks_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
+            external_link = Path(scratch) / "linked-live-canvas.sqlite3"
+            os.link(canvas, external_link)
+            original = canvas.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "hard links"):
+                ledger.validate_copy_state_root(root)
+
+            self.assertEqual(canvas.read_bytes(), original)
+
+    def test_copy_state_root_rejects_a_known_live_database_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            live = Path(scratch) / "known-live"
+            root.mkdir()
+            live.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
+            live_canvas = live / "canvas.sqlite3"
+            os.link(canvas, live_canvas)
+            original_stat = Path.stat
+
+            def report_copy_as_unlinked(path, *args, **kwargs):
+                stat = original_stat(path, *args, **kwargs)
+                if path == canvas:
+                    values = list(stat)
+                    values[3] = 1
+                    return os.stat_result(values)
+                return stat
+
+            with patch.object(Path, "stat", report_copy_as_unlinked):
+                with self.assertRaisesRegex(ValueError, "aliases a known live database"):
+                    ledger.validate_copy_state_root(root, live_state_root=live)
+
+    def test_copy_state_requires_valid_database_schema_and_a_preexisting_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            for name in ("canvas.sqlite3", "analytics.sqlite3"):
+                (root / name).touch()
+            with self.assertRaisesRegex(ValueError, "invalid SQLite header"):
+                ledger.validate_copy_state_root(root)
+
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute("CREATE TABLE unrelated(value TEXT)")
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "incompatible schema"):
+                ledger.validate_copy_state_root(root)
+
+            self.create_marked_copy(root, with_agent=False)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            with self.assertRaisesRegex(ValueError, "pre-existing native agent"):
+                ledger.copied_agent_witness(root)
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
+
+    def test_copy_functional_witness_uses_existing_copy_row_not_seeded_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "stored-agent", "cwd": "/copied/project"},
+            )
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
+
+    def test_wal_backup_validation_and_witness_do_not_create_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            source_path = Path(scratch) / "source.sqlite3"
+            with closing(sqlite3.connect(source_path)) as source:
+                source.execute("PRAGMA journal_mode=WAL")
+                source.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                source.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("wal-agent", json.dumps({"id": "wal-agent", "cwd": "/wal/copied"})),
+                )
+                source.commit()
+                with closing(sqlite3.connect(root / "canvas.sqlite3")) as copied:
+                    source.backup(copied)
+            before = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "wal-agent", "cwd": "/wal/copied"},
+            )
+            after = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertEqual({path.name for path in root.iterdir()}, set(before))
+
+    def test_copy_witness_report_redacts_copied_row_contents(self) -> None:
+        probe_case = {}
+        response_body = {
+            "kind": "native",
+            "path": "/private/copied/project",
+            "id": "private-agent-id",
+            "record": "private-row-content",
+        }
+        observation = {
+            "matched": True,
+            "body": ledger.persisted_probe_body(
+                probe_case, response_body, copy_mode=True,
+            ),
+        }
+        report = json.dumps(observation)
+        self.assertTrue(observation["matched"])
+        self.assertIsNone(observation["body"])
+        for copied_value in (
+            "/private/copied/project",
+            "private-agent-id",
+            "private-row-content",
+        ):
+            self.assertNotIn(copied_value, report)
+
+    def test_other_probe_bodies_remain_available_for_diagnostics(self) -> None:
+        body = {"error": "Not found"}
+        self.assertEqual(ledger.persisted_probe_body({}, body), body)
+
+    def test_api_and_copied_data_gates_require_independent_evidence(self) -> None:
+        api_positive = [{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [{
+                "expected": "2xx", "expectedMatches": True, "status": 200,
+            }],
+        }]
+        api_report = ledger.api_fixture_evidence(api_positive)
+        self.assertEqual(api_report["status"], "pass")
+        self.assertEqual(api_report["positiveOperations"], 1)
+        self.assertEqual(
+            ledger.copied_data_evidence_status({
+                "existingRowRead": True,
+                "unchangedDuringFinderRead": True,
+            }),
+            "unverified",
+            "API fixture success cannot stand in for copy validation or rollback",
+        )
+
+        copied_data = {
+            "stateCheckBefore": True,
+            "existingRowRead": True,
+            "preexistingRowsPreservedFromBeforeStartup": True,
+            "stateCheckAfter": True,
+            "unchangedDuringFinderRead": True,
+            "schemaChangesReviewed": True,
+            "derivedIndexesReviewed": True,
+            "baselineRestore": True,
+            "pythonRollbackReadback": True,
+        }
+        self.assertEqual(ledger.copied_data_evidence_status(copied_data), "pass")
+        refusal_only = [{
+            "implementation": "implemented",
+            "classification": "unverified",
+            "covered": False,
+            "probeCases": [{
+                "expected": "403", "expectedMatches": True, "status": 403,
+            }],
+        }]
+        refusal_report = ledger.api_fixture_evidence(refusal_only)
+        self.assertEqual(refusal_report["positiveOperations"], 0)
+        self.assertEqual(refusal_report["validatedNegativeCases"], 1)
+        self.assertEqual(
+            refusal_report["status"], "unverified",
+            "a valid refusal cannot count as positive API capability",
+        )
+        positive_with_refusal_contract = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {"expected": "403", "expectedMatches": True, "status": 403},
+            ],
+        }])
+        self.assertEqual(positive_with_refusal_contract["status"], "pass")
+        self.assertEqual(positive_with_refusal_contract["validatedNegativeCases"], 1)
+
+        legacy_coverage_flag = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": True,
+            "probeCases": [{
+                "expected": None, "expectedMatches": False, "status": 403,
+            }],
+        }])
+        self.assertEqual(legacy_coverage_flag["status"], "unverified")
+        named_success = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": True,
+            "observedSuccessfulAssertions": ["fixture::valid request succeeds"],
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "A named consumer test sends the successful request.",
+                "status": None,
+            }],
+        }])
+        self.assertEqual(named_success["status"], "pass")
+
+    def test_api_evidence_does_not_auto_pass_empty_unresolved_or_server_error(self) -> None:
+        self.assertEqual(ledger.api_fixture_evidence([])["status"], "unverified")
+        unresolved = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [{"expected": None, "expectedMatches": False, "status": 200}],
+        }])
+        self.assertEqual(unresolved["status"], "unverified")
+        server_error = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "unexpected",
+            "covered": True,
+            "probeCases": [{"expected": "2xx", "expectedMatches": False, "status": 503}],
+        }])
+        self.assertEqual(server_error["status"], "failed")
+        self.assertEqual(server_error["unexpectedOperations"], 1)
+
+        named_server_error = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "unverified",
+            "covered": False,
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {
+                    "expected": "503", "expectedMatches": True, "status": 503,
+                    "expectedError": "Optional adapter is unavailable",
+                    "reason": "the child fixture has no adapter binding",
+                },
+            ],
+        }])
+        self.assertEqual(named_server_error["status"], "unverified")
+        self.assertEqual(named_server_error["unverifiedOperations"], 1)
+
+        malformed_record = ledger.api_fixture_evidence([{
+            "implementation": "implemented",
+            "classification": "implemented",
+            "covered": False,
+            "probeCases": [
+                {"expected": "2xx", "expectedMatches": True, "status": 200},
+                {
+                    "expected": "503", "expectedMatches": True, "status": 503,
+                    "expectedError": "Stored row is invalid",
+                    "reason": "seeded malformed stored record fault contract",
+                },
+            ],
+        }])
+        self.assertEqual(malformed_record["status"], "pass")
+        self.assertEqual(malformed_record["positiveOperations"], 1)
+
+    def test_router_junit_evidence_is_exact_revision_hash_and_test_bound(self) -> None:
+        expected_operations = {
+            ("POST", "/api/connection-recovery"),
+            ("POST", "/api/servers/orchestration"),
+            ("POST", "/api/mac-sync/config"),
+            ("POST", "/api/mac-sync/resolve"),
+            ("POST", "/api/voice/approve"),
+            ("GET", "/api/multi-server/v1/status"),
+            ("POST", "/api/multi-server/v1/auto-pair"),
+            ("POST", "/api/multi-server/v1/pair"),
+            ("POST", "/api/multi-server/v1/name"),
+            ("POST", "/api/monitor/input"),
+            ("POST", "/api/vault/setup"),
+            ("POST", "/api/vault/setup/facts"),
+        }
+        self.assertEqual(set(ledger.ROUTER_POSITIVE_TESTS), expected_operations)
+        recovery_class, recovery_name = ledger.ROUTER_POSITIVE_TESTS[
+            ("POST", "/api/connection-recovery")
+        ]
+        orchestration_class, orchestration_name = ledger.ROUTER_POSITIVE_TESTS[
+            ("POST", "/api/servers/orchestration")
+        ]
+        report = (
+            '<testsuites><testsuite>'
+            + "".join(
+                f'<testcase classname="{classname}" name="{name}" />'
+                for classname, name in set(ledger.ROUTER_POSITIVE_TESTS.values())
+            )
+            + '</testsuite></testsuites>'
+        ).encode()
+        digest = ledger.hashlib.sha256(report).hexdigest()
+        metadata = {"revision": "exact-candidate", "junitSha256": digest}
+
+        passing = ledger.parse_router_test_evidence(metadata, report, "exact-candidate")
+        self.assertEqual(passing["status"], "pass")
+        self.assertEqual(
+            len(passing["assertions"]), len(ledger.ROUTER_POSITIVE_TESTS),
+        )
+        self.assertEqual(
+            {item["status"] for item in passing["assertions"]}, {"passed"},
+        )
+        with tempfile.TemporaryDirectory(prefix="router-junit-evidence-") as scratch:
+            root = Path(scratch)
+            (root / "junit.xml").write_bytes(report)
+            sidecar = root / "evidence.json"
+            sidecar.write_text(json.dumps({
+                **metadata,
+                "junitPath": "junit.xml",
+            }))
+            with patch.object(
+                ledger.subprocess, "run",
+                side_effect=[
+                    SimpleNamespace(stdout="exact-candidate\n"),
+                    SimpleNamespace(stdout=""),
+                ],
+            ):
+                loaded = ledger.load_router_test_evidence(sidecar)
+            self.assertEqual(loaded["status"], "pass")
+            with patch.object(
+                ledger.subprocess, "run",
+                side_effect=[
+                    SimpleNamespace(stdout="exact-candidate\n"),
+                    SimpleNamespace(stdout=" M workspaces/runtime/packages/runtime-http/src/lib.rs\n"),
+                ],
+            ):
+                dirty = ledger.load_router_test_evidence(sidecar)
+            self.assertEqual(dirty["status"], "unverified")
+            self.assertIn("dirty source worktree", dirty["assertions"][0]["reason"])
+        self.assertEqual(ledger.load_router_test_evidence(None)["status"], "unverified")
+
+        stale_revision = ledger.parse_router_test_evidence(metadata, report, "different-candidate")
+        self.assertEqual(stale_revision["status"], "unverified")
+        dirty_worktree = ledger.parse_router_test_evidence(
+            metadata, report, "exact-candidate", worktree_clean=False,
+        )
+        self.assertEqual(dirty_worktree["status"], "unverified")
+        wrong_hash = ledger.parse_router_test_evidence(
+            {**metadata, "junitSha256": "0" * 64}, report, "exact-candidate",
+        )
+        self.assertEqual(wrong_hash["status"], "unverified")
+        missing = ledger.parse_router_test_evidence(
+            {**metadata, "junitSha256": digest},
+            report.replace(
+                f'name="{orchestration_name}"'.encode(), b'name="other_test"'
+            ),
+            "exact-candidate",
+        )
+        self.assertEqual(missing["status"], "unverified")
+        # A JUnit skipped node must never count as a passing route witness.
+        skipped_report = (
+            '<testsuites><testsuite>'
+            f'<testcase classname="{recovery_class}" name="{recovery_name}" />'
+            f'<testcase classname="{orchestration_class}" name="{orchestration_name}"><skipped /></testcase>'
+            '</testsuite></testsuites>'
+        ).encode()
+        skipped = ledger.parse_router_test_evidence(
+            {"revision": "exact-candidate", "junitSha256": ledger.hashlib.sha256(skipped_report).hexdigest()},
+            skipped_report, "exact-candidate",
+        )
+        self.assertEqual(skipped["status"], "unverified")
+        failed_report = report.replace(
+            f'name="{orchestration_name}" />'.encode(),
+            f'name="{orchestration_name}"><failure /></testcase>'.encode(),
+        )
+        failed = ledger.parse_router_test_evidence(
+            {"revision": "exact-candidate", "junitSha256": ledger.hashlib.sha256(failed_report).hexdigest()},
+            failed_report, "exact-candidate",
+        )
+        self.assertEqual(failed["status"], "failed")
+
+    def test_consumer_only_probe_needs_named_success_and_keeps_copy_gate_independent(self) -> None:
+        operation = {"method": "POST", "path": "/api/action"}
+        case = ledger.PROBE_CASES[("POST", "/api/action")]["primary"]
+        self.assertFalse(case.get("dispatch", True))
+        self.assertTrue(case["consumer_only"])
+        observation = {
+            "expected": None, "expectedMatches": False, "dispatched": False,
+            "status": None, "consumerOnly": True,
+            "reason": "Existing fake-provider consumer tests send the successful request.",
+        }
+        without_consumer = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "probeCases": [observation],
+        }])
+        self.assertEqual(without_consumer["status"], "unverified")
+        anonymous_no_dispatch = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": ["fixture::some 2xx request"],
+            "probeCases": [{"expected": None, "dispatched": False, "status": None}],
+        }])
+        self.assertEqual(anonymous_no_dispatch["status"], "unverified")
+        with_consumer = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": [
+                "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py::"
+                "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread"
+            ],
+            "probeCases": [observation],
+        }])
+        self.assertEqual(with_consumer["status"], "pass")
+        route = ("POST", "/api/connection-recovery")
+        router_test = ledger.ROUTER_POSITIVE_TESTS[route]
+        router_only = ledger.api_fixture_evidence([{
+            "method": route[0], "path": route[1],
+            "implementation": "implemented", "classification": "unverified",
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "Rust router witness supplies the successful request.",
+                "status": None,
+            }],
+        }], {
+            "status": "pass",
+            "assertions": [{
+                "operation": f"{route[0]} {route[1]}",
+                "test": f"{router_test[0]}::{router_test[1]}",
+                "status": "passed",
+            }],
+        })
+        self.assertEqual(router_only["status"], "pass")
+        self.assertEqual(router_only["routerPositiveOperations"], 1)
+        missing_router = ledger.api_fixture_evidence([{
+            "method": route[0], "path": route[1],
+            "implementation": "implemented", "classification": "unverified",
+            "probeCases": [{
+                "expected": None, "expectedMatches": False,
+                "dispatched": False, "consumerOnly": True,
+                "reason": "Rust router witness supplies the successful request.",
+                "status": None,
+            }],
+        }])
+        self.assertEqual(missing_router["status"], "unverified")
+        self.assertEqual(
+            ledger.copied_data_evidence_status({"existingRowRead": True}),
+            "unverified",
+            "API success cannot stand in for copied-data validation and rollback",
+        )
+
+    def test_unavailable_import_and_guest_ports_require_named_http_success(self) -> None:
+        consumer_assertions = {
+            ("GET", "/api/import"): [
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_list_import_threads_on_both_backends",
+            ],
+            ("POST", "/api/import"): [
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_import_thread_on_both_backends",
+                "workspaces/runtime/apps/server/tests/portable-history-import-http-contract.py::"
+                "__main__.PortableHistoryImportHTTPContract.test_import_metadata_and_initial_event_commit_atomically",
+            ],
+        }
+        for route in (
+            ("POST", "/api/project-secrets/list"),
+            ("POST", "/api/project-secrets/set"),
+            ("POST", "/api/project-secrets/remove"),
+        ):
+            consumer_assertions[route] = [
+                "workspaces/runtime/apps/server/tests/rust-host-secrets-http-contract.py::"
+                "__main__.HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values",
+            ]
+
+        self.assertEqual(set(consumer_assertions), {
+            ("GET", "/api/import"),
+            ("POST", "/api/import"),
+            ("POST", "/api/project-secrets/list"),
+            ("POST", "/api/project-secrets/set"),
+            ("POST", "/api/project-secrets/remove"),
+        })
+        for route, assertions in consumer_assertions.items():
+            with self.subTest(route=route):
+                probe = ledger.PROBE_CASES[route]["primary"]
+                self.assertFalse(probe.get("dispatch", True))
+                self.assertTrue(probe.get("consumer_only"))
+                self.assertTrue(probe.get("reason"))
+                self.assertNotIn("expected", probe)
+                observation = ledger.unsafe_probe_observation(probe["reason"])
+                operation = {
+                    "method": route[0], "path": route[1],
+                    "implementation": "implemented", "classification": "unverified",
+                    "probeCases": [observation],
+                }
+                without_success = ledger.api_fixture_evidence([operation])
+                self.assertEqual(without_success["status"], "unverified")
+                operation["observedSuccessfulAssertions"] = assertions
+                with_success = ledger.api_fixture_evidence([operation])
+                self.assertEqual(with_success["status"], "pass")
+
+    def test_retired_get_tombstones_are_not_probed(self) -> None:
+        retired_gets = {
+            ("GET", "/api/federation"),
+            ("GET", "/api/federation/v1/message"),
+            ("GET", "/api/federation/v1/pair"),
+            ("GET", "/api/federation/v1/pull"),
+            ("GET", "/api/federation/v1/status"),
+            ("GET", "/api/multi-server/v1/pair"),
+        }
+        self.assertTrue(retired_gets.isdisjoint(ledger.PROBE_CASES))
+
+    def test_copy_backend_command_requires_ephemeral_port(self) -> None:
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server --port 0"),
+            ["/tmp/studio-runtime-server", "--port", "0"],
+        )
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server"),
+            ["/tmp/studio-runtime-server"],
+        )
+        for command in (
+            "/tmp/studio-runtime-server --port 4620",
+            "/tmp/studio-runtime-server --port=4620",
+            "/tmp/studio-runtime-server --port 4635",
+            "/tmp/studio-runtime-server --port 0 --port 0",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(ValueError):
+                    ledger.validate_ephemeral_backend_command(command)
+
+    def test_copy_probe_constants_are_namespaced_away_from_existing_rows(self) -> None:
+        identifiers = {
+            "_fixturePrefix": "copyprobe-unique-",
+            "_accountKey": "copyprobe-unique-account",
+            "_literalIds": {"60606060-6060-4060-8060-606060606060": "new-request-id"},
+        }
+        value = {
+            "id": "ledger-probe-agent",
+            "account_key": "default",
+            "request_id": "60606060-6060-4060-8060-606060606060",
+        }
+        self.assertEqual(
+            ledger.namespace_probe_constants(value, identifiers),
+            {
+                "id": "copyprobe-unique-probe-agent",
+                "account_key": "copyprobe-unique-account",
+                "request_id": "new-request-id",
+            },
+        )
 
     def test_provider_turn_refusals_are_keyed_to_the_undeclared_dependency(self) -> None:
         boundary = "workspaces/runtime/apps/server/tests/http-boundary-contract.py"
@@ -137,12 +1000,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         documented = set(ledger.operations())
         self.assertLessEqual(set(ledger.PROBE_CASES), documented)
         fixture_keys = {
-            "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
+            "agent", "deleteAgent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
-            "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
+            "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
+            "disconnectedAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
+            "liveTerminal",
         }
 
         def references(value):
@@ -158,49 +1023,279 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "404", "501"})
+                    expected = probe_case.get(
+                        "expected", None if probe_case.get("dispatch") is False else "2xx"
+                    )
+                    if probe_case.get("dispatch") is False:
+                        self.assertTrue(probe_case.get("consumer_only"))
+                        self.assertTrue(probe_case.get("reason"))
+                        self.assertIsNone(expected)
+                    elif probe_case.get("unverified"):
+                        self.assertIsNone(expected)
+                        self.assertTrue(probe_case.get("reason"))
+                    else:
+                        self.assertTrue(
+                            expected in {"2xx", "400", "403", "404", "409"}
+                            or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
+                        )
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
 
-    def test_reset_credit_probes_are_named_refusals_without_redemption(self) -> None:
-        reset = ledger.PROBE_CASES[("POST", "/api/limits/reset")]
-        self.assertEqual(set(reset), {"primary"})
-        self.assertEqual(reset["primary"]["expected"], "501")
-        self.assertTrue(reset["primary"]["assert_no_write"])
-        self.assertEqual(
-            reset["primary"]["reason"],
-            "redemption is never performed or simulated in tests",
-        )
+        delete_probe = ledger.PROBE_CASES[("POST", "/api/conversation/delete")]["primary"]
+        self.assertEqual(delete_probe["body"]["id"], "$deleteAgent")
+
+        session_cost = ledger.PROBE_CASES[("GET", "/api/session-cost")]["primary"]
+        self.assertEqual(session_cost["expected"], "2xx")
+        self.assertEqual(session_cost["fixture_mutations"], {"seed_pricing_catalog": True})
+        self.assertEqual(session_cost["restore"], ["pricing_file"])
+
+        remote_project = ledger.PROBE_CASES[("POST", "/api/projects")]["additional"][0]
+        self.assertEqual(remote_project["expected"], "403")
+        self.assertEqual(remote_project["body"]["request_id"], "ledger-cross-server-project")
+
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="", copy_mode=False,
+        )), "")
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="copy-123-", copy_mode=True,
+        )), "copy-123-")
+
+    def test_disconnected_account_probe_uses_registry_key_namespace(self) -> None:
+        probe = ledger.PROBE_CASES[("GET", "/api/limits")]["additional"][0]
+        self.assertEqual(probe["query"]["account_key"], "$disconnectedAccount")
+        self.assertEqual(ledger.account_fixture_namespace(SimpleNamespace(
+            fixture_namespace="", copy_mode=False,
+        )) + "disconnected", "disconnected")
+
+    def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
+        operation = {"method": "POST", "path": "/api/limits/reset"}
+        self.assertNotIn((operation["method"], operation["path"]), ledger.PROBE_CASES)
+        reason = ledger.unsafe_probe_exclusion(operation["method"], operation["path"])
+        if reason is None:
+            self.fail("reset-credit redemption must remain undispatched by the generic probe")
+        self.assertIn("reset-credit", reason)
+        observation = ledger.unsafe_probe_observation(reason)
+        self.assertFalse(observation["dispatched"])
+        self.assertTrue(observation["consumerOnly"])
+        self.assertIsNone(observation["expected"])
+
+        without_positive = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "probeCases": [observation],
+        }])
+        self.assertEqual(without_positive["status"], "unverified")
+
+        with_positive = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": [
+                "workspaces/runtime/apps/server/tests/limit-reset-http-contract.py::"
+                "__main__.ResetCreditHTTPContract.test_exact_request_replay_uses_one_fake_provider_redemption"
+            ],
+            "probeCases": [observation],
+        }])
+        self.assertEqual(with_positive["status"], "pass")
+        self.assertEqual(with_positive["positiveOperations"], 1)
 
     def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
         for operation in (
             ("GET", "/api/changes"),
-            ("GET", "/api/models"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),
-            ("POST", "/api/peer-teams"),
             ("POST", "/api/projects"),
-            ("POST", "/api/questions/delete"),
         ):
             with self.subTest(operation=operation):
                 spec = ledger.PROBE_CASES[operation]
                 self.assertEqual(spec["primary"]["expected"], "2xx")
                 refusals = spec.get("additional", [])
+                if operation == ("GET", "/api/changes"):
+                    self.assertEqual(refusals, [])
+                    continue
                 self.assertTrue(refusals)
-                self.assertTrue(all(case["expected"] == "501" for case in refusals))
-                self.assertTrue(all(case.get("expected_error") for case in refusals))
+                if operation == ("POST", "/api/federation"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertFalse(refusals[0].get("expected_error"))
+                elif operation == ("POST", "/api/messages"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertIn("schema rejects attachment objects", refusals[0]["reason"])
+                elif operation == ("POST", "/api/multi-server"):
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "400")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertIn("Tailscale Serve", refusals[0]["reason"])
+                else:
+                    self.assertEqual(len(refusals), 1)
+                    self.assertEqual(refusals[0]["expected"], "403")
+                    self.assertTrue(refusals[0]["assert_no_write"])
+                    self.assertIn("not paired", refusals[0]["reason"])
+
+    def test_implemented_route_expectations_follow_the_current_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "obsolete refusal"},
+            "additional": [{"expected": "501", "expected_error": "obsolete refusal"}],
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "implemented", "dependencies": []},
+            })
+            cases = [
+                ledger.PROBE_CASES[operation]["primary"],
+                *ledger.PROBE_CASES[operation]["additional"],
+            ]
+            self.assertTrue(all(case.get("expected") is None for case in cases))
+            self.assertTrue(all(case["unverified"] for case in cases))
+            self.assertTrue(all("expected_error" not in case for case in cases))
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
+
+    def test_unverified_additional_probe_never_accepts_a_server_error(self) -> None:
+        cases = [
+            ("primary", {"expected": "2xx"}),
+            ("legacy refusal", {"expected": None, "unverified": True}),
+        ]
+        observations = [
+            {"status": 200, "expectedMatches": True},
+            {"status": 503, "expectedMatches": ledger.probe_status_matches(
+                None, 503, standard_501=False, response_body={"error": "unavailable"},
+            )},
+        ]
+        self.assertFalse(observations[1]["expectedMatches"])
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
+        self.assertEqual(
+            ledger.apply_probe_expectations("unexpected", cases, [
+                {"status": 200, "expectedMatches": True},
+                {"status": 400, "expectedMatches": False},
+            ]),
+            "unexpected",
+        )
+        observations[0] = {"status": 503, "expectedMatches": False}
+        observations[1] = {"status": 400, "expectedMatches": False}
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
+        self.assertFalse(ledger.probe_status_matches(
+            "not_501", 200, standard_501=True, response_body={},
+        ))
+
+    def test_named_refusal_rejects_wrong_body_even_when_status_matches(self) -> None:
+        expected_error = "The server is not paired or is revoked"
+        self.assertFalse(ledger.probe_status_matches(
+            "403", 403, standard_501=False,
+            response_body={"error": "different 403 reason"},
+            expected_error=expected_error,
+        ))
+        cases = [("unpaired remote project", {
+            "expected": "403", "expected_error": expected_error,
+        })]
+        observations = [{
+            "status": 403,
+            "expectedMatches": ledger.probe_status_matches(
+                "403", 403, standard_501=False,
+                response_body={"error": "different 403 reason"},
+                expected_error=expected_error,
+            ),
+        }]
+        self.assertEqual(
+            ledger.apply_probe_expectations("implemented", cases, observations),
+            "unexpected",
+        )
+
+    def test_message_attachment_probe_is_an_explicit_schema_rejection(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/messages")]["additional"][0]
+        self.assertEqual(probe["expected"], "400")
+        self.assertNotIn("expected_error", probe)
+        self.assertIn("schema rejects attachment objects", probe["reason"])
+
+    def test_named_refusal_expectations_remain_owned_by_partial_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "Not implemented: requires test/service"},
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "partial", "dependencies": ["test/service"]},
+            })
+            self.assertEqual(ledger.PROBE_CASES[operation]["primary"]["expected"], "501")
+            self.assertEqual(
+                ledger.PROBE_CASES[operation]["primary"]["expected_error"],
+                "Not implemented: requires test/service",
+            )
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
+
+    def test_disabled_signed_federation_probes_expect_python_gate_before_headers(self) -> None:
+        for path in (
+            "/api/federation/v1/message",
+            "/api/federation/v1/pair",
+            "/api/federation/v1/pull",
+            "/api/federation/v1/status",
+        ):
+            with self.subTest(path=path):
+                probe = ledger.PROBE_CASES[("POST", path)]["primary"]
+                self.assertEqual(probe["expected"], "403")
+                self.assertNotIn("headers", probe)
+
+    def test_answer_probe_covers_the_implemented_async_question_flow(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/answer")]["primary"]
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(probe["body"]["id"], "$answerQuestion")
+        self.assertEqual(
+            probe["body"]["answers"],
+            {"value": {"answers": ["Ledger answer"]}},
+        )
+        self.assertNotIn("expected_error", probe)
+
+    def test_answer_probe_preserves_the_later_defer_question(self) -> None:
+        identifiers = {
+            "question": "ledger-probe-question",
+            "answerQuestion": "ledger-probe-answer-question",
+        }
+        answer_path, answer_body, _ = ledger.valid_probe(
+            "POST", "/api/answer", identifiers,
+            ledger.PROBE_CASES[("POST", "/api/answer")]["primary"],
+        )
+        defer_path, defer_body, _ = ledger.valid_probe(
+            "POST", "/api/questions/defer", identifiers,
+            ledger.PROBE_CASES[("POST", "/api/questions/defer")]["primary"],
+        )
+        self.assertEqual(answer_path, "/api/answer")
+        self.assertEqual(answer_body["id"], "ledger-probe-answer-question")
+        self.assertEqual(defer_path, "/api/questions/defer")
+        self.assertEqual(defer_body["id"], "ledger-probe-question")
+        self.assertNotEqual(answer_body["id"], defer_body["id"])
+
+    def test_native_question_delete_uses_provider_callback_owner_witness(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/questions/delete")]
+        self.assertEqual(probe["primary"]["expected"], "2xx")
+        self.assertNotIn("additional", probe)
+
+    def test_native_command_probe_uses_a_distinct_seeded_running_task(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/native-command")]["primary"]
+        identifiers = {"activeCommand": "ledger-probe-active-command"}
+        _, body, _ = ledger.valid_probe("POST", "/api/native-command", identifiers, probe)
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(body["id"], "ledger-probe-active-command")
+        self.assertNotEqual(body["id"], "ledger-probe-task")
 
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
-        changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
-        changes_path, _, _ = ledger.valid_probe(
-            "GET", "/api/changes", identifiers, changes,
-        )
+        changes = ledger.PROBE_CASES[("GET", "/api/changes")]["primary"]
+        changes_path, _, _ = ledger.valid_probe("GET", "/api/changes", identifiers, changes)
         self.assertEqual(changes_path, "/api/changes?agent=lead-agent")
-        self.assertEqual(changes["fixture_mutations"]["agent_execution_mode"], "vm")
-        self.assertIn("agent_record", changes["restore"])
+        self.assertNotIn("additional", ledger.PROBE_CASES[("GET", "/api/changes")])
 
         models = ledger.PROBE_CASES[("GET", "/api/models")]["additional"][0]
         models_path, _, _ = ledger.valid_probe("GET", "/api/models", identifiers, models)
@@ -211,9 +1306,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             state = Path(scratch)
             with sqlite3.connect(state / "canvas.sqlite3") as connection:
                 connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
                 connection.execute(
                     "INSERT INTO runtime_agents VALUES(?, ?)",
                     ("lead-agent", json.dumps({"id": "lead-agent", "executionMode": "host"})),
+                )
+                connection.execute(
+                    "INSERT INTO runtime_tasks VALUES(?, ?)",
+                    ("active-command", json.dumps({"id": "active-command", "status": "completed"})),
                 )
             identity_path = state / "multi-server" / "identity.json"
             identity_path.parent.mkdir()
@@ -222,20 +1322,27 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             case = {
                 "fixture_mutations": {
                     "agent_execution_mode": "vm", "remove_identity": True,
+                    "activate_native_command": True,
                 },
-                "restore": ["agent_record", "identity_file"],
+                "restore": ["agent_record", "identity_file", "active_command_record"],
             }
 
             with self.assertRaisesRegex(RuntimeError, "probe failed"):
                 with ledger.probe_fixture_state(
-                    SimpleNamespace(state=state), {"agent": "lead-agent"}, case,
+                    SimpleNamespace(state=state), {
+                        "agent": "lead-agent", "activeCommand": "active-command",
+                    }, case,
                 ):
                     self.assertFalse(identity_path.exists())
                     with sqlite3.connect(state / "canvas.sqlite3") as connection:
                         changed = json.loads(connection.execute(
                             "SELECT record FROM runtime_agents WHERE id='lead-agent'",
                         ).fetchone()[0])
+                        active = json.loads(connection.execute(
+                            "SELECT record FROM runtime_tasks WHERE id='active-command'",
+                        ).fetchone()[0])
                     self.assertEqual(changed["executionMode"], "vm")
+                    self.assertEqual(active["status"], "running")
                     raise RuntimeError("probe failed")
 
             self.assertEqual(identity_path.read_bytes(), b'{"serverId":"local"}')
@@ -245,6 +1352,584 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     "SELECT record FROM runtime_agents WHERE id='lead-agent'",
                 ).fetchone()[0])
             self.assertEqual(restored["executionMode"], "host")
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                restored_task = json.loads(connection.execute(
+                    "SELECT record FROM runtime_tasks WHERE id='active-command'",
+                ).fetchone()[0])
+            self.assertEqual(restored_task["status"], "completed")
+
+    def test_voice_approval_probe_creates_and_restores_fresh_pending_request(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-voice-approval-") as scratch:
+            state = Path(scratch)
+            monitor = {"id": "approval-monitor", "agent": "lead-agent", "epoch": 7,
+                       "status": "completed", "command": "echo ledger probe",
+                       "cwd": "/fixture/project"}
+            original_monitor_record = json.dumps(monitor)
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as db, db:
+                db.executescript("""
+                    CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                    CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                    CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                """)
+                db.execute("INSERT INTO runtime_monitors VALUES (?, ?)", (monitor["id"], original_monitor_record))
+                db.execute("INSERT INTO runtime_agents VALUES (?, ?)", (monitor["agent"], json.dumps({
+                    **{key: monitor[key] for key in ("id", "epoch", "cwd")}, "turnId": "turn-7",
+                })))
+            identifiers = {"agent": monitor["agent"], "monitor": monitor["id"],
+                           "approvalRequest": "pre-start-placeholder"}
+            case = ledger.PROBE_CASES[("POST", "/api/voice/approval_speech")]["primary"]
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(SimpleNamespace(state=state), identifiers, case):
+                    self.assertNotEqual(identifiers["approvalRequest"], "pre-start-placeholder")
+                    with closing(sqlite3.connect(state / "canvas.sqlite3")) as db, db:
+                        request = json.loads(db.execute(
+                            "SELECT record FROM runtime_requests WHERE id=?",
+                            (identifiers["approvalRequest"],),
+                        ).fetchone()[0])
+                        prepared = json.loads(db.execute(
+                            "SELECT record FROM runtime_monitors WHERE id=?",
+                            (monitor["id"],),
+                        ).fetchone()[0])
+                    self.assertEqual((request["status"], request["method"], request["epoch"]),
+                                     ("pending", "monitor/approve", 7))
+                    self.assertEqual(request["params"]["monitorId"], prepared["id"])
+                    self.assertEqual(prepared["status"], "approval")
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(identifiers["approvalRequest"], "pre-start-placeholder")
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as db:
+                self.assertIsNone(db.execute("SELECT 1 FROM runtime_requests").fetchone())
+                self.assertEqual(db.execute(
+                    "SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],),
+                ).fetchone()[0], original_monitor_record)
+
+    def test_session_cost_fixture_restores_cache_and_temporary_pricing_catalog(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-pricing-restore-") as scratch:
+            state = Path(scratch)
+            root_id = "analytics-agent"
+            cache = ledger.session_cost_cache_path(state, root_id)
+            cache.parent.mkdir()
+            original_cache = json.dumps({
+                "rootId": root_id,
+                "source": {"usage": {"generation": 1}},
+            })
+            cache.write_text(original_cache)
+            case = {
+                "fixture_mutations": {
+                    "stale_session_cost_cache": True,
+                    "seed_pricing_catalog": True,
+                },
+                "restore": ["session_cost_cache", "pricing_file"],
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(
+                    SimpleNamespace(state=state),
+                    {"analyticsAgent": root_id},
+                    case,
+                ):
+                    self.assertEqual(
+                        json.loads(cache.read_text())["source"]["usage"]["generation"],
+                        2,
+                    )
+                    pricing = state / "model-pricing" / "models-dev-v1.json"
+                    self.assertEqual(json.loads(pricing.read_text())["version"], 1)
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(cache.read_text(), original_cache)
+            self.assertFalse((state / "model-pricing").exists())
+
+    def test_action_route_keeps_fake_provider_http_cases_in_ledger_coverage(self) -> None:
+        suite = "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py"
+        self.assertNotIn(
+            "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS.get(suite, {}),
+        )
+        self.assertNotIn(
+            "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS.get(suite, {}),
+        )
+        primary = ledger.PROBE_CASES[("POST", "/api/action")]["primary"]
+        self.assertFalse(primary.get("dispatch", True))
+        self.assertTrue(primary["consumer_only"])
+        self.assertIn("completed provider thread", primary["reason"])
+
+    def test_analytics_seeder_namespaces_ids_in_synthetic_copy_mode(self) -> None:
+        suite = LEDGER.parent / "rust-analytics-http-contract.py"
+        analytics_spec = importlib.util.spec_from_file_location("ledger_copy_analytics_seed", suite)
+        self.assertIsNotNone(analytics_spec)
+        assert analytics_spec is not None and analytics_spec.loader is not None
+        analytics_module = importlib.util.module_from_spec(analytics_spec)
+        analytics_spec.loader.exec_module(analytics_module)
+
+        with tempfile.TemporaryDirectory(prefix="ledger-copy-analytics-") as scratch:
+            root = Path(scratch)
+            state = root / "state"
+            cwd = root / "project"
+            home = root / "home"
+            codex_home = root / "codex"
+            for directory in (state, cwd, home, codex_home):
+                directory.mkdir()
+            if "CODEX_NODE" in os.environ:
+                configured_node = os.environ["CODEX_NODE"]
+                node = shutil.which(configured_node) if configured_node else None
+                if node is None:
+                    self.fail("configured CODEX_NODE must resolve to an executable")
+            else:
+                node = shutil.which("node")
+                if node is None:
+                    self.skipTest("synthetic Runtime identity setup requires the local Node crypto helper")
+            node = os.path.abspath(node)
+            namespace = "copyprobe-ledger-test-"
+            environment = {
+                "HOME": str(home),
+                "CODEX_HOME": str(codex_home),
+                "CODEX_AGENTS_STATE_DIR": str(state),
+                "CODEX_CANVAS_CWD": str(cwd),
+                "CODEX_NODE": node,
+                "PATH": "",
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+                "XDG_STATE_HOME": str(root / "xdg-state"),
+            }
+            backend = SimpleNamespace(
+                copy_mode=True,
+                fixture_namespace=namespace,
+                cwd=cwd,
+                _environment=lambda: environment,
+            )
+            analytics_module.seed_analytics(backend)
+
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as connection:
+                agent_ids = {
+                    row[0] for row in connection.execute("SELECT id FROM runtime_agents")
+                }
+            with closing(sqlite3.connect(state / "analytics.sqlite3")) as connection:
+                usage_agents = {
+                    row[0] for row in connection.execute("SELECT DISTINCT agent FROM analytics_usage")
+                }
+            self.assertIn(f"{namespace}analytics-contract-agent", agent_ids)
+            self.assertIn(f"{namespace}analytics-contract-teammate", agent_ids)
+            self.assertEqual(usage_agents, {
+                f"{namespace}analytics-contract-agent",
+                f"{namespace}analytics-population",
+            })
+            self.assertNotIn("analytics-contract-agent", agent_ids)
+            self.assertNotIn("analytics-contract-agent", usage_agents)
+
+    def test_sqlite_snapshot_uses_data_version_fast_path_without_scanning_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-snapshot-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value, payload)")
+                connection.executemany(
+                    "INSERT INTO mixed VALUES (?, ?)",
+                    [(None, None), (1, b"blob\x00"), ("1", b""), (1.0, None)],
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with patch.object(
+                    ledger,
+                    "_sqlite_content_digest",
+                    side_effect=AssertionError("unchanged data version must skip row scans"),
+                ):
+                    self.assertTrue(snapshot.unchanged())
+
+    def test_sqlite_snapshot_fallback_compares_schema_and_unordered_mixed_rows(self) -> None:
+        rows = [
+            (None, None), (1, b"blob\x00"), ("1", b""), (1.0, None),
+            (-0.0, b"negative zero"), (0.0, b"positive zero"),
+            (1, b"blob\x00"),
+        ]
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-snapshot-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value, payload)")
+                connection.executemany("INSERT INTO mixed VALUES (?, ?)", rows)
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("DELETE FROM mixed")
+                    connection.executemany("INSERT INTO mixed VALUES (?, ?)", reversed(rows))
+                    connection.commit()
+                self.assertTrue(snapshot.unchanged())
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("UPDATE mixed SET payload=? WHERE rowid=1", (b"changed",))
+                    connection.commit()
+                self.assertFalse(snapshot.unchanged())
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("CREATE INDEX mixed_payload ON mixed(payload)")
+                    connection.commit()
+                self.assertFalse(snapshot.unchanged())
+
+    def test_sqlite_snapshot_detects_identical_content_file_replacement(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-replaced-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            replacement = Path(scratch) / "replacement.sqlite3"
+            for path in (database, replacement):
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute("CREATE TABLE state(value TEXT)")
+                    connection.execute("INSERT INTO state VALUES ('same logical contents')")
+                    connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                original_identity = ledger._sqlite_file_identity(database)
+                replacement_identity = ledger._sqlite_file_identity(replacement)
+                self.assertNotEqual(original_identity, replacement_identity)
+                os.replace(replacement, database)
+                self.assertFalse(snapshot.unchanged())
+
+    def test_old_row_preservation_allows_new_tables_and_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-rows-additions-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)")
+                connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                connection.execute("CREATE TABLE duplicate_values(value BLOB)")
+                connection.executemany(
+                    "INSERT INTO duplicate_values VALUES (?)",
+                    [(b"same",), (b"same",)],
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO records VALUES (2, 'new row')")
+                    connection.execute(
+                        "INSERT INTO duplicate_values VALUES (?)", (b"same",),
+                    )
+                    connection.execute("CREATE TABLE new_table(value TEXT)")
+                    connection.execute("INSERT INTO new_table VALUES ('new table row')")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newTables"], 1)
+
+    def test_old_row_preservation_rejects_deleted_or_changed_rows(self) -> None:
+        for mutation in ("delete", "update"):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory(prefix="ledger-old-rows-change-") as scratch:
+                    database = Path(scratch) / "canvas.sqlite3"
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute("PRAGMA journal_mode=WAL")
+                        connection.execute(
+                            "CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)"
+                        )
+                        connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                        connection.commit()
+
+                    with ledger.sqlite_snapshot(database) as snapshot:
+                        with closing(sqlite3.connect(database)) as connection:
+                            statement = (
+                                "DELETE FROM records WHERE id=1"
+                                if mutation == "delete"
+                                else "UPDATE records SET value='changed' WHERE id=1"
+                            )
+                            connection.execute(statement)
+                            connection.commit()
+                        result = snapshot.preserved_existing_rows()
+                    self.assertFalse(result["preserved"])
+
+    def test_old_row_preservation_allows_added_columns_but_checks_old_columns(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-columns-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value BLOB)")
+                connection.execute("INSERT INTO records VALUES (1, ?)", (b"kept",))
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("ALTER TABLE records ADD COLUMN added TEXT")
+                    connection.execute(
+                        "UPDATE records SET added='new metadata' WHERE id=1"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newColumns"], 1)
+            self.assertEqual(result["changedTableDefinitions"], 1)
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE records SET value=? WHERE id=1", (b"changed",),
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
+
+            with tempfile.TemporaryDirectory(prefix="ledger-old-column-drop-") as second:
+                database = Path(second) / "canvas.sqlite3"
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    connection.execute(
+                        "CREATE TABLE records(id INTEGER PRIMARY KEY, old_value TEXT)"
+                    )
+                    connection.execute("INSERT INTO records VALUES (1, 'kept')")
+                    connection.commit()
+                with ledger.sqlite_snapshot(database) as snapshot:
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute("ALTER TABLE records DROP COLUMN old_value")
+                        connection.commit()
+                    result = snapshot.preserved_existing_rows()
+                self.assertFalse(result["preserved"])
+
+    def test_no_primary_key_duplicate_tables_use_rowid_or_report_unverified(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-no-primary-key-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE duplicates(value TEXT)")
+                connection.executemany(
+                    "INSERT INTO duplicates VALUES (?)", [("same",), ("same",)],
+                )
+                connection.execute(
+                    "CREATE TABLE shadowed(rowid TEXT, _rowid_ TEXT, oid TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO shadowed VALUES ('a', 'b', 'c')"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "INSERT INTO duplicates VALUES ('same')"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertIsNone(result["preserved"])
+            self.assertEqual(result["unsupportedTables"], 1)
+
+            with tempfile.TemporaryDirectory(prefix="ledger-no-pk-delete-") as second:
+                database = Path(second) / "canvas.sqlite3"
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    connection.execute("CREATE TABLE duplicates(value TEXT)")
+                    connection.executemany(
+                        "INSERT INTO duplicates VALUES (?)", [("same",), ("same",)],
+                    )
+                    connection.commit()
+                with ledger.sqlite_snapshot(database) as snapshot:
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.execute(
+                            "DELETE FROM duplicates WHERE rowid=(SELECT MIN(rowid) FROM duplicates)"
+                        )
+                        connection.commit()
+                    result = snapshot.preserved_existing_rows()
+                self.assertFalse(result["preserved"])
+
+    def test_old_row_preservation_compares_exact_types_and_text_bytes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-old-row-types-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE mixed(value)")
+                connection.executemany(
+                    "INSERT INTO mixed VALUES (?)",
+                    [(None,), (b"blob\x00",), (1,), ("1",), (1.0,)],
+                )
+                connection.execute(
+                    "CREATE TABLE collated(value TEXT COLLATE NOCASE)"
+                )
+                connection.execute("INSERT INTO collated VALUES ('Ab')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE mixed SET value=1.0 WHERE rowid=("
+                        "SELECT rowid FROM mixed WHERE typeof(value)='integer' LIMIT 1)"
+                    )
+                    connection.execute("UPDATE collated SET value='ab'")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
+
+    def test_rowid_alias_must_be_available_in_both_schema_versions(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-rowid-alias-change-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE records(value TEXT)")
+                connection.execute("INSERT INTO records VALUES ('kept')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("ALTER TABLE records RENAME TO old_records")
+                    connection.execute(
+                        "CREATE TABLE records(_rowid_ TEXT, value TEXT)"
+                    )
+                    connection.execute(
+                        "INSERT INTO records(rowid, _rowid_, value) "
+                        "SELECT rowid, 'shadow', value FROM old_records"
+                    )
+                    connection.execute(
+                        "INSERT INTO records(rowid, _rowid_, value) "
+                        "VALUES (2, 'shadow-new', 'new row')"
+                    )
+                    connection.execute("DROP TABLE old_records")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["newColumns"], 1)
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "UPDATE records SET value='changed' WHERE rowid=1"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+            self.assertFalse(result["preserved"])
+
+    def test_autoincrement_sequence_changes_are_reported_outside_user_rows(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sequence-bookkeeping-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute(
+                    "CREATE TABLE records(id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT)"
+                )
+                connection.execute("INSERT INTO records(value) VALUES ('old row')")
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO records(value) VALUES ('new row')")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertTrue(result["sqliteSequenceChanged"])
+            self.assertEqual(result["internalBookkeepingTables"], 1)
+
+    def test_known_contentless_fts_is_reported_as_unreadable_derived_index(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-contentless-fts-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute(
+                    "CREATE TABLE runtime_search_next_meta "
+                    "(search_rowid INTEGER PRIMARY KEY, agent_id TEXT NOT NULL, kind TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE VIRTUAL TABLE runtime_search_next USING "
+                    "fts5(body,content='',contentless_delete=1,tokenize='unicode61')"
+                )
+                connection.execute(
+                    "INSERT INTO runtime_search_next_meta VALUES (1, 'agent-old', 'turn')"
+                )
+                connection.execute(
+                    "INSERT INTO runtime_search_next(rowid,body) VALUES (1, 'old terms')"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute(
+                        "INSERT INTO runtime_search_next_meta VALUES (2, 'agent-new', 'turn')"
+                    )
+                    connection.execute(
+                        "INSERT INTO runtime_search_next(rowid,body) VALUES (2, 'new terms')"
+                    )
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertTrue(result["preserved"])
+            self.assertEqual(result["unreadableDerivedIndexes"], 1)
+            self.assertEqual(result["unsupportedTables"], 0)
+            self.assertEqual(result["derivedIndexSchemaChanges"], 0)
+            self.assertEqual(
+                ledger.copied_data_evidence_status({
+                    "stateCheckBefore": True,
+                    "existingRowRead": True,
+                    "preexistingRowsPreservedFromBeforeStartup": True,
+                    "unchangedDuringFinderRead": True,
+                    "schemaChangesReviewed": True,
+                    "stateCheckAfter": True,
+                    "baselineRestore": True,
+                    "pythonRollbackReadback": True,
+                }),
+                "unverified",
+                "contentless FTS body preservation needs separate review evidence",
+            )
+
+    def test_unknown_virtual_tables_remain_unverified(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-unknown-virtual-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("CREATE TABLE state(value INTEGER)")
+                connection.execute("INSERT INTO state VALUES (1)")
+                connection.execute(
+                    "CREATE VIRTUAL TABLE other_search USING fts5(body)"
+                )
+                connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.execute("INSERT INTO state VALUES (2)")
+                    connection.commit()
+                result = snapshot.preserved_existing_rows()
+
+            self.assertIsNone(result["preserved"])
+            self.assertEqual(result["unsupportedTables"], 1)
+            self.assertEqual(result["unreadableDerivedIndexes"], 0)
+
+    def test_copy_privacy_and_reset_probe_is_always_preserved(self) -> None:
+        copied_response = {
+            "stateDir": "/copied/private/state",
+            "entities": [{"id": "private-agent", "record": "private record"}],
+        }
+        self.assertIsNone(ledger.persisted_probe_body({}, copied_response, copy_mode=True))
+        self.assertEqual(ledger.persisted_probe_body({}, copied_response), copied_response)
+        self.assertIsNone(ledger.persisted_probe_body(
+            {"functional_witness": "copy-existing-agent"}, copied_response,
+        ))
+        self.assertEqual(ledger.copied_data_evidence_status({}), "unverified")
+
+        with tempfile.TemporaryDirectory(prefix="ledger-copy-skip-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            original = '{"scope":"user","fields":{"theme":"private"}}'
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE sync_preferences(scope TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO sync_preferences VALUES ('user', ?)", (original,),
+                )
+                connection.commit()
+
+            self.assertIsNone(ledger.unsafe_probe_exclusion(
+                "POST", "/api/sync/preferences",
+            ), "global preference writes are allowed only on disposable scratch state")
+            self.assertIn("reset-credit", ledger.unsafe_probe_exclusion(
+                "POST", "/api/limits/reset",
+            ))
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT record FROM sync_preferences WHERE scope='user'"
+                    ).fetchone()[0],
+                    original,
+                )
 
     def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
         panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
@@ -264,19 +1949,19 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
 
     def test_partial_operations_with_multiple_request_shapes_check_both_results(self) -> None:
         expected_cases = {
-            ("GET", "/api/file"): ["2xx", "501"],
-            ("GET", "/api/file-info"): ["2xx", "501"],
+            ("GET", "/api/file"): ["2xx"],
+            ("GET", "/api/file-info"): ["2xx"],
             ("GET", "/api/sync/pull"): ["2xx", "2xx"],
             ("POST", "/api/sync/drafts"): ["2xx", "400"],
-            ("POST", "/api/rules"): ["2xx", "501"],
-            ("POST", "/api/agents"): ["2xx", "501"],
-            ("POST", "/api/leads"): ["2xx", "501"],
-            ("POST", "/api/configure"): ["2xx", "501"],
-            ("POST", "/api/conversation"): ["2xx", "501"],
-            ("POST", "/api/checkpoint"): ["501", "2xx"],
+            ("POST", "/api/rules"): ["2xx", "2xx"],
+            ("POST", "/api/agents"): ["2xx"],
+            ("POST", "/api/leads"): ["2xx"],
+            ("POST", "/api/configure"): ["2xx", "400"],
+            ("POST", "/api/conversation"): ["2xx", "400"],
+            ("POST", "/api/checkpoint"): ["2xx", "400"],
             ("POST", "/api/checkpoint/preview"): ["2xx"],
-            ("POST", "/api/voice/end"): ["2xx", "501"],
-            ("POST", "/api/voice/speech"): ["2xx", "501"],
+            ("POST", "/api/voice/end"): ["2xx", "2xx"],
+            ("POST", "/api/voice/speech"): ["2xx", "400"],
             ("POST", "/api/voice/submit"): ["2xx", "400"],
         }
         for operation, expected in expected_cases.items():
@@ -286,6 +1971,15 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     [spec["primary"]["expected"], *[case["expected"] for case in spec.get("additional", [])]],
                     expected,
                 )
+        rules = ledger.PROBE_CASES[("POST", "/api/rules")]
+        self.assertEqual(rules["primary"]["python_citation"], "codex_rules.py:337-339")
+        self.assertEqual(
+            rules["additional"][0]["python_citation"],
+            "codex_rules.py:179-181,236-245",
+        )
+        smart_title = ledger.PROBE_CASES[("POST", "/api/rename")]["additional"][0]
+        self.assertEqual(smart_title["expected"], "2xx")
+        self.assertEqual(smart_title["python_citation"], "codex_rename.py:195-199")
 
     def test_classifier_rejects_server_errors_before_allowances(self) -> None:
         case = {"path": "/x", "method": "GET", "label": "known"}
@@ -473,6 +2167,37 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertEqual(run.call_args.kwargs["env"]["CODEX_SERVER_TEST_JOBS"], "1")
             self.assertEqual(observed["passed"], 3)
             self.assertEqual(len(observed["tests"]), 2)
+
+    def test_consumer_timeout_is_recorded_and_leaves_active_test_unreported(self) -> None:
+        relative = "workspaces/runtime/apps/server/tests/fixture-timeout.py"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log = root / "consumer.log"
+            log.write_text(
+                "test_completed (__main__.Example.test_completed) ... ok\n"
+                "test_active (__main__.Example.test_active) ... \n"
+                "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+                "Test outcomes: {\"error\":0,\"failed\":0,\"passed\":1,\"skipped\":0}\n"
+                f"FAIL {relative}: timed out after 120s\n"
+            )
+            process = SimpleNamespace(
+                stdout=json.dumps({
+                    "status": "failed", "passed": 1, "failed": 1,
+                    "skipped": 0, "exitCode": 1, "logPath": str(log),
+                }),
+                stderr="", returncode=1,
+            )
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                observed = ledger.run_suite(ledger.TESTS / "fixture-timeout.py", {}, root, [], {})
+
+        self.assertEqual(observed["status"], "failed")
+        self.assertEqual(observed["passed"], 1)
+        self.assertEqual(observed["failed"], 1)
+        self.assertEqual(
+            [case["status"] for case in observed["tests"]],
+            ["ok", "unreported"],
+        )
+        self.assertEqual(observed["diagnostic"], "runner timed out after 120s")
 
     def test_consumer_reconciles_status_after_interleaved_warning(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

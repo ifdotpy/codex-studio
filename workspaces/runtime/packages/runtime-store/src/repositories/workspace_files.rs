@@ -41,7 +41,7 @@ impl WorkspaceFilesRepository {
     }
 
     pub fn asset_ids(connection: &Connection) -> StoreResult<Vec<String>> {
-        let mut statement = connection.prepare("SELECT id FROM runtime_assets")?;
+        let mut statement = connection.prepare_cached("SELECT id FROM runtime_assets")?;
         let rows = statement.query_map([], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)

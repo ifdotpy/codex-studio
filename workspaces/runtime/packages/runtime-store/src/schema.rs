@@ -75,6 +75,16 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
     Ok(())
 }
 
+pub(crate) fn ensure_analytics_limits_index(path: &Path) -> StoreResult<()> {
+    let analytics = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    if table_exists(&analytics, "analytics_limits")? {
+        analytics.execute_batch(
+            "CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at)",
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn verify_bootstrap(canvas: &Connection) -> StoreResult<()> {
     let registrations = crate::repositories::schema_registrations();
     for registration in &registrations {

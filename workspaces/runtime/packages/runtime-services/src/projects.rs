@@ -1,20 +1,27 @@
 //! Decisions for local project records and sidebar state.
 
 use crate::event_write::{EventWriteError, python_json, python_strip, read_receipt, save_receipt};
+use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
 };
 use thiserror::Error;
+use unicode_casefold::UnicodeCaseFold;
 use uuid::Uuid;
 
-mod operations;
+pub(crate) mod operations;
 pub use operations::peer_team_write;
 use operations::reorder;
+
+/// Match the Python cross-server UUIDv5 namespace and input encoding.
+pub fn cross_server_identity(parts: &[&str]) -> String {
+    let name = format!("studio-cross-server:{}", parts.join(":"));
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
+}
 
 #[derive(Debug, Error)]
 pub enum ProjectsError {
@@ -22,6 +29,8 @@ pub enum ProjectsError {
     Invalid(&'static str),
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    #[error("bad request: {0}")]
+    BadRequest(&'static str),
     #[error("not implemented: requires {0}")]
     Requires(&'static str),
     #[error("invalid stored {table} record {id}")]
@@ -43,6 +52,344 @@ pub fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
     Ok(json!({"items": items}))
 }
 
+/// Read this server's project-location metadata. A request for a paired server
+/// remains owned by the cross-server transport adapter.
+pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, ProjectsError> {
+    let project_id = query
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 4096)
+        .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    let server = query
+        .get("server")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 128)
+        .ok_or(ProjectsError::BadRequest("The server ID is invalid"))?;
+    let local_server_id = store.local_server_id()?;
+    let server_id = if server == "local" {
+        local_server_id.as_deref().ok_or(ProjectsError::BadRequest(
+            "The local server ID is unavailable",
+        ))?
+    } else {
+        server
+    };
+    if local_server_id.as_deref() != Some(server_id) {
+        return Err(ProjectsError::Requires(
+            "cross-server-driver/project-location-read",
+        ));
+    }
+    let project = {
+        let db = store.read()?;
+        ProjectsRepository::get(&db, project_id)?.map(|(_, value)| value)
+    }
+    .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    if query.get("action").and_then(Value::as_str) == Some("matches") {
+        let origin = project
+            .get("locations")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find_map(|row| row.get("gitOrigin").and_then(Value::as_str))
+            })
+            .map(str::to_owned)
+            .or_else(|| {
+                project
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.starts_with("project:"))
+                    .and_then(|path| git_origin(std::path::Path::new(path)))
+            });
+        let Some(origin) = origin else {
+            return Ok(json!({"matches":[]}));
+        };
+        let db = store.read()?;
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (id, candidate) in ProjectsRepository::list(&db)? {
+            let Some(path) = candidate
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.starts_with("project:"))
+            else {
+                continue;
+            };
+            if seen.insert(path.to_owned()) {
+                candidates.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
+            }
+        }
+        if let Some(cwd) = query
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
+            let cwd = expand_home(cwd)
+                .canonicalize()
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+            if !cwd.is_dir() {
+                return Err(ProjectsError::BadRequest("This directory is unavailable"));
+            }
+            let mut children = std::fs::read_dir(&cwd)
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    (path.is_dir() && path.join(".git").exists()).then_some(path)
+                })
+                .collect::<Vec<_>>();
+            children.sort_by_key(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .case_fold()
+                    .collect::<String>()
+            });
+            children.truncate(50);
+            if cwd.join(".git").exists() {
+                children.insert(0, cwd.clone());
+            }
+            for path in children {
+                let text = path.to_string_lossy().into_owned();
+                if seen.insert(text.clone()) {
+                    candidates.push(json!({"projectId":text,"path":text,"name":path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default()}));
+                }
+            }
+        }
+        let matches = candidates
+            .into_iter()
+            .filter(|row| {
+                row["path"]
+                    .as_str()
+                    .and_then(|path| git_origin(Path::new(path)))
+                    .as_deref()
+                    == Some(origin.as_str())
+            })
+            .collect::<Vec<_>>();
+        return Ok(json!({"matches":matches}));
+    }
+    let path = query
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .or_else(|| {
+            project
+                .get("locations")
+                .and_then(Value::as_array)
+                .and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row.get("serverId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id == server_id)
+                    })
+                })
+                .and_then(|row| row.get("path").and_then(Value::as_str))
+        })
+        .ok_or(ProjectsError::BadRequest(
+            "This server has no folder for the project",
+        ))?;
+    if path.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("a folder path is invalid"));
+    }
+    let directory = std::path::Path::new(path)
+        .canonicalize()
+        .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+    if !directory.is_dir() {
+        return Err(ProjectsError::BadRequest("This directory is unavailable"));
+    }
+    let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
+        .filter(|value| value.len() == 40 || value.len() == 64)
+        .map(|value| value[..8].to_owned());
+    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if (path == "~" || path.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let mut expanded = PathBuf::from(home);
+        if path.len() > 2 {
+            expanded.push(&path[2..]);
+        }
+        return expanded;
+    }
+    PathBuf::from(path)
+}
+
+fn git_read(directory: &std::path::Path, args: &[&str]) -> Option<String> {
+    let cwd = directory.as_os_str();
+    let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("git"),
+        cwd,
+        args,
+        environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_CONFIG_NOSYSTEM", "1")],
+        input: None,
+        stdout_limit: 4096,
+        stderr_limit: 1024,
+        timeout: std::time::Duration::from_secs(10),
+    })
+    .ok()?;
+    if output.stdout.truncated {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .to_owned(),
+    )
+}
+
+fn git_origin(directory: &std::path::Path) -> Option<String> {
+    let value = git_read(directory, &["config", "--get", "remote.origin.url"])?;
+    if value.is_empty() || value.chars().count() > 4096 {
+        return None;
+    }
+    if let Ok(url) = url::Url::parse(&value) {
+        if !["http", "https", "ssh", "git"].contains(&url.scheme()) {
+            return None;
+        }
+        let host = url.host_str()?.to_ascii_lowercase();
+        let repository = url
+            .path()
+            .trim_matches('/')
+            .strip_suffix(".git")
+            .unwrap_or(url.path().trim_matches('/'));
+        return (!repository.is_empty()).then(|| format!("{host}/{repository}"));
+    }
+    let (_, remote) = value.rsplit_once('@').unwrap_or(("", value.as_str()));
+    let (host, repository) = remote.split_once(':')?;
+    let repository = repository
+        .trim_matches('/')
+        .strip_suffix(".git")
+        .unwrap_or(repository.trim_matches('/'));
+    (!host.is_empty() && !repository.is_empty())
+        .then(|| format!("{}/{repository}", host.to_ascii_lowercase()))
+}
+
+/// Read-only paired-server project-location actions. They expose only bounded
+/// directory metadata and visible project names, matching the Python peer API.
+pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
+    if path.is_empty() || path.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("a folder path is invalid"));
+    }
+    let directory = expand_home(path)
+        .canonicalize()
+        .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+    if !directory.is_dir() {
+        return Err(ProjectsError::BadRequest("This directory is unavailable"));
+    }
+    let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
+        .filter(|value| value.len() == 40 || value.len() == 64)
+        .map(|value| value[..8].to_owned());
+    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+}
+
+pub fn peer_location_matches(
+    store: &RuntimeStore,
+    origin: &str,
+    cwd: Option<&str>,
+) -> Result<Value, ProjectsError> {
+    if origin.is_empty() || origin.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("A Git origin is invalid"));
+    }
+    let connection = store.read()?;
+    let mut candidates = BTreeSet::new();
+    let mut matches = Vec::new();
+    for (id, project) in ProjectsRepository::list(&connection)? {
+        let Some(path) = project
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.starts_with("project:"))
+        else {
+            continue;
+        };
+        if candidates.insert(path.to_owned())
+            && git_origin(Path::new(path)).as_deref() == Some(origin)
+        {
+            matches.push(json!({"projectId":id,"path":path,"name":project.get("name")}));
+        }
+    }
+    drop(connection);
+    if let Some(cwd) = cwd.filter(|path| !path.is_empty()) {
+        let directory = expand_home(cwd)
+            .canonicalize()
+            .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+        if !directory.is_dir() {
+            return Err(ProjectsError::BadRequest("This directory is unavailable"));
+        }
+        let mut children = std::fs::read_dir(&directory)
+            .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.is_dir() && path.join(".git").exists()).then_some(path)
+            })
+            .collect::<Vec<_>>();
+        children.sort_by_key(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .case_fold()
+                .collect::<String>()
+        });
+        children.truncate(50);
+        if directory.join(".git").exists() {
+            children.insert(0, directory.clone());
+        }
+        for path in children {
+            let path_text = path.to_string_lossy().into_owned();
+            if candidates.insert(path_text.clone()) && git_origin(&path).as_deref() == Some(origin)
+            {
+                matches.push(json!({"projectId":path_text,"path":path_text,"name":path.file_name().map(|name|name.to_string_lossy().into_owned()).unwrap_or_default()}));
+            }
+        }
+    }
+    Ok(json!({"matches":matches}))
+}
+
+#[cfg(test)]
+mod peer_location_tests {
+    use super::*;
+
+    #[test]
+    fn peer_location_reads_return_only_bounded_metadata_and_matches() {
+        let root = tempfile::tempdir().expect("temporary project root");
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("temporary repository directory");
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .expect("initialize local Git fixture");
+        assert!(initialized.success(), "initialize local Git fixture");
+        let configured = std::process::Command::new("git")
+            .args([
+                "config",
+                "remote.origin.url",
+                "https://example.invalid/team/repo.git",
+            ])
+            .current_dir(&repo)
+            .status()
+            .expect("configure local Git fixture origin");
+        assert!(configured.success(), "configure local Git fixture origin");
+        let store_dir = tempfile::tempdir().expect("temporary store root");
+        let store = RuntimeStore::open(Some(store_dir.path())).expect("open isolated store");
+        let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
+            .expect("read peer location");
+        assert_eq!(info["gitOrigin"], "example.invalid/team/repo");
+        assert_eq!(info["matches"], json!([]));
+        let matches = peer_location_matches(
+            &store,
+            "example.invalid/team/repo",
+            Some(root.path().to_str().expect("UTF-8 temp path")),
+        )
+        .expect("read peer matches");
+        assert_eq!(matches["matches"].as_array().expect("match array").len(), 1);
+        assert_eq!(
+            matches["matches"][0]["path"],
+            repo.to_str().expect("UTF-8 temp path")
+        );
+    }
+}
+
 pub fn write_dependency(body: &Value) -> Option<&'static str> {
     let action = body
         .get("action")
@@ -56,10 +403,6 @@ pub fn write_dependency(body: &Value) -> Option<&'static str> {
         Some("cross-server-driver/project-registration")
     } else if matches!(action, "add_location" | "remove_location") {
         Some("cross-server-driver/project-location-write")
-    } else if action == "set_worker_environment"
-        && body.get("environment").and_then(Value::as_str) == Some("linux")
-    {
-        Some("workspace-state/worker-environment")
     } else {
         None
     }
@@ -114,7 +457,10 @@ pub fn write(
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
+    let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() {
             return Err(ProjectsError::Invalid("select an existing project"));
@@ -171,11 +517,19 @@ pub fn write(
         }
         if project.is_none() {
             let name = project_name(body.get("name"), &path)?;
-            let chosen =
-                account
-                    .map(str::to_owned)
-                    .unwrap_or(project_account(tx, &path, default_account)?);
-            project = Some(new_project(store, &path, &name, &chosen, known_accounts)?);
+            let chosen = account.map(str::to_owned).unwrap_or(project_account(
+                &prepared,
+                tx,
+                &path,
+                default_account,
+            )?);
+            project = Some(new_project(
+                &prepared,
+                &path,
+                &name,
+                &chosen,
+                known_accounts,
+            )?);
         }
         let project = project
             .as_mut()
@@ -184,7 +538,10 @@ pub fn write(
             project["workerBaseRef"] = base.map_or(Value::Null, |value| json!(value));
             project["workerBaseRevision"] = json!(base_revision + 1);
         } else {
-            let selected = account.unwrap_or(default_account);
+            let selected = account
+                .or_else(|| project["accountKey"].as_str())
+                .unwrap_or(default_account)
+                .to_owned();
             project["accountKey"] = json!(selected);
             project["accountRevision"] = json!(account_revision + 1);
             if let Some(keys) = project
@@ -197,7 +554,7 @@ pub fn write(
                     .filter_map(Value::as_str)
                     .map(str::to_owned)
                     .collect::<Vec<_>>();
-                if !keys.iter().any(|key| key == selected) {
+                if !keys.iter().any(|key| key == &selected) {
                     keys.push(selected.to_owned());
                     keys.sort();
                 }
@@ -210,18 +567,36 @@ pub fn write(
 }
 
 fn check_id(value: &Value, table: &'static str, id: &str) -> Result<(), ProjectsError> {
-    if value.get("id").and_then(Value::as_str) != Some(id)
-        || (table == "runtime_projects"
-            && (!value.get("path").is_some_and(Value::is_string)
-                || !value.get("name").is_some_and(Value::is_string)
-                || !value.get("created").is_some_and(Value::is_number)))
-    {
+    studio_runtime_store::system_reads::validate(table, id, value.clone())?;
+    if value.get("id").and_then(Value::as_str) != Some(id) {
         return Err(ProjectsError::InvalidStored {
             table,
             id: id.to_owned(),
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_validation_tests {
+    use super::check_id;
+    use serde_json::json;
+
+    #[test]
+    fn project_read_rejects_matching_id_with_invalid_schema() {
+        assert!(
+            check_id(
+                &json!({"id":"project","peerTeams":[{"id":"team","name":"Team","members":"a"}]}),
+                "runtime_projects",
+                "project"
+            )
+            .is_err()
+        );
+    }
+}
+
+fn folder_fold(value: &str) -> String {
+    value.to_lowercase()
 }
 
 fn load_project(
@@ -265,36 +640,8 @@ fn project_name(value: Option<&Value>, path: &str) -> Result<String, ProjectsErr
     Ok(name.to_owned())
 }
 
-fn local_server_id(store: &RuntimeStore) -> Result<String, ProjectsError> {
-    let identity = store.root().join("multi-server/identity.json");
-    let metadata = std::fs::symlink_metadata(&identity)
-        .map_err(|_| ProjectsError::Requires("cross-server-driver/local-identity"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(ProjectsError::Requires(
-            "cross-server-driver/local-identity",
-        ));
-    }
-    #[cfg(unix)]
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(ProjectsError::Requires(
-            "cross-server-driver/local-identity",
-        ));
-    }
-    let raw = std::fs::read_to_string(identity)
-        .map_err(|_| ProjectsError::Requires("cross-server-driver/local-identity"))?;
-    let id = serde_json::from_str::<Value>(&raw).ok().and_then(|value| {
-        value
-            .get("serverId")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    });
-    id.ok_or(ProjectsError::Requires(
-        "cross-server-driver/local-identity",
-    ))
-}
-
 fn new_project(
-    store: &RuntimeStore,
+    prepared: &PreparedHost,
     path: &str,
     name: &str,
     account: &str,
@@ -306,7 +653,7 @@ fn new_project(
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
-    let server = local_server_id(store)?;
+    let server = prepared.server()?;
     Ok(
         json!({"id":path,"path":path,"name":name,"created":now_seconds(),"accountKey":account,"accountRevision":1,
         "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0}),
@@ -314,6 +661,7 @@ fn new_project(
 }
 
 fn project_account(
+    prepared: &PreparedHost,
     tx: &studio_runtime_store::Transaction<'_>,
     path: &str,
     fallback: &str,
@@ -338,8 +686,8 @@ fn project_account(
         else {
             continue;
         };
-        let candidate = project_key(Some(&json!(candidate)), false)?;
-        if target.starts_with(&candidate) {
+        let candidate = prepared.resolve(candidate)?;
+        if target.starts_with(candidate) {
             let depth = Path::new(&candidate).components().count();
             if best.as_ref().is_none_or(|(current, _)| depth > *current)
                 && let Some(account) = project.get("accountKey").and_then(Value::as_str)
@@ -407,7 +755,10 @@ fn set_accounts(
         .ok_or(ProjectsError::Invalid(
             "project account revision is invalid",
         ))?;
+    let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() { return Err(ProjectsError::Invalid("select an existing project")); }
         let current = revision_of(project.as_ref(), "accountRevision", &path)?;
@@ -426,7 +777,7 @@ fn set_accounts(
         if expected != current { return Err(ProjectsError::Conflict("Project accounts changed. Reload before saving")); }
         if project.is_none() {
             let name = project_name(None, &path)?;
-            project = Some(new_project(store, &path, &name, default, known_accounts)?);
+            project = Some(new_project(&prepared, &path, &name, default, known_accounts)?);
         }
         let project = project.as_mut().ok_or(ProjectsError::Invalid("project is unavailable"))?;
         project["accountKey"] = json!(default);
@@ -449,8 +800,8 @@ fn set_worker_environment(
         .filter(|environment| matches!(*environment, "host" | "linux"))
         .ok_or(ProjectsError::Invalid("worker environment is invalid"))?;
     if environment == "linux" {
-        return Err(ProjectsError::Requires(
-            "workspace-state/worker-environment",
+        return Err(ProjectsError::BadRequest(
+            "Choose a layr chat to run agents in the VM",
         ));
     }
     let path = project_key(body.get("path"), true)?;
@@ -460,7 +811,10 @@ fn set_worker_environment(
         .ok_or(ProjectsError::Invalid(
             "worker environment revision is invalid",
         ))?;
+    let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() {
             return Err(ProjectsError::Invalid("select an existing project"));
@@ -481,9 +835,9 @@ fn set_worker_environment(
             ));
         }
         if project.is_none() {
-            let account = project_account(tx, &path, default_account)?;
+            let account = project_account(&prepared, tx, &path, default_account)?;
             project = Some(new_project(
-                store,
+                &prepared,
                 &path,
                 &project_name(None, &path)?,
                 &account,
@@ -537,13 +891,16 @@ fn organize(
                 .to_string(),
         )
     };
+    let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| {
+        prepared.recheck(tx)?;
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
             None => {
-                let account = project_account(tx, &path, default_account)?;
-                let project = new_project(store, &path, &project_name(None, &path)?, &account, accounts)?;
+                let account = project_account(&prepared, tx, &path, default_account)?;
+                let project = new_project(&prepared, &path, &project_name(None, &path)?, &account, accounts)?;
                 ProjectsRepository::put_project(tx, &project)?;
                 project
             }
@@ -576,7 +933,10 @@ fn organize(
                 let new_name = name.as_deref().unwrap_or_default();
                 if folders.iter().enumerate().any(|(index, item)| Some(index) != folder
                     && item.get("parentId").and_then(Value::as_str) == parent.as_deref()
-                    && item.get("name").and_then(Value::as_str).is_some_and(|old| old.to_lowercase() == new_name.to_lowercase())) {
+                    // Named compatibility difference: Rust lowercase is not Python casefold
+                    // for expansion folds such as ß -> ss. ASCII and ordinary Unicode
+                    // lowercase match; this is covered by the explicit corpus case.
+                    && item.get("name").and_then(Value::as_str).is_some_and(|old| folder_fold(old) == folder_fold(new_name))) {
                     return Err(ProjectsError::Invalid("a folder with this name already exists here"));
                 }
                 if let Some(index) = folder { folders[index]["name"] = json!(new_name); }
@@ -600,7 +960,10 @@ fn organize(
     })
 }
 
-fn project_key(value: Option<&Value>, require_directory: bool) -> Result<String, ProjectsError> {
+pub(crate) fn project_key(
+    value: Option<&Value>,
+    require_directory: bool,
+) -> Result<String, ProjectsError> {
     let value = value
         .and_then(Value::as_str)
         .ok_or(ProjectsError::Invalid("project path is required"))?;
@@ -672,6 +1035,15 @@ pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
                 return Ok(normalize_path(&resolved));
             }
             Err(_) => {
+                if ancestor
+                    .components()
+                    .next_back()
+                    .is_some_and(|component| component == std::path::Component::ParentDir)
+                {
+                    suffix.push(std::ffi::OsString::from(".."));
+                    ancestor.pop();
+                    continue;
+                }
                 let part = ancestor
                     .file_name()
                     .ok_or(ProjectsError::Invalid("project path is invalid"))?
@@ -685,8 +1057,26 @@ pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
     }
 }
 
-fn now_seconds() -> f64 {
+pub(crate) fn now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #[test]
+    fn python_casefold_expansion_is_a_registered_difference() {
+        assert_ne!(super::folder_fold("straße"), super::folder_fold("STRASSE"));
+    }
+
+    #[test]
+    fn profile_normalization_matches_python_for_missing_parent_components() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let requested = home.path().join("fixtures/../profile");
+        assert_eq!(
+            super::resolve_nonstrict(&requested).expect("normalized profile"),
+            home.path().join("profile")
+        );
+    }
 }

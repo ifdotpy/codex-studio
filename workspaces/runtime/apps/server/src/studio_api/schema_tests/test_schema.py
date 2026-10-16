@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import ast
-import unittest
+import copy
 import json
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
 
 from codex_layout import REPOSITORY_ROOT
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
 from codex_multi_server_protocol import ACCESS_PROTOCOL_VERSION
 from codex_agent_modes import (
     DEFAULT_MAX_TEAM_AGENTS,
@@ -34,6 +36,7 @@ from studio_api.models import (
     UInt64,
 )
 from studio_api.work.models import (
+    ManagedMessageBody,
     PersistedToolRequest,
     _record_response_model,
 )
@@ -208,6 +211,26 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_managed_message_limit_owner_matches_runtime_and_schema(self) -> None:
+        schema = ManagedMessageBody.model_json_schema()
+        self.assertEqual(
+            schema["properties"]["text"]["maxLength"],
+            MAX_MANAGED_MESSAGE_CODEPOINTS,
+        )
+        accepted = "🙂" * MAX_MANAGED_MESSAGE_CODEPOINTS
+        body = ManagedMessageBody(
+            id="06060606-0606-0606-0606-060606060606",
+            room="message-room",
+            text=accepted,
+        )
+        self.assertEqual(len(body.text), MAX_MANAGED_MESSAGE_CODEPOINTS)
+        with self.assertRaises(ValidationError):
+            ManagedMessageBody(
+                id="06060606-0606-0606-0606-060606060607",
+                room="message-room",
+                text=accepted + "🙂",
+            )
+
     def test_multi_server_access_protocol_has_one_generated_owner(self) -> None:
         from studio_api.multi_server.models import AccessProtocolVersion
 
@@ -525,21 +548,137 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     adapter.validate_python(invalid)
 
-    def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
+    def test_generated_document_only_adds_reviewed_schema_changes(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["sourceCommit"], "a3024407")
+        self.assertEqual(manifest["sourceCommit"], "51d376b7")
         self.assertEqual(manifest["sourcePath"], "workspaces/runtime/packages/runtime-http/openapi.json")
         baseline_document = manifest["document"]
         self.assertIsInstance(baseline_document, dict)
-        baseline = constraint_snapshot(baseline_document)
         committed_document = json.loads(
             (REPOSITORY_ROOT / manifest["sourcePath"]).read_text(encoding="utf-8")
         )
+        methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+        def operation_keys(document: dict[str, object]) -> set[str]:
+            paths = document.get("paths", {})
+            assert isinstance(paths, dict)
+            return {
+                f"{method.upper()} {path}"
+                for path, path_item in paths.items()
+                if isinstance(path_item, dict)
+                for method in path_item
+                if method in methods
+            }
+
+        expected_removals = set(manifest.get("acceptedOperationRemovals", []))
+        self.assertEqual(
+            operation_keys(baseline_document) - operation_keys(committed_document),
+            expected_removals,
+        )
+        self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), set())
+        reviewed_baseline = copy.deepcopy(baseline_document)
+        paths = reviewed_baseline["paths"]
+        for operation in expected_removals:
+            method, path = operation.split(" ", 1)
+            paths[path].pop(method.lower())
+        baseline = constraint_snapshot(reviewed_baseline)
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
-        self.assertEqual(loosenings, [])
+        # These six GET operations were permanent 404 tombstones. Compare the
+        # historical constraints after the exact reviewed removals, while WAL
+        # telemetry retains its separately reviewed nullable diagnostic fields.
+        self.assertEqual(loosenings, manifest.get("acceptedLoosenings", []))
+        self.assertEqual(
+            {(item["pointer"], item["constraint"]) for item in loosenings},
+            self._reviewed_schema_additions(),
+            "only reviewed diagnostics and execution-effect statuses may loosen the schema",
+        )
 
+
+    @staticmethod
+    def _reviewed_schema_additions() -> set[tuple[str, str]]:
+        """Allow diagnostics fields and the approved execution-effect status.
+
+        The store percentiles are nullable because a cold process has no samples;
+        WAL entries are nullable until a checkpoint has observed that database.
+        These diagnostics are additive wire fields, while the metrics themselves
+        remain closed objects and keep their numeric bounds.
+        """
+        allowed: set[tuple[str, str]] = set()
+
+        def add(pointer: str, *constraints: str) -> None:
+            allowed.update((pointer, constraint) for constraint in constraints)
+
+        blocking_fields = ("closureP95Ms", "closureP99Ms", "queueWaitP95Ms", "queueWaitP99Ms")
+        for prefix in (
+            "/components/schemas/BlockingPoolGroupMetrics/properties",
+            "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties",
+        ):
+            for field in blocking_fields:
+                add(f"{prefix}/{field}", "property")
+
+        for schema in ("DiagnosticsResponse", "SqliteContention"):
+            base = f"/components/schemas/{schema}/properties"
+            if schema == "DiagnosticsResponse":
+                base += "/sqliteContention/properties"
+            for field in ("commitProfile", "sqlProfile", "storeAdmission", "walTelemetry"):
+                add(f"{base}/{field}", "property")
+            add(f"{base}/walTelemetry", "@nullable", "@nullableBranch")
+
+        sqlite_metric = "/components/schemas/SqliteMetric/properties"
+        for suffix in ("p99TransactionMs", "sites/additionalProperties/properties/p99TransactionMs"):
+            pointer = f"{sqlite_metric}/{suffix}"
+            add(pointer, "property", "@nullable", "@nullableBranch")
+
+        # Percentiles are null until the first sample is recorded.
+        nullable_percentiles = ("p50Ms", "p95Ms", "p99Ms")
+        nullable_prefixes = [
+            "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties",
+            "/components/schemas/SqliteProfileMetric/properties",
+            "/components/schemas/SqliteWaitQuantiles/properties",
+            "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties",
+            "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties",
+        ]
+        for response in ("DiagnosticsResponse", "SqliteContention"):
+            base = f"/components/schemas/{response}/properties"
+            if response == "DiagnosticsResponse":
+                base += "/sqliteContention/properties"
+            for profile in ("sqlProfile", "commitProfile"):
+                nullable_prefixes.append(f"{base}/{profile}/additionalProperties/properties")
+            for side in ("reads", "writes"):
+                nullable_prefixes.append(
+                    f"{base}/storeAdmission/properties/{side}/properties/waitMs/properties"
+                )
+        for prefix in nullable_prefixes:
+            for field in nullable_percentiles:
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # The Rust runtime-lock series already publishes these quantiles; keep
+        # them in the closed diagnostics contract alongside the Python owner.
+        for pointer in (
+            "/components/schemas/LockMetricSummary/properties/p99",
+            "/components/schemas/RuntimeLockOperation/properties/waitMs/properties/p99",
+            "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
+            "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
+            "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
+        ):
+            add(pointer, "property")
+
+        for database in ("canvas", "analytics"):
+            add(
+                f"/components/schemas/WalTelemetry/properties/{database}",
+                "@nullable",
+                "@nullableBranch",
+            )
+        for pointer in (
+            "/components/schemas/ExecutionEffect/properties/status",
+            "/components/schemas/ExecutionRun/properties/effects/items/properties/status",
+            "/components/schemas/ExecutionLedger/properties/runs/items/properties/effects/items/properties/status",
+            "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
+        ):
+            add(pointer, "@anyOf")
+        return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
             "paths": {
@@ -606,6 +745,38 @@ class SchemaContractTests(unittest.TestCase):
         }
         loosenings, _ = constraint_changes(old, new)
         self.assertEqual(loosenings, [])
+
+    def test_constraint_diff_treats_single_schema_as_tighter_than_union(self) -> None:
+        old: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "@anyOf": ['{"type":"integer"}', '{"type":"string"}'],
+            }
+        }
+        new: dict[str, dict[str, JsonValue]] = {
+            "/value": {"@schemaPresent": True, "type": "string"}
+        }
+        loosenings, tightenings = constraint_changes(old, new)
+        self.assertEqual(loosenings, [])
+        self.assertEqual(
+            [(item["pointer"], item["constraint"]) for item in tightenings],
+            [("/value", "@anyOf"), ("/value", "type")],
+        )
+
+    def test_constraint_diff_treats_removed_union_without_replacement_as_looser(self) -> None:
+        old: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "@anyOf": ['{"type":"integer"}', '{"type":"string"}'],
+            }
+        }
+        new: dict[str, dict[str, JsonValue]] = {"/value": {"@schemaPresent": True}}
+        loosenings, tightenings = constraint_changes(old, new)
+        self.assertEqual(tightenings, [])
+        self.assertEqual(
+            [(item["pointer"], item["constraint"]) for item in loosenings],
+            [("/value", "@anyOf")],
+        )
 
     def test_constraint_diff_ignores_unreachable_components(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

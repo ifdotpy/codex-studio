@@ -8,6 +8,7 @@ use crate::analytics_capture::{
     check_identity, decide, text,
 };
 use crate::analytics_rollout::{RolloutAction, RolloutContext};
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 mod read_proof;
@@ -34,6 +35,8 @@ pub enum HistoryError {
     Capture(#[from] CaptureError),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
+    #[error(transparent)]
+    Budget(#[from] crate::budget::BudgetError),
     #[error("analytics history read failed")]
     Read,
     #[error("analytics history checkpoint advanced concurrently")]
@@ -69,20 +72,52 @@ impl Default for BatchLimits {
     }
 }
 /// Budget receipts must be idempotent by provider response/counter identity.
-/// A failure aborts the batch before its analytics cursor is acknowledged.
-/// The sink verifies current agent/account/epoch ownership in its own writer
-/// transaction, then calls `budget_service::capture` with History source and
-/// CURRENT durable agent ownership, not the supplied historical agent copy.
-/// Historical response/turn IDs remain in params; collection time supplies now.
-/// A replay must reuse the durable charge identity. The integrator must test
-/// the real sink across lost acknowledgements, failures and stale batches;
-/// analytics and budget databases cannot share a SQLite commit.
+/// The sink applies every capture for this bounded page in one writer
+/// transaction. A failure aborts the page before its analytics cursor is
+/// acknowledged. Historical response/turn IDs remain in params; collection
+/// time supplies `now`. Analytics and budget databases commit separately.
 pub trait HistoryBudgetSink {
-    fn capture(&self, agent: &Value, params: &Value, at: f64) -> Result<(), HistoryError>;
+    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError>;
 }
+
+/// The production page sink. Identity and budget state are re-read through
+/// `budget_service::capture` while holding one admitted canvas writer.
+pub struct StoreHistoryBudgetSink<'a> {
+    store: &'a RuntimeStore,
+}
+
+impl<'a> StoreHistoryBudgetSink<'a> {
+    pub fn new(store: &'a RuntimeStore) -> Self {
+        Self { store }
+    }
+}
+
+impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
+    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError> {
+        if captures.is_empty() {
+            return Ok(());
+        }
+        self.store.transaction_with::<_, HistoryError>(|tx| {
+            for (agent, params, at) in captures {
+                let mut agent = agent.clone();
+                crate::budget_service::capture(
+                    tx,
+                    &mut agent,
+                    params,
+                    *at,
+                    crate::budget::CaptureSource::History,
+                    now,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
+
 pub struct BudgetUnavailable;
 impl HistoryBudgetSink for BudgetUnavailable {
-    fn capture(&self, _: &Value, _: &Value, _: f64) -> Result<(), HistoryError> {
+    fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
         Err(HistoryError::BudgetUnavailable)
     }
 }
@@ -149,8 +184,8 @@ impl HistoryBatch {
         if let Some(proof) = &mut self.read_proof {
             proof.validate()?;
         }
-        for (agent, params, at) in &self.budget {
-            budget.capture(agent, params, *at)?;
+        if !self.budget.is_empty() {
+            budget.capture_page(&self.budget, now)?;
         }
         store.analytics_transaction(|tx, canvas| {
             check_identity(canvas, &self.agent)?;
@@ -217,17 +252,200 @@ fn collect_path(
         text(&agent["threadId"])
     );
     crate::analytics_history_repair::repair_terminal_errors(store)?;
-    let budget_advanced = crate::analytics_history_repair::migrate_budget(store, &agent, budget)?;
-    let read = AnalyticsRepository::new(store.root())
-        .open_read_only()
-        .map_err(|_| HistoryError::Read)?;
-    let previous = Repo::read(&read, CaptureTable::History, &key)?;
-    drop(read);
+    let budget_advanced =
+        crate::analytics_history_repair::migrate_budget(store, &agent, budget, now)?;
+    let previous = read_history_checkpoint(store, &key, &agent)?;
     let snapshot = HistorySnapshot::from_records(agent, previous)?;
     let batch = prepare(snapshot, profile, selection.0, selection.1, now, cancel)?;
     let advanced = batch.advanced();
     batch.commit(store, budget, now)?;
     Ok(advanced || budget_advanced)
+}
+
+/// Read one checkpoint without allowing one malformed stored row to stop the
+/// account-wide history importer. Invalid rows are replaced with a safe initial
+/// checkpoint that retains a value-free diagnostic for repair and display.
+/// Python reads the keyed row with `json.loads` in
+/// `apps/server/src/codex_analytics_history.py:627-638`; it does not validate
+/// the persisted checkpoint against the AnalyticsHistory schema at read time.
+fn read_history_checkpoint(
+    store: &RuntimeStore,
+    key: &str,
+    agent: &Value,
+) -> Result<Option<Value>, HistoryError> {
+    let read = AnalyticsRepository::new(store.root())
+        .open_read_only()
+        .map_err(|_| HistoryError::Read)?;
+    let raw = read
+        .query_row(
+            "SELECT record FROM analytics_history WHERE id=?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(read);
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+        let valid = CaptureTable::History.validate(&value).is_ok()
+            && value.get("id").and_then(Value::as_str) == Some(key);
+        if valid {
+            return Ok(Some(value));
+        }
+        let (diagnostic, invalid_pointers) = if value.get("id").and_then(Value::as_str) != Some(key)
+        {
+            (
+                analytics_field_diagnostic(key, "/id", "row_id_mismatch", &value),
+                vec!["/id".to_owned()],
+            )
+        } else {
+            let errors = studio_runtime_schema::validation_errors("AnalyticsHistory", &value)
+                .map_err(studio_runtime_store::StoreError::SchemaValidation)?;
+            let details = errors
+                .iter()
+                .map(|(pointer, reason)| analytics_field_diagnostic(key, pointer, reason, &value))
+                .collect::<Vec<_>>();
+            let pointers = errors
+                .into_iter()
+                .map(|(pointer, _)| pointer)
+                .collect::<Vec<_>>();
+            let diagnostic = if details.is_empty() {
+                format!("analytics_history/{key}: schema_invalid")
+            } else {
+                details.join("; ")
+            };
+            (diagnostic, pointers)
+        };
+        let replacement = if let Some(mut retained) = value.as_object().cloned().map(Value::Object)
+        {
+            for pointer in &invalid_pointers {
+                remove_json_pointer(&mut retained, pointer);
+            }
+            retained["status"] = json!("invalidRecord");
+            retained["error"] = json!(diagnostic);
+            retained["invalidRecordDiagnostic"] = json!(diagnostic);
+            if retained.get("id").and_then(Value::as_str) == Some(key)
+                && CaptureTable::History.validate(&retained).is_ok()
+            {
+                retained
+            } else {
+                initial_history_checkpoint(key, agent, &diagnostic)
+            }
+        } else {
+            initial_history_checkpoint(key, agent, &diagnostic)
+        };
+        quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
+        return Ok(Some(replacement));
+    }
+    let diagnostic = format!(
+        "analytics_history/{key} at : invalid_json; record length {} bytes",
+        raw.len()
+    );
+    let replacement = initial_history_checkpoint(key, agent, &diagnostic);
+    quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
+    Ok(Some(replacement))
+}
+
+fn remove_json_pointer(value: &mut Value, pointer: &str) {
+    if pointer.is_empty() || pointer == "/" {
+        return;
+    }
+    let parts = pointer
+        .strip_prefix('/')
+        .unwrap_or(pointer)
+        .split('/')
+        .map(|part| part.replace("~1", "/").replace("~0", "~"))
+        .collect::<Vec<_>>();
+    let Some((last, parents)) = parts.split_last() else {
+        return;
+    };
+    let mut parent = value;
+    for part in parents {
+        let Some(next) = (if let Ok(index) = part.parse::<usize>() {
+            parent.get_mut(index)
+        } else {
+            parent.get_mut(part.as_str())
+        }) else {
+            return;
+        };
+        parent = next;
+    }
+    if let Some(object) = parent.as_object_mut() {
+        object.remove(last);
+    } else if let (Ok(index), Some(array)) = (last.parse::<usize>(), parent.as_array_mut())
+        && index < array.len()
+    {
+        array.remove(index);
+    }
+}
+
+fn analytics_value_shape(value: Option<&Value>) -> (&'static str, String) {
+    match value {
+        Some(Value::String(value)) => ("string", format!("{} bytes", value.len())),
+        Some(Value::Array(value)) => ("array", format!("{} items", value.len())),
+        Some(Value::Object(value)) => ("object", format!("{} properties", value.len())),
+        Some(Value::Number(_)) => ("number", "not applicable".to_owned()),
+        Some(Value::Bool(_)) => ("boolean", "not applicable".to_owned()),
+        Some(Value::Null) => ("null", "not applicable".to_owned()),
+        None => ("missing", "not applicable".to_owned()),
+    }
+}
+
+fn analytics_field_diagnostic(key: &str, pointer: &str, reason: &str, value: &Value) -> String {
+    let (kind, length) = analytics_value_shape(value.pointer(pointer));
+    format!("analytics_history/{key} at {pointer}: {reason}; value type {kind}, length {length}")
+}
+
+fn initial_history_checkpoint(key: &str, agent: &Value, diagnostic: &str) -> Value {
+    let account = agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let thread = text(&agent["threadId"]);
+    json!({
+        "id": key,
+        "agent": agent["id"],
+        "accountKey": account,
+        "threadId": thread,
+        "deletedAt": agent.get("deletedAt"),
+        "offset": 0,
+        "importedRecords": 0,
+        "malformedLines": 0,
+        "context": {"threadId": thread},
+        "status": "invalidRecord",
+        "error": diagnostic,
+        "invalidRecordDiagnostic": diagnostic
+    })
+}
+
+fn quarantine_history_checkpoint(
+    store: &RuntimeStore,
+    key: &str,
+    previous_raw: &str,
+    replacement: Value,
+) -> Result<(), HistoryError> {
+    store.analytics_transaction(|tx, _| {
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT record FROM analytics_history WHERE id=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if current.as_deref() != Some(previous_raw) {
+            return Err(HistoryError::StaleCheckpoint);
+        }
+        tx.execute(
+            "UPDATE analytics_history SET agent=?2,record=?3 WHERE id=?1",
+            rusqlite::params![key, replacement["agent"].as_str(), replacement.to_string()],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Ok(())
+    })?;
+    Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RolloutPath {
@@ -683,8 +901,9 @@ pub struct HistoryClock {
     pub monotonic: f64,
 }
 
-/// Timer/notification-loop consumer. The account worker supplies each current
-/// roster and the selected account's profile; the scheduler owns no OS thread.
+/// Timer/notification-loop consumer. Each step commits at most one rollout
+/// batch and returns; its caller schedules the next step after yielding to
+/// other work. The scheduler owns no OS thread.
 #[derive(Default)]
 pub struct HistoryCollector {
     pub schedule: crate::analytics_history_schedule::HistorySchedule,
@@ -745,5 +964,108 @@ impl HistoryCollector {
                 .completed(&agent, &checkpoint, clock.monotonic, false, false)?;
         }
         Ok(advanced)
+    }
+}
+
+#[cfg(test)]
+mod invalid_record_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {
+        let root = tempfile::tempdir().expect("temporary runtime");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
+            .expect("analytics database");
+        let invalid_key = "bad:default:bad-thread";
+        let valid_key = "good:default:good-thread";
+        let invalid = json!({
+            "id": invalid_key,
+            "agent": "bad",
+            "accountKey": "default",
+            "threadId": "bad-thread",
+            "path": "/profile/rollout.jsonl",
+            "filesystemIdentity": [12, 34],
+            "anchor": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "validated": true,
+            "offset": "private offset",
+            "importedRecords": 32,
+            "malformedLines": 0,
+            "context": {"threadId": "bad-thread", "window": "private value"}
+        });
+        let valid = json!({
+            "id": valid_key,
+            "agent": "good",
+            "accountKey": "default",
+            "threadId": "good-thread",
+            "offset": 0,
+            "importedRecords": 0,
+            "malformedLines": 0,
+            "context": {"threadId": "good-thread", "window": 128000}
+        });
+        for (key, agent_id, record) in [
+            (invalid_key, "bad", invalid),
+            (valid_key, "good", valid.clone()),
+        ] {
+            db.execute(
+                "INSERT OR REPLACE INTO analytics_history(id,agent,record) VALUES (?1,?2,?3)",
+                rusqlite::params![key, agent_id, record.to_string()],
+            )
+            .expect("seed history row");
+        }
+        drop(db);
+        let bad_agent = json!({"id":"bad","accountKey":"default","threadId":"bad-thread"});
+        let recovered = read_history_checkpoint(&store, invalid_key, &bad_agent)
+            .expect("quarantine invalid history row")
+            .expect("replacement checkpoint");
+        let diagnostic = recovered["invalidRecordDiagnostic"]
+            .as_str()
+            .expect("recorded diagnostic");
+        assert!(diagnostic.contains("analytics_history/bad:default:bad-thread"));
+        assert!(diagnostic.contains("/context/window"));
+        assert!(diagnostic.contains("/offset"));
+        assert!(diagnostic.contains("anyOf"));
+        assert!(diagnostic.contains("value type string"));
+        assert!(!diagnostic.contains("private value"));
+        assert!(!diagnostic.contains("private offset"));
+        assert_eq!(recovered["offset"], 0);
+        assert_eq!(recovered["importedRecords"], 0);
+        assert!(recovered["context"].get("window").is_none());
+        assert_eq!(recovered["status"], "invalidRecord");
+        let good_agent = json!({"id":"good","accountKey":"default","threadId":"good-thread"});
+        let still_valid = read_history_checkpoint(&store, valid_key, &good_agent)
+            .expect("continue importing valid row")
+            .expect("valid checkpoint");
+        assert_eq!(still_valid, valid);
+    }
+
+    #[test]
+    fn non_object_history_checkpoints_reset_to_initial_values_without_panicking() {
+        let root = tempfile::tempdir().expect("temporary runtime");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
+            .expect("analytics database");
+        let agent = json!({"id":"agent","accountKey":"default","threadId":"thread"});
+
+        for (index, value) in [json!([]), json!(23), json!("x")].into_iter().enumerate() {
+            let key = format!("agent:default:thread-{index}");
+            db.execute(
+                "INSERT INTO analytics_history(id,agent,record) VALUES (?1,?2,?3)",
+                rusqlite::params![key, "agent", value.to_string()],
+            )
+            .expect("seed non-object checkpoint");
+            let replacement = read_history_checkpoint(&store, &key, &agent)
+                .expect("quarantine non-object checkpoint")
+                .expect("initial checkpoint");
+            assert_eq!(replacement["id"], key);
+            assert_eq!(replacement["status"], "invalidRecord");
+            assert_eq!(replacement["offset"], 0);
+            assert_eq!(replacement["importedRecords"], 0);
+            assert!(
+                replacement["invalidRecordDiagnostic"]
+                    .as_str()
+                    .is_some_and(|diagnostic| diagnostic.contains("analytics_history/"))
+            );
+        }
     }
 }

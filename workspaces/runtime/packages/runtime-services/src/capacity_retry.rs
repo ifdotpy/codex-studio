@@ -47,6 +47,7 @@ pub enum Action<'a> {
     Reset(&'a str),
     Cancel,
     Wait(&'a str),
+    Excluded(&'a str),
     Error {
         attempt: &'a Value,
         reason: &'a str,
@@ -58,6 +59,7 @@ pub enum Action<'a> {
     },
     Claim {
         settings: &'a Value,
+        automatic: bool,
     },
 }
 /// Construct a new exact failure row after the turn driver has classified a known terminal failure.
@@ -115,6 +117,9 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     match action {
         Action::Completed { turn_id, completed } => {
             if text(&r, "acceptedTurnId") != turn_id {
+                return Ok(Decision::default());
+            }
+            if text(&r, "status") == "finished" {
                 return Ok(Decision::default());
             }
             patch(&mut r, json!({"status":"finished","dueAt":null}));
@@ -195,6 +200,20 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 json!({"status":"scheduled","dueAt":now+(WAIT_STEP*waits as f64).min(WAIT_MAX),"waits":waits,"reason":reason}),
             );
         }
+        Action::Excluded(reason) => {
+            if text(&r, "status") != "scheduled" || present(&r, "acceptedTurnId") {
+                return Ok(Decision::default());
+            }
+            patch(
+                &mut r,
+                json!({"status":"cancelled","dueAt":null,"reason":reason}),
+            );
+            patch(
+                &mut agent,
+                json!({"status":"failed","inFlight":false,"error":reason}),
+            );
+            hold = Some("account-excluded");
+        }
         Action::Error {
             attempt: receipt,
             reason,
@@ -240,7 +259,13 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                     .saturating_add(1)
             );
         }
-        Action::Claim { settings } => {
+        Action::Claim {
+            settings,
+            automatic,
+        } => {
+            if automatic && text(&r, "status") != "scheduled" {
+                return Ok(Decision::default());
+            }
             if present(&r, "claimedAt")
                 || !matches!(text(&r, "status"), "scheduled" | "cancelled" | "exhausted")
             {

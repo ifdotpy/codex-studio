@@ -7,7 +7,9 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
-use studio_runtime_process::{OperationId, provider_seam::Shutdown};
+use studio_runtime_process::{
+    OperationId, operational_log::OperationalLog, provider_seam::Shutdown,
+};
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
 
@@ -73,6 +75,7 @@ pub async fn provider_exchange(
     isolated: bool,
     requests: Vec<ProviderRequest>,
     timeout: Duration,
+    stderr_log: Option<OperationalLog>,
 ) -> Result<Vec<Result<Value, CatalogReadError>>, CatalogReadError> {
     let responses = crate::provider_exchange::run(
         executable,
@@ -80,6 +83,7 @@ pub async fn provider_exchange(
         isolated,
         crate::provider_exchange::ExchangeSpec {
             cleanup_report: None,
+            stderr_log,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("catalog-reads-initialize".into()),
@@ -96,6 +100,68 @@ pub async fn provider_exchange(
         .into_iter()
         .map(|response| response.map_err(|_| CatalogReadError::ProviderExchangeFailed))
         .collect())
+}
+
+/// Read discovery methods through the selected account's already retained
+/// provider session. The account worker owns the durable intent and receipt;
+/// this adapter only accepts a written reply bound to the captured connection.
+pub fn account_session_exchange(
+    session: &dyn crate::account_session_runtime::AccountSessionPort,
+    account: &str,
+    requests: Vec<ProviderRequest>,
+    timeout: Duration,
+) -> Result<Vec<Result<Value, CatalogReadError>>, CatalogReadError> {
+    use crate::account_session_runtime::{
+        ProviderRequest as SessionRequest, ProviderResponse, RequestCertainty,
+    };
+
+    const OPERATION_PREFIX: &str = "catalog-discovery";
+    static REQUEST_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let scope = session
+        .current_scope(account)
+        .ok_or(CatalogReadError::ProviderExchangeFailed)?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut responses = Vec::with_capacity(requests.len());
+    for request in requests {
+        let sequence = REQUEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let operation = format!(
+            "{OPERATION_PREFIX}:{}:{sequence}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| CatalogReadError::ProviderExchangeFailed)?
+                .as_nanos()
+        );
+        let method =
+            Method::from_wire(&request.method).ok_or(CatalogReadError::ProviderExchangeFailed)?;
+        let receipt = session
+            .provider_request(SessionRequest {
+                account: account.to_owned(),
+                operation: operation.clone(),
+                actor: None,
+                expected_scope: Some(scope.clone()),
+                deleted_actor_session: None,
+                method,
+                params: request.params,
+                deadline,
+            })
+            .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+        if receipt.scope != scope
+            || receipt.operation != operation
+            || receipt.certainty != RequestCertainty::Written
+            || receipt.ticket.as_ref().is_none_or(|ticket| {
+                ticket.method != method || ticket.generation != scope.generation
+            })
+        {
+            return Err(CatalogReadError::ProviderExchangeFailed);
+        }
+        match receipt.result {
+            Some(ProviderResponse::Reply(response)) => responses.push(Ok(response)),
+            Some(ProviderResponse::Rejected(_)) | None => {
+                responses.push(Err(CatalogReadError::ProviderExchangeFailed));
+            }
+        }
+    }
+    Ok(responses)
 }
 
 /// Cancel only after the provider confirms the exact terminal item and process ID.
@@ -116,6 +182,7 @@ pub async fn cancel_terminal(
         isolated,
         crate::provider_exchange::ExchangeSpec {
             cleanup_report: None,
+            stderr_log: None,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("native-command-cancel-initialize".into()),
@@ -570,6 +637,94 @@ pub fn host_finder_view(agent: &Value) -> Option<Value> {
     }))
 }
 
+/// Finder's view of a Linux VM chat, derived from the host's saved mount records.
+/// This deliberately does not call the guest: `codex_vm_agents.finder_view` is
+/// a read-only projection and reports mount state from host observations.
+pub fn vm_finder_view(state_dir: &Path, agent: &Value) -> Value {
+    let unmounted = json!({"kind":"vm","state":"unmounted","path":null,"error":null});
+    let Some(project_id) = agent.get("layrProjectId").and_then(Value::as_str) else {
+        return unmounted;
+    };
+    let projects = state_dir.join("layr-projects");
+    let entries = match std::fs::read_dir(&projects) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return unmounted,
+        Err(error) => return finder_status_error(error.to_string()),
+    };
+    let mut record = None;
+    let mut failure = None;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => return finder_status_error(error.to_string()),
+        };
+        let directory = entry.path();
+        match std::fs::read(directory.join("mount.json")) {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) if value.get("projectId").and_then(Value::as_str) == Some(project_id) => {
+                    record = Some(value);
+                }
+                Ok(_) => {}
+                Err(error) => return finder_status_error(error.to_string()),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return finder_status_error(error.to_string()),
+        }
+        match std::fs::read(directory.join("mount-error.json")) {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) if value.get("projectId").and_then(Value::as_str) == Some(project_id) => {
+                    failure = Some(value);
+                }
+                Ok(_) => {}
+                Err(error) => return finder_status_error(error.to_string()),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return finder_status_error(error.to_string()),
+        }
+    }
+    let Some(record) = record else {
+        return failure.map_or(unmounted, |failure| {
+            json!({"kind":"vm","state":"failed","path":null,
+                "error":failure.get("error").cloned().unwrap_or(Value::Null)})
+        });
+    };
+    let Some(path) = record.get("path").and_then(Value::as_str) else {
+        return finder_status_error("The saved mount record has no path".to_owned());
+    };
+    let mount = Path::new(path);
+    let mounted = mount_is_mountpoint(mount);
+    let state = if mounted { "mounted" } else { "unmounted" };
+    let error = if mounted {
+        Value::Null
+    } else {
+        failure
+            .as_ref()
+            .and_then(|value| value.get("error").cloned())
+            .unwrap_or(Value::Null)
+    };
+    json!({"kind":"vm","state":state,"path":if mounted { json!(path) } else { Value::Null },"error":error})
+}
+
+#[cfg(unix)]
+fn mount_is_mountpoint(mount: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    mount
+        .metadata()
+        .ok()
+        .zip(mount.parent().and_then(|parent| parent.metadata().ok()))
+        .is_some_and(|(mount, parent)| mount.dev() != parent.dev())
+}
+
+#[cfg(not(unix))]
+fn mount_is_mountpoint(_mount: &Path) -> bool {
+    false
+}
+
+fn finder_status_error(message: String) -> Value {
+    json!({"kind":"vm","state":"failed","path":null,
+        "error":format!("The Finder view status is unavailable: {}", message.chars().take(300).collect::<String>())})
+}
+
 /// Construct the stable capability fields before the independent provider probes run.
 pub fn capabilities_base(
     agent_id: &str,
@@ -634,9 +789,9 @@ pub fn append_capability_error(result: &mut Value, label: &str, error: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilitiesCache, CapabilityAgentSnapshot, ProviderRequest, apply_capability_result,
-        cancel_terminal_in_session, capabilities_base, host_finder_view, read_requests,
-        skills_for_cwd,
+        CapabilitiesCache, CapabilityAgentSnapshot, ProviderRequest, account_session_exchange,
+        apply_capability_result, cancel_terminal_in_session, capabilities_base, host_finder_view,
+        read_requests, skills_for_cwd, vm_finder_view,
     };
     use serde_json::{Value, json};
     use std::{
@@ -659,6 +814,66 @@ mod tests {
     struct Script {
         responses: Vec<serde_json::Value>,
         requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    struct RetainedDiscovery {
+        calls: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl crate::account_session_runtime::AccountSessionPort for RetainedDiscovery {
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<crate::account_session_runtime::ConnectionScope> {
+            Some(crate::account_session_runtime::ConnectionScope {
+                account: account.to_owned(),
+                connection: "fixture".to_owned(),
+                generation: 7,
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: crate::account_session_runtime::ProviderRequest,
+        ) -> Result<
+            crate::account_session_runtime::SessionReceipt,
+            crate::account_session_runtime::AccountSessionError,
+        > {
+            use crate::account_session_runtime::{
+                ProviderResponse, RequestCertainty, SessionReceipt,
+            };
+            let scope = request
+                .expected_scope
+                .clone()
+                .expect("captured fixture scope");
+            assert!(request.deadline > std::time::Instant::now());
+            let method = request.method;
+            let operation = request.operation.clone();
+            let response = if method == studio_runtime_providers::Method::SkillsList {
+                json!({"data":[{"cwd":"/repo","skills":[]}]})
+            } else {
+                json!({"servers":[],"nextCursor":null})
+            };
+            self.calls.lock().expect("discovery calls").push(json!({
+                "account":request.account,
+                "operation":operation,
+                "method":method.as_str(),
+                "params":request.params,
+            }));
+            Ok(SessionReceipt {
+                scope,
+                operation,
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    generation: 7,
+                    id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
+                    method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(response)),
+                not_sent_reason: None,
+                replayed: false,
+            })
+        }
     }
 
     impl ProviderTaskFactory for Script {
@@ -801,6 +1016,58 @@ mod tests {
     }
 
     #[test]
+    fn vm_finder_view_without_layr_project_is_unmounted_without_guest_rpc() {
+        let state = tempfile::tempdir().expect("temporary state directory");
+        assert_eq!(
+            vm_finder_view(state.path(), &json!({"executionMode":"vm"})),
+            json!({"kind":"vm","state":"unmounted","path":null,"error":null})
+        );
+    }
+
+    #[test]
+    fn vm_finder_view_reads_saved_mount_failure_without_guest_rpc() {
+        let state = tempfile::tempdir().expect("temporary VM state directory");
+        let project = state.path().join("layr-projects").join("project");
+        std::fs::create_dir_all(&project).expect("project state directory");
+        std::fs::write(
+            project.join("mount-error.json"),
+            json!({"projectId":"project","error":"share unavailable"}).to_string(),
+        )
+        .expect("saved mount failure");
+        assert_eq!(
+            vm_finder_view(
+                state.path(),
+                &json!({
+                    "executionMode":"vm","layrProjectId":"project"
+                })
+            ),
+            json!({"kind":"vm","state":"failed","path":null,"error":"share unavailable"})
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn vm_finder_view_projects_a_saved_mountpoint_without_guest_rpc() {
+        let state = tempfile::tempdir().expect("temporary VM state directory");
+        let project = state.path().join("layr-projects").join("project");
+        std::fs::create_dir_all(&project).expect("project state directory");
+        std::fs::write(
+            project.join("mount.json"),
+            json!({"projectId":"project","path":"/dev"}).to_string(),
+        )
+        .expect("saved mount record");
+        assert_eq!(
+            vm_finder_view(
+                state.path(),
+                &json!({
+                    "executionMode":"vm","layrProjectId":"project"
+                })
+            ),
+            json!({"kind":"vm","state":"mounted","path":"/dev","error":null})
+        );
+    }
+
+    #[test]
     fn capabilities_projection_keeps_scoped_observations_and_provider_aliases() {
         let mut result = capabilities_base(
             "agent-a",
@@ -899,6 +1166,7 @@ mod tests {
             started,
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-init".into()),
@@ -925,6 +1193,43 @@ mod tests {
         assert_eq!(calls[3]["params"]["threadId"], "thread");
     }
 
+    #[test]
+    fn account_session_discovery_uses_bound_written_read_receipts() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let session = RetainedDiscovery {
+            calls: Arc::clone(&calls),
+        };
+        let responses = account_session_exchange(
+            &session,
+            "claude-account",
+            vec![
+                ProviderRequest {
+                    method: "skills/list".to_owned(),
+                    params: json!({"cwds":["/repo"],"forceReload":false}),
+                },
+                ProviderRequest {
+                    method: "mcpServerStatus/list".to_owned(),
+                    params: json!({"threadId":"thread-1","limit":100}),
+                },
+            ],
+            Duration::from_secs(5),
+        )
+        .expect("written discovery replies");
+        assert_eq!(
+            responses,
+            vec![
+                Ok(json!({"data":[{"cwd":"/repo","skills":[]}]})),
+                Ok(json!({"servers":[],"nextCursor":null})),
+            ]
+        );
+        let calls = calls.lock().expect("discovery calls");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["account"], "claude-account");
+        assert_eq!(calls[0]["method"], "skills/list");
+        assert_eq!(calls[1]["method"], "mcpServerStatus/list");
+        assert_ne!(calls[0]["operation"], calls[1]["operation"]);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn scripted_cancel_requires_the_exact_item_and_process_before_terminate() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -946,6 +1251,7 @@ mod tests {
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-init".into()),
@@ -988,6 +1294,7 @@ mod tests {
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-mismatch-init".into()),
@@ -1026,6 +1333,7 @@ mod tests {
             factory, launch, Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-item-mismatch-init".into()),

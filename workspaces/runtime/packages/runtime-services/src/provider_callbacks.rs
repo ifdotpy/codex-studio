@@ -1,19 +1,31 @@
 //! Durable provider callbacks. Invoke once after journal admission, outside the
 //! journal transaction. No provider I/O occurs here; the account worker owns it.
+//!
+//! Managed monitor input uses the callback's stable tool request identity.
+//! HTTP monitor input has no caller identity; its retry contract remains an
+//! open owner decision and the HTTP entry point refuses it by name.
 mod cards;
 mod model;
 mod projection;
 mod recovery;
 mod storage;
-mod tools;
+pub(crate) mod tools;
+pub use crate::managed_child_create::{
+    ManagedCreationEnvironment, ManagedCreationEnvironmentError,
+};
+pub(crate) use cards::answer_signature;
 pub use cards::{
-    AnswerAuthority, answer, answer_value, expire, prepare_delete, prepare_user_answer, resolve,
+    AnswerAuthority, answer, answer_value, expire, pending_native_delete_context, prepare_delete,
+    prepare_user_answer, resolve,
 };
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
 };
 pub use projection::project_tool_result;
-pub use recovery::recover_connection;
+pub use recovery::{
+    ContextToolReceiptSnapshot, prepare_unresolved_context_tool_receipts, recover_connection,
+    revalidate_unresolved_context_tool_receipts,
+};
 use serde_json::{Value, json};
 pub use storage::{
     DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
@@ -21,6 +33,71 @@ pub use storage::{
 };
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedCreationAccountError {
+    Unknown,
+    Deleted,
+    Disconnected,
+    SignInRequired,
+    Unavailable,
+}
+
+/// Minimal account identity needed for managed child planning. This deliberately
+/// stays independent of the P02 host creation module; the composition adapter
+/// converts it at the final integration boundary.
+#[derive(Clone, Debug)]
+pub struct ManagedAccountIdentity {
+    pub provider: Option<String>,
+    pub home: Option<String>,
+    pub account_id: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedCreationAccountCandidate {
+    pub account_key: String,
+    pub identity: ManagedAccountIdentity,
+    pub ready: bool,
+    pub can_attempt_native_proof: bool,
+    pub disconnected: bool,
+    pub deleted: bool,
+    pub duplicate: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedCreationAccountListing {
+    pub default_account_key: Option<String>,
+    pub accounts: Vec<ManagedCreationAccountCandidate>,
+}
+
+/// Narrow account read port used by managed child creation. The runtime server
+/// adapts AccountDriver here; callback code does not receive its mutation
+/// surface or credential material.
+pub trait ManagedCreationAccountRead: Send + Sync {
+    fn worker_accounts(&self)
+    -> Result<ManagedCreationAccountListing, ManagedCreationAccountError>;
+
+    fn resolve_identity(
+        &self,
+        account_key: &str,
+        parent_account_key: &str,
+    ) -> Result<ManagedAccountIdentity, ManagedCreationAccountError>;
+}
+
+pub use tools::ManagedToolRuntime;
+pub(crate) use tools::ManagedToolRuntimePorts;
+#[cfg(test)]
+pub(crate) use tools::MonitorInputRequest;
+#[cfg(test)]
+pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
+pub use tools::{WorkerAccountSelection, select_worker_account, validate_worker_model_choice};
+
+pub(crate) struct ManagedToolPortsConfig {
+    pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) runtime_ports: ManagedToolRuntimePorts,
+}
 
 /// This is deliberately pure: journal bookkeeping may call it repeatedly.
 pub fn is_callback(frame: &Frame) -> bool {
@@ -36,6 +113,117 @@ pub fn dispatch(
     frame: &Frame,
     now: f64,
 ) -> Result<CallbackDecision, CallbackError> {
+    dispatch_with_managed_tools(
+        store,
+        context,
+        frame,
+        now,
+        &crate::managed_host_tools::UnavailablePorts,
+    )
+}
+
+/// Construct the real host bundle from the retained account callback path.
+/// Filesystem snapshots are prepared before the callback's writer transaction.
+#[cfg(test)]
+pub(crate) fn managed_tool_ports(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    managed_tool_ports_with_monitor_wake(
+        store,
+        context,
+        frame,
+        wake,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn managed_tool_ports_with_monitor_wake(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    managed_tool_ports_with_runtime(
+        store,
+        context,
+        frame,
+        ManagedToolPortsConfig {
+            wake,
+            monitor_dispatch_wake,
+            runtime_ports: ManagedToolRuntimePorts {
+                status_watch: None,
+                child_creation: None,
+                monitor_create: None,
+                interrupt: None,
+                monitor_input: None,
+                monitor_cancel: None,
+            },
+        },
+    )
+}
+
+pub(crate) fn managed_tool_ports_with_runtime(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    config: ManagedToolPortsConfig,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    let Some(request) = model::Input::from_frame(frame)? else {
+        return Err(CallbackError::Invalid("Expected a managed tool callback"));
+    };
+    if request.method != "item/tool/call" {
+        return Err(CallbackError::Invalid("Expected a managed tool callback"));
+    }
+    tools::production_ports(store, context, &request, config)
+}
+
+pub(crate) fn managed_tool_ports_with_bundle(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    runtime: Option<&ManagedToolRuntime>,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    let runtime_ports =
+        runtime
+            .map(ManagedToolRuntime::ports)
+            .unwrap_or_else(|| ManagedToolRuntimePorts {
+                status_watch: None,
+                child_creation: None,
+                monitor_create: None,
+                interrupt: None,
+                monitor_input: None,
+                monitor_cancel: None,
+            });
+    managed_tool_ports_with_runtime(
+        store,
+        context,
+        frame,
+        ManagedToolPortsConfig {
+            wake,
+            monitor_dispatch_wake,
+            runtime_ports,
+        },
+    )
+}
+
+/// Account workers with a retained host runtime pass its explicit staged-effect
+/// bundle here. The bundle is used inside the callback transaction only to
+/// write durable intents; managed tool dispatch releases wake signals after
+/// the final commit and before returning the decision.
+pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    now: f64,
+    ports: &P,
+) -> Result<CallbackDecision, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Ok(CallbackDecision::Unsupported);
     };
@@ -43,7 +231,7 @@ pub fn dispatch(
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
     if request.method == "item/tool/call" {
-        return tools::dispatch(store, context, &request, now);
+        return tools::dispatch_with_ports(store, context, &request, now, ports);
     }
     store.transaction_with(|tx| {
         let identity = ReplyIdentity::new(context, &request.id);

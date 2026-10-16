@@ -2,7 +2,7 @@
 
 use super::extractors::ApiJson;
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,29 +18,18 @@ use studio_runtime_store::{
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
-const EXECUTION_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post("/api/assets", OperationStatus::Implemented, upload_asset),
-        get(
-            "/api/file-info",
-            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
-            file_info,
-        ),
-        get(
-            "/api/file",
-            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
-            file_content,
-        ),
+        get("/api/file-info", OperationStatus::Implemented, file_info),
+        get("/api/file", OperationStatus::Implemented, file_content),
     ])
 }
 
 async fn upload_asset(
     State(state): State<HttpState>,
     ApiJson(mut body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AssetRecord>, ApiError> {
     let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
     let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
     let id = take_string(&mut body, "id");
@@ -48,9 +37,10 @@ async fn upload_asset(
         .or_else(|| take_string(&mut body, "data"))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let asset = tokio::task::spawn_blocking(move || {
-        payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
-    })
+    let asset = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_payload_store_error)?;
@@ -60,21 +50,24 @@ async fn upload_asset(
 pub(crate) async fn file_info(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileInfo>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_info(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_info(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileInfo>(json!({
@@ -89,21 +82,24 @@ pub(crate) async fn file_info(
 pub(crate) async fn file_content(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileContent>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_content(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_content(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileContent>(json!({
@@ -146,9 +142,12 @@ fn read_info(
         return Ok(info);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context, "GET", "/api/file-info")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
+    if context.image_workspace_ready {
+        workspace_files::image_file_info(path, &context.cwd).map_err(file_error)
+    } else {
+        workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
+    }
 }
 
 fn read_content(
@@ -183,9 +182,12 @@ fn read_content(
         return Ok(content);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context, "GET", "/api/file")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
+    if context.image_workspace_ready {
+        workspace_files::image_file_content(path, &context.cwd).map_err(file_error)
+    } else {
+        workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
+    }
 }
 
 fn workspace_context(
@@ -204,7 +206,10 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
     let record = agent.value();
-    if record.get("deletedAt").is_some_and(json_truthy) {
+    if record
+        .get("deletedAt")
+        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
+    {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This agent was deleted",
@@ -216,41 +221,12 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
     })
 }
 
-fn ensure_local_workspace(
-    context: &WorkspaceContext,
-    method: &str,
-    path: &str,
-) -> Result<(), ApiError> {
-    if context.execution_backed {
-        Err(
-            dependency_unavailable(method, path, &EXECUTION_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal()),
-        )
-    } else {
-        Ok(())
-    }
-}
-
 fn string_query<'a>(query: &'a QueryParams, name: &str) -> Option<&'a str> {
     query.typed_value(name).and_then(Value::as_str)
 }
 
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(values) => !values.is_empty(),
-    }
-}
-
 fn invalid_stored(object: &str, id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}/{id}"),
-    )
+    ApiError::invalid_stored(object, id)
 }
 
 fn map_store_error(error: StoreError) -> ApiError {
@@ -300,16 +276,13 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
         PayloadStoreError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        error @ PayloadStoreError::InvalidStoredAsset { .. } => {
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        PayloadStoreError::InvalidStoredAsset { id } => {
+            ApiError::invalid_stored("runtime_assets", &id)
         }
         PayloadStoreError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
             table: "runtime_assets",
             id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object runtime_assets/{id}"),
-        ),
+        }) => ApiError::invalid_stored("runtime_assets", &id),
         PayloadStoreError::Io(_)
         | PayloadStoreError::Store(_)
         | PayloadStoreError::Json(_)
@@ -329,6 +302,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "workspace_files",
         routes: Some(routes),
-        dependencies: &["workspace-state/image-execution"],
+        dependencies: &[],
     }
 }

@@ -104,6 +104,52 @@ fn apply(
     }
     .apply(expected, &scope(), action)
 }
+struct NoRecoveryDelivery;
+impl studio_runtime_services::recovery_store::RecoveryDelivery for NoRecoveryDelivery {
+    fn start_held(
+        &mut self,
+        _: &Transaction<'_>,
+        _: &serde_json::Value,
+        _: &str,
+        _: &str,
+    ) -> Result<(), RecoveryError> {
+        Ok(())
+    }
+    fn terminal(
+        &mut self,
+        _: &Transaction<'_>,
+        _: &mut serde_json::Value,
+        _: &serde_json::Value,
+        _: studio_runtime_services::recovery::CompletionMode,
+    ) -> Result<(), RecoveryError> {
+        Ok(())
+    }
+}
+fn apply_lifecycle(
+    store: &RuntimeStore,
+    expected: &RecoverySnapshot,
+    action: RecoveryAction,
+) -> Result<RecoveryOutcome, RecoveryError> {
+    use studio_runtime_services::recovery_store::{
+        LifecycleCompletionWriter, RecoveryMessageWriter,
+    };
+    let mut delivery = NoRecoveryDelivery;
+    let mut write_message: &mut RecoveryMessageWriter<'_> = &mut |_, _, _, _, _, _, _| Ok(None);
+    let mut completion = LifecycleCompletionWriter {
+        at: 100.0,
+        delivery: &mut delivery,
+        write_message: &mut write_message,
+        stream_update: None,
+    };
+    RecoveryStore {
+        store,
+        connection_current: &|_| true,
+        completion: &mut completion,
+        at: 100.0,
+        observation_current: &|_| None,
+    }
+    .apply(expected, &scope(), action)
+}
 fn events(store: &RuntimeStore) -> Vec<(String, String)> {
     store
         .read()
@@ -270,6 +316,119 @@ fn recovery_transaction_restart_matrix() {
     stale_epoch_connection_and_uncertain_input_write_nothing();
     preparation_transaction_failpoints_roll_back_every_row();
     orphan_requires_the_completed_turn_receipt_and_no_uncertain_input();
+    queued_active_wait_is_adopted_and_keeps_input_pending();
+    pending_native_request_blocks_queued_wait_adoption();
+    queued_active_wait_terminal_is_reconciled_and_saved();
+}
+
+fn queued_active_snapshot(store: &RuntimeStore) -> RecoverySnapshot {
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("recovery/cases.json")).expect("recovery corpus");
+    let mut agent = cases
+        .iter()
+        .find(|case| case["name"] == "queued-active")
+        .expect("queued active fixture")["agent"]
+        .clone();
+    agent["connectionRecovery"]["requestId"] = json!("queued-recovery");
+    agent["connectionRecovery"]["requestState"] = json!("pending");
+    agent["connectionRecovery"]["requestBasis"] = json!([]);
+    agent["connectionRecovery"]["requestReceipt"] = serde_json::Value::Null;
+    lifecycle_transaction(store, |tx| {
+        let record = studio_runtime_store::AgentRecord::from_value(agent.clone())
+            .expect("valid agent fixture");
+        AgentRepository::put(tx, &record)?;
+        tx.execute(
+            "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id='event'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed queued active wait");
+    snapshot(store)
+}
+
+fn queued_active_wait_is_adopted_and_keeps_input_pending() {
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    let turn = json!({"id":"turn","threadId":"thread","status":"inProgress","items":[],"itemsView":"full"});
+    let result = apply_lifecycle(&store, &before, RecoveryAction::AdoptQueuedWait { turn })
+        .expect("adopt active native turn");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(json!({"status":"adopted","turnId":"turn"}))
+    );
+    let after = snapshot(&store).record().clone();
+    assert_eq!(after["status"], "running");
+    assert_eq!(after["inFlight"], true);
+    assert!(after.get("startAttempt").is_none());
+    assert!(after.get("contextRepairWait").is_none());
+    assert_eq!(after["connectionRecovery"]["queuedInputPreserved"], true);
+    assert_eq!(after["connectionRecovery"]["requestState"], "result");
+    assert_eq!(
+        after["connectionRecovery"]["requestReceipt"]["status"],
+        "adopted"
+    );
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
+}
+
+fn pending_native_request_blocks_queued_wait_adoption() {
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES('pending-request',?1)",
+                [json!({"agent":"agent","turnId":"turn","status":"pending"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("seed pending runtime request");
+    let original = snapshot(&store).record().clone();
+    let turn = json!({"id":"turn","threadId":"thread","status":"inProgress","items":[],"itemsView":"full"});
+    assert_eq!(
+        apply_lifecycle(&store, &before, RecoveryAction::AdoptQueuedWait { turn })
+            .expect("pending request makes adoption unconfirmed"),
+        RecoveryOutcome::Unconfirmed
+    );
+    assert_eq!(snapshot(&store).record(), &original);
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
+}
+
+fn queued_active_wait_terminal_is_reconciled_and_saved() {
+    use studio_runtime_services::recovery::CompletionMode;
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    let turn =
+        json!({"id":"turn","threadId":"thread","status":"completed","items":[],"itemsView":"full"});
+    let result = apply_lifecycle(
+        &store,
+        &before,
+        RecoveryAction::Terminal {
+            turn,
+            native_state: "idle".into(),
+            mode: CompletionMode::QueuedActiveWait,
+        },
+    )
+    .expect("reconcile exact terminal turn");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(
+            json!({"status":"reconciled","turnId":"turn","outcome":"completed"})
+        )
+    );
+    let after = snapshot(&store).record().clone();
+    assert_eq!(after["status"], "completed");
+    assert_eq!(after["turnId"], serde_json::Value::Null);
+    assert_eq!(after["connectionRecovery"]["requestState"], "result");
+    assert_eq!(
+        after["connectionRecovery"]["requestReceipt"]["status"],
+        "reconciled"
+    );
+    assert_eq!(after["connectionRecovery"]["queuedInputPreserved"], true);
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
 }
 
 fn oracle(name: &str) -> Vec<serde_json::Value> {
@@ -477,6 +636,7 @@ fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
+                    confirmed_not_applied: false,
                 },
             );
             assert!(result.is_err(), "{name}/{table}/{timing}");
@@ -493,6 +653,71 @@ fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                 })
                 .expect("count");
             assert_eq!(count, 0);
+        }
+    }
+}
+
+#[test]
+fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
+    let case = oracle("start_oracle")
+        .into_iter()
+        .find(|case| case["name"] == "restore")
+        .expect("restore oracle case");
+    for (table, operation) in [("runtime_events", "UPDATE"), ("runtime_agents", "UPDATE")] {
+        for timing in ["BEFORE", "AFTER"] {
+            let root = fixture();
+            let store = RuntimeStore::open(Some(root.path())).expect("store");
+            let mut agent = case["agent"].clone();
+            let mut attempt = agent["startAttempt"].clone();
+            attempt["executionOutcome"] = json!("unknown");
+            agent["restartRecovery"] = json!({"stage":"held","startAttempt":attempt});
+            agent["contextRepairWait"] = json!({"events":["event"]});
+            agent["status"] = json!("queued");
+            agent["autoWake"] = json!(true);
+            agent["inFlight"] = json!(false);
+            agent["error"] = json!(null);
+            if let Some(agent) = agent.as_object_mut() {
+                agent.remove("startAttempt");
+            } else {
+                panic!("restore oracle agent is not an object");
+            }
+            seed_agent(&store, &agent);
+            let before = snapshot(&store);
+            let queue = events(&store);
+            store
+                .transaction(|tx| {
+                    tx.execute_batch(&format!(
+                        "CREATE TRIGGER fail_reconcile {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;"
+                    ))?;
+                    Ok(())
+                })
+                .expect("trigger");
+            let observation: studio_runtime_services::recovery_absence::RecoveryObservation =
+                serde_json::from_value(case["observation"].clone()).expect("observation");
+            let current = |_: &ConnectionScope| Some(observation.clone());
+            let mut writer = HoldWriter::default();
+            let result = RecoveryStore {
+                store: &store,
+                connection_current: &|_| true,
+                completion: &mut writer,
+                at: observation.at,
+                observation_current: &current,
+            }
+            .apply(
+                &before,
+                &observation.scope,
+                RecoveryAction::StartAbsent {
+                    observation: observation.clone(),
+                    complete_history: true,
+                    idle_twice: true,
+                    confirmed_not_applied: true,
+                },
+            );
+            assert!(result.is_err(), "{table}/{timing}");
+            drop(store);
+            let reopened = RuntimeStore::open(Some(root.path())).expect("reopen");
+            assert_eq!(snapshot(&reopened).record(), before.record());
+            assert_eq!(events(&reopened), queue);
         }
     }
 }

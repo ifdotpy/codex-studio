@@ -831,8 +831,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_get"];
+    get?: never;
     put?: never;
     /** Manage Federation */
     post: operations["manage_federation_api_federation_post"];
@@ -849,8 +848,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_message_get"];
+    get?: never;
     put?: never;
     /** Message */
     post: operations["message_api_federation_v1_message_post"];
@@ -867,8 +865,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_pair_get"];
+    get?: never;
     put?: never;
     /** Pair */
     post: operations["pair_api_federation_v1_pair_post"];
@@ -885,8 +882,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_pull_get"];
+    get?: never;
     put?: never;
     /** Pull */
     post: operations["pull_api_federation_v1_pull_post"];
@@ -903,8 +899,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
-    get: operations["no_get_counterpart_api_federation_v1_status_get"];
+    get?: never;
     put?: never;
     /** Status */
     post: operations["status_api_federation_v1_status_post"];
@@ -1271,8 +1266,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Pair Get */
-    get: operations["no_pair_get_api_multi_server_v1_pair_get"];
+    get?: never;
     put?: never;
     /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
@@ -7743,6 +7737,42 @@ export interface components {
       /** Serverid */
       serverId: string;
     };
+    /** BlockingPoolGroupMetrics */
+    BlockingPoolGroupMetrics: {
+      /** Closureavgms */
+      closureAvgMs: number;
+      /** Closuremaxms */
+      closureMaxMs: number;
+      /** Closurep95Ms */
+      closureP95Ms: number;
+      /** Closurep99Ms */
+      closureP99Ms: number;
+      /** Count */
+      count: number;
+      /** Group */
+      group: string;
+      /** Queuewaitavgms */
+      queueWaitAvgMs: number;
+      /** Queuewaitmaxms */
+      queueWaitMaxMs: number;
+      /** Queuewaitp95Ms */
+      queueWaitP95Ms: number;
+      /** Queuewaitp99Ms */
+      queueWaitP99Ms: number;
+    };
+    /** BlockingPoolMetrics */
+    BlockingPoolMetrics: {
+      /** Enabled */
+      enabled: boolean;
+      /** Groups */
+      groups: components["schemas"]["BlockingPoolGroupMetrics"][];
+      /** Peakoccupancy */
+      peakOccupancy: number;
+      /** Queued */
+      queued: number;
+      /** Running */
+      running: number;
+    };
     /** BranchDraft */
     BranchDraft: {
       /**
@@ -10520,6 +10550,19 @@ export interface components {
        * @default null
        */
       queuedInputPreserved?: boolean;
+      requestBasis?: components["schemas"]["JsonValue"];
+      /**
+       * Requestid
+       * @default null
+       */
+      requestId?: string;
+      requestReceipt?: components["schemas"]["JsonValue"];
+      /**
+       * Requeststate
+       * @default null
+       * @enum {string}
+       */
+      requestState?: "pending" | "result";
       /**
        * Source
        * @default null
@@ -11545,6 +11588,8 @@ export interface components {
       analyticsCapture: components["schemas"]["AnalyticsCaptureStatus"];
       /** At */
       at: string;
+      /** @default null */
+      blockingPoolMetrics?: components["schemas"]["BlockingPoolMetrics"] | null;
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
@@ -12242,7 +12287,7 @@ export interface components {
        */
       status?:
         | components["schemas"]["ExecutionStatus"]
-        | ("answered" | "expired" | "lost")
+        | ("answered" | "expired" | "lost" | "approved")
         | null;
       /**
        * Taskid
@@ -13556,6 +13601,8 @@ export interface components {
       p50: number;
       /** P95 */
       p95: number;
+      /** P99 */
+      p99: number;
       /** Samples */
       samples: number;
     };
@@ -13699,7 +13746,7 @@ export interface components {
        * Assets
        * @default []
        */
-      assets?: components["schemas"]["JsonValue"][];
+      assets?: string[];
       /**
        * Delivery
        * @default queue
@@ -21070,16 +21117,41 @@ export interface components {
       /** Threads */
       threads: components["schemas"]["SqliteThread"][];
     };
+    /** SqliteAdmissionMetric */
+    SqliteAdmissionMetric: {
+      /** Activewaiters */
+      activeWaiters: number;
+      /** Openedconnections */
+      openedConnections: number;
+      /** Operations */
+      operations: number;
+      /** Peakwaiters */
+      peakWaiters: number;
+      waitMs: components["schemas"]["SqliteWaitQuantiles"];
+      /** Waits */
+      waits: number;
+    };
     /** SqliteContention */
     SqliteContention: {
       /** Activetransactions */
       activeTransactions: components["schemas"]["SqliteActiveTransaction"][];
       activeTransactionScan: components["schemas"]["SqliteActiveScan"];
+      /** Commitprofile */
+      commitProfile: {
+        [key: string]: components["schemas"]["SqliteProfileMetric"];
+      };
       /** @default null */
       lockError?: components["schemas"]["SqliteMetric"] | null;
       slowTransactions: components["schemas"]["SqliteHistory"];
+      /** Sqlprofile */
+      sqlProfile: {
+        [key: string]: components["schemas"]["SqliteProfileMetric"];
+      };
+      storeAdmission: components["schemas"]["SqliteStoreAdmission"];
       /** @default null */
       transaction?: components["schemas"]["SqliteMetric"] | null;
+      /** @default null */
+      walTelemetry?: components["schemas"]["WalTelemetry"] | null;
       /** @default null */
       writeWait?: components["schemas"]["SqliteMetric"] | null;
     };
@@ -21153,6 +21225,11 @@ export interface components {
        */
       p95TransactionMs?: null | number;
       /**
+       * P99Transactionms
+       * @default null
+       */
+      p99TransactionMs?: null | number;
+      /**
        * Sites
        * @default {}
        */
@@ -21175,6 +21252,17 @@ export interface components {
       /** Frames */
       frames: components["schemas"]["SqliteFrame"][];
     };
+    /** SqliteProfileMetric */
+    SqliteProfileMetric: {
+      /** Count */
+      count: number;
+      /** P50Ms */
+      p50Ms: null | number;
+      /** P95Ms */
+      p95Ms: null | number;
+      /** P99Ms */
+      p99Ms: null | number;
+    };
     /**
      * SqliteStatement
      * @enum {string}
@@ -21191,6 +21279,11 @@ export interface components {
       | "WITH"
       | "SAVEPOINT"
       | "other";
+    /** SqliteStoreAdmission */
+    SqliteStoreAdmission: {
+      reads: components["schemas"]["SqliteAdmissionMetric"];
+      writes: components["schemas"]["SqliteAdmissionMetric"];
+    };
     /** SqliteThread */
     SqliteThread: {
       /** Frames */
@@ -21254,6 +21347,19 @@ export interface components {
      * @enum {string}
      */
     SqliteTransactionState: "active" | "committed" | "rolledBack" | "ended";
+    /** SqliteWaitQuantiles */
+    SqliteWaitQuantiles: {
+      /** Maxms */
+      maxMs: number;
+      /** P50Ms */
+      p50Ms: null | number;
+      /** P95Ms */
+      p95Ms: null | number;
+      /** P99Ms */
+      p99Ms: null | number;
+      /** Samples */
+      samples: number;
+    };
     /** StartActionIdentityRecordResponse */
     StartActionIdentityRecordResponse: {
       /**
@@ -25093,6 +25199,22 @@ export interface components {
      * @enum {string}
      */
     VoiceTransport: "native";
+    /** WalCheckpoint */
+    WalCheckpoint: {
+      /** Busy */
+      busy: number;
+      /** Checkpointedframes */
+      checkpointedFrames: number;
+      /** Logframes */
+      logFrames: number;
+      /** Walsizebytes */
+      walSizeBytes: number;
+    };
+    /** WalTelemetry */
+    WalTelemetry: {
+      analytics: components["schemas"]["WalCheckpoint"] | null;
+      canvas: components["schemas"]["WalCheckpoint"] | null;
+    };
     /**
      * WhoisStatus
      * @enum {string}
@@ -26521,6 +26643,28 @@ export interface components {
     };
     /** @description Internal server error */
     ApiError500: {
+      headers: {
+        "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+        "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+        "Cache-Control": components["headers"]["CacheControl"];
+        "Content-Encoding": components["headers"]["ContentEncoding"];
+        "Content-Length": components["headers"]["ContentLength"];
+        "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+        "Content-Type": components["headers"]["ContentType"];
+        "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+        "Server-Timing": components["headers"]["ServerTiming"];
+        Vary: components["headers"]["Vary"];
+        "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+        "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+        "X-Studio-Server": components["headers"]["StudioServer"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["ErrorResponse"];
+      };
+    };
+    /** @description Not implemented: a named dependency is unavailable */
+    ApiError501: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
         "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
@@ -29512,6 +29656,8 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
+      /** @description Not Implemented */
+      501: components["responses"]["ApiError501"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -29557,30 +29703,6 @@ export interface operations {
       401: components["responses"]["ApiError401"];
       /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  no_get_counterpart_api_federation_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
       /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
@@ -29665,30 +29787,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  no_get_counterpart_api_federation_v1_message_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   message_api_federation_v1_message_post: {
     parameters: {
       query?: never;
@@ -29750,30 +29848,6 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  no_get_counterpart_api_federation_v1_pair_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -29843,30 +29917,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  no_get_counterpart_api_federation_v1_pull_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   pull_api_federation_v1_pull_post: {
     parameters: {
       query?: never;
@@ -29928,30 +29978,6 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  no_get_counterpart_api_federation_v1_status_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -31826,28 +31852,6 @@ export interface operations {
       };
       /** @description Gateway Timeout */
       504: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  no_pair_get_api_multi_server_v1_pair_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      400: components["responses"]["ApiError400"];
-      403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
-      404: {
         headers: {
           [name: string]: unknown;
         };

@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.responses import Response
-from starlette.routing import BaseRoute
+from starlette.routing import BaseRoute, Match
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from studio_api.core_models import SessionResponse
@@ -270,10 +270,38 @@ def create_app(context: ApiContext) -> FastAPI:
     @app.get("/{relative:path}", include_in_schema=False)
     def static_path(request: Request, relative: str) -> object:
         if relative == "" or relative.startswith("api/") or relative == "api":
+            allowed = api_allowed_methods(request)
+            if allowed:
+                raise StarletteHTTPException(
+                    status_code=405,
+                    detail="Method not allowed",
+                    headers={"Allow": ", ".join(sorted(allowed))},
+                )
             raise StarletteHTTPException(status_code=404, detail="Not found")
         if relative not in STATIC_ALLOWLIST and not relative.startswith("assets/"):
             raise StarletteHTTPException(status_code=404, detail="Not found")
         return static_file(request, relative)
+
+    def api_allowed_methods(request: Request) -> set[str]:
+        """Return methods for API routes matching this path with another method."""
+        allowed: set[str] = set()
+        pending = list(app.routes)
+        visited: set[int] = set()
+        while pending:
+            route = pending.pop()
+            if id(route) in visited:
+                continue
+            visited.add(id(route))
+            if isinstance(route, APIRoute):
+                if (
+                    route.path.startswith("/api/")
+                    and route.matches(request.scope)[0] is Match.PARTIAL
+                ):
+                    allowed.update(route.methods or ())
+                continue
+            original_router = getattr(route, "original_router", None)
+            pending.extend(getattr(original_router, "routes", ()))
+        return allowed
 
     def static_file(request: Request, relative: str) -> object:
         from codex_canvas import HASHED_ASSET as LEGACY_HASHED_ASSET, WEB, static_content

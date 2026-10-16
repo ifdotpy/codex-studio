@@ -7,18 +7,25 @@ publish.workspace = true
 
 [dependencies]
 axum = { workspace = true }
+base64 = { workspace = true }
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
 futures-util = { workspace = true }
 studio-runtime-process = { path = "../../packages/runtime-process" }
+studio-runtime-providers = { path = "../../packages/runtime-providers" }
 studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
+nix = { workspace = true }
+process-wrap = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+sha2 = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["io-std"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-studio-runtime-providers = { path = "../../packages/runtime-providers" }
+notify = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }

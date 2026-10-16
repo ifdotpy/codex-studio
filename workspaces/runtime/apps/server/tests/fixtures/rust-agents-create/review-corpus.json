@@ -14,50 +14,22 @@
     "worker_defaults",
     "review_defaults"
   ],
+  "childStoredFields": {
+    "name": "P02 child",
+    "prompt": "Use the frozen base."
+  },
+  "childNameCases": {
+    "trimmedInput": "  P02 child  ",
+    "maximumLength": 100
+  },
   "creationCatalogNulls": ["effort", "fast_mode", "daybreak_enabled"],
   "boundaries": [
     ["/api/leads", { "model": "gpt-6-astra" }, "provider-session/model-list"],
     [
       "/api/leads",
-      { "worker_defaults": null },
-      "worker-driver/settings-catalog"
+      { "project_id": "project", "project_server_id": "remote" },
+      "cross-server-driver/project-binding"
     ],
-    [
-      "/api/leads",
-      { "review_defaults": null },
-      "worker-driver/settings-catalog"
-    ],
-    [
-      "/api/leads",
-      { "workspaceMode": "image" },
-      "workspace-state/lead-workspace"
-    ],
-    ["/api/leads", { "project_id": "project" }, "project-driver/chat-binding"],
-    [
-      "/api/agents",
-      { "parent": "parent" },
-      "worker-driver/workspace-preparation"
-    ],
-    ["/api/agents", { "effort": null }, "provider-session/model-list"],
-    [
-      "/api/agents",
-      { "worker_defaults": null },
-      "worker-driver/settings-catalog"
-    ],
-    [
-      "/api/agents",
-      { "workspaceMode": "image" },
-      "workspace-state/lead-workspace"
-    ],
-    [
-      "/api/configure",
-      { "concurrency": 0 },
-      "agent-management/agent-mode-settings"
-    ],
-    [
-      "/api/conversation",
-      { "agent_mode": "single" },
-      "agent-management/conversation-settings"
-    ]
+    ["/api/agents", { "effort": null }, "provider-session/model-list"]
   ]
 }

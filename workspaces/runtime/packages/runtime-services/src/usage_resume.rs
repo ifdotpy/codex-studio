@@ -27,6 +27,7 @@ pub enum Cause {
 #[derive(Clone)]
 pub struct LimitsObservation {
     raw: Value,
+    account_key: String,
     marker: Option<String>,
 }
 impl LimitsObservation {
@@ -37,17 +38,26 @@ impl LimitsObservation {
         {
             return Err(ContinuationError::Invalid(format!("/limits{path}")));
         }
-        Ok(Self { raw, marker })
+        let account_key = raw["accountKey"]
+            .as_str()
+            .ok_or_else(|| ContinuationError::Invalid("/limits/accountKey".into()))?
+            .to_owned();
+        Ok(Self {
+            raw,
+            account_key,
+            marker,
+        })
+    }
+    pub fn account_key(&self) -> &str {
+        &self.account_key
+    }
+    pub fn refresh_marker(&self) -> Option<&str> {
+        self.marker.as_deref()
     }
     fn fresh_for(&self, key: &str, after: f64, strict: bool) -> bool {
         !present(&self.raw, "error")
             && !flag(&self.raw, "stale")
-            && self
-                .raw
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or(key)
-                == key
+            && self.account_key == key
             && number(&self.raw, "at")
                 .is_some_and(|at| if strict { at > after } else { at >= after })
     }
@@ -159,51 +169,18 @@ fn excluded(s: &Snapshot, key: &str) -> bool {
 }
 /// Called after an account observation; current identity and task ownership are checked anew.
 pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decision> {
-    now_checked(now)?;
-    let Some(r) = &s.record else {
-        return Ok(Decision::default());
-    };
-    if !s.current("usageResume")
-        || text(&s.agent["usageResume"], "status") != "scheduled"
-        || s.status() != Some(crate::continuation::WaitStatus::Scheduled)
-        || number(r, "dueAt").is_none_or(|t| t > now)
-    {
-        return Ok(Decision::default());
+    if let Some(decision) = tick_before_observation(s, now)? {
+        return Ok(decision);
     }
+    let r = s
+        .record
+        .as_ref()
+        .ok_or(ContinuationError::Invalid("/record".into()))?;
     let key = account(r);
-    if excluded(s, key) {
-        let reason =
-            format!("Automatic resume stopped because account {key} is disabled for this chat.");
-        let mut d = cancel(s, r, &reason, now);
-        if let Some(a) = &mut d.agent {
-            patch(
-                a,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
-        }
-        d.hold(text(r, "id"), "account-excluded", &reason);
-        return Ok(d);
-    }
-    if present(&s.agent, "deletedAt")
-        || !flag(&s.agent, "autoWake")
-        || s.agent.get("usageResumeEnabled") == Some(&Value::Bool(false))
-        || account(&s.agent) != key
-        || !s.parents_running(false)
-    {
-        return Ok(cancel(s, r, STOPPED, now));
-    }
-    if ["threadId", "epoch"]
-        .iter()
-        .any(|k| s.agent.get(*k) != r.get(*k))
-        || s.agent.get("lastCompletedTurn") != r.get("turnId")
-        || !flag(&s.agent, "nativeFailureHold")
-    {
-        return Ok(cancel(s, r, CHANGED, now));
-    }
-    if !s.claims_valid(r) {
-        let mut d = cancel(s, r, TASK_CHANGED, now);
-        d.hold(text(r, "id"), "task-changed", TASK_CHANGED);
-        return Ok(d);
+    if limits.account_key() != key {
+        return Err(ContinuationError::Unavailable(
+            "usage-policy/limits-account-mismatch",
+        ));
     }
     let auth = text(r, "cause") == "auth";
     let failed = number(r, "failedAt").unwrap_or(0.0);
@@ -255,6 +232,63 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
     }
     Ok(d)
 }
+
+/// Returns quiet cancellations/no-ops before a timer caller has to capture limits.
+pub fn tick_without_observation(s: &Snapshot, now: f64) -> Result<Decision> {
+    tick_before_observation(s, now)?.ok_or(ContinuationError::Unavailable(
+        "usage-policy/limits-snapshot",
+    ))
+}
+
+fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
+    now_checked(now)?;
+    let Some(r) = &s.record else {
+        return Ok(Some(Decision::default()));
+    };
+    if !s.current("usageResume")
+        || text(&s.agent["usageResume"], "status") != "scheduled"
+        || s.status() != Some(crate::continuation::WaitStatus::Scheduled)
+        || number(r, "dueAt").is_none_or(|t| t > now)
+    {
+        return Ok(Some(Decision::default()));
+    }
+    let key = account(r);
+    if excluded(s, key) {
+        let reason =
+            format!("Automatic resume stopped because account {key} is disabled for this chat.");
+        let mut d = cancel(s, r, &reason, now);
+        if let Some(a) = &mut d.agent {
+            patch(
+                a,
+                json!({"status":"failed","inFlight":false,"error":reason}),
+            );
+        }
+        d.hold(text(r, "id"), "account-excluded", &reason);
+        return Ok(Some(d));
+    }
+    if present(&s.agent, "deletedAt")
+        || !flag(&s.agent, "autoWake")
+        || s.agent.get("usageResumeEnabled") == Some(&Value::Bool(false))
+        || account(&s.agent) != key
+        || !s.parents_running(false)
+    {
+        return Ok(Some(cancel(s, r, STOPPED, now)));
+    }
+    if ["threadId", "epoch"]
+        .iter()
+        .any(|k| s.agent.get(*k) != r.get(*k))
+        || s.agent.get("lastCompletedTurn") != r.get("turnId")
+        || !flag(&s.agent, "nativeFailureHold")
+    {
+        return Ok(Some(cancel(s, r, CHANGED, now)));
+    }
+    if !s.claims_valid(r) {
+        let mut d = cancel(s, r, TASK_CHANGED, now);
+        d.hold(text(r, "id"), "task-changed", TASK_CHANGED);
+        return Ok(Some(d));
+    }
+    Ok(None)
+}
 /// Limit telemetry may advance a wait, but never earlier than the anti-loop floor.
 pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decision> {
     now_checked(now)?;
@@ -267,6 +301,11 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
         || !present(&limits.raw, "data")
     {
         return Ok(Decision::default());
+    }
+    if limits.account_key() != account(&s.agent) || limits.account_key() != account(r) {
+        return Err(ContinuationError::Unavailable(
+            "usage-policy/limits-account-mismatch",
+        ));
     }
     let reset = limits.reset_at();
     let mut r = r.clone();
@@ -347,18 +386,26 @@ pub struct FailureObservation<'a> {
     pub auth_attempt: u64,
     pub limits: &'a LimitsObservation,
 }
-pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -> Result<Decision> {
-    now_checked(now)?;
-    if crate::continuation::native_thread_blocked(&s.agent)
-        || !flag(&s.agent, "autoWake")
-        || present(&s.agent, "deletedAt")
-        || s.agent.get("usageResumeEnabled") == Some(&Value::Bool(false))
-        || !present(&s.agent, "threadId")
-        || s.agent
+pub fn failure_eligible(s: &Snapshot) -> bool {
+    !crate::continuation::native_thread_blocked(&s.agent)
+        && flag(&s.agent, "autoWake")
+        && !present(&s.agent, "deletedAt")
+        && s.agent.get("usageResumeEnabled") != Some(&Value::Bool(false))
+        && present(&s.agent, "threadId")
+        && !s
+            .agent
             .get("turnEpoch")
             .is_some_and(|e| Some(e) != s.agent.get("epoch"))
-    {
+}
+pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -> Result<Decision> {
+    now_checked(now)?;
+    if !failure_eligible(s) {
         return Ok(Decision::default());
+    }
+    if failure.limits.account_key() != account(&s.agent) {
+        return Err(ContinuationError::Unavailable(
+            "usage-policy/limits-account-mismatch",
+        ));
     }
     let id = failure_identity(s, failure.turn_id);
     if s.record.as_ref().is_some_and(|r| text(r, "id") == id) {
@@ -410,30 +457,35 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
 /// One successful turn is proof only for older auth waits on the same account.
 pub fn completed_proof(s: &Snapshot, account_key: &str, now: f64) -> Result<Decision> {
     now_checked(now)?;
-    let Some(r) = &s.record else {
-        return Ok(Decision::default());
-    };
-    if account(r) != account_key
-        || text(r, "cause") != "auth"
-        || text(r, "status") != "scheduled"
-        || number(r, "failedAt").is_none_or(|t| t >= now)
-    {
+    let proof = s.record.as_ref().filter(|r| {
+        account(r) == account_key
+            && text(r, "cause") == "auth"
+            && text(r, "status") == "scheduled"
+            && !present(r, "proofAt")
+            && number(r, "failedAt").is_some_and(|t| t < now)
+    });
+    let reset_attempt = s.current("usageResume")
+        && text(&s.agent["usageResume"], "cause") == "auth"
+        && text(&s.agent["usageResume"], "status") == "started";
+    if proof.is_none() && !reset_attempt {
         return Ok(Decision::default());
     }
-    let mut r = r.clone();
-    patch(&mut r, json!({"proofAt":now,"dueAt":now}));
-    let agent = if s.current("usageResume") {
-        let mut a = s.agent.clone();
-        a["usageResume"] = r.clone();
-        Some(a)
-    } else {
-        None
-    };
-    Ok(Decision {
-        agent,
-        record: Some(r),
-        ..Decision::default()
-    })
+    let mut decision = Decision::default();
+    if let Some(record) = proof {
+        let mut record = record.clone();
+        patch(&mut record, json!({"proofAt":now,"dueAt":now}));
+        if s.current("usageResume") {
+            let mut agent = s.agent.clone();
+            agent["usageResume"] = record.clone();
+            decision.agent = Some(agent);
+        }
+        decision.record = Some(record);
+    }
+    if reset_attempt {
+        let agent = decision.agent.get_or_insert_with(|| s.agent.clone());
+        agent["authResumeAttempt"] = json!(0);
+    }
+    Ok(decision)
 }
 
 fn recoverable_error(error: &Value, provider: &str) -> Result<bool> {

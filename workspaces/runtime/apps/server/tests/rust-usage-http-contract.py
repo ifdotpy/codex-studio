@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from test_isolation import isolate_supervisor_environment
 
-import json
+import base64
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -26,7 +27,10 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
-        cls.backend = start_contract_backend(cls)
+        cls.backend = start_contract_backend(
+            cls,
+            hold_provider_method="thread/resume" if not cls.rust_backend else None,
+        )
         cls.backend.stop()
         from codex_runtime import Runtime
 
@@ -41,11 +45,21 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     draft=True,
                     defer=True,
                 )
+                if name in {"retry", "enable"}:
+                    agent.update(
+                        autoWake=True,
+                        status="failed",
+                        threadId="thread",
+                        lastCompletedTurn="turn",
+                        lastCompletedTurnStatus="failed",
+                        nativeFailureHold=True,
+                        error={"codexErrorInfo": "usageLimitExceeded"},
+                    )
                 retry = {
                     "id": f"retry-{name}", "status": "scheduled", "dueAt": now + 600,
                     "threadId": "thread", "turnId": "turn", "accountKey": "default",
                     "epoch": agent["epoch"], "cause": "serverOverloaded", "attempt": 1,
-                    "maxAttempts": 3, "cwd": str(cls.backend.cwd), "settings": {},
+                    "maxAttempts": 3, "cwd": str(cls.backend.cwd), "settings": runtime.preparation_settings(agent),
                     "taskClaims": [],
                 }
                 resume = {
@@ -55,6 +69,10 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "authAttempt": 0, "authRefreshMarker": None, "plannedAt": None,
                     "resetAt": None, "reason": None,
                 }
+                if name == "enable":
+                    resume = runtime.usage_resume_record(agent, "turn", agent["error"])
+                    resume.update(status="cancelled", dueAt=None, reason="Automatic resume is off for this chat.")
+                    agent["usageResumeEnabled"] = False
                 agent["capacityRetry"] = retry
                 with runtime.lock, runtime.db() as db:
                     runtime.capacity_save(db, agent, retry)
@@ -70,6 +88,15 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             runtime.close()
         home = cls.backend.codex_home.resolve()
         account_id = "usage-contract-account"
+        claims = base64.urlsafe_b64encode(json.dumps({
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        }).encode()).rstrip(b"=").decode()
+        (home / "auth.json").write_text(json.dumps({
+            "tokens": {
+                "account_id": account_id,
+                "access_token": f"e30.{claims}.fixture-signature",
+            },
+        }), encoding="utf-8")
         registry = cls.backend.state / "accounts" / "registry.json"
         registry.parent.mkdir(parents=True, exist_ok=True)
         registry.write_text(json.dumps({
@@ -78,7 +105,6 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "accounts": {"default": {
                 "id": "default", "home": str(home), "label": "Contract account",
                 "source": "Local profile", "accountId": account_id, "status": "ready",
-                "disconnected": True,
             }},
             "logins": {}, "deleteReceipts": {},
         }), encoding="utf-8")
@@ -198,7 +224,7 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"id": self.malformed_id, "resume_id": self.malformed_resume, "enabled": False},
             headers=self.write_headers(),
         )
-        self.assertEqual(result.status, 500, result.body[:1000])
+        self.assertEqual(result.status, 503, result.body[:1000])
         self.assertIn(f"runtime_usage_resumes/{self.malformed_resume}", result.json()["error"])
         with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
             after = (
@@ -207,33 +233,58 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
         self.assertEqual(after, before)
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend refusal contract")
-    def test_turn_submitting_actions_refuse_without_mutating_persisted_rows(self) -> None:
+    def test_retry_and_enable_use_the_durable_continuation_path(self) -> None:
+        if not self.rust_backend:
+            self.addCleanup(self.backend.release_provider_gate)
         with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
-            before = (
-                db.execute("SELECT record FROM runtime_capacity_retries WHERE id=?", (self.retry_retry,)).fetchone()[0],
-                db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.enable_resume,)).fetchone()[0],
-            )
+            request_count = db.execute("SELECT count(*) FROM runtime_requests").fetchone()[0]
+            plan = db.execute(
+                "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM runtime_requests "
+                "WHERE json_extract(record,'$.agent')=?1 "
+                "AND json_extract(record,'$.status') IN ('pending','answering','uncertain'))",
+                (self.retry_id,),
+            ).fetchall()
+        self.assertTrue(
+            any("runtime_request_agent_status" in str(row) for row in plan),
+            f"capacity admission must use the indexed projection: {plan}",
+        )
+        print(json.dumps({"runtimeRequestsRows": request_count, "capacityAdmissionPlan": plan}))
         retry = self.backend.request(
             "POST", "/api/capacity-retry",
             body={"id": self.retry_id, "retry_id": self.retry_retry, "action": "retry"},
             headers=self.write_headers(),
         )
-        self.assertEqual(retry.status, 501, retry.body[:1000])
-        self.assertIn("turn-driver/capacity-retry", retry.json()["error"])
+        self.assertEqual(retry.status, 200, (retry.body[:1000], self.backend.stderr))
+        self.assertIn(retry.json()["status"], {"starting", "scheduled"})
+        if not self.rust_backend:
+            self.backend.wait_until(
+                self.backend.provider_gate_started,
+                "capacity retry reaches the fake provider thread/resume call",
+            )
         resume = self.backend.request(
             "POST", "/api/usage-resume",
             body={"id": self.enable_id, "resume_id": self.enable_resume, "enabled": True},
             headers=self.write_headers(),
         )
-        self.assertEqual(resume.status, 501, resume.body[:1000])
-        self.assertIn("turn-driver/usage-resume", resume.json()["error"])
+        self.assertEqual(resume.status, 200, resume.body[:1000])
+        self.assertEqual(resume.json()["status"], "scheduled")
         with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
-            after = (
-                db.execute("SELECT record FROM runtime_capacity_retries WHERE id=?", (self.retry_retry,)).fetchone()[0],
-                db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.enable_resume,)).fetchone()[0],
+            capacity = json.loads(db.execute("SELECT record FROM runtime_capacity_retries WHERE id=?", (self.retry_retry,)).fetchone()[0])
+            usage = json.loads(db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.enable_resume,)).fetchone()[0])
+            agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.enable_id,)).fetchone()[0])
+            retry_agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.retry_id,)).fetchone()[0])
+        self.assertEqual(capacity["status"], "starting", capacity)
+        self.assertEqual(retry_agent["startAttempt"]["action"], "capacity")
+        self.assertEqual(retry_agent["startAttempt"]["capacityRetryId"], self.retry_retry)
+        self.assertFalse(retry_agent["startAttempt"]["submitted"])
+        self.assertEqual(usage["status"], "scheduled")
+        self.assertTrue(agent["usageResumeEnabled"])
+        if not self.rust_backend:
+            self.assertIn(
+                "thread/resume",
+                [frame.get("method") for frame in self.backend.received_provider_frames()],
             )
-        self.assertEqual(after, before)
+            self.backend.release_provider_gate()
 
 
 if __name__ == "__main__":

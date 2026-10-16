@@ -436,7 +436,7 @@ fn matching_rpc_cards(
     rpc_id: &RequestId,
 ) -> Result<Vec<Value>, CallbackError> {
     let rpc_id = serde_json::to_string(rpc_id)?;
-    let mut statement = tx.prepare(
+    let mut statement = tx.prepare_cached(
         "SELECT record FROM runtime_requests \
          WHERE json_extract(record,'$.agent')=?1 \
            AND json_extract(record,'$.accountKey')=?2 \
@@ -464,7 +464,7 @@ fn matching_rpc_cards(
     .collect()
 }
 
-fn answer_signature(data: &Value) -> String {
+pub(crate) fn answer_signature(data: &Value) -> String {
     let relevant: serde_json::Map<String, Value> = ["answers", "content", "decision"]
         .into_iter()
         .filter_map(|key| data.get(key).map(|v| (key.to_owned(), v.clone())))
@@ -501,6 +501,34 @@ fn card_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, C
             .map(str::to_owned)
             .map(Ok)
             .unwrap_or_else(|| required(&actor["turnId"]))?,
+    })
+}
+
+fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, CallbackError> {
+    card_context(tx, card).map_err(|error| match error {
+        CallbackError::Stored(_) | CallbackError::Stale => {
+            CallbackError::Dependency("provider-session/question-answer")
+        }
+        error => error,
+    })
+}
+
+/// Read the exact session identity needed by a pending native delete before
+/// the durable answer intent is prepared. The lifecycle transaction rechecks
+/// the card after this query; delivery still owns races after preflight.
+pub fn pending_native_delete_context(
+    store: &RuntimeStore,
+    id: &str,
+) -> Result<Option<CallbackContext>, CallbackError> {
+    store.read_transaction_with_error(|tx| {
+        let card = records::get(tx, "runtime_requests", id)?
+            .ok_or(CallbackError::Invalid("Unknown question"))?;
+        let method = card["method"].as_str().unwrap_or_default();
+        if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            provider_context(tx, &card).map(Some)
+        } else {
+            Ok(None)
+        }
     })
 }
 
@@ -548,7 +576,7 @@ fn prepare_answer_in(
             ),
         });
     }
-    let context = card_context(tx, &card)?;
+    let context = provider_context(tx, &card)?;
     let reply = answer_in(tx, &context, id, data, now)?;
     if delete {
         let key = reply.identity.key();
@@ -595,6 +623,10 @@ pub fn prepare_delete(
         }
         let method = card["method"].as_str().unwrap_or_default();
         if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            // A native answer is only possible for a card tied to a live
+            // provider request. Missing callback identity is a named refusal,
+            // checked before prepare_answer_in writes durable intent.
+            provider_context(tx, &card)?;
             let data = if method == "mcpServer/elicitation/request" {
                 json!({"decision":"cancel"})
             } else {

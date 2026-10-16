@@ -311,17 +311,17 @@ impl AuthorizationSnapshot {
             projects: BTreeMap::new(),
             events: Vec::new(),
         };
+        let mut malformed_agents = BTreeMap::new();
         for (key, raw) in &rows.agents {
             let location = format!("agents/{key}");
-            let row = object(raw, &location)?;
-            let id = row
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty() && *id == key)
-                .ok_or_else(|| invalid(format!("{location}/id")))?;
-            snapshot.agents.insert(
-                key.clone(),
-                AgentAuthority {
+            let authority = (|| {
+                let row = object(raw, &location)?;
+                let id = row
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty() && *id == key)
+                    .ok_or_else(|| invalid(format!("{location}/id")))?;
+                Ok::<_, SnapshotError>(AgentAuthority {
                     id: id.into(),
                     root_id: optional_string(row.get("rootId"), &format!("{location}/rootId"))?,
                     parent_id: optional_string(
@@ -331,8 +331,20 @@ impl AuthorizationSnapshot {
                     is_lead: row.get("isLead") == Some(&Value::Bool(true)),
                     deleted: truthy(row.get("deletedAt")),
                     resolved_cwd: resolve(row.get("cwd"), &format!("{location}/cwd"))?,
-                },
-            );
+                })
+            })();
+            match authority {
+                Ok(authority) => {
+                    snapshot.agents.insert(key.clone(), authority);
+                }
+                Err(error) if key != &rows.recipient_id => {
+                    // A malformed row has no authority unless a submitted
+                    // event names it as a sender. Keep the refusal so that a
+                    // missing authority cannot become a room-boundary result.
+                    malformed_agents.insert(key.clone(), error);
+                }
+                Err(error) => return Err(error),
+            }
         }
         for (key, raw) in &rows.rooms {
             let location = format!("rooms/{key}");
@@ -445,6 +457,19 @@ impl AuthorizationSnapshot {
                 _ => EventSnapshot::Other,
             };
             snapshot.events.push(projected);
+        }
+        for event in &snapshot.events {
+            let sender = match event {
+                EventSnapshot::AgentMessage { sender, .. }
+                | EventSnapshot::Followup { sender, .. }
+                | EventSnapshot::ComplaintResponse {
+                    responder: sender, ..
+                } => sender.as_deref(),
+                _ => None,
+            };
+            if let Some(error) = sender.and_then(|sender| malformed_agents.get(sender)) {
+                return Err(error.clone());
+            }
         }
         Ok(snapshot)
     }
@@ -587,7 +612,9 @@ impl ExecutionSnapshot {
 pub struct ModelCapabilities {
     pub model: String,
     pub resolved_model: Option<String>,
+    pub is_default: bool,
     pub hidden: bool,
+    pub access_programs: Option<Vec<String>>,
     pub supported_efforts: Vec<String>,
     pub default_effort: Option<String>,
     pub priority: bool,

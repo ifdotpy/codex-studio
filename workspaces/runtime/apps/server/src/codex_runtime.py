@@ -44,6 +44,7 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
@@ -450,6 +451,17 @@ class SubmissionUnknown(ResponseTimeout):
         self.submitted = submitted
 
 
+def app_server_launch_environment(*, home=None, isolated=False):
+    """Build the exact ambient environment used to launch a Codex AppServer."""
+    env = os.environ.copy()
+    if home is not None:
+        env["CODEX_HOME"] = str(home)
+    if isolated:
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_API_KEY", None)
+    return env
+
+
 class AppServer:
     WRITE_TIMEOUT = 5
     CALLBACK_QUEUE_LIMIT = PROVIDER_CALLBACK_QUEUE_LIMIT
@@ -506,12 +518,8 @@ class AppServer:
         from codex_log_rotation import RotatingLog
         self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
         command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
-        env = os.environ.copy()
-        if home is not None:
-            env["CODEX_HOME"] = str(home)
+        env = app_server_launch_environment(home=home, isolated=isolated)
         if isolated:
-            env.pop("OPENAI_API_KEY", None)
-            env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
         self.provider_options = (provider_options or {}).get("claudeOptions", {})
         if provider == "claude" and process_factory is None:
@@ -1709,6 +1717,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
+                CREATE INDEX IF NOT EXISTS runtime_events_agent_epoch_status_created
+                  ON runtime_events(agent,epoch,status,created,id);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
@@ -5595,11 +5605,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         assets = assets or []
         if (
             not isinstance(text, str)
-            or len(text) > 32000
+            or len(text) > MAX_MANAGED_MESSAGE_CODEPOINTS
             or (not text.strip() and not assets)
         ):
             raise ValueError(
-                "Message must have text or attachments, at most 32000 characters"
+                f"Message must have text or attachments, at most {MAX_MANAGED_MESSAGE_CODEPOINTS} characters"
             )
         if delivery not in {"queue", "steer", "after_tool", "after_turn"}:
             raise ValueError("Choose queue, steer, after_tool or after_turn")

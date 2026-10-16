@@ -1,12 +1,22 @@
 //! Persisted agent creation and management.
+//!
+//! Project creation uses the local server identity supplied by its caller and
+//! falls back to the persisted agent `serverId` when that identity is absent.
+//! If neither exists, creation fails before writing the project. This path does
+//! not create identity files: it depends on the runtime's existing identity
+//! source. The store-held identity from `origin/fix/rust-reads-no-writer` will
+//! provide the authoritative value once that change is merged.
 mod operations;
+pub(crate) use operations::DEFAULT_LEAD_MODEL;
 pub use operations::*;
+pub(crate) use operations::{image_provision_is_current, persist_image_provision_failure};
+pub(crate) use operations::{set_image_workspace_fields, set_vm_workspace_fields};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
-    SyncDocumentsRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, RuntimeStore,
+    StoreError, SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -24,8 +34,14 @@ pub enum MutationError {
     LeadRequired,
     #[error("A rename request id is required")]
     RequestIdRequired,
-    #[error("Not implemented: requires provider-session/title-generation")]
-    TitleGenerationUnavailable,
+    #[error("Invalid host agent creation field: {0}")]
+    InvalidCreation(&'static str),
+    #[error("Not implemented: requires {0}")]
+    CapabilityUnavailable(&'static str),
+    #[error("The account or project changed; reload before creating the agent")]
+    IdentityChanged,
+    #[error("Internal server error")]
+    Internal,
     #[error("The team changed. Reload before saving")]
     Stale,
     #[error("Switch this chat to another account before disabling its current account")]
@@ -40,6 +56,18 @@ pub enum MutationError {
 pub type CreateError = MutationError;
 pub type RenameError = MutationError;
 pub type SettingsError = MutationError;
+
+pub(crate) fn canonical_project_directory(path: &std::path::Path) -> Result<String, &'static str> {
+    let path = path
+        .canonicalize()
+        .map_err(|_| "Select an existing project directory")?;
+    if !path.is_dir() {
+        return Err("Select an existing project directory");
+    }
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or("Select an existing project directory")
+}
 
 fn new_id() -> Result<String, CreateError> {
     let mut bytes = [0_u8; 16];
@@ -95,15 +123,13 @@ pub fn mode_fields(record: &mut Value) {
 }
 
 /// Use the shared canonical renderer builder for every agent publication.
-fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
+pub(crate) fn sync_projection(
+    transaction: &Transaction<'_>,
+    record: &Value,
+) -> Result<Value, StoreError> {
     let mut record = record.clone();
     mode_fields(&mut record);
-    let server_id = transaction
-        .path()
-        .and_then(|path| std::path::Path::new(path).parent()?.to_str())
-        .map(crate::sync_entity_context::local_server_id)
-        .transpose()?
-        .flatten();
+    let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     let context =
         crate::sync_entity_context::agent_view_context(transaction, &record, server_id.as_deref())?;
     crate::sync_views::agent_entity_view(&record, &context)
@@ -281,12 +307,28 @@ pub(crate) fn ensure_project(
         .get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default");
+    let local_server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+    let server = local_server_id
+        .as_deref()
+        .or_else(|| agent.get("serverId").and_then(Value::as_str))
+        .filter(|server| !server.is_empty())
+        .ok_or_else(|| StoreError::SchemaMismatch("new lead has no server identity".to_owned()))?;
     let name = std::path::Path::new(path)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(path);
-    let project = json!({"id":path,"path":path,"name":name,"created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,"accountKey":account,"accountRevision":1});
+    let project = json!({
+        "id":path,
+        "path":path,
+        "name":name,
+        "created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
+        "accountKey":account,
+        "accountRevision":1,
+        "homeServerId":server,
+        "locations":[{"serverId":server,"path":path,"projectId":path}],
+        "locationsRevision":0
+    });
     transaction
         .execute(
             "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
@@ -329,6 +371,7 @@ fn load_open_record(
 
 /// Persist a lead and its first pending message atomically. The caller supplies
 /// the fully validated, product-shaped record and controls account admission.
+#[cfg(test)]
 fn create_agent(
     transaction: &Transaction<'_>,
     id: &str,
@@ -337,7 +380,18 @@ fn create_agent(
     created: f64,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
-    if !validate("AgentRecordResponse", &record) {
+    create_agent_with_identity(transaction, id, prompt, record, created, validate)
+}
+
+fn create_agent_with_identity(
+    transaction: &Transaction<'_>,
+    id: &str,
+    prompt: &str,
+    record: Value,
+    created: f64,
+    validate: impl Fn(&str, &Value) -> bool,
+) -> Result<Value, CreateError> {
+    if !validate("PersistedAgentRecord", &record) {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
             id: id.to_owned(),
@@ -354,7 +408,14 @@ fn create_agent(
     } else {
         AgentStatus::Queued
     };
-    if agent.id.0 != id || agent.root_id.0 != id || agent.status != expected_status {
+    let valid_root = if record.get("isLead").and_then(Value::as_bool) == Some(true)
+        || record.get("parentId").is_none_or(Value::is_null)
+    {
+        agent.root_id.0 == id
+    } else {
+        !agent.root_id.0.is_empty()
+    };
+    if agent.id.0 != id || !valid_root || agent.status != expected_status {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
             id: id.to_owned(),
@@ -364,7 +425,13 @@ fn create_agent(
         ensure_project(transaction, &record)?;
     }
     AgentRepository::put(transaction, &agent)?;
-    let projection = publish_agent(transaction, &record)?;
+    let id = record
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
+    let deleted = crate::event_write::truthy(record.get("deletedAt"));
+    let projection = sync_projection(transaction, &record)?;
+    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
     if !draft {
         let event_id = format!("{id}:initial");
         let inserted = crate::event_write::enqueue_event(
@@ -555,7 +622,7 @@ fn rename(
     }
     let Some(name) = name else {
         return Err(if request_id.is_some() {
-            RenameError::TitleGenerationUnavailable
+            RenameError::InvalidCreation("name")
         } else {
             RenameError::RequestIdRequired
         });
@@ -585,15 +652,20 @@ pub(crate) use prepared_python_test_support::prepared_python;
 
 #[cfg(test)]
 mod tests {
-    use super::create_agent;
+    use super::{create_agent, ensure_project, replay_agent};
     use rusqlite::Connection;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
         super::prepared_python_test_support::prepared_python(source)
     }
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
+        create_schema(&connection);
+        connection
+    }
+
+    fn create_schema(connection: &Connection) {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
@@ -609,7 +681,6 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
             )
             .expect("agent-create tables exist");
-        connection
     }
 
     #[test]
@@ -696,7 +767,7 @@ mod tests {
         let record = json!({
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
-            "accountKey":"default", "isLead":true, "needsTitle":false, "autoWake":true,
+            "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
             "creationIntent":{"name":"Agent A","prompt":"Start the task"}
         });
         let created = create_agent(
@@ -738,6 +809,22 @@ mod tests {
                 ["id"],
             "agent-a"
         );
+        let project: String = connection
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id='/project'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("project projection exists");
+        let project = serde_json::from_str::<serde_json::Value>(&project)
+            .expect("project projection JSON")["value"]
+            .clone();
+        assert_eq!(project["homeServerId"], "server-a");
+        assert_eq!(
+            project["locations"],
+            json!([{"serverId":"server-a","path":"/project","projectId":"/project"}])
+        );
+        assert_eq!(project["locationsRevision"], 0);
 
         let tx = connection.transaction().expect("replay transaction starts");
         super::replay_agent(&tx, "agent-a", &record["creationIntent"], |_, _| true)
@@ -772,5 +859,158 @@ mod tests {
             )
             .expect("conflict does not change agent");
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn project_creation_uses_persisted_agent_server_id_without_local_identity() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction starts");
+        let agent = json!({
+            "id":"agent-a",
+            "cwd":"/project",
+            "accountKey":"default",
+            "serverId":"persisted-server"
+        });
+
+        ensure_project(&transaction, &agent)
+            .expect("persisted agent identity supplies project location");
+
+        let payload: String = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id='/project'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("project sync projection exists");
+        let project =
+            serde_json::from_str::<Value>(&payload).expect("project projection JSON")["value"]
+                .clone();
+        assert_eq!(project["homeServerId"], "persisted-server");
+        assert_eq!(
+            project["locations"],
+            json!([{
+                "serverId":"persisted-server",
+                "path":"/project",
+                "projectId":"/project"
+            }])
+        );
+        assert_eq!(project["locationsRevision"], 0);
+    }
+
+    #[test]
+    fn creation_failpoints_rollback_every_row_and_retry_once_after_restart() {
+        let failure_points = [
+            ("agent row", "runtime_agents", "INSERT"),
+            ("sync entity and sequence", "sync_entities", "INSERT"),
+            ("initial event", "runtime_events", "INSERT"),
+            ("event queue metadata", "runtime_event_meta", "INSERT"),
+            ("agent queue", "runtime_agents", "UPDATE"),
+        ];
+        for (index, (boundary, table, operation)) in failure_points.into_iter().enumerate() {
+            let state = tempfile::tempdir().expect("isolated state directory");
+            let path = state
+                .path()
+                .join(format!("creation-failpoint-{index}.sqlite3"));
+            let mut connection = Connection::open(&path).expect("failure database opens");
+            create_schema(&connection);
+            connection
+                .execute_batch(&format!(
+                    "CREATE TRIGGER injected_creation_failure AFTER {operation} ON {table}
+                     BEGIN SELECT RAISE(ABORT,'injected creation failure'); END;"
+                ))
+                .expect("install targeted failpoint");
+            let record = json!({
+                "id":"agent-failpoint", "rootId":"parent", "parentId":"parent", "epoch":0,
+                "status":"queued", "name":"Agent", "prompt":"Task", "cwd":"/project",
+                "accountKey":"default", "isLead":false, "role":"implementer",
+                "needsTitle":false, "autoWake":true,
+                "creationIntent":{"name":"Agent","prompt":"Task"}
+            });
+            let transaction = connection
+                .transaction()
+                .expect("start failpoint transaction");
+            assert!(
+                create_agent(
+                    &transaction,
+                    "agent-failpoint",
+                    "Task",
+                    record.clone(),
+                    10.0,
+                    |_, _| true
+                )
+                .is_err(),
+                "failpoint {index} ({boundary}): {table} {operation}"
+            );
+            drop(transaction);
+            drop(connection);
+            let connection = Connection::open(&path).expect("restart after failed transaction");
+            for table in [
+                "runtime_agents",
+                "sync_entities",
+                "runtime_events",
+                "runtime_event_meta",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .expect("count rows after rollback");
+                assert_eq!(count, 0, "failpoint {index} left rows in {table}");
+            }
+            connection
+                .execute_batch("DROP TRIGGER injected_creation_failure")
+                .expect("remove failpoint");
+            drop(connection);
+            let mut connection = Connection::open(&path).expect("restart before retry");
+            let transaction = connection.transaction().expect("start retry transaction");
+            create_agent(
+                &transaction,
+                "agent-failpoint",
+                "Task",
+                record.clone(),
+                10.0,
+                |_, _| true,
+            )
+            .expect("retry succeeds");
+            transaction.commit().expect("retry commits");
+            drop(connection);
+            let mut connection = Connection::open(&path).expect("restart before replay");
+            let transaction = connection.transaction().expect("start replay transaction");
+            replay_agent(
+                &transaction,
+                "agent-failpoint",
+                &record["creationIntent"],
+                |_, _| true,
+            )
+            .expect("same creation intent replays");
+            transaction.commit().expect("replay commits");
+            let (agents, events, projections): (i64, i64, i64) = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM runtime_agents),
+                            (SELECT COUNT(*) FROM runtime_events),
+                            (SELECT COUNT(*) FROM sync_entities)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("count successful retry rows");
+            assert_eq!(
+                (agents, events, projections),
+                (1, 1, 1),
+                "failpoint {index}"
+            );
+            let (event_status, queue_metadata): (String, i64) = connection
+                .query_row(
+                    "SELECT e.status,
+                            (SELECT COUNT(*) FROM runtime_event_meta WHERE id='agent-failpoint:initial')
+                     FROM runtime_events e WHERE e.id='agent-failpoint:initial'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("queued event and metadata survive retry");
+            assert_eq!(event_status, "pending");
+            assert_eq!(queue_metadata, 1);
+            drop(connection);
+            std::fs::remove_file(path).expect("remove failpoint database");
+        }
     }
 }

@@ -1,0 +1,32 @@
+{
+  "source": "Hand-authored reset-credit HTTP contract replies; no live account or provider.",
+  "boundaryOnly": true,
+  "rpcReplies": {
+    "account/rateLimits/read": {
+      "direction": "in",
+      "responseFor": "account/rateLimits/read",
+      "timestamp": 0,
+      "message": {
+        "result": {
+          "accountId": "fixture-account",
+          "rateLimitResetCredits": {
+            "availableCount": 1,
+            "credits": [
+              {
+                "id": "fixture-credit",
+                "status": "available",
+                "resetType": "codexRateLimits"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "account/rateLimitResetCredit/consume": {
+      "direction": "in",
+      "responseFor": "account/rateLimitResetCredit/consume",
+      "timestamp": 0,
+      "message": { "result": { "outcome": "reset" } }
+    }
+  }
+}

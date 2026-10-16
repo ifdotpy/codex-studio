@@ -65,7 +65,7 @@ pub fn capture(
     source: CaptureSource,
     now: f64,
 ) -> Result<u64, BudgetError> {
-    let state = atomic(tx, || {
+    let (state, changed) = atomic(tx, || {
         let snapshot = snapshot(tx, agent, now)?;
         let observation = UsageObservation::from_record(&snapshot, params, at, source)?;
         let previous = BudgetRepository::usage(tx, observation.key())?;
@@ -73,9 +73,16 @@ pub fn capture(
         if let Some(row) = &decision.usage {
             BudgetRepository::insert_usage(tx, row)?;
         }
-        save_state(tx, snapshot.agent_id(), &decision.state)?;
-        Ok(decision.state)
+        if decision.changed {
+            save_state(tx, snapshot.agent_id(), &decision.state)?;
+        }
+        Ok((decision.state, decision.changed))
     })?;
+    if !changed {
+        return state.patch()["tokensUsed"]
+            .as_u64()
+            .ok_or_else(|| BudgetError::Invalid("runtime_budget/spent".into()));
+    }
     let patch = state.patch();
     agent["tokensUsed"] = patch["tokensUsed"].clone();
     agent["tokenUsageAccounting"] = patch["tokenUsageAccounting"].clone();

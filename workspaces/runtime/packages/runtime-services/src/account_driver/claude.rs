@@ -105,7 +105,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .iter()
                 .any(|(field, expected)| {
                     existing.get(*field).is_some_and(|v| {
-                        python_truthy(v) && v.as_str() != expected.map(String::as_str)
+                        truthy_value(v) && v.as_str() != expected.map(String::as_str)
                     })
                 })
             {
@@ -135,7 +135,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             });
             let same_login = local
                 .get("accountId")
-                .is_none_or(|v| !python_truthy(v) || v.as_str() == metadata.account_id.as_deref());
+                .is_none_or(|v| !truthy_value(v) || v.as_str() == metadata.account_id.as_deref());
             if local.get("provider") == Some(&json!("claude")) && same_paths && same_login {
                 if local_options.is_some_and(|o| !o.is_empty() && o != &options) {
                     return Err(ClaudeAccountError::SettingsChanged);
@@ -239,6 +239,26 @@ pub fn login_binary(
 ) -> Option<PathBuf> {
     resolve_login_binary(None, environment)
 }
+
+/// Resolve the executable selected by a Claude account profile, using the
+/// same profile/override/PATH policy as the account status probe.
+pub fn resolve_claude_binary(profile: &Value) -> Option<String> {
+    let environment = env::vars_os().collect();
+    resolve_claude_binary_with_environment(profile, &environment)
+}
+
+pub(crate) fn resolve_claude_binary_with_environment(
+    profile: &Value,
+    environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+) -> Option<String> {
+    let configured = profile
+        .pointer("/claudeOptions/binaryPath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    resolve_login_binary(configured, environment)
+        .map(|binary| binary.to_string_lossy().into_owned())
+}
+
 pub(crate) fn resolve_login_binary(
     configured: Option<&str>,
     environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,

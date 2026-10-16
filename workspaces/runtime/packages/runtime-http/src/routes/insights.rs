@@ -12,7 +12,7 @@ use studio_runtime_services::analytics::{self, AnalyticsOptions};
 use studio_runtime_services::costs::{self, CostsError};
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
@@ -31,7 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/session-cost",
-            OperationStatus::partial(&SESSION_COST_DEPENDENCIES),
+            OperationStatus::Implemented,
             session_cost,
         ),
     ])
@@ -46,20 +46,24 @@ async fn analytics_read(
     State(state): State<HttpState>,
     query: QueryParams,
 ) -> Result<Response, ApiError> {
-    let options: AnalyticsOptions = serde_json::from_value(Value::Object(query.into_typed()))
-        .map_err(|_| ApiError::internal())?;
+    let options: AnalyticsOptions =
+        serde_json::from_value(Value::Object((*query.into_typed()).clone()))
+            .map_err(|_| ApiError::internal())?;
     let export = options.export;
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let value = analytics::read(&store, &options)?;
-        if export {
-            Ok(ReadBody::Export(serde_json::to_vec(&value)?))
-        } else {
-            Ok(ReadBody::Json(value))
-        }
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/insights",
+        move || {
+            let value = analytics::read(&store, &options)?;
+            if export {
+                Ok(ReadBody::Export(serde_json::to_vec(&value)?))
+            } else {
+                Ok(ReadBody::Json(value))
+            }
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_analytics_error)?;
@@ -101,7 +105,7 @@ async fn analytics_read(
 async fn session_cost(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     let agent = query.nonempty_str("agent").unwrap_or_default().to_owned();
     if agent.is_empty() || !valid_agent_id(&agent) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
@@ -124,9 +128,10 @@ async fn session_cost(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
-    let value = tokio::task::spawn_blocking(move || {
-        costs::session_cost_with_accounts(&store, &agent, &account_providers)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/insights",
+        move || costs::session_cost_with_accounts(&store, &agent, &account_providers),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_costs_error)?;
@@ -141,8 +146,10 @@ fn cost_dependency(dependency: &'static str) -> ApiError {
             .iter()
             .any(|candidate| candidate.name() == dependency)
     );
-    dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        format!("Not implemented: requires {dependency}"),
+    )
 }
 
 fn map_costs_error(error: CostsError) -> ApiError {
@@ -150,14 +157,10 @@ fn map_costs_error(error: CostsError) -> ApiError {
         CostsError::Dependency(dependency) => cost_dependency(dependency),
         CostsError::Analytics(error) => map_analytics_error(error),
         CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::MissingFamily) => {
-            dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal())
+            cost_dependency("store-bootstrap/analytics-usage-schema")
         }
         CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::InvalidStoredRow(id)) => {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object analytics_usage/{id}"),
-            )
+            ApiError::invalid_stored("analytics_usage", &id)
         }
         CostsError::Usage(
             studio_runtime_store::CostUsageRepositoryError::Sqlite(_)
@@ -182,14 +185,12 @@ fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
         analytics::AnalyticsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Select an agent for analytics")
         }
-        analytics::AnalyticsError::InvalidStoredObject(object) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
-        ),
-        analytics::AnalyticsError::InvalidStoredRow { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
+        analytics::AnalyticsError::InvalidStoredObject(object) => {
+            ApiError::invalid_stored(object, "<record>")
+        }
+        analytics::AnalyticsError::InvalidStoredRow { table, id } => {
+            ApiError::invalid_stored(table, &id)
+        }
         analytics::AnalyticsError::Read(_)
         | analytics::AnalyticsError::Sqlite(_)
         | analytics::AnalyticsError::Serialization(_) => ApiError::internal(),

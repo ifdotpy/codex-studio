@@ -80,6 +80,7 @@
           {
             "model": "model",
             "resolved_model": "alias",
+            "is_default": false,
             "hidden": false,
             "supported_efforts": ["low", "medium", "high"],
             "default_effort": "medium",
@@ -127,6 +128,7 @@
           {
             "model": "model",
             "resolved_model": "alias",
+            "is_default": false,
             "hidden": false,
             "supported_efforts": ["low", "medium", "high"],
             "default_effort": "medium",
@@ -1386,6 +1388,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": true,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -1423,6 +1426,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": null,
@@ -1464,6 +1468,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -1770,6 +1775,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2028,6 +2034,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2059,6 +2066,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2086,6 +2094,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2117,6 +2126,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2144,6 +2154,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2175,6 +2186,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2202,6 +2214,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2233,6 +2246,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2260,6 +2274,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2291,6 +2306,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2318,6 +2334,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2349,6 +2366,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2376,6 +2394,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2407,6 +2426,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2430,6 +2450,7 @@
             {
               "model": "model",
               "resolved_model": "alias",
+              "is_default": false,
               "hidden": false,
               "supported_efforts": ["low", "medium", "high"],
               "default_effort": "medium",
@@ -2794,6 +2815,7 @@
           "value": "renamed"
         }
       ],
+      "refusal_location": "agents/sender/id",
       "deviation": "invalid-stored-input"
     },
     {
@@ -4507,6 +4529,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -4582,6 +4605,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -4657,6 +4681,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -4732,6 +4757,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -4807,6 +4833,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -4882,6 +4909,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",
@@ -5002,6 +5030,7 @@
               {
                 "model": "model",
                 "resolved_model": "alias",
+                "is_default": false,
                 "hidden": false,
                 "supported_efforts": ["low", "medium", "high"],
                 "default_effort": "medium",

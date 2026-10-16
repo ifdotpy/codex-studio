@@ -76,8 +76,7 @@ test.describe("legacy schema mismatch", () => {
     let activeHash = oldHash;
     let pendingEntitySequence;
     let pendingEntityChanges;
-    let pendingEntityDeliveriesRemaining = 0;
-    let pendingChangeEventResolve;
+    let newPage;
     let allowPendingChangeEventResolve;
     let allowPendingChangeEventPromise;
     let allowPendingChangeEvent = false;
@@ -134,8 +133,6 @@ test.describe("legacy schema mismatch", () => {
         });
         let body = "";
         let workspaceId;
-        let injectedEntitySequence;
-        let resolveChangeEvent;
         if (initialResources.length > 0) {
           const identity = await fetch(
             new URL("/api/sync/identity", requestUrl),
@@ -152,51 +149,45 @@ test.describe("legacy schema mismatch", () => {
         }
         if (
           streamHash === nextHash &&
+          newPage &&
+          route.request().frame().page() === newPage &&
+          resources.some((resource) => resource.kind === "state") &&
           pendingEntitySequence !== undefined &&
-          pendingEntityDeliveriesRemaining > 0
+          pendingEntityChanges !== undefined
         ) {
           const entityChanges = pendingEntityChanges;
           const entitySequence = pendingEntitySequence;
           if (!allowPendingChangeEvent) await allowPendingChangeEventPromise;
-          if (!workspaceId) {
-            const identity = await fetch(
-              new URL("/api/sync/identity", requestUrl),
-            );
-            ({ workspaceId } = await identity.json());
+          if (pendingEntitySequence === entitySequence) {
+            if (!workspaceId) {
+              const identity = await fetch(
+                new URL("/api/sync/identity", requestUrl),
+              );
+              ({ workspaceId } = await identity.json());
+            }
+            body += protocol3SseEvent("resources", {
+              protocol: 3,
+              workspaceId,
+              epoch: "schema-cache-test",
+              revision: 2,
+              reason: "change",
+              resources: [{ kind: "state" }],
+              resourceVersions: [
+                {
+                  resource: { kind: "state" },
+                  revision: entityChanges.through,
+                  entityChanges,
+                },
+              ],
+            });
+            entityChangePages.add(newPage);
           }
-          body += protocol3SseEvent("resources", {
-            protocol: 3,
-            workspaceId,
-            epoch: "schema-cache-test",
-            revision: 2,
-            reason: "change",
-            resources: [{ kind: "state" }],
-            resourceVersions: [
-              {
-                resource: { kind: "state" },
-                revision: entityChanges.through,
-                entityChanges,
-              },
-            ],
-          });
-          pendingEntityDeliveriesRemaining--;
-          if (pendingEntityDeliveriesRemaining === 0) {
-            injectedEntitySequence = entitySequence;
-            resolveChangeEvent = pendingChangeEventResolve;
-            pendingChangeEventResolve = undefined;
-            pendingEntitySequence = undefined;
-            pendingEntityChanges = undefined;
-          }
-          entityChangePages.add(route.request().frame().page());
         }
-        const response = await route.fulfill({
+        return route.fulfill({
           status: 200,
           headers: { "content-type": "text/event-stream" },
           body: apiSchemaHandshakeSse(body, { hash: activeHash }),
         });
-        if (injectedEntitySequence !== undefined)
-          resolveChangeEvent?.(injectedEntitySequence);
-        return response;
       }
       if (
         requestUrl.pathname === "/api/sync/pull" &&
@@ -411,7 +402,7 @@ test.describe("legacy schema mismatch", () => {
         }),
       ).toBeVisible({ timeout: 20_000 });
       const oldPage = page;
-      const newPage = await context.newPage();
+      newPage = await context.newPage();
       variantPages.add(newPage);
       newPage.on("pageerror", (error) => errors.push(error.message));
       newPage.on("console", (message) => {
@@ -633,13 +624,9 @@ test.describe("legacy schema mismatch", () => {
         through: entityChangeCursor,
         documents: entityChangeDocuments,
       };
-      pendingEntityDeliveriesRemaining = 2;
       allowPendingChangeEvent = false;
       allowPendingChangeEventPromise = new Promise((resolve) => {
         allowPendingChangeEventResolve = resolve;
-      });
-      const changeEventInjected = new Promise((resolve) => {
-        pendingChangeEventResolve = resolve;
       });
       await newPage.reload();
       await expect(
@@ -658,14 +645,20 @@ test.describe("legacy schema mismatch", () => {
       allowPendingChangeEvent = true;
       allowPendingChangeEventResolve?.();
       allowPendingChangeEventResolve = undefined;
-      await changeEventInjected;
-      assert.ok(
-        entityChangePages.has(newPage),
-        "the valid tab receives the fixture's separate entity change event",
-      );
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ checkpoint: Number(mutationEntity.seq) });
+      pendingEntitySequence = undefined;
+      pendingEntityChanges = undefined;
+      assert.ok(
+        entityChangePages.has(newPage),
+        "the valid tab applied the fixture's entity change event",
+      );
+      assert.deepEqual(
+        errors,
+        [],
+        "the valid tab applies the entity change without console errors",
+      );
       await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
         timeout: 30_000,
       });

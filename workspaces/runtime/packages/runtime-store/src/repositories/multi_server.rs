@@ -26,7 +26,7 @@ pub struct MultiServerRepository;
 
 impl MultiServerRepository {
     pub fn audit(connection: &Connection) -> StoreResult<Value> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT CAST(seq AS TEXT),client,actor,action,created FROM runtime_access_audit ORDER BY seq DESC LIMIT 100",
         )?;
         let records = statement.query_map([], |row| {

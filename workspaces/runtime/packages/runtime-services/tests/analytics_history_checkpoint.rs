@@ -4,16 +4,18 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::sync::{OnceLock, atomic::AtomicBool};
+use std::thread;
 use studio_runtime_services::analytics_history::{
     self as history, BatchLimits, HistoryBudgetSink, HistoryError, HistorySnapshot, RolloutPath,
 };
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
-use studio_runtime_store::{AnalyticsRepository, RuntimeStore};
+use studio_runtime_store::{AnalyticsRepository, RuntimeStore, StoreError, TranscriptRepository};
 
 struct Budget;
 impl HistoryBudgetSink for Budget {
-    fn capture(&self, _: &Value, _: &Value, _: f64) -> Result<(), HistoryError> {
+    fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
         Ok(())
     }
 }
@@ -133,6 +135,138 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         .expect("row");
     assert_eq!(turn["status"], "completed");
     assert_eq!(turn["durationMs"], 1000.);
+}
+
+#[test]
+fn committed_read_snapshot_finishes_while_store_writer_is_held() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let (root, _) = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let (writer_started, started) = mpsc::channel();
+    let (release_writer, release) = mpsc::channel();
+    let (reader_done, read_done) = mpsc::channel();
+    thread::scope(|scope| {
+        let writer_store = &store;
+        let writer = scope.spawn(move || {
+            writer_store
+                .transaction(|tx| {
+                    tx.execute("UPDATE runtime_agents SET record=record WHERE id='a'", [])?;
+                    writer_started.send(()).expect("writer gate");
+                    release.recv().expect("writer release");
+                    Ok(())
+                })
+                .expect("writer commit");
+        });
+        started
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer holds transaction");
+        let reader_store = &store;
+        scope.spawn(move || {
+            reader_done
+                .send(reader_store.read_transaction(|tx| {
+                    Ok(
+                        tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
+                            r.get::<_, String>(0)
+                        })?,
+                    )
+                }))
+                .expect("reader result receiver");
+        });
+        let result = read_done.recv_timeout(Duration::from_secs(5));
+        release_writer.send(()).expect("release writer");
+        writer.join().expect("writer task");
+        assert_eq!(
+            result
+                .expect("reader completed before writer release")
+                .expect("read"),
+            "a"
+        );
+    });
+}
+
+#[test]
+fn unchanged_transcript_projection_performs_no_sql_writes() {
+    let (root, _) = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let payload = json!({
+        "agent":{"id":"a"},
+        "items":[{"id":"item-1","role":"assistant","text":"stable"}]
+    });
+    let writes = || {
+        store.transaction(|tx| {
+            let before = tx.total_changes();
+            TranscriptRepository::pull_payload(tx, "transcript:a", 0, &payload, false, Some(1))
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            Ok(tx.total_changes() - before)
+        })
+    };
+    assert!(writes().expect("initial projection") > 0);
+    assert_eq!(writes().expect("same projection"), 0);
+}
+
+#[test]
+fn main_store_write_runs_between_separately_scheduled_history_batches() {
+    let (root, agent) = fixture();
+    let path = file(root.path(), &records(), b"");
+    let cancel = AtomicBool::new(false);
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let first = history::prepare(
+        HistorySnapshot::from_records(agent.clone(), checkpoint(&store)).expect("snapshot"),
+        root.path(),
+        RolloutPath::Found(path.clone()),
+        BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
+        10.0,
+        &cancel,
+    )
+    .expect("first batch prepares");
+
+    let (schedule_write, write_scheduled) = mpsc::channel();
+    let (write_committed, committed) = mpsc::channel();
+    thread::scope(|scope| {
+        let agent_id = agent["id"].as_str().expect("agent id").to_owned();
+        let store_ref = &store;
+        let task = scope.spawn(move || {
+            write_scheduled.recv().expect("queued write is scheduled");
+            store_ref
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=record WHERE id=?",
+                        [&agent_id],
+                    )?;
+                    Ok(())
+                })
+                .expect("queued main-store write commits");
+            write_committed
+                .send(())
+                .expect("commit receipt is received");
+        });
+
+        first
+            .commit(&store, &Budget, 10.0)
+            .expect("first batch commits");
+        schedule_write.send(()).expect("main write is queued");
+        committed
+            .recv()
+            .expect("main write commits before next batch");
+
+        let second = history::prepare(
+            HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
+            root.path(),
+            RolloutPath::Found(path),
+            BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
+            11.0,
+            &cancel,
+        )
+        .expect("second batch prepares");
+        second
+            .commit(&store, &Budget, 11.0)
+            .expect("second batch commits");
+        task.join().expect("queued writer exits");
+    });
+
+    let stored = checkpoint(&store).expect("history checkpoint persists");
+    assert_eq!(stored["status"], "catchingUp");
 }
 #[test]
 fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
@@ -286,6 +420,212 @@ fn stale_agent_budget_failure_and_cancellation_write_nothing() {
         .expect("epoch advance");
     assert!(batch.commit(&store, &Budget, 200.).is_err());
     assert!(checkpoint(&store).is_none());
+}
+
+#[test]
+fn history_usage_is_admitted_once_per_bounded_page() {
+    use std::sync::Mutex;
+    #[derive(Default)]
+    struct Pages(Mutex<Vec<Vec<String>>>);
+    impl HistoryBudgetSink for Pages {
+        fn capture_page(
+            &self,
+            captures: &[(Value, Value, f64)],
+            _: f64,
+        ) -> Result<(), HistoryError> {
+            self.0.lock().expect("page counts").push(
+                captures
+                    .iter()
+                    .map(|(_, params, _)| {
+                        params["responseId"]
+                            .as_str()
+                            .expect("captured history page includes response ID")
+                            .to_owned()
+                    })
+                    .collect(),
+            );
+            Ok(())
+        }
+    }
+    let (root, agent) = fixture();
+    let mut lines = records();
+    for response in ["r1", "r2"] {
+        lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{
+            "thread_id":"thread","response_id":response,"usage":{"total_tokens":2},
+            "thread_token_usage":{"total_tokens":2}
+        }}));
+    }
+    let path = file(root.path(), &lines, b"");
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let batch = history::prepare(
+        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        root.path(),
+        RolloutPath::Found(path),
+        BatchLimits::new(1024 * 1024, 16).expect("page limit"),
+        200.,
+        &AtomicBool::new(false),
+    )
+    .expect("batch");
+    let pages = Pages::default();
+    batch.commit(&store, &pages, 200.).expect("commit");
+    assert_eq!(
+        *pages.0.lock().expect("page counts"),
+        vec![vec!["r1".to_owned(), "r2".to_owned()]],
+        "two usage events must reach one budget page call"
+    );
+}
+
+#[test]
+fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use studio_runtime_services::analytics_history::StoreHistoryBudgetSink;
+    let (root, agent) = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let commits = Arc::new(AtomicUsize::new(0));
+    let observed = commits.clone();
+    store.set_commit_notifier(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    let captures = ["r1", "r2"].map(|response| {
+        (
+            agent.clone(),
+            json!({
+                "threadId":"thread", "turnId":"turn", "responseId":response,
+                "rawTokenUsageRecord":{"response_id":response},
+                "requestUsage":{"totalTokens":2},
+                "tokenUsage":{"total":{"totalTokens":2},"last":{"totalTokens":2}}
+            }),
+            5.0,
+        )
+    });
+    let sink = StoreHistoryBudgetSink::new(&store);
+    sink.capture_page(&captures, 200.).expect("budget page");
+    assert_eq!(
+        commits.load(Ordering::SeqCst),
+        1,
+        "one writer commit for the page"
+    );
+    sink.capture_page(&captures, 200.)
+        .expect("idempotent replay");
+    assert_eq!(
+        commits.load(Ordering::SeqCst),
+        1,
+        "replay must not rewrite budget rows"
+    );
+    let (rows, tokens) = store
+        .read_transaction(|tx| {
+            Ok((
+                tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                tx.query_row(
+                    "SELECT COALESCE(sum(tokens),0) FROM runtime_budget_usage",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .expect("read budget receipts");
+    assert_eq!((rows, tokens), (2, 4));
+}
+
+#[test]
+fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
+    use studio_runtime_services::analytics_history::{
+        HistoryClock, HistoryCollector, StoreHistoryBudgetSink,
+    };
+    let (root, agent) = fixture();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).expect("fixture sessions");
+    let path = sessions.join("rollout-fixture-thread.jsonl");
+    let mut lines = records();
+    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{
+        "thread_id":"thread","response_id":"history-response",
+        "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+    }}));
+    let mut bytes = Vec::new();
+    for line in &lines {
+        bytes.extend(serde_json::to_vec(line).expect("rollout line"));
+        bytes.push(b'\n');
+    }
+    fs::write(&path, bytes).expect("fixture rollout");
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let cancel = AtomicBool::new(false);
+    let mut collector = HistoryCollector::default();
+    let budget = StoreHistoryBudgetSink::new(&store);
+    let roster = [agent];
+    let profile = |_: &str| Ok(root.path().to_path_buf());
+
+    assert!(
+        collector
+            .step(
+                &store,
+                &roster,
+                profile,
+                HistoryClock {
+                    observed_at: 200.0,
+                    monotonic: 10.0
+                },
+                &cancel,
+                &budget,
+            )
+            .expect("first import tick")
+    );
+    let read_budget = || {
+        store
+            .read_transaction(|tx| {
+                Ok((
+                    tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                    tx.query_row(
+                        "SELECT COALESCE(sum(tokens),0) FROM runtime_budget_usage",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                ))
+            })
+            .expect("budget receipts")
+    };
+    assert_eq!(read_budget(), (1, 23));
+    let analytics = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
+        .expect("analytics database");
+    let read_analytics = || {
+        analytics
+            .query_row(
+                "SELECT count(*) FROM analytics_usage WHERE json_extract(record,'$.responseId')='history-response'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("analytics usage")
+    };
+    assert_eq!(read_analytics(), 1);
+    assert_eq!(
+        checkpoint(&store).expect("history checkpoint")["importedRecords"],
+        4
+    );
+
+    let _replay_advanced = collector
+        .step(
+            &store,
+            &roster,
+            profile,
+            HistoryClock {
+                observed_at: 205.0,
+                monotonic: 15.0,
+            },
+            &cancel,
+            &budget,
+        )
+        .expect("replay tick");
+
+    assert_eq!(read_budget(), (1, 23));
+    assert_eq!(read_analytics(), 1);
+    assert_eq!(
+        checkpoint(&store).expect("history checkpoint")["importedRecords"],
+        4
+    );
 }
 
 #[test]
@@ -473,13 +813,24 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
     use studio_runtime_services::analytics_capture::{CaptureSource, PreparedCapture, capture};
     use studio_runtime_services::analytics_history_repair::migrate_budget;
     #[derive(Default)]
-    struct Receipts(Mutex<std::collections::BTreeSet<String>>);
+    struct Receipts {
+        ids: Mutex<std::collections::BTreeSet<String>>,
+        page_sizes: Mutex<Vec<usize>>,
+    }
     impl HistoryBudgetSink for Receipts {
-        fn capture(&self, _: &Value, p: &Value, _: f64) -> Result<(), HistoryError> {
-            self.0
+        fn capture_page(
+            &self,
+            captures: &[(Value, Value, f64)],
+            _: f64,
+        ) -> Result<(), HistoryError> {
+            self.page_sizes
                 .lock()
-                .expect("receipts")
-                .insert(p["responseId"].as_str().expect("response").into());
+                .expect("page sizes")
+                .push(captures.len());
+            let mut receipts = self.ids.lock().expect("receipts");
+            for (_, params, _) in captures {
+                receipts.insert(params["responseId"].as_str().expect("response").into());
+            }
             Ok(())
         }
     }
@@ -501,8 +852,9 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
     .expect("capture");
     store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{let raw:String=tx.query_row("SELECT record FROM analytics_usage LIMIT 1",[],|r|r.get(0))?;let base:Value=serde_json::from_str(&raw)?;for index in 1..65{let mut record=base.clone();record["id"]=json!(format!("usage-{index}"));record["responseId"]=json!(format!("r{index}"));Repo::write(tx,CaptureTable::Usage,&record)?;}tx.execute_batch("CREATE TRIGGER abort_migration BEFORE INSERT ON analytics_meta WHEN NEW.key LIKE 'budgetUsageMigrationV1:%' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;Ok(())}).expect("65 saved responses and failpoint");
     let receipts = Receipts::default();
-    assert!(migrate_budget(&store, &agent, &receipts).is_err());
-    assert_eq!(receipts.0.lock().expect("receipts").len(), 64);
+    assert!(migrate_budget(&store, &agent, &receipts, 200.).is_err());
+    assert_eq!(receipts.ids.lock().expect("receipts").len(), 64);
+    assert_eq!(*receipts.page_sizes.lock().expect("page sizes"), vec![64]);
     store
         .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
             tx.execute_batch("DROP TRIGGER abort_migration")?;
@@ -511,11 +863,19 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
         .expect("remove failpoint");
     drop(store);
     let store = RuntimeStore::open(Some(root.path())).expect("restart");
-    assert!(migrate_budget(&store, &agent, &receipts).expect("idempotent replay"));
-    assert_eq!(receipts.0.lock().expect("receipts").len(), 64);
-    assert!(migrate_budget(&store, &agent, &receipts).expect("last page"));
-    assert_eq!(receipts.0.lock().expect("receipts").len(), 65);
-    assert!(!migrate_budget(&store, &agent, &receipts).expect("complete"));
+    assert!(migrate_budget(&store, &agent, &receipts, 200.).expect("idempotent replay"));
+    assert_eq!(receipts.ids.lock().expect("receipts").len(), 64);
+    assert_eq!(
+        *receipts.page_sizes.lock().expect("page sizes"),
+        vec![64, 64]
+    );
+    assert!(migrate_budget(&store, &agent, &receipts, 200.).expect("last page"));
+    assert_eq!(receipts.ids.lock().expect("receipts").len(), 65);
+    assert_eq!(
+        *receipts.page_sizes.lock().expect("page sizes"),
+        vec![64, 64, 1]
+    );
+    assert!(!migrate_budget(&store, &agent, &receipts, 200.).expect("complete"));
 }
 
 #[path = "analytics_capture/common.rs"]
@@ -702,7 +1062,7 @@ fn conflicting_header_alias_does_not_authorize_a_foreign_file() {
 fn changed_consumed_range_is_refused_before_any_effect() {
     struct NoEffects;
     impl HistoryBudgetSink for NoEffects {
-        fn capture(&self, _: &Value, _: &Value, _: f64) -> Result<(), HistoryError> {
+        fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
             panic!("changed file must be refused before budget capture")
         }
     }

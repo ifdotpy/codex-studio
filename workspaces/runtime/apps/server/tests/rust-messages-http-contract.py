@@ -21,14 +21,17 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
+from entity_test_support import capacity_retry
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
 from http_backend_harness import (
+    BACKGROUND_OWNED_FIELDS,
     TimedHTTPContractTest,
     start_contract_backend,
     no_write_snapshot,
+    strip_owned_json_fields,
 )
 
 _fixture_spec = importlib.util.spec_from_file_location("messages_runtime_fixture", HERE / "runtime-contract.py")
@@ -191,7 +194,55 @@ def message_write_snapshot(path: Path, message_id: str, agent_id: str | None = N
             metadata.pop("contextManifest", None)
             metadata.pop("transcriptItemId", None)
             result["metadata"] = (result["metadata"][0], metadata)
+        if result["agent"]:
+            result["agent"] = (strip_owned_json_fields(
+                json.loads(result["agent"][0]), "record",
+                BACKGROUND_OWNED_FIELDS.get("runtime_agents", frozenset()),
+            ),)
+        if result["agent_projection"]:
+            result["agent_projection"] = (
+                strip_owned_json_fields(
+                    json.loads(result["agent_projection"][0]), "payload",
+                    BACKGROUND_OWNED_FIELDS.get("sync_entities", frozenset()),
+                ),
+                result["agent_projection"][1],
+            )
         return result
+
+
+def agent_snapshot_delta(before, after):
+    """Name agent fields that moved while a request snapshot was taken."""
+    def rows(snapshot):
+        result = {}
+        for database, tables in snapshot:
+            for table, columns, values in tables:
+                if table not in {"runtime_agents", "sync_entities"}:
+                    continue
+                for row in values:
+                    record = dict(zip(columns, row, strict=True))
+                    if table == "runtime_agents":
+                        key = record["id"]
+                        value = json.loads(record["record"])
+                    elif record.get("collection") == "agent":
+                        key = record["id"]
+                        value = json.loads(record["payload"]).get("value", {})
+                    else:
+                        continue
+                    result[(database, table, key)] = value
+        return result
+
+    old, new = rows(before), rows(after)
+    changes = []
+    for key in sorted(old.keys() | new.keys()):
+        left, right = old.get(key, {}), new.get(key, {})
+        fields = {
+            name: (left.get(name), right.get(name))
+            for name in sorted(left.keys() | right.keys())
+            if left.get(name) != right.get(name)
+        }
+        if fields:
+            changes.append(f"{key!r}: {fields!r}")
+    return changes
 
 
 def agent_projection_snapshot(path: Path, agent_id: str):
@@ -205,7 +256,10 @@ def agent_projection_snapshot(path: Path, agent_id: str):
         return record, payload["value"]
 
 
-def python_direct_message(backend, agent_id: str, message_id: str, text: str, delivery: str):
+def python_direct_message(
+    backend, agent_id: str, message_id: str, text: str, delivery: str,
+    *, hold_for_dispatch: bool = False,
+):
     with tempfile.TemporaryDirectory(prefix="messages-python-reference-") as directory:
         state = Path(directory) / "state"
         state.mkdir()
@@ -218,6 +272,11 @@ def python_direct_message(backend, agent_id: str, message_id: str, text: str, de
                 pass
         runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
         try:
+            if hold_for_dispatch:
+                with runtime.db() as database:
+                    agent = runtime.agent(agent_id, database)
+                    agent.update(status="approval", autoWake=True, inFlight=False)
+                    runtime.put(database, "agents", agent)
             result = runtime.send(agent_id, text, message_id, delivery=delivery)
             with runtime.db() as database:
                 database.execute(
@@ -236,20 +295,9 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = start_contract_backend(cls)
         cls.agent_id = seed_agent(cls.backend)
         cls.other_agent_id = seed_agent(cls.backend)
-        # An in-flight native review excludes this recipient from dispatch while
-        # the contract compares every stored field, including dispatcher-owned
-        # agent status and attempt projections.
-        cls.busy_agent_id = seed_agent(cls.backend, {
-            "status": "running",
-            "inFlight": True,
-            "startAttempt": {
-                "id": "messages-contract-held-review",
-                "epoch": 0,
-                "events": [],
-                "action": "review",
-                "submitted": True,
-            },
-        })
+        # This recipient is held after backend startup for exact row snapshots;
+        # the dedicated busy-agent case below covers an in-flight worker.
+        cls.delivery_matrix_agent_id = seed_agent(cls.backend)
         cls.stopped_agent_id = seed_agent(cls.backend, {
             "status": "idle",
         })
@@ -260,12 +308,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "status": "running",
         })
         cls.capacity_agent_id = seed_agent(cls.backend)
-        retry = {
-            "id": "capacity-retry-message-send",
-            "agent": cls.capacity_agent_id,
-            "status": "scheduled",
-            "dueAt": 9_999_999_999.0,
-        }
+        retry = capacity_retry(
+            due_at=9_999_999_999.0,
+            id="capacity-retry-message-send",
+        )
         update_agent(cls.backend, cls.capacity_agent_id, {
             "capacityRetry": retry,
             "capacityRetryCount": 1,
@@ -280,15 +326,38 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 (retry["id"], cls.capacity_agent_id, json.dumps(retry)),
             )
             database.commit()
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            # Freeze Python dispatch before the first accepted thread is started.
-            cls.backend.hold_provider("thread/start")
+        # Freeze dispatch at the first provider boundary for both backends so
+        # row snapshots observe the same durable turn state.
+        cls.backend.hold_provider("thread/start")
         cls.backend.start()
+        # Keep this matrix recipient out of scheduler dispatch after startup
+        # recovery. The separate busy-agent case below retains a live worker.
+        update_agent(cls.backend, cls.delivery_matrix_agent_id, {
+            "status": "approval", "autoWake": True, "inFlight": False,
+        })
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            def scheduler_admissions_settled() -> bool:
+                with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
+                    rows = database.execute("SELECT record FROM runtime_agents").fetchall()
+                for (raw,) in rows:
+                    record = json.loads(raw)
+                    attempt = record.get("startAttempt") or {}
+                    # Python creates startAttempt before preparation and marks
+                    # it submitted before provider work (codex_runtime.py:
+                    # 7188-7196, 7459-7466). Wait for that admission to settle
+                    # before asserting snapshots across unrelated HTTP writes.
+                    if record.get("inFlight") and attempt.get("submitted") is not True:
+                        return False
+                return True
+
+            cls.backend.wait_until(
+                scheduler_admissions_settled,
+                "background agent scheduler admission before message snapshots",
+            )
 
     @classmethod
     def tearDownClass(cls) -> None:
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            cls.backend.release_provider_gate()
+        cls.backend.release_provider_gate()
         cls.backend.stop()
 
     def headers(self):
@@ -488,13 +557,13 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 empty_id, room, "user", "", 3.0, json.dumps({"agent": "delivered"}),
             ))
         history = self.backend.request("GET", f"/api/messages?room={room}", headers=self.headers())
-        self.assertEqual(history.status, 500, history.body[:1000])
+        self.assertEqual(history.status, 503, history.body[:1000])
         self.assertIn(f"messages/{bad_id}", history.json()["error"])
         self.assertNotIn(f"messages/{room}", history.json()["error"])
         takeover = self.backend.request("POST", "/api/chats", body={
             "id": room, "name": "History", "members": [],
         }, headers=self.headers())
-        self.assertEqual(takeover.status, 500, takeover.body[:1000])
+        self.assertEqual(takeover.status, 503, takeover.body[:1000])
         self.assertIn(f"messages/{bad_id}", takeover.json()["error"])
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM messages WHERE id=?", (bad_id,))
@@ -506,7 +575,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(rows[empty_id]["text"], "")
 
     def test_managed_send_matches_python_rows_for_every_delivery_and_replay(self):
-        agent_id = self.busy_agent_id
+        agent_id = self.delivery_matrix_agent_id
         modes = ("queue", "steer", "after_tool", "after_turn")
         ids = (
             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
@@ -523,16 +592,24 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             }
             expected = python_direct_message(
                 self.backend, agent_id, message_id, body["text"], delivery,
+                hold_for_dispatch=True,
             )
             response = self.backend.request("POST", "/api/messages", body=body, headers=self.headers())
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json().get("id"), message_id)
             self.assertEqual(response.json().get("status"), "queued")
-            if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                self.backend.wait_until(
-                    self.backend.provider_gate_started,
-                    "accepted message held at the provider thread/start boundary",
-                )
+            record, projection = agent_projection_snapshot(
+                self.backend.state / "canvas.sqlite3", agent_id,
+            )
+            expected_hold = ("approval", True, False)
+            self.assertEqual(
+                (record.get("status"), record.get("autoWake"), record.get("inFlight")),
+                expected_hold,
+            )
+            self.assertEqual(
+                (projection.get("status"), projection.get("autoWake"), projection.get("inFlight")),
+                expected_hold,
+            )
             self.assertEqual(
                 managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
             )
@@ -561,7 +638,20 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", message_id, agent_id,
             )
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                self.assertEqual(after_replay, before)
+                changed_agent_fields = []
+                for key in ("agent", "agent_projection"):
+                    left, right = before[key], after_replay[key]
+                    if left != right and left and right:
+                        old_value = left[0] if isinstance(left[0], dict) else json.loads(left[0])
+                        new_value = right[0] if isinstance(right[0], dict) else json.loads(right[0])
+                        if key == "agent_projection":
+                            old_value = old_value.get("value", old_value)
+                            new_value = new_value.get("value", new_value)
+                        changed_agent_fields.extend(
+                            f"{key}.{field}" for field in sorted(old_value.keys() | new_value.keys())
+                            if old_value.get(field) != new_value.get(field)
+                        )
+                self.assertEqual(after_replay, before, f"changed agent fields: {changed_agent_fields!r}")
             else:
                 for table in ("event", "metadata", "receipt", "message", "capacity_retry"):
                     self.assertEqual(after_replay[table], before[table], table)
@@ -597,20 +687,39 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             {**body, "id": "acacacac-acac-acac-acac-acacacacacac", "text": "x" * 32_001},
         ):
             refused_id = invalid["id"]
-            unchanged = no_write_snapshot(self.backend.state)
+            unchanged = message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", refused_id, agent_id,
+            )
             refused = self.backend.request("POST", "/api/messages", body=invalid, headers=self.headers())
             self.assertEqual(refused.status, 400, refused.body[:1000])
-            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
+            self.assertEqual(message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", refused_id, agent_id,
+            ), unchanged)
 
+        upload = self.backend.request("POST", "/api/assets", body={
+            "agent": agent_id, "name": "inline.txt", "data": "cGF5bG9hZA==",
+        }, headers=self.headers())
+        self.assertEqual(upload.status, 200, upload.body[:1000])
+        asset_id = upload.json()["id"]
+        attachment_id = "adadadad-adad-4dad-8dad-adadadadadad"
+        attachment = self.backend.request("POST", "/api/messages", body={
+            **body, "id": attachment_id, "assets": [asset_id], "text": "",
+        }, headers=self.headers())
+        self.assertEqual(attachment.status, 200, attachment.body[:1000])
+        self.assertEqual(attachment.json()["status"], "queued")
+
+        pending_id = "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae"
+        pending = self.backend.request("POST", "/api/messages", body={
+            **body, "id": pending_id, "assets": [asset_id], "text": "",
+        }, headers=self.headers())
+        self.assertEqual(pending.status, 200, pending.body[:1000])
+        self.assertEqual(pending.json()["status"], "queued")
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            attachment_id = "adadadad-adad-adad-adad-adadadadadad"
-            unchanged = no_write_snapshot(self.backend.state)
-            attachment = self.backend.request("POST", "/api/messages", body={
-                **body, "id": attachment_id, "assets": [{"name": "pending"}], "text": "",
-            }, headers=self.headers())
-            self.assertEqual(attachment.status, 501, attachment.body[:1000])
-            self.assertEqual(attachment.json().get("error"), "Not implemented: requires payload-store/uploads")
-            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
+            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+                raw = database.execute(
+                    "SELECT record FROM runtime_event_meta WHERE id=?", (pending_id,),
+                ).fetchone()[0]
+            self.assertEqual(json.loads(raw)["assets"], [asset_id])
 
     def test_managed_send_matches_python_for_stopped_paused_and_busy_agents(self):
         cases = (
@@ -684,15 +793,24 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             database.commit()
         before = no_write_snapshot(self.backend.state)
-        response = self.backend.request("POST", "/api/messages", body={
-            "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
-        }, headers=self.headers())
-        self.assertEqual(response.status, 500, response.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-        with closing(sqlite3.connect(path)) as database:
-            database.execute("DROP TRIGGER fail_agent_projection_update")
-            database.execute("DROP TRIGGER fail_event_projection_insert")
-            database.commit()
+        try:
+            response = self.backend.request("POST", "/api/messages", body={
+                "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
+            }, headers=self.headers())
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
+            after = no_write_snapshot(self.backend.state)
+            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
+        finally:
+            with closing(sqlite3.connect(path)) as database:
+                database.execute("DROP TRIGGER IF EXISTS fail_agent_projection_update")
+                database.execute("DROP TRIGGER IF EXISTS fail_event_projection_insert")
+                database.commit()
+            # The injected SQLite failure is fatal to the fixture's account
+            # worker. Restart only after removing the fault so later contracts
+            # use a healthy backend and startup recovery sees clean schema.
+            self.backend.stop()
+            self.backend.start()
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_agent_error_names_runtime_agents_row(self):
@@ -713,7 +831,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "room": self.agent_id,
             "text": "Invalid stored row",
         }, headers=self.headers())
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", response.json()["error"])
         with closing(sqlite3.connect(path)) as database:
             database.execute(
@@ -772,6 +890,10 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.agent_id = cls.denial_agent_id
         cls.denial_peer_agent_id = seed_agent(cls.backend)
         cls.deleted_agent_id = seed_agent(cls.backend, {"deletedAt": 123.0})
+        # Keep refusal workers stopped, matching the Python fixture, so
+        # background dispatch cannot move agent rows during write snapshots.
+        update_agent(cls.backend, cls.denial_agent_id, {"autoWake": False})
+        update_agent(cls.backend, cls.denial_peer_agent_id, {"autoWake": False})
         cls.backend.start()
 
     @classmethod
@@ -793,7 +915,8 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "text": "Deleted agent",
         }, headers=self.headers())
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        after = no_write_snapshot(self.backend.state)
+        self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
 
     def test_managed_send_denial_gates_refuse_without_writes(self):
         agent_id = self.denial_agent_id
@@ -831,11 +954,15 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "id": message_id, "room": agent_id, "text": "Must be refused",
             }, headers=self.headers())
             self.assertNotEqual(response.status, 200, response.body[:1000])
-            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index in {3, 4}:
-                self.assertEqual(response.status, 501, response.body[:1000])
-                expected = "workspace-policy/message-admission" if index == 3 else "budget-policy/message-admission"
-                self.assertIn(expected, response.json()["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 3:
+                # Workspace admission is implemented on both backends; match
+                # codex_runtime.py:5642-5646 instead of the old Rust-only 501.
+                self.assertEqual(response.status, 400, response.body[:1000])
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 4:
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertTrue(response.json()["error"].startswith("Team token budget"))
+            after = no_write_snapshot(self.backend.state)
+            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
             update_agent(self.backend, agent_id, {}, remove=tuple(fields))
 
         peer_agent_id = self.denial_peer_agent_id
@@ -847,36 +974,48 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": message_id, "room": agent_id, "text": "Delegation is disabled",
         }, headers=self.headers())
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(
-            no_write_snapshot(self.backend.state), before,
-        )
+        after = no_write_snapshot(self.backend.state)
+        self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
         update_agent(self.backend, agent_id, {"rootId": agent_id})
         update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_federation_and_managed_send_routes_refuse_before_canvas_writes(self):
+    def test_federated_room_rejects_empty_message_before_canvas_writes(self):
+        from codex_federation import _crypto
+
         path = self.backend.state / "canvas.sqlite3"
+        local = _crypto("generate")
+        remote = _crypto("generate")
+        peer_id = "22222222-2222-4222-8222-222222222222"
         with sqlite3.connect(path) as database:
             database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            database.execute("INSERT OR REPLACE INTO runtime_federation_settings VALUES('global',?)", ('{"enabled":true}',))
+            database.execute("INSERT OR REPLACE INTO runtime_federation_identity VALUES('local',?)", (
+                json.dumps({"stateId": "11111111-1111-4111-8111-111111111111",
+                            "label": "Local test server", **local}),
+            ))
+            database.execute("INSERT OR REPLACE INTO runtime_federation_peers VALUES(?,?)", (
+                peer_id, json.dumps({"stateId": peer_id, "label": "Fake peer",
+                                     "origin": "https://peer.ts.net", "publicKey": remote["publicKey"],
+                                     "status": "approved", "localApproved": True,
+                                     "remoteApproved": True, "whoisStatus": "missing",
+                                     "whoisUser": None, "created": 1, "updated": 1}),
+            ))
             database.execute("INSERT OR REPLACE INTO runtime_federation_rooms(id,record) VALUES(?,?)", (
-                "federated:peer:room", json.dumps({"id": "federated:peer:room", "status": "approved"}),
+                "federated:peer:room", json.dumps({
+                    "id": "federated:peer:room", "peerId": peer_id, "status": "approved",
+                    "localApproved": True, "remoteApproved": True,
+                    "localMembers": [self.agent_id], "localParticipants": [
+                        {"id": self.agent_id, "role": "lead"}], "remoteMembers": [],
+                    "shareNames": False, "shareStatus": False,
+                }),
             ))
         before = no_write_snapshot(path.parent)
         federation = self.backend.request("POST", "/api/messages", body={
             "id": "16161616-1616-1616-1616-161616161616",
             "room": "federated:peer:room", "text": "",
         }, headers=self.headers())
-        self.assertEqual(federation.status, 501, federation.body[:1000])
-        self.assertIn("federation-driver/rooms", federation.json()["error"])
-        direct = self.backend.request("POST", "/api/messages", body={
-            "id": "17171717-1717-1717-1717-171717171717",
-            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
-        }, headers=self.headers())
-        self.assertEqual(direct.status, 501, direct.body[:1000])
-        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
+        self.assertEqual(federation.status, 400, federation.body[:1000])
         self.assertEqual(no_write_snapshot(path.parent), before)
-
-
 
 if __name__ == "__main__":
     unittest.main()

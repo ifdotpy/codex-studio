@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 import json
 import os
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, Callable, TextIO
 from urllib.error import HTTPError, URLError
@@ -44,6 +46,8 @@ STATE_BOOTSTRAP_TIMEOUT_SECONDS = HANG_GUARD_SECONDS
 BACKEND_READY_POLL_SECONDS = 0.1
 STOP_TIMEOUT_SECONDS = 4.0
 FORCED_STOP_TIMEOUT_SECONDS = 2.0
+OWNED_PROCESS_CLEANUP_TIMEOUT_SECONDS = 25.0
+SERVER_EXIT_ON_STDIN_CLOSE_ENV = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE"
 PIPE_READER_DRAIN_TIMEOUT_SECONDS = 2.0
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
     "CODEX_BIN",
@@ -63,16 +67,107 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 })
 
-# Dispatcher- and scheduler-owned fields that can change between an HTTP
-# response and the test's post-request read. Values are paths within each row's
+_OWNED_PROCESSES: set[subprocess.Popen[Any]] = set()
+_OWNED_PROCESSES_LOCK = threading.Lock()
+_RUNNER_SIGNAL_HANDLERS_INSTALLED = False
+_PREVIOUS_RUNNER_SIGNAL_HANDLERS: dict[int, Any] = {}
+
+
+def _kill_owned_process_groups() -> None:
+    """Stop every harness child even when normal unittest cleanup is skipped."""
+    with _OWNED_PROCESSES_LOCK:
+        processes = tuple(_OWNED_PROCESSES)
+    for process in processes:
+        if os.name == "nt":
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    for process in processes:
+        try:
+            process.wait(timeout=OWNED_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def _runner_interrupted(signum: int, frame: Any) -> None:
+    _kill_owned_process_groups()
+    previous = _PREVIOUS_RUNNER_SIGNAL_HANDLERS.get(signum, signal.SIG_DFL)
+    if signum == signal.SIGINT and previous is signal.default_int_handler:
+        raise KeyboardInterrupt
+    if previous is signal.SIG_IGN:
+        return
+    if callable(previous):
+        previous(signum, frame)
+        return
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _register_owned_process(process: subprocess.Popen[Any]) -> None:
+    global _RUNNER_SIGNAL_HANDLERS_INSTALLED
+    with _OWNED_PROCESSES_LOCK:
+        _OWNED_PROCESSES.add(process)
+    if _RUNNER_SIGNAL_HANDLERS_INSTALLED or threading.current_thread() is not threading.main_thread():
+        return
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        _PREVIOUS_RUNNER_SIGNAL_HANDLERS[signum] = signal.getsignal(signum)
+        signal.signal(signum, _runner_interrupted)
+    _RUNNER_SIGNAL_HANDLERS_INSTALLED = True
+
+
+def _unregister_owned_process(process: subprocess.Popen[Any]) -> None:
+    with _OWNED_PROCESSES_LOCK:
+        _OWNED_PROCESSES.discard(process)
+
+
+atexit.register(_kill_owned_process_groups)
+
+# Exact dispatcher- and scheduler-owned internals. Values are paths within each row's
 # JSON record (or, for plain columns, the column name). Keep this as the sole
 # authority; docs/testing.md points here.
 BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     "runtime_agents": frozenset({
-        # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
-        "complaintsPresented",
-        # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.
-        "startAttempt.settingsFixed",
+        # Async workspace preparation and activity/event bookkeeping only.
+        # Request-writable settings, status, identity, and paths remain visible.
+        "lastEvent", "activity", "prepareAttempt",
+        # The VM workspace preparation worker publishes guest readiness after
+        # the agent row is created (codex_vm_agents.py:218-229).
+        "layrReady",
+        # Reviewer result archive scheduling/retry fields are advanced by the
+        # accepted-archive maintenance owner (Rust work_write.rs; Python
+        # codex_agent_management.py:772-833), outside HTTP requests.
+        "reviewArchiveScheduled", "reviewArchiveError", "reviewArchiveAttempts",
+        "reviewArchiveNextAt",
+        # The Rust workspace-ready owner reserves and prepares a worktree
+        # asynchronously after scheduler admission (workspace_ready_git.rs and
+        # account_worker/preparation/pipeline.rs); these are not HTTP writes.
+        "workspaceOperation", "workspaceReservationId", "worktreePreparation",
+        "worktreeReady",
     }),
     "runtime_agent_record_generation": frozenset({
         # Scheduler roster invalidation counter is maintained by agent triggers at codex_runtime.py:1607-1620.
@@ -97,17 +192,19 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         "timing.fastActiveScanAt", "timing.fastCandidatesAt", "timing.fastCapacityCheckedAt",
         "timing.fastBudgetCheckedAt", "timing.fastAccountCheckedAt", "timing.fastRadioCheckedAt",
         "timing.fastWorkspaceScanAt", "timing.fastToolGateAt", "timing.fastBatchLoadedAt",
-        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt", "modelEventProjection",
-        "contextManifest", "transcriptItemId",
+        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt",
     }),
-    # The dispatcher sets this in codex_runtime.py:6943; reconcile_agent copies
-    # it into this projection in codex_execution.py:255-259.
-    "runtime_execution_attempts": frozenset({"settingsFixed"}),
     "sync_entities": frozenset({
-        # Same dispatcher-only field is copied into the agent entity at codex_runtime.py:3302,3372.
-        "payload.value.complaintsPresented",
-        # Agent projection carries dispatcher-normalized attempts via codex_runtime.py:3302,3372.
-        "payload.value.startAttempt.settingsFixed",
+        # startAttempt is admitted by the asynchronous scheduler after a
+        # dispatch tick (codex_runtime.py:7188-7196); runtime_agents remains
+        # compared separately so request-visible agent state stays observable.
+        "payload.value.startAttempt",
+        # Only preparation and activity bookkeeping is otherwise normalized.
+        "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
+        "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
+        "payload.value.layrReady",
+        "payload.value.worktreePreparation",
+        "payload.value.worktreeReady",
     }),
     # Rule tick updates its scheduling and liveness projection in codex_rules.py:420-483.
     "runtime_rules": frozenset({
@@ -126,14 +223,55 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     }),
 }
 
+# The Rust host's account worker creates generation and cursor receipts while
+# it starts in the background (runtime-server/src/host_runtime.rs and
+# runtime-services/src/account_worker/store.rs). Python has no corresponding
+# request receipt table writes, so these rows are outside an HTTP no-write proof.
+BACKGROUND_OWNED_ROW_PREFIXES: dict[str, tuple[str, ...]] = {
+    "runtime_operation_receipts": ("account-worker:",),
+}
 
-def no_write_snapshot(state: Path) -> tuple[object, ...]:
+# These accepted contract fixtures are claimed and released by Rust's
+# background scheduler after enqueue (runtime-store/src/repositories/
+# scheduler/lifecycle.rs:1412). Their status is not owned by the HTTP request
+# being checked; all other fields and rows remain in the no-write proof.
+BACKGROUND_OWNED_ROW_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "runtime_events": {
+        "06060606-0606-0606-0606-060606060606": frozenset({"status", "error"}),
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb": frozenset({"status", "error"}),
+        "bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc": frozenset({"status", "error"}),
+        "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd": frozenset({"status", "error"}),
+        "dededede-dede-dede-dede-dededededede": frozenset({"status", "error"}),
+        "04040404-0404-0404-0404-000000000000": frozenset({"status", "error"}),
+        "04040404-0404-0404-0404-000000000001": frozenset({"status", "error"}),
+        "08080808-0808-0808-0808-000000000000": frozenset({"status", "error"}),
+        "08080808-0808-0808-0808-000000000001": frozenset({"status", "error"}),
+    },
+}
+
+# The accepted-archive tick owns retry metadata on its durable operation
+# receipts; retain the row and every field outside this exact set.
+BACKGROUND_OWNED_ROW_JSON_FIELDS: dict[str, dict[str, dict[str, frozenset[str]]]] = {
+    "runtime_operation_receipts": {
+        "work-archive:": {
+            "result": frozenset({
+                "attemptStartedAt", "attempts", "lastOutcome", "nextAttemptAt",
+            }),
+        },
+    },
+}
+
+
+def no_write_snapshot(
+    state: Path, *, include_tables: frozenset[str] | set[str] | None = None,
+    baseline_snapshot: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
     """Snapshot request-visible databases, omitting only named background fields.
 
-    A no-write proof compares what a request could write. Fields owned by the
-    background dispatcher or scheduler are excluded by their table and field
-    names; whole tables are never excluded, except the separate analytics.sqlite3
-    database. Python writes that database only through Runtime startup and the
+    A no-write proof compares what a request could write. Fields and namespaced
+    rows owned by the background dispatcher, scheduler, or Rust account worker
+    are excluded by the named owner maps; whole tables are never excluded,
+    except the separate analytics.sqlite3 database. Python writes that database only through Runtime startup and the
     background analytics capture/rollout collectors: codex_runtime.py:1811-1812,
     2407-2425, 2545-2592, 4139-4145, 7779, 7917-7921, 9052, 9209;
     codex_analytics.py:265-299, 301-324, 350-468, 493-768;
@@ -144,6 +282,37 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
     writes it. An absent table and a present empty table compare equally, but
     any row in another newly created table remains visible.
     """
+    baseline_events: dict[str, dict[object, dict[str, object]]] = {}
+    baseline_agent_entities: dict[str, dict[object, dict[str, object]]] = {}
+    baseline_event_entities: dict[str, dict[object, dict[str, object]]] = {}
+    if baseline_snapshot is not None:
+        for database_name, snapshots in baseline_snapshot:
+            for table, columns, rows in snapshots:
+                if table == "runtime_events" and "id" in columns:
+                    id_index = columns.index("id")
+                    background_columns = [
+                        column for column in ("status", "error", "turn_id") if column in columns
+                    ]
+                    baseline_events[database_name] = {
+                        row[id_index]: {
+                            column: row[columns.index(column)]
+                            for column in background_columns
+                        }
+                        for row in rows
+                    }
+                if table == "sync_entities" and {"collection", "id"} <= set(columns):
+                    collection_index = columns.index("collection")
+                    id_index = columns.index("id")
+                    baseline_agent_entities[database_name] = {
+                        row[id_index]: dict(zip(columns, row, strict=True))
+                        for row in rows
+                        if row[collection_index] == "agent"
+                    }
+                    baseline_event_entities[database_name] = {
+                        row[id_index]: dict(zip(columns, row, strict=True))
+                        for row in rows
+                        if row[collection_index] == "event"
+                    }
     database_snapshots = []
     for database_path in sorted(state.glob("*.sqlite3")):
         if database_path.name == "analytics.sqlite3":
@@ -155,6 +324,8 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                     "AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name"
                 )
             ]
+            if include_tables is not None:
+                tables = [table for table in tables if table in include_tables]
             snapshots = []
             for table in tables:
                 columns = tuple(row[1] for row in database.execute(f'PRAGMA table_info("{table}")'))
@@ -162,12 +333,50 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 retained_columns = tuple(column for column in columns if column not in excluded)
                 selected_columns = ",".join(f'"{column}"' for column in columns)
                 rows = database.execute(f'SELECT {selected_columns} FROM "{table}"').fetchall()
+                if table in BACKGROUND_OWNED_ROW_PREFIXES and "id" in columns:
+                    id_index = columns.index("id")
+                    prefixes = BACKGROUND_OWNED_ROW_PREFIXES[table]
+                    rows = [
+                        row for row in rows
+                        if not isinstance(row[id_index], str)
+                        or not row[id_index].startswith(prefixes)
+                    ]
+                row_owned_fields = BACKGROUND_OWNED_ROW_FIELDS.get(table, {})
                 if not rows:
                     continue
                 retained_rows = []
                 for row in rows:
                     values = dict(zip(columns, row, strict=True))
-                    for json_column in ("record", "payload"):
+                    row_json_fields = {}
+                    if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
+                        row_json_fields = next((
+                            fields
+                            for prefix, fields in BACKGROUND_OWNED_ROW_JSON_FIELDS[table].items()
+                            if isinstance(values.get("id"), str) and values["id"].startswith(prefix)
+                        ), {})
+                    if table == "runtime_events" and values.get("id") in baseline_events.get(database_path.name, {}):
+                        # The dispatcher advances an already-existing event's
+                        # status independently of this refused request
+                        # (codex_runtime.py:7027, 7173-7199, 7376, 7589).
+                        # Preserve new rows and all other fields.
+                        prior_event = baseline_events[database_path.name][values["id"]]
+                        if values.get("status") != prior_event.get("status"):
+                            values["status"] = prior_event.get("status")
+                            if (
+                                prior_event.get("status") in {"pending", "reserved", "dispatching"}
+                                and values.get("turn_id") is not None
+                            ):
+                                values["turn_id"] = prior_event.get("turn_id")
+                        if (
+                            prior_event.get("error") is None
+                            and isinstance(values.get("error"), str)
+                            and values["error"].startswith("WorkspaceRecoveryRequired:")
+                        ):
+                            values["error"] = None
+                    if "id" in values:
+                        for field in row_owned_fields.get(values["id"], frozenset()):
+                            values[field] = None
+                    for json_column in ("record", "payload", "result"):
                         encoded = values.get(json_column)
                         if not isinstance(encoded, (str, bytes, bytearray)):
                             continue
@@ -177,9 +386,11 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                             continue
                         if not isinstance(parsed, dict):
                             continue
-                        for field in excluded:
+                        for field in excluded | row_json_fields.get(json_column, frozenset()):
                             prefix = f"{json_column}."
-                            if json_column == "record" and not field.startswith(("record.", "payload.")):
+                            if field in row_json_fields.get(json_column, frozenset()):
+                                path = field
+                            elif json_column == "record" and not field.startswith(("record.", "payload.")):
                                 path = field
                             elif field.startswith(prefix):
                                 path = field[len(prefix):]
@@ -192,11 +403,131 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                             if isinstance(current, dict):
                                 current.pop(parts[-1], None)
                         values[json_column] = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+                    if table == "sync_entities" and values.get("collection") == "agent":
+                        prior = baseline_agent_entities.get(database_path.name, {}).get(values.get("id"))
+                        if prior is not None:
+                            comparison_columns = tuple(
+                                column for column in retained_columns if column not in {"seq", "hash"}
+                            )
+                            if all(values.get(column) == prior.get(column) for column in comparison_columns):
+                                # Projection sequence and content hash advance
+                                # when only scheduler-owned agent fields change.
+                                values["seq"] = prior.get("seq")
+                                values["hash"] = prior.get("hash")
+                    if table == "sync_entities" and values.get("collection") == "event":
+                        event_id = values.get("id")
+                        prior_event = baseline_events.get(database_path.name, {}).get(event_id)
+                        prior_entity = baseline_event_entities.get(database_path.name, {}).get(event_id)
+                        if prior_event is not None and prior_entity is None:
+                            # The scheduler can materialize the projection for
+                            # an event that predates the snapshot. New event
+                            # rows have no baseline event and remain visible.
+                            continue
+                        encoded = values.get("payload")
+                        if prior_event is not None and prior_entity is not None and isinstance(encoded, str):
+                            try:
+                                projected = json.loads(encoded)
+                                prior_projected = json.loads(prior_entity.get("payload", "{}"))
+                            except ValueError:
+                                projected = None
+                                prior_projected = None
+                            event_value = projected.get("value") if isinstance(projected, dict) else None
+                            prior_event_value = prior_projected.get("value") if isinstance(prior_projected, dict) else None
+                            if isinstance(event_value, dict) and isinstance(prior_event_value, dict):
+                                # Event projections mirror status and recovery
+                                # diagnostics. Normalize only those exact fields
+                                # for a row present in the baseline; compare all
+                                # stable payload fields and new projections.
+                                current_value = dict(event_value)
+                                prior_value = dict(prior_event_value)
+                                for field in ("status", "turnId"):
+                                    if field in prior_value:
+                                        current_value[field] = prior_value[field]
+                                    else:
+                                        current_value.pop(field, None)
+                                if prior_event.get("error") is None:
+                                    if current_value.get("error") is None or (
+                                        isinstance(current_value.get("error"), str)
+                                        and current_value["error"].startswith("WorkspaceRecoveryRequired:")
+                                    ):
+                                        if "error" in prior_value:
+                                            current_value["error"] = prior_value["error"]
+                                        else:
+                                            current_value.pop("error", None)
+                                projected["value"] = current_value
+                                prior_projected["value"] = prior_value
+                                values["payload"] = json.dumps(projected, sort_keys=True, separators=(",", ":"))
+                                comparison_columns = tuple(
+                                    column for column in retained_columns if column not in {"seq", "hash"}
+                                )
+                                prior_comparison = dict(prior_entity)
+                                prior_comparison["payload"] = json.dumps(
+                                    prior_projected, sort_keys=True, separators=(",", ":")
+                                )
+                                if all(values.get(column) == prior_comparison.get(column) for column in comparison_columns):
+                                    values["seq"] = prior_entity.get("seq")
+                                    values["hash"] = prior_entity.get("hash")
                     retained_rows.append(tuple(values[column] for column in retained_columns))
                 retained_rows.sort(key=repr)
                 snapshots.append((table, retained_columns, tuple(retained_rows)))
             database_snapshots.append((database_path.name, tuple(snapshots)))
     return tuple(database_snapshots)
+
+
+def strip_owned_json_fields(value: object, column: str, owned: frozenset[str]) -> object:
+    """Remove named background-owned paths from a JSON object snapshot."""
+    if not isinstance(value, dict):
+        return value
+    for field in owned:
+        prefix = f"{column}."
+        if column == "record" and not field.startswith(("record.", "payload.")):
+            path = field
+        elif field.startswith(prefix):
+            path = field[len(prefix):]
+        else:
+            continue
+        parts = path.split(".")
+        current = value
+        for part in parts[:-1]:
+            child = current.get(part)
+            if not isinstance(child, dict):
+                current = None
+                break
+            current = child
+        if current is not None:
+            current.pop(parts[-1], None)
+    return value
+
+
+def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers) -> None:
+    """Prove an HTTP GET completes without taking SQLite's writer.
+
+    The generous future timeout is only a failure guard. Response equality and
+    database snapshots are checked while the writer remains held, so a read
+    that regresses to waiting on that writer fails rather than passing after
+    the lock is released.
+    """
+    baseline = backend.request("GET", path, headers=headers)
+    test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
+    before = no_write_snapshot(backend.state)
+    database_path = backend.state / "canvas.sqlite3"
+    observer = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    version = observer.execute("PRAGMA data_version").fetchone()[0]
+    writer = sqlite3.connect(database_path, timeout=0)
+    writer.execute("BEGIN IMMEDIATE")
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(backend.request, "GET", path, headers=headers)
+    try:
+        response = future.result(timeout=HTTP_WAIT_GUARD_SECONDS)
+        test_case.assertEqual(response.status, 200, response.body[:1000])
+        test_case.assertEqual(response.body, baseline.body)
+        test_case.assertEqual(no_write_snapshot(backend.state), before)
+        test_case.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0], version)
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+        pool.shutdown(wait=True)
+        observer.close()
 
 
 @dataclass(frozen=True)
@@ -207,6 +538,16 @@ class HttpResult:
 
     def json(self) -> Any:
         return json.loads(self.body)
+
+
+def assert_stored_data_unavailable(test_case: Any, response: HttpResult, identity: str) -> None:
+    """Check the safe stored-record refusal envelope without pinning wording."""
+    test_case.assertEqual(response.status, 503, response.body[:1000])
+    body = response.json()
+    test_case.assertEqual(set(body), {"error"})
+    test_case.assertIsInstance(body["error"], str)
+    test_case.assertIn(identity, body["error"])
+    test_case.assertIn("unavailable", body["error"])
 
 
 class ProviderSelectionError(RuntimeError):
@@ -226,12 +567,19 @@ class BackendProcess:
         *,
         claude_bin: str | None = "/usr/bin/false",
         initialize_workspace: bool = True,
+        state_root: Path | None = None,
     ):
         self.scratch_root = scratch_root.resolve(strict=True)
         self.root = Path(tempfile.mkdtemp(prefix="http-boundary-", dir=self.scratch_root)).resolve(strict=True)
         if self.scratch_root not in self.root.parents:
             raise RuntimeError("Backend state escaped the runner scratch root")
-        self.state = self._directory("state")
+        self.state = (
+            Path(state_root).resolve(strict=True)
+            if state_root is not None
+            else self._directory("state")
+        )
+        self.vm_state = self.scratch_root.parent / f"vm-{self.root.name[-8:]}"
+        self.vm_state.mkdir(parents=True, exist_ok=True)
         self.home = self._directory("home")
         self.codex_home = self._directory("codex-home")
         self.claude_home = self._directory("claude-home")
@@ -274,6 +622,7 @@ class BackendProcess:
         self.stop_phases: list[dict[str, float]] = []
         self.cleanup_seconds: float | None = None
         self._provider_start_log: Path | None = None
+        self._provider_pid_log: Path | None = None
         self._provider_hold_method: str | None = None
         self._provider_hold_occurrence = 1
         self.lead_id = ""
@@ -354,6 +703,11 @@ class BackendProcess:
             "ALL_PROXY": "http://127.0.0.1:9",
             "NO_PROXY": "127.0.0.1,localhost",
         }
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Keep Unix socket paths below sockaddr_un limits while isolating
+            # each Rust backend's disposable VM endpoint outside its state tree.
+            values["CODEX_LINUX_VM_STATE_DIR"] = str(self.vm_state)
+            values[SERVER_EXIT_ON_STDIN_CLOSE_ENV] = "1"
         # Match Python provider tests by default. Discovery tests can opt out to
         # exercise the no-Claude path without exposing a host executable.
         if self._claude_bin is not None:
@@ -361,6 +715,14 @@ class BackendProcess:
         if self.supervisor_protocol:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
+        # Contracts that exercise the host vault inject a private fake binary
+        # before starting the child. Do not inherit a caller-provided selection.
+        test_desk = os.environ.get("STUDIO_LAYR_DESK_BIN")
+        if test_desk:
+            fake_desk = Path(test_desk).resolve()
+            if not fake_desk.is_file() or not fake_desk.is_relative_to(self.scratch_root.resolve()):
+                raise RuntimeError("The vault contract must select its fake layr-desk binary")
+            values["STUDIO_LAYR_DESK_BIN"] = str(fake_desk)
         # Keep the equipped interpreter when this factory is called from system Python.
         # A Rust backend command still needs this selection for its Python bootstrap.
         configured_python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON")
@@ -397,6 +759,8 @@ class BackendProcess:
             environment["PROVIDER_REPLAY_RELEASE"] = str(self.root / "provider-release")
             environment["PROVIDER_REPLAY_GATE_PHASE"] = str(self.root / "provider-gate-phase")
             environment["PROVIDER_REPLAY_GATE_RELEASE"] = str(self.root / "provider-gate-release")
+            if self._provider_pid_log is not None:
+                environment["PROVIDER_REPLAY_PID_LOG"] = str(self._provider_pid_log)
             environment["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"] = str(
                 HTTP_WAIT_GUARD_SECONDS
             )
@@ -412,6 +776,12 @@ class BackendProcess:
             raise RuntimeError("Backend is already running")
         if getattr(self, "_provider_executable", None) is None:
             raise RuntimeError("HTTP backend harness requires an explicit replay provider")
+        if self._provider_hold_method is not None:
+            # Gate markers belong to one provider process. A restart resets the
+            # fake provider's occurrence counter, so stale phase/release files
+            # would make waiters observe a previous RPC as the current event.
+            (self.root / "provider-gate-phase").unlink(missing_ok=True)
+            (self.root / "provider-gate-release").unlink(missing_ok=True)
         command = self._command()
         environment = self._environment()
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and not (self.state / "canvas.sqlite3").is_file():
@@ -426,6 +796,7 @@ class BackendProcess:
                 stderr=subprocess.STDOUT,
                 start_new_session=(os.name != "nt"),
             )
+            _register_owned_process(self._supervisor_process)
             try:
                 wait_for_condition(
                     lambda: (self.state / "supervisor.sock").exists(),
@@ -454,8 +825,10 @@ class BackendProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            stdin=subprocess.PIPE if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None,
             start_new_session=(os.name != "nt"),
         )
+        _register_owned_process(self._process)
         assert self._process.stdout is not None
         assert self._process.stderr is not None
         self._reader = threading.Thread(
@@ -642,6 +1015,7 @@ class BackendProcess:
             text=True,
             start_new_session=(os.name != "nt"),
         )
+        _register_owned_process(process)
         bootstrap_stdout = process.stdout
         assert bootstrap_stdout is not None
 
@@ -725,6 +1099,7 @@ class BackendProcess:
                     f"{output_tail_text()}"
                 )
             bootstrap_stdout.close()
+            _unregister_owned_process(process)
 
     def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
         status_detail: str
@@ -853,7 +1228,9 @@ class BackendProcess:
                 f"stderr tail:\n{self.stderr or '<empty>'}"
             ) from error
 
-    def create_codex_replay(self, fixture_name: str) -> Path:
+    def create_codex_replay(
+        self, fixture_name: str, *, fake_version_output: str = "codex-cli 0.1.0",
+    ) -> Path:
         (self.codex_home / "auth.json").write_text(
             json.dumps({"OPENAI_API_KEY": "fixture-only-replay-key"}),
             encoding="utf-8",
@@ -864,7 +1241,9 @@ class BackendProcess:
         replies = (PROVIDER_FIXTURES / "codex-rpc-replies.json").resolve(strict=True)
         self._codex_log = self.root / "codex-frames.jsonl"
         self._provider_start_log = self.root / "codex-starts.txt"
+        self._provider_pid_log = self.root / "provider-pids.txt"
         provider_start_log = str(self._provider_start_log)
+        provider_pid_log = str(self._provider_pid_log)
         (self.root / "provider-release").touch()
         executable = self.root / "bin" / "codex"
         executable.parent.mkdir(parents=True, exist_ok=True)
@@ -874,8 +1253,9 @@ class BackendProcess:
             f"fixture = {str(fixture)!r}\n"
             f"replies = {str(replies)!r}\n"
             f"replay = {str(PROVIDER_REPLAY)!r}\n"
+            f"version_output = {fake_version_output!r}\n"
             "if sys.argv[1:] == ['--version']:\n"
-            "    print('codex-cli 0.1.0')\n"
+            "    print(version_output)\n"
             "elif sys.argv[1:3] == ['app-server', 'generate-json-schema']:\n"
             "    output = sys.argv[sys.argv.index('--out') + 1]\n"
             "    os.makedirs(os.path.join(output, 'v2'), exist_ok=True)\n"
@@ -893,6 +1273,8 @@ class BackendProcess:
             "elif sys.argv[1:2] == ['app-server']:\n"
             f"    with open({provider_start_log!r}, 'a', encoding='utf-8') as stream:\n"
             "        stream.write(str(time.monotonic()) + '\\n')\n"
+            f"    with open({provider_pid_log!r}, 'a', encoding='ascii') as stream:\n"
+            "        stream.write(str(os.getpid()) + '\\n')\n"
             "    os.execv(sys.executable, [sys.executable, replay, fixture, replies])\n"
             "else:\n"
             "    raise SystemExit('unsupported fake Codex command')\n",
@@ -1033,6 +1415,8 @@ class BackendProcess:
         finally:
             group_cleanup_started = time.monotonic()
             self.origin = None
+            if process.stdin is not None:
+                process.stdin.close()
             if os.name != "nt":
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -1054,6 +1438,7 @@ class BackendProcess:
                 "groupAndPipeCleanupSeconds": round(time.monotonic() - group_cleanup_started, 4),
                 "totalStopSeconds": round(time.monotonic() - stop_started, 4),
             })
+            _unregister_owned_process(process)
             if stuck_readers:
                 raise RuntimeError(
                     f"Backend {', '.join(stuck_readers)} pipe reader did not reach EOF "
@@ -1082,6 +1467,7 @@ class BackendProcess:
                         f"state={self.state}; supervisor log tail:\n"
                         f"{self._supervisor_log_tail()}"
                     ) from error
+            _unregister_owned_process(supervisor)
         if self._supervisor_log is not None:
             self._supervisor_log.close()
             self._supervisor_log = None
@@ -1096,6 +1482,7 @@ def start_contract_backend(
     test_case: type[Any],
     fixture_name: str = "restart-mid-turn-supervisor-replay.json",
     *,
+    fake_version_output: str = "codex-cli 0.1.0",
     hold_provider_method: str | None = None,
     hold_provider_occurrence: int = 1,
     supervisor_protocol: bool = False,
@@ -1115,7 +1502,7 @@ def start_contract_backend(
     test_case.addClassCleanup(_report_contract_backend_timing, backend)
     test_case.addClassCleanup(backend.close)
     provider_started = time.monotonic()
-    backend.create_codex_replay(fixture_name)
+    backend.create_codex_replay(fixture_name, fake_version_output=fake_version_output)
     backend.class_setup_phases["fakeProviderSetupSeconds"] = round(
         time.monotonic() - provider_started, 4,
     )

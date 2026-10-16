@@ -16,11 +16,13 @@ import os
 from pathlib import Path
 import platform
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 from typing import Any, Awaitable, Callable
+import uuid
 
 from codex_layout import VM_GUEST_ROOT
 from codex_linux_vm import LinuxVMError
@@ -32,6 +34,7 @@ from browser_bridge import BridgeError, BrowserBridge, Listener, proc_listeners 
 
 FOLDER = "browser-host"
 SESSION_FILE = "studio-browser.json"
+HOST_BROWSER_CONTROL_SOCKET_NAME = "control.sock"
 
 
 def lsof_listeners(text: str) -> list[Listener]:
@@ -128,6 +131,9 @@ class HostGuest:
                  http_providers: frozenset[str] = frozenset()) -> None:
         environment = session_environment(Path(runtime.root))
         self.socket = Path(environment["STUDIO_BROWSER_SOCKET"])
+        self.control_socket = self.socket.parent / HOST_BROWSER_CONTROL_SOCKET_NAME
+        self.control_tasks: set[asyncio.Task[Any]] = set()
+        self.closing = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="studio-browser-host", daemon=True)
         self.thread.start()
@@ -138,6 +144,11 @@ class HostGuest:
             await bridge.listen(self.socket)
             # The folder is private; only this user's processes reach the socket.
             self.socket.chmod(0o600)
+            self.control_socket.unlink(missing_ok=True)
+            self.control_server = await asyncio.start_unix_server(
+                self.control_client, path=str(self.control_socket), limit=64 * 1024
+            )
+            self.control_socket.chmod(0o600)
             return bridge
         try:
             self.bridge = asyncio.run_coroutine_threadsafe(start(), self.loop).result(10)
@@ -147,14 +158,102 @@ class HostGuest:
 
     def call(self, method: str, params: dict[str, Any] | None = None, *,
              request_id: str | None = None, timeout: float = 60) -> Any:
-        future = asyncio.run_coroutine_threadsafe(self.bridge.call(method, params or {}), self.loop)
+        identity = request_id or str(uuid.uuid4())
+        payload = json.dumps({
+            "id": identity,
+            "method": method,
+            "params": params or {},
+        }, separators=(",", ":")).encode() + b"\n"
+        if len(payload) > 64 * 1024:
+            raise LinuxVMError("The browser request is too large", code="invalid_request")
         try:
-            return future.result(timeout)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(timeout)
+                client.connect(str(self.control_socket))
+                client.sendall(payload)
+                response = bytearray()
+                while len(response) <= 64 * 1024:
+                    chunk = client.recv(min(4096, 64 * 1024 + 1 - len(response)))
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\n" in chunk:
+                        break
+            if len(response) > 64 * 1024 or not response.endswith(b"\n"):
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            value = json.loads(response[:-1])
+            if not isinstance(value, dict) or value.get("id") != identity:
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            error = value.get("error")
+            if isinstance(error, dict):
+                raise LinuxVMError(
+                    str(error.get("message") or "The browser request failed"),
+                    code=str(error.get("code") or "unavailable"),
+                )
+            if "result" not in value:
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            return value["result"]
+        except (OSError, TimeoutError) as error:
+            raise LinuxVMError("The host browser control socket is unavailable", code="unavailable") from error
+
+    async def control_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self.control_tasks.add(task)
+        identity = ""
+        try:
+            line = await asyncio.wait_for(reader.readline(), 5)
+            if len(line) > 64 * 1024 or not line.endswith(b"\n"):
+                raise BridgeError("invalid_request", "Send one bounded JSON request")
+            request = json.loads(line)
+            if not isinstance(request, dict):
+                raise BridgeError("invalid_request", "The request must be an object")
+            request_identity: object = request.get("id")
+            identity = request_identity if isinstance(request_identity, str) else ""
+            method = request.get("method")
+            params = request.get("params", {})
+            if not identity or not isinstance(method, str) or not isinstance(params, dict):
+                raise BridgeError("invalid_request", "The request identity, method or parameters are invalid")
+            result = await self.bridge.call(method, params)
+            response = {"id": identity, "result": result}
         except BridgeError as error:
-            raise LinuxVMError(str(error), code=error.code) from None
+            response = {"id": identity, "error": {"code": error.code, "message": str(error)}}
+        except (asyncio.TimeoutError, OSError, ValueError, TypeError):
+            response = {"id": identity, "error": {"code": "invalid_request", "message": "The browser request is invalid"}}
+        try:
+            writer.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+            await asyncio.wait_for(writer.drain(), 5)
+        except (asyncio.TimeoutError, OSError):
+            pass
+        finally:
+            if task is not None:
+                self.control_tasks.discard(task)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
 
     def close(self) -> None:
+        if self.closing.is_set():
+            return
+        self.closing.set()
         try:
-            asyncio.run_coroutine_threadsafe(self.bridge.close(), self.loop).result(10)
+            async def shutdown() -> None:
+                self.control_server.close()
+                # A browser.wait RPC may be waiting on the bridge's long poll. Stop
+                # accepted control calls before waiting for the Unix server to drain.
+                clients = [task for task in self.control_tasks if task is not asyncio.current_task()]
+                for task in clients:
+                    task.cancel()
+                if clients:
+                    await asyncio.gather(*clients, return_exceptions=True)
+                await self.control_server.wait_closed()
+                await self.bridge.close()
+
+            asyncio.run_coroutine_threadsafe(shutdown(), self.loop).result(10)
+            self.control_socket.unlink(missing_ok=True)
         finally:
             self.loop.call_soon_threadsafe(self.loop.stop)
+            if threading.current_thread() is not self.thread:
+                self.thread.join(timeout=2)

@@ -162,10 +162,10 @@ class AccessTests(unittest.TestCase):
         with self.runtime.read_db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 2)
 
-    def test_pair_get_fallback_declares_its_actual_not_found_status(self) -> None:
+    def test_pair_get_is_not_a_supported_method(self) -> None:
         response = self.client.get("/api/multi-server/v1/pair")
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"error": "Not found"})
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.headers.get("allow"), "POST")
 
     def test_name_file_failure_recovers_intent_after_restart(self) -> None:
         service = self.runtime.service

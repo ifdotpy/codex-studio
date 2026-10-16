@@ -547,6 +547,42 @@ class SyncRouterTests(unittest.TestCase):
         self.assertNotIn("work-private", response.text)
         self.assertNotIn("tombstone-private", response.text)
 
+    def test_entity_response_strips_extras_from_the_selected_union_alternative(self) -> None:
+        from studio_api.sync.entity_response import response_entity_document
+
+        object_variant = response_entity_document({
+            "id": "entity:agent:object-variant",
+            "payload": json.dumps({
+                "collection": "agent",
+                "id": "object-variant",
+                "value": {
+                    "id": "object-variant",
+                    "nativeStatus": {
+                        "phase": "auth",
+                        "message": "visible status",
+                        "unexpectedSecret": "private",
+                    },
+                },
+            }),
+            "_deleted": False,
+        })
+        enum_variant = response_entity_document({
+            "id": "entity:agent:enum-variant",
+            "payload": json.dumps({
+                "collection": "agent",
+                "id": "enum-variant",
+                "value": {"id": "enum-variant", "nativeStatus": "idle"},
+            }),
+            "_deleted": False,
+        })
+
+        self.assertIsNotNone(object_variant)
+        self.assertIsNotNone(enum_variant)
+        object_value = json.loads(object_variant["payload"])["value"]
+        self.assertEqual(object_value["nativeStatus"]["message"], "visible status")
+        self.assertNotIn("unexpectedSecret", object_value["nativeStatus"])
+        self.assertEqual(json.loads(enum_variant["payload"])["value"]["nativeStatus"], "idle")
+
     def test_entity_pull_tombstones_skip_dto_validation_and_strip_stale_values(self) -> None:
         context = ContextStub()
         temporary = tempfile.TemporaryDirectory(prefix="sync-router-tombstone-")

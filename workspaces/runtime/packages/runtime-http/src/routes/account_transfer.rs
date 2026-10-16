@@ -1,7 +1,7 @@
-//! Transfer control and receipt replay. Provider-dependent starts refuse before writes.
+//! Durable transfer requests, worker selection, and receipt replay.
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
@@ -12,25 +12,16 @@ use studio_runtime_services::{
     account_transfer_driver,
 };
 
-const TRANSFER: &[Dependency] = &[
-    Dependency::new("account-transfer/provider-history-executor"),
-    Dependency::new("account-transfer/destination-settings"),
-    Dependency::new("store-bootstrap/account-transfer-schema"),
-];
-const SELECTION: &[Dependency] = &[
-    Dependency::new("account-driver/unavailable"),
-    Dependency::new("account-transfer/usage-resume-cancellation"),
-];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/agents/account",
-            OperationStatus::partial(SELECTION),
+            OperationStatus::Implemented,
             selection,
         ),
         post(
             "/api/agents/account-transfer",
-            OperationStatus::partial(TRANSFER),
+            OperationStatus::Implemented,
             transfer,
         ),
     ])
@@ -38,32 +29,39 @@ pub(crate) fn routes() -> RouteGroup {
 async fn selection(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::AccountSelectionRequest>,
-) -> Result<Json<Value>, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-        let accounts = || {
-            if let Some(driver) = &state.account_driver {
-                driver.snapshot().map_err(|_| TransferError::Stored {
-                    object: "account registry",
-                    pointer: "/".into(),
-                })
-            } else if let Some(policy) = &state.account_policy {
-                Ok(policy.accounts())
-            } else {
-                Err(TransferError::Requires("account-driver/unavailable"))
-            }
-        };
-        let value = studio_runtime_services::account_selection::select(
-            store,
-            &accounts,
-            &body.id,
-            &body.account_key,
-            body.cwd.as_ref().and_then(Option::as_deref),
-        )
-        .map_err(error)?;
-        state.event_wake.notify_one();
-        super::generated_json::<generated::AgentResponse>(value).map(Json)
-    })
+) -> Result<Json<generated::AgentResponse>, ApiError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_transfer",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let accounts = || {
+                if let Some(driver) = &state.account_driver {
+                    driver.snapshot().map_err(|_| TransferError::Stored {
+                        object: "account registry",
+                        pointer: "/".into(),
+                    })
+                } else if let Some(policy) = &state.account_policy {
+                    Ok(policy.accounts())
+                } else {
+                    Err(TransferError::Stored {
+                        object: "account registry",
+                        pointer: "/".into(),
+                    })
+                }
+            };
+            let value = studio_runtime_services::account_selection::select(
+                store,
+                &accounts,
+                &body.id,
+                &body.account_key,
+                body.cwd.as_ref().and_then(Option::as_deref),
+            )
+            .map_err(error)?;
+            state.event_wake.notify_one();
+            state.continuation_wake.notify_one();
+            super::generated_json::<generated::AgentResponse>(value).map(Json)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }
@@ -78,78 +76,120 @@ struct Request {
 async fn transfer(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Request>,
-) -> Result<Json<Value>, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        let store = state.store.as_deref().ok_or_else(|| {
-            error(TransferError::Requires(
-                "account-transfer/provider-history-executor",
-            ))
-        })?;
-        let result = if let Some(action) = body.action {
-            let action = match action.as_str() {
-                "cancel" => Action::Cancel,
-                "retry" => Action::Retry,
-                "finish_history" => Action::FinishHistory,
-                _ => {
-                    return Err(ApiError::validation(vec![
-                        Value::String("body".into()),
-                        Value::String("action".into()),
-                    ]));
-                }
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ApiError::internal())?
-                .as_secs_f64();
-            account_transfer_driver::action(store, &body.request_id, action, now)
-        } else {
-            let lead = body.id.as_deref().ok_or_else(|| {
-                ApiError::validation(vec![
-                    Value::String("body".into()),
-                    Value::String("id".into()),
-                ])
-            })?;
-            let target = body.account_key.as_deref().ok_or_else(|| {
-                ApiError::validation(vec![
-                    Value::String("body".into()),
-                    Value::String("account_key".into()),
-                ])
-            })?;
-            let registered = if let Some(driver) = &state.account_driver {
-                driver
-                    .snapshot()
+) -> Result<Json<generated::TransferResponse>, ApiError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_transfer",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let result = if let Some(action) = body.action {
+                let action = match action.as_str() {
+                    "cancel" => Action::Cancel,
+                    "retry" => Action::Retry,
+                    "finish_history" => Action::FinishHistory,
+                    _ => {
+                        return Err(ApiError::validation(vec![
+                            Value::String("body".into()),
+                            Value::String("action".into()),
+                        ]));
+                    }
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|_| ApiError::internal())?
-                    .known_account_keys
-                    .contains(target)
-            } else if let Some(policy) = &state.account_policy {
-                policy.has_account(target)
+                    .as_secs_f64();
+                account_transfer_driver::action(store, &body.request_id, action, now)
             } else {
-                return Err(error(TransferError::Requires(
-                    "account-transfer/provider-history-executor",
-                )));
-            };
-            if !registered {
-                return Err(error(TransferError::Refused("Unknown account")));
+                let lead = body.id.as_deref().ok_or_else(|| {
+                    ApiError::validation(vec![
+                        Value::String("body".into()),
+                        Value::String("id".into()),
+                    ])
+                })?;
+                let target = body.account_key.as_deref().ok_or_else(|| {
+                    ApiError::validation(vec![
+                        Value::String("body".into()),
+                        Value::String("account_key".into()),
+                    ])
+                })?;
+                let registered = if let Some(driver) = &state.account_driver {
+                    driver
+                        .snapshot()
+                        .map_err(|_| ApiError::internal())?
+                        .known_account_keys
+                        .contains(target)
+                } else if let Some(policy) = &state.account_policy {
+                    policy.has_account(target)
+                } else {
+                    return Err(error(TransferError::Refused("Unknown account")));
+                };
+                if !registered {
+                    return Err(error(TransferError::Refused("Unknown account")));
+                }
+                if state.account_policy.as_ref().is_some_and(|policy| {
+                    policy.accounts().accounts.iter().any(|account| {
+                        account["id"].as_str() == Some(target)
+                            && (account
+                                .get("deleted")
+                                .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
+                                || account
+                                    .get("disconnected")
+                                    .is_some_and(|value| studio_runtime_store::truthy(Some(value))))
+                    })
+                }) {
+                    return Err(error(TransferError::Refused(
+                        "Reconnect this account before transferring a team to it",
+                    )));
+                }
+                let target_provider = state
+                    .model_catalog
+                    .account_profile(target)
+                    .map(|(_, provider)| provider)
+                    .or_else(|| {
+                        state.account_policy.as_ref().and_then(|policy| {
+                            policy
+                                .accounts()
+                                .accounts
+                                .into_iter()
+                                .find(|account| account["id"].as_str() == Some(target))
+                                .and_then(|account| {
+                                    account
+                                        .get("provider")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned)
+                                })
+                        })
+                    })
+                    .or_else(|| (target == "default").then(|| "codex".to_owned()))
+                    .ok_or_else(|| error(TransferError::Refused("Unknown account provider")))?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| ApiError::internal())?
+                    .as_secs_f64();
+                account_transfer_driver::request(
+                    store,
+                    &body.request_id,
+                    lead,
+                    target,
+                    body.scope.as_deref().unwrap_or("team"),
+                    &target_provider,
+                    now,
+                )
             }
-            account_transfer_driver::request(
-                store,
-                &body.request_id,
-                lead,
-                target,
-                body.scope.as_deref().unwrap_or("team"),
-            )
-        }
-        .map_err(error)?;
-        state.event_wake.notify_one();
-        super::generated_json::<generated::TransferResponse>(result).map(Json)
-    })
+            .map_err(error)?;
+            state.event_wake.notify_one();
+            state.continuation_wake.notify_one();
+            super::generated_json::<generated::TransferResponse>(result).map(Json)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }
 fn error(error: TransferError) -> ApiError {
     let status = match error {
         TransferError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
-        TransferError::Stored { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        TransferError::Stored { object, pointer } => {
+            return ApiError::invalid_stored(object, &pointer);
+        }
         TransferError::Store(_) => return ApiError::internal(),
         TransferError::Refused(_) => StatusCode::BAD_REQUEST,
     };
@@ -158,8 +198,9 @@ fn error(error: TransferError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "account_transfer", routes: Some(routes), dependencies: &[
+            "account-transfer/usage-resume-cancellation",
             "account-transfer/provider-history-executor", "account-transfer/destination-settings",
-            "account-driver/unavailable", "account-transfer/usage-resume-cancellation", "store-bootstrap/account-transfer-schema",
+            "store-bootstrap/account-transfer-schema",
         ],
     }
 }

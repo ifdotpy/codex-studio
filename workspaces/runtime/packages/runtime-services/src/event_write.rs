@@ -3,10 +3,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, Transaction,
+    QueueEventId, QueueWriteRepository, RulesRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -109,8 +110,7 @@ pub fn save_plan(
             "The plan event identity is already in use",
         ));
     }
-    refuse_if_event_rule_applies(connection, &input.agent_id)?;
-
+    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
         Some(value) => {
             if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
@@ -210,8 +210,7 @@ pub fn annotate(
             "The annotation event identity is already in use",
         ));
     }
-    refuse_if_event_rule_applies(connection, &input.agent_id)?;
-
+    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut record = json!({
         "id": id,
         "agent": input.agent_id.clone(),
@@ -243,26 +242,25 @@ pub fn annotate(
     })
 }
 
-fn refuse_if_event_rule_applies(
-    connection: &Transaction<'_>,
-    agent_id: &str,
-) -> Result<(), EventWriteError> {
-    let (rules, _) = RulesRepository::list(connection)?;
-    for rule in rules {
-        let record = rule.value();
-        if record.get("agent").and_then(Value::as_str) == Some(agent_id)
-            && record.get("kind").and_then(Value::as_str) == Some("event")
-            && record.get("status").and_then(Value::as_str) == Some("active")
-        {
-            return Err(EventWriteError::RuleDriverUnavailable);
-        }
+pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
+    if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
+        return Err(EventWriteError::RemoteEventsUnavailable);
     }
     Ok(())
 }
 
-pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
-    if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
-        return Err(EventWriteError::RemoteEventsUnavailable);
+fn refuse_active_event_rule(
+    connection: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<(), EventWriteError> {
+    let (rules, _) = RulesRepository::list(connection)?;
+    if rules.iter().any(|rule| {
+        let record = rule.value();
+        record.get("agent").and_then(Value::as_str) == Some(agent_id)
+            && record.get("kind").and_then(Value::as_str) == Some("event")
+            && record.get("status").and_then(Value::as_str) == Some("active")
+    }) {
+        return Err(EventWriteError::RuleDriverUnavailable);
     }
     Ok(())
 }
@@ -316,6 +314,162 @@ fn enqueue(
         turn_id: None,
         error: None,
     };
+    if let Some((server, link, is_anchor)) = remote_owner(agent)? {
+        // Remote anchors forward user input through the paired input protocol;
+        // remote workers use its worker form. Neither proxy queues native work
+        // on this server.
+        if !is_anchor {
+            if !matches!(kind, "user" | "followup") {
+                return Err(EventWriteError::RemoteEventsUnavailable);
+            }
+            let link_raw: Option<String> = transaction
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [&link],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let link_record: Value = link_raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+            if link_record.get("side").and_then(Value::as_str) != Some("remote")
+                || link_record.get("server").and_then(Value::as_str) != Some(server.as_str())
+                || !link_record
+                    .get("workers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|workers| {
+                        workers
+                            .iter()
+                            .any(|worker| worker.as_str() == Some(agent.id.0.as_str()))
+                    })
+            {
+                return Err(EventWriteError::Conflict("Remote event link is invalid"));
+            }
+            let metadata = QueueWriteRepository::metadata(transaction, &id)?
+                .unwrap_or_else(|| json!({"assets":[],"delivery":"queue"}));
+            if metadata
+                .get("assets")
+                .and_then(Value::as_array)
+                .is_some_and(|assets| !assets.is_empty())
+            {
+                return Err(EventWriteError::InvalidRequest(
+                    "Remote worker input does not support attachments",
+                ));
+            }
+            let parent_epoch = link_record
+                .get("parentEpoch")
+                .and_then(Value::as_i64)
+                .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+            let remote_epoch = agent
+                .extra
+                .get("remoteEpoch")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let request_id = crate::relocation::identity(&["input", &id]);
+            let payload = json!({
+                "link":link,
+                "worker":agent.id.0,
+                "kind":kind,
+                "text":event.text,
+                "delivery":metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+                "parentEpoch":parent_epoch,
+                "epoch":remote_epoch,
+                "controlEpoch":agent.epoch,
+            });
+            crate::multi_server_orchestration::enqueue_in_transaction(
+                transaction,
+                &server,
+                "input",
+                &payload,
+                &request_id,
+                created as i64,
+            )
+            .map_err(|_| EventWriteError::Conflict("Remote input could not be queued"))?;
+            return Ok(true);
+        }
+        let link_raw: Option<String> = transaction
+            .query_row(
+                "SELECT record FROM runtime_server_links WHERE id=?1",
+                [&link],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let link_record: Value = link_raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+        if link_record.get("side").and_then(Value::as_str) != Some("remote")
+            || link_record.get("home").and_then(Value::as_str) != Some(server.as_str())
+        {
+            return Err(EventWriteError::Conflict("Remote event link is invalid"));
+        }
+        let parent_epoch = link_record
+            .get("parentEpoch")
+            .and_then(Value::as_i64)
+            .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+        if matches!(kind, "user" | "followup") {
+            if is_anchor && kind != "user" {
+                return Err(EventWriteError::RemoteEventsUnavailable);
+            }
+            let metadata = QueueWriteRepository::metadata(transaction, &id)?
+                .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+            if metadata
+                .get("assets")
+                .and_then(Value::as_array)
+                .is_some_and(|assets| !assets.is_empty())
+            {
+                return Err(EventWriteError::InvalidRequest(
+                    "Remote anchor input does not support attachments",
+                ));
+            }
+            let mut stored = event.clone();
+            stored.status = "stored_only".to_owned();
+            EventWriteRepository::insert_event(transaction, &stored)?;
+            let request_id = crate::relocation::identity(&["anchor-input", &id]);
+            let mut payload = json!({
+                "link": link,
+                "parentEpoch": parent_epoch,
+                "kind": event.kind,
+                "text": event.text,
+                "delivery": metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+            });
+            payload[crate::multi_server_orchestration::REMOTE_ANCHOR_INPUT_FIELD] =
+                Value::Bool(true);
+            crate::multi_server_orchestration::enqueue_in_transaction(
+                transaction,
+                &server,
+                "input",
+                &payload,
+                &request_id,
+                created as i64,
+            )
+            .map_err(|_| EventWriteError::Conflict("Remote anchor input could not be queued"))?;
+            return Ok(true);
+        }
+        let request_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("studio-cross-server:event:{id}").as_bytes(),
+        )
+        .to_string();
+        let payload = json!({
+            "link": link,
+            "parentEpoch": parent_epoch,
+            "kind": event.kind,
+            "text": event.text,
+        });
+        crate::multi_server_orchestration::enqueue_in_transaction(
+            transaction,
+            &server,
+            "event",
+            &payload,
+            &request_id,
+            created as i64,
+        )
+        .map_err(|_| EventWriteError::Conflict("Remote event could not be queued"))?;
+        return Ok(true);
+    }
     let inserted = EventWriteRepository::insert_event(transaction, &event)?;
     if inserted && !recovery_pending {
         if auto_wake {
@@ -324,6 +478,37 @@ fn enqueue(
         EventWriteRepository::mark_event_enqueued(transaction, &id, monotonic_ns())?;
     }
     Ok(inserted)
+}
+
+fn remote_owner(agent: &AgentRecord) -> Result<Option<(String, String, bool)>, EventWriteError> {
+    let remote_worker = agent
+        .extra
+        .get("remoteWorker")
+        .filter(|value| truthy(Some(value)));
+    let remote_anchor = agent
+        .extra
+        .get("remoteAnchor")
+        .filter(|value| truthy(Some(value)));
+    let (value, is_anchor) = if let Some(value) = remote_anchor {
+        (value, true)
+    } else if let Some(value) = remote_worker {
+        (value, false)
+    } else {
+        return Ok(None);
+    };
+    let server_field = if is_anchor { "home" } else { "server" };
+    let server = value
+        .get(server_field)
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let link = value
+        .get("link")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if server.is_empty() || link.is_empty() {
+        return Err(EventWriteError::Conflict("Remote event owner is invalid"));
+    }
+    Ok(Some((server.to_owned(), link.to_owned(), is_anchor)))
 }
 
 pub fn checked_agent(
@@ -503,12 +688,14 @@ pub(crate) fn monotonic_ns() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_recovery_event, save_plan,
+        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_event,
+        enqueue_recovery_event, save_plan,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use studio_runtime_store::{
-        AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, Transaction,
+        AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
+        Transaction,
     };
 
     fn database() -> Connection {
@@ -521,6 +708,9 @@ mod tests {
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_server_links(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
@@ -729,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn active_event_rule_refuses_before_any_write() {
+    fn active_event_rule_refuses_plan_writes_without_changes() {
         let mut connection = database();
         connection
             .execute(
@@ -741,10 +931,11 @@ mod tests {
             )
             .expect("event rule inserts");
         let before = counts(&connection);
+        let result = with_transaction(&mut connection, |transaction| {
+            save_plan(transaction, plan_input(0, "allowed", "sig"))
+        });
         assert!(matches!(
-            with_transaction(&mut connection, |transaction| {
-                save_plan(transaction, plan_input(0, "blocked", "sig"))
-            }),
+            result,
             Err(EventWriteError::RuleDriverUnavailable)
         ));
         assert_eq!(counts(&connection), before);
@@ -805,6 +996,64 @@ mod tests {
             Err(EventWriteError::RemoteEventsUnavailable)
         ));
         assert_eq!(counts(&connection), before);
+    }
+
+    #[test]
+    fn remote_worker_user_input_is_saved_as_stable_paired_intent() {
+        let mut connection = database();
+        let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
+            .expect("agent read")
+            .expect("fixture");
+        agent.extra.insert(
+            "remoteWorker".into(),
+            json!({"server":"remote","link":"remote-link"}),
+        );
+        agent.extra.insert("remoteEpoch".into(), json!(3));
+        AgentRepository::put(&connection, &agent).expect("remote fixture writes");
+        connection.execute(
+            "INSERT INTO runtime_server_links(id,record) VALUES(?1,?2)",
+            ("remote-link", json!({"id":"remote-link","side":"remote","server":"remote","parentEpoch":4,"workers":["a"]}).to_string()),
+        ).expect("remote link writes");
+        connection.execute(
+            "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+            ("remote", json!({"id":"remote","clientId":"client","kind":"server","label":"Remote","created":1,"publicKey":"public","status":"paired"}).to_string()),
+        ).expect("paired peer writes");
+        let unicode_text = "🙂".repeat(10_000);
+        assert!(crate::coordination::message_text_within_limit(
+            &unicode_text
+        ));
+        let result = with_transaction(&mut connection, |tx| {
+            QueueWriteRepository::put_metadata(
+                tx,
+                "message-1",
+                &json!({"assets":[],"delivery":"steer"}),
+            )?;
+            enqueue_event(
+                tx,
+                &agent,
+                "message-1".into(),
+                "user",
+                unicode_text.clone(),
+                100.0,
+            )
+        })
+        .expect("paired input queues");
+        assert!(result);
+        let (server, body): (String, String) = connection
+            .query_row(
+                "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
+                [crate::relocation::identity(&["input", "message-1"])],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("stable outbox row");
+        let body: Value = serde_json::from_str(&body).expect("outbox envelope JSON");
+        assert_eq!(server, "remote");
+        assert_eq!(body["action"], "input");
+        assert_eq!(body["payload"]["worker"], "a");
+        assert_eq!(body["payload"]["delivery"], "steer");
+        assert_eq!(body["payload"]["parentEpoch"], 4);
+        assert_eq!(body["payload"]["epoch"], 3);
+        assert_eq!(body["payload"]["text"], unicode_text);
     }
 
     fn annotation(id: &str) -> AnnotationWrite {

@@ -4,12 +4,16 @@ pub mod error;
 mod http_body_limits_generated;
 mod json_body;
 pub mod middleware;
+mod mutation_sync;
 pub mod router;
 pub mod routes;
 pub mod schema;
 mod validation;
 
 pub use router::{HttpState, router};
+pub use routes::{
+    NativeContextRepairPort, VaultJobClient, VaultJobOwner, initialize_backend_identity,
+};
 pub use schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash, operations};
 
 #[allow(clippy::all)]

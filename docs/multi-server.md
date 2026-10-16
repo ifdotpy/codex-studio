@@ -48,7 +48,8 @@ enable Funnel.
 
 1. On the target server, call `POST /api/multi-server` with
    `{action:"create_invite",requestId,label?}` and the existing local session
-   header. A paired owner can also create an invitation with a signed request.
+   header. If `label` is omitted, the invitation uses the saved server identity
+   label. A paired server can also create an invitation with a signed request.
 2. Transfer the invitation through a private channel. The response contains
    `{invitation:{protocol:1,inviteId,token,serverId,label,origin,publicKey,tailscaleUser,expires},expires}`.
    The random secret expires after 15 minutes. The server stores its hash.
@@ -258,18 +259,22 @@ mutation receipt. Revocation takes precedence over discovery and saved receipts.
 The backend runs discovery at start and every 300 seconds. Each pass reads
 `tailscale status --json`. It selects online, untagged peers with Self's UserID
 and a valid Tailscale DNS name. It probes their identity endpoint over HTTPS.
+For already-paired peers, discovery refreshes the displayed name through the
+signed status endpoint. That request uses the shared QUIC-first paired transport
+when a route has been learned, with HTTPS fallback only before any bytes were sent.
 Each probe has a five-second timeout. A pass uses at most four concurrent probes,
 64 candidates, and a 90-second deadline. Unknown services are ignored quietly.
 A pass does not overlap another pass on the same server.
 
 The existing session authenticates these `POST /api/multi-server` actions:
 
-| Body                                      | Response                       | Access                        |
-| ----------------------------------------- | ------------------------------ | ----------------------------- |
-| `{action:"discover",requestId}`           | Access snapshot after the pass | Local session only            |
-| `{action:"settings",autoPair,requestId?}` | Access snapshot                | Local session or signed owner |
-| `{action:"unrevoke",clientId,requestId}`  | Access snapshot                | Local session or signed owner |
-| `{action:"ui_invite",serverId,requestId}` | `{invitation,expires}`         | Local session only            |
+| Body                                        | Response                       | Access                        |
+| ------------------------------------------- | ------------------------------ | ----------------------------- |
+| `{action:"discover",requestId}`             | Access snapshot after the pass | Local session only            |
+| `{action:"settings",autoPair,requestId?}`   | Access snapshot                | Local session or signed owner |
+| `{action:"unrevoke",clientId,requestId}`    | Access snapshot                | Local session or signed owner |
+| `{action:"alias",serverId,alias,requestId}` | Access snapshot                | Local session only            |
+| `{action:"ui_invite",serverId,requestId}`   | `{invitation,expires}`         | Local session only            |
 
 An access snapshot adds `settings:{autoPair}`. Its `servers` list contains the
 existing server fields and `lastSeen` (Unix seconds or null) and `autoPair`
@@ -291,10 +296,16 @@ It fails if the requested client is not a revoked server.
 
 `ui_invite` asks the selected paired server to run signed `create_invite`, using
 one derived stable request ID. It returns the standard invitation to the local
-UI. An exact retry returns the same invitation while it is valid. The recipient's
-receipt omits the token. The caller stores only the request fingerprint and
-public outcome metadata, and obtains the secret again through the signed route.
-No log or durable receipt contains the invitation secret.
+UI. An exact retry returns the same invitation while it is valid. A completed,
+redacted request authorizes replay of the same signed body and request ID so the
+recipient can return its saved invitation; an unknown outcome is never resent.
+The recipient's receipt omits the token. The caller stores only the request
+fingerprint and public outcome metadata. No log or durable receipt contains the
+invitation secret.
+
+`alias` changes the selected local or paired server's alias in the current
+server's access records. The request ID records both the target and alias, so an
+exact retry returns the saved snapshot and changed content with that ID fails.
 
 Proof failures return the existing `{error,code}` format. HTTP 403 covers owner,
 origin, identity, disabled auto-pair, and revocation errors. HTTP 409 covers a

@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, Connection, Transaction};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError, Transaction,
+};
 
 use crate::coordination::CoordinationError;
 
@@ -53,9 +55,9 @@ impl PreparedAdmission {
                 },
             )?;
             let cwd = cwd(&agent)?;
-            paths.entry(cwd.to_owned()).or_insert_with(|| {
-                std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd))
-            });
+            paths
+                .entry(cwd.to_owned())
+                .or_insert_with(|| resolve_path(cwd));
         }
         Ok(Self { paths })
     }
@@ -73,6 +75,7 @@ impl MessageAdmission for PreparedAdmission {
         )?;
         let ids = query.query_map([], |row| row.get::<_, String>(0))?;
         let mut blockers = Vec::new();
+        let mut unsupported_operation = false;
         for id in ids {
             let id = id?;
             let other =
@@ -93,18 +96,17 @@ impl MessageAdmission for PreparedAdmission {
             let path = self.paths.get(cwd(agent)?);
             let other_path = self.paths.get(cwd(&other)?);
             if path.is_none() || other_path.is_none() {
-                return Err(CoordinationError::RequiresDependency(
-                    "workspace-policy/message-admission",
+                // Python resolves both cwd values in its locked snapshot
+                // (codex_workspace.py:2219); Rust cannot canonicalize a newly
+                // observed cwd inside the writer transaction.
+                return Err(CoordinationError::AdmissionDenied(
+                    "Workspace admission changed while the message was being prepared".into(),
                 ));
             }
             if path != other_path {
                 continue;
             }
-            if !matches!(operation, "checkpoint" | "capture") {
-                return Err(CoordinationError::RequiresDependency(
-                    "workspace-policy/message-admission",
-                ));
-            }
+            unsupported_operation |= !matches!(operation, "checkpoint" | "capture");
             let mut blocker = json!({"agentId":id,"operation":operation});
             if let Some(id) = other
                 .extra
@@ -118,7 +120,22 @@ impl MessageAdmission for PreparedAdmission {
                 }
                 blocker["operationId"] = record["id"].clone();
             }
+            if !matches!(operation, "checkpoint" | "capture")
+                && blocker.get("operationId").is_none()
+                && let Some(record) = other_operation(tx, &id)?
+            {
+                for key in ["phase", "created", "turnId"] {
+                    blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
+                }
+                blocker["operationId"] = record["id"].clone();
+            }
             blockers.push(blocker);
+        }
+        if unsupported_operation {
+            return Err(CoordinationError::AdmissionDenied(format!(
+                "A workspace operation is active in this directory: {}",
+                studio_runtime_store::python_json(&Value::Array(blockers)),
+            )));
         }
         Ok(blockers)
     }
@@ -142,6 +159,95 @@ impl MessageAdmission for PreparedAdmission {
     }
 }
 
+/// Message ingress adapter that combines P03's workspace snapshot with P09's
+/// history-backed budget policy. Filesystem history is read before the caller's
+/// writer transaction; durable bindings are rechecked inside that transaction.
+pub struct MessageIngressAdmission<'a> {
+    workspace: PreparedAdmission,
+    store: &'a RuntimeStore,
+    histories: BTreeMap<String, crate::budget::HistoryObservation>,
+    now: f64,
+}
+
+impl<'a> MessageIngressAdmission<'a> {
+    pub fn load(
+        store: &'a RuntimeStore,
+        connection: &Connection,
+        recipient: &str,
+    ) -> Result<Self, CoordinationError> {
+        let workspace = PreparedAdmission::load(connection, recipient)?;
+        let histories = match AgentRepository::get(connection, &AgentId::from(recipient))? {
+            Some(agent) => {
+                let root = AgentRepository::get(connection, &agent.root_id)?;
+                if root.as_ref().is_some_and(|root| {
+                    root.extra.get("tokenBudget").and_then(Value::as_u64) == Some(0)
+                }) {
+                    // A zero budget is already reached from the durable zero
+                    // lifetime floor; provider history cannot change the denial.
+                    BTreeMap::new()
+                } else if root.as_ref().is_some_and(|root| {
+                    root.extra
+                        .get("tokenBudget")
+                        .is_some_and(|budget| !budget.is_null())
+                }) {
+                    crate::budget_runtime::read_histories_from_connection(
+                        store,
+                        connection,
+                        &agent.root_id.0,
+                    )?
+                } else {
+                    BTreeMap::new()
+                }
+            }
+            None => BTreeMap::new(),
+        };
+        Ok(Self {
+            workspace,
+            store,
+            histories,
+            now: unix_time(),
+        })
+    }
+}
+
+impl MessageAdmission for MessageIngressAdmission<'_> {
+    fn workspace(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+    ) -> Result<Vec<Value>, CoordinationError> {
+        self.workspace.workspace(tx, agent)
+    }
+
+    fn budget(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+        root: &AgentRecord,
+    ) -> Result<(), CoordinationError> {
+        let decision = crate::budget_runtime::admission(
+            self.store,
+            tx,
+            &agent.value(),
+            &root.value(),
+            &self.histories,
+            self.now,
+        )
+        .map_err(|error| CoordinationError::BudgetRuntime(error.into()))?;
+        if let Some(denial) = decision.denial {
+            return Err(CoordinationError::AdmissionDenied(denial.message));
+        }
+        Ok(())
+    }
+}
+
+fn unix_time() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
 fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
     agent
         .extra
@@ -153,14 +259,108 @@ fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
         })
 }
 
-/// Runtime.send stores attachment IDs verbatim. Existence, count and ownership
-/// belong to turn_prepare::compile, matching Python message_inputs timing.
-/// Non-ID upload requests still require the separately owned upload adapter.
+fn resolve_path(path: &str) -> PathBuf {
+    use std::path::Component;
+
+    let path = PathBuf::from(path);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            }
+        }
+    }
+    resolved
+}
+
+/// Runtime.send stores accepted attachment ID strings verbatim for exact
+/// replay. The shared payload-store owner validates their shape here; turn
+/// preparation loads the referenced asset and applies ownership checks.
 pub(crate) fn attachments(assets: &[Value]) -> Result<(), CoordinationError> {
-    if assets.iter().any(|asset| !asset.is_string()) {
-        return Err(CoordinationError::RequiresDependency(
-            "payload-store/uploads",
-        ));
+    for asset in assets {
+        crate::payload_store::asset_reference_id(asset)
+            .map_err(|_| CoordinationError::InvalidRequest("Invalid attachment reference"))?;
     }
     Ok(())
+}
+
+fn other_operation(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    const ACTIVE_PHASES: [&str; 6] = [
+        "provider_pending",
+        "provider_ready",
+        "local_mutation",
+        "recovery_required",
+        "capture_pending",
+        "capture_running",
+    ];
+    let mut query = tx.prepare(
+        "SELECT id,record FROM runtime_workspace_operations \
+         WHERE json_extract(record,'$.agent')=?1 ORDER BY rowid",
+    )?;
+    let rows = query.query_map([agent_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, raw) = row?;
+        let value: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+        if value
+            .get("phase")
+            .and_then(Value::as_str)
+            .is_some_and(|phase| ACTIVE_PHASES.contains(&phase))
+        {
+            return studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, &id)
+                .map_err(CoordinationError::from);
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let project_directory = tempfile::tempdir().expect("temporary project directory");
+        let project = project_directory.path().to_path_buf();
+        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let agent = AgentRecord::from_value(json!({
+            "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
+            "isLead":true, "autoWake":true, "accountKey":"default",
+            "provider":"codex", "model":"gpt-6-astra", "cwd":project,
+            "threadId":"thread-1", "tokenBudget":100
+        }))
+        .expect("valid lead record");
+        store
+            .transaction_with_error(|tx| {
+                AgentRepository::put(tx, &agent)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("persist lead record");
+
+        let connection = store.read().expect("hold message admission snapshot");
+        let admission = MessageIngressAdmission::load(&store, &connection, "lead")
+            .expect("positive token budget history loads without nested read");
+        assert!(admission.histories.contains_key("lead"));
+    }
 }

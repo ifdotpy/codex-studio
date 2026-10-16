@@ -540,7 +540,7 @@ impl NativePlatform {
         }
     }
 
-    const fn target_triple(self) -> &'static str {
+    pub const fn target_triple(self) -> &'static str {
         match self {
             Self::LinuxX64 => "x86_64-unknown-linux-musl",
             Self::LinuxArm64 => "aarch64-unknown-linux-musl",
@@ -551,14 +551,14 @@ impl NativePlatform {
         }
     }
 
-    const fn executable_name(self) -> &'static str {
+    pub const fn executable_name(self) -> &'static str {
         match self {
             Self::WindowsX64 | Self::WindowsArm64 => "codex.exe",
             _ => "codex",
         }
     }
 
-    const fn is_windows(self) -> bool {
+    pub const fn is_windows(self) -> bool {
         matches!(self, Self::WindowsX64 | Self::WindowsArm64)
     }
 }

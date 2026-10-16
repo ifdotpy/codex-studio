@@ -39,7 +39,7 @@ impl WorkspaceOperationsRepository {
             .transpose()
     }
     pub fn active_operations(connection: &Connection) -> StoreResult<Vec<Value>> {
-        let mut query = connection.prepare("SELECT record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IS NULL OR json_extract(record,'$.phase') NOT IN ('completed','failed') ORDER BY id")?;
+        let mut query = connection.prepare_cached("SELECT record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IS NULL OR json_extract(record,'$.phase') NOT IN ('completed','failed') ORDER BY id")?;
         query
             .query_map([], |r| r.get::<_, String>(0))?
             .map(|r| serde_json::from_str(&r?).map_err(StoreError::from))
@@ -50,7 +50,7 @@ impl WorkspaceOperationsRepository {
         agent: &str,
         checkpoint: &str,
     ) -> StoreResult<HistoryRows> {
-        let mut query = connection.prepare(
+        let mut query = connection.prepare_cached(
             "WITH RECURSIVE lineage(id,record) AS (
                SELECT id,record FROM runtime_checkpoints WHERE id=?1
                UNION SELECT c.id,c.record FROM runtime_checkpoints c JOIN lineage p
@@ -65,7 +65,7 @@ impl WorkspaceOperationsRepository {
             .map(|r| serde_json::from_str(&r?).map_err(StoreError::from))
             .collect::<StoreResult<Vec<_>>>()?;
         let mut query = connection
-            .prepare("SELECT id,created FROM runtime_items WHERE agent=?1 ORDER BY rowid")?;
+            .prepare_cached("SELECT id,created FROM runtime_items WHERE agent=?1 ORDER BY rowid")?;
         let items = query
             .query_map([agent], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

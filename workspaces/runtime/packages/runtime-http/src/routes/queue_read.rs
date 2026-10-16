@@ -46,7 +46,7 @@ pub(super) fn queue_snapshot(
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
     for owner in owners {
         let record = AgentRepository::get(connection, &AgentId::from(owner))
-            .map_err(|_| invalid_stored("runtime_agents", owner))?;
+            .map_err(QueueWriteError::Store)?;
         let Some(record) = record else {
             return Err(invalid_stored("runtime_agents", owner));
         };
@@ -65,7 +65,7 @@ pub(super) fn queue_snapshot(
         })?;
     for item in &items {
         let id = item.get("id").and_then(Value::as_str).unwrap_or("<event>");
-        if super::generated_json::<crate::generated::QueueItem>(item.clone()).is_err() {
+        if serde_json::from_value::<crate::generated::QueueItem>(item.clone()).is_err() {
             return Err(invalid_stored("runtime_events", id));
         }
     }
@@ -110,24 +110,50 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::InvalidRequest(message) | QueueWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        QueueWriteError::InvalidStoredObject { object, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid stored object {object}/{id}"),
-        ),
+        QueueWriteError::InvalidStoredObject { object, id } => {
+            ApiError::invalid_stored(object, &id)
+        }
         QueueWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
         ),
-        QueueWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
-            table,
-            id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid stored object {table}/{id}"),
-        ),
-        QueueWriteError::Store(_) | QueueWriteError::Json(_) => ApiError::internal(),
+        QueueWriteError::Store(error) => ApiError::stored(error),
+        QueueWriteError::Json(_) => ApiError::internal(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::api_error;
+    use crate::error::{InternalErrorCause, InternalErrorKind};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use studio_runtime_services::queue_write::QueueWriteError;
+    use studio_runtime_store::StoreError;
+
+    #[test]
+    fn queue_store_mapping_keeps_database_failures_internal() {
+        let malformed = api_error(QueueWriteError::Store(StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: "deleted-owner".to_owned(),
+        }))
+        .into_response();
+        assert_eq!(malformed.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let database_failure = api_error(QueueWriteError::Store(StoreError::Sqlite(
+            rusqlite::Error::InvalidQuery,
+        )))
+        .into_response();
+        assert_eq!(
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
+        );
+    }
+}
+
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "queue_read",

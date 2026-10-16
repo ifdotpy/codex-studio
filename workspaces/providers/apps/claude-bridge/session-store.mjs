@@ -7,6 +7,19 @@ const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_COMPACT_BYTES = 1024 * 1024;
 const DEFAULT_COMPACT_RECORDS = 128;
 
+export function ephemeralSessionOptions(session) {
+  if (session?.ephemeral !== true) return {};
+  return {
+    persistSession: false,
+    permissionMode: "dontAsk",
+    tools: [],
+    allowedTools: [],
+    settingSources: [],
+    strictMcpConfig: true,
+    mcpServers: {},
+  };
+}
+
 function copy(value) {
   return structuredClone(value);
 }
@@ -490,6 +503,8 @@ export function createSessionStore(root, options = {}) {
     return loads.get(id);
   }
   async function metadata(id) {
+    const live = sessions.get(id);
+    if (live?.ephemeral === true) return metadataFor(live, `ephemeral:${id}`);
     const cached = metadataCache.get(id);
     if (cached) return cached;
     await ready;
@@ -532,6 +547,10 @@ export function createSessionStore(root, options = {}) {
     };
   }
   function persist(session) {
+    // Claude title requests use Python's --no-session-persistence behavior.
+    // Keep their turns in the live map for the duration of the request, but
+    // never create transcript, journal, or metadata files for them.
+    if (session.ephemeral === true) return Promise.resolve();
     const id = session.id;
     const previous = writes.get(id) || Promise.resolve();
     const next = previous.catch(() => {}).then(() => persistNow(session));

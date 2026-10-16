@@ -39,26 +39,32 @@ pub fn corpus(root: &Path) -> Vec<Value> {
             .expect("monitor fixture");
     }
     let mut cases = cases.clone();
-    let expected_log_root = template_root.path().join("monitor-logs");
-    let actual_log_root = root.join("monitor-logs");
     for case in &mut cases {
-        if case["action"] != "create" {
-            continue;
-        }
-        for field in ["after", "response"] {
-            let Some(log) = case[field]["log"].as_str() else {
-                continue;
-            };
-            let log_path = Path::new(log);
-            if log_path.starts_with(&expected_log_root) {
-                let relative = log_path
-                    .strip_prefix(&expected_log_root)
-                    .expect("monitor fixture log path");
-                case[field]["log"] = actual_log_root.join(relative).display().to_string().into();
-            }
-        }
+        rebase_fixture_paths(case, template_root.path(), root);
     }
     cases
+}
+
+fn rebase_fixture_paths(value: &mut Value, from: &Path, to: &Path) {
+    match value {
+        Value::String(path) => {
+            let source = Path::new(path);
+            if let Ok(relative) = source.strip_prefix(from) {
+                *path = to.join(relative).to_string_lossy().into_owned();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                rebase_fixture_paths(value, from, to);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                rebase_fixture_paths(value, from, to);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn store(root: &Path, name: &str) -> RuntimeStore {
