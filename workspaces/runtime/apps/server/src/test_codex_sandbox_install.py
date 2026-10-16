@@ -9,7 +9,7 @@ from codex_layout import VM_GUEST_ROOT
 
 
 class InstallCodexSandboxTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -38,12 +38,12 @@ class InstallCodexSandboxTests(unittest.TestCase):
         self.script = self.root / "install-codex-sandbox.sh"
         self.script.write_text(source)
 
-    def run_installer(self, **env):
+    def run_installer(self, **env: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["sh", str(self.script)], capture_output=True, text=True,
                               timeout=5, env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
                                               "CALL_LOG": str(self.log), **env})
 
-    def test_repairs_trusted_binary_before_loading_only_its_profile(self):
+    def test_repairs_trusted_binary_before_loading_only_its_profile(self) -> None:
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.log.read_text().splitlines()
@@ -52,21 +52,21 @@ class InstallCodexSandboxTests(unittest.TestCase):
         self.assertTrue(calls[-1].endswith("/etc/apparmor.d/studio-codex"))
         self.assertEqual(self.restriction.read_text(), "1\n")
 
-    def test_policy_load_failure_stops_installation(self):
+    def test_policy_load_failure_stops_installation(self) -> None:
         self.assertEqual(self.run_installer(PARSER_EXIT="42").returncode, 42)
 
-    def test_without_apparmor_only_repairs_binary_ownership(self):
+    def test_without_apparmor_only_repairs_binary_ownership(self) -> None:
         self.restriction.unlink()
         self.assertEqual(self.run_installer().returncode, 0)
         self.assertEqual(len(self.log.read_text().splitlines()), 2)
 
-    def test_rejects_a_broken_symlink_before_privilege_changes(self):
+    def test_rejects_a_broken_symlink_before_privilege_changes(self) -> None:
         self.binary_root.rmdir()
         self.binary_root.symlink_to(self.root / "missing", target_is_directory=True)
         self.assertEqual(self.run_installer().returncode, 1)
         self.assertFalse(self.log.exists())
 
-    def test_rejects_a_symlink_before_privilege_changes(self):
+    def test_rejects_a_symlink_before_privilege_changes(self) -> None:
         self.binary_root.rmdir()
         self.binary_root.symlink_to(self.bin, target_is_directory=True)
         self.assertEqual(self.run_installer().returncode, 1)
