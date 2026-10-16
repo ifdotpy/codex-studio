@@ -793,6 +793,10 @@ impl Worker {
                 // The forwarder sends Exit on the same channel after the event
                 // stream closes. FIFO therefore puts every delivered event ahead
                 // of the joined task's remaining durable evidence.
+                #[cfg(test)]
+                self.bridge
+                    .faults
+                    .mark_shutdown_phase("joining VM actor session");
                 let exit = if active {
                     self.vm_sessions
                         .get_mut(&source.actor_id)
@@ -808,6 +812,10 @@ impl Worker {
                         .completion()
                         .await
                 };
+                #[cfg(test)]
+                self.bridge
+                    .faults
+                    .mark_shutdown_phase("VM actor session joined");
                 if let Some(recovery) = exit
                     .adapter
                     .as_ref()
@@ -868,23 +876,55 @@ impl Worker {
     }
 
     async fn run(mut self) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        self.bridge.faults.mark_shutdown_phase("serving");
         let result = self.serve().await;
+        #[cfg(test)]
+        self.bridge.faults.mark_shutdown_phase("serve complete");
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("draining managed callbacks");
         let drain_result = self.drain_managed_callbacks().await;
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("managed callbacks drained");
         let result = result.and(drain_result);
         if let Some(recovery) = self.restart_recovery.take() {
+            #[cfg(test)]
+            self.bridge
+                .faults
+                .mark_shutdown_phase("joining restart recovery");
             recovery.abort();
             let _joined = recovery.await;
         }
         self.connection_recovery.abort_all();
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("joining connection recovery");
         while self.connection_recovery.join_next().await.is_some() {}
         self.control.cancel();
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("joining account session");
         let exit = self.session.completion().await;
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("account session joined");
         for session in self.vm_sessions.values() {
             session.control.cancel();
         }
         let mut vm_cleanup_error = None;
         let mut forwarders = std::mem::take(&mut self.vm_event_forwarders);
         while let Some(mut forwarder) = forwarders.pop() {
+            #[cfg(test)]
+            self.bridge
+                .faults
+                .mark_shutdown_phase("joining VM event forwarder");
             loop {
                 tokio::select! {
                     _joined = &mut forwarder => break,
@@ -912,7 +952,15 @@ impl Worker {
         }
         // Completion has an independent lane. Drain bounded delivered and retained
         // evidence before persisting disconnect; abandoned cursors are never ACKed.
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("finishing account state");
         let cleanup = self.finish(exit).await;
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .mark_shutdown_phase("account state finished");
         let cleanup = cleanup.and_then(|()| vm_cleanup_error.map_or(Ok(()), Err));
         match cleanup.and(result) {
             Err(WorkerError::Session(SessionTaskError::Closed)) if *self.stop.borrow() => Ok(()),
@@ -2837,6 +2885,10 @@ impl Worker {
         actor_epoch: Option<i64>,
     ) -> Result<(), WorkerError> {
         if let Some(actor) = actor_id.as_deref() {
+            #[cfg(test)]
+            self.bridge
+                .faults
+                .mark_callback_phase("validating callback actor identity");
             let Some(expected) = self
                 .vm_sessions
                 .get(actor)
@@ -2965,6 +3017,10 @@ impl Worker {
         // A callback may have waited while this actor was resolving. Fence it
         // again immediately before the provider response can leave the host.
         if let Some(actor) = actor_id.as_deref() {
+            #[cfg(test)]
+            self.bridge
+                .faults
+                .mark_callback_phase("checking final callback generation fence");
             let Some(expected) = self
                 .vm_sessions
                 .get(actor)
@@ -2976,11 +3032,19 @@ impl Worker {
             if expected.generation != self.generation.0
                 || !vm_account_generation_matches(&self.resources, &expected)
             {
+                #[cfg(test)]
+                self.bridge
+                    .faults
+                    .mark_callback_phase("retiring stale callback actor");
                 if let Some(source) =
                     actor_epoch.and_then(|epoch| self.current_vm_source(actor, epoch))
                 {
                     self.retire_vm_actor_if_current(&source);
                 }
+                #[cfg(test)]
+                self.bridge
+                    .faults
+                    .mark_callback_phase("stale callback actor retired");
                 return Err(WorkerError::StaleVmActor);
             }
             let actor = actor.to_owned();
