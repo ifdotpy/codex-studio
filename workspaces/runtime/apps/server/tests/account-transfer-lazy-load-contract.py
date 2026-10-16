@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Explicitly selected account transfer latency check; no native model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest
