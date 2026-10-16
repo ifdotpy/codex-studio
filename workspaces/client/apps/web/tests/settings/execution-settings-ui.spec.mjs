@@ -1,4 +1,9 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  spawnFixture as spawn,
+  test,
+  expect,
+} from "../playwright.mjs";
 import {
   setupControl,
   setupToggle,
