@@ -317,6 +317,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store).await?;
     studio_runtime_services::monitor_runtime::recover_on_startup(&store, startup_recovery_time)
         .await?;
+    studio_runtime_services::provider_callbacks::recover_tool_requests_on_startup(
+        &store,
+        startup_recovery_time,
+    )
+    .await?;
     startup_trace("store-recovery-completed");
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
