@@ -592,13 +592,14 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(
             {(item["pointer"], item["constraint"]) for item in loosenings},
             self._reviewed_schema_additions(),
-            "only reviewed diagnostics and execution-effect statuses may loosen the schema",
+            "only reviewed diagnostics, execution-effect statuses, and the "
+            "MultiServerResource addition may loosen the schema",
         )
 
 
     @staticmethod
     def _reviewed_schema_additions() -> set[tuple[str, str]]:
-        """Allow diagnostics fields and the approved execution-effect status.
+        """Allow diagnostic fields, execution-effect statuses, and one resource variant.
 
         The store percentiles are nullable because a cold process has no samples;
         WAL entries are nullable until a checkpoint has observed that database.
@@ -678,6 +679,16 @@ class SchemaContractTests(unittest.TestCase):
             "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
         ):
             add(pointer, "@anyOf")
+
+        # MultiServerResource is an additive resource reference variant. Keep
+        # its exact occurrences reviewed so unrelated union loosenings still fail.
+        for pointer in (
+            "/components/schemas/ResourceChangeEvent/properties/resources/items",
+            "/components/schemas/ResourceNotifyRequest/properties/resources/items",
+            "/components/schemas/ResourceRef",
+            "/paths/~1api~1sync~1notify/post/requestBody/content/application~1json/schema/properties/resources/items",
+        ):
+            add(pointer, "@oneOf")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
