@@ -166,10 +166,10 @@ fn find_dist_directory(executable_directory: &Path) -> Option<PathBuf> {
             Path::new("web/dist"),
         ] {
             let candidate = ancestor.join(relative);
-            if candidate.join("index.html").is_file() {
-                if let Ok(root) = candidate.canonicalize() {
-                    return Some(root);
-                }
+            if candidate.join("index.html").is_file()
+                && let Ok(root) = candidate.canonicalize()
+            {
+                return Some(root);
             }
         }
     }
@@ -249,7 +249,9 @@ mod tests {
         assert_eq!(index.status(), StatusCode::OK);
         assert_eq!(index.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
-            to_bytes(index.into_body(), usize::MAX).await.unwrap(),
+            to_bytes(index.into_body(), usize::MAX)
+                .await
+                .expect("index body bytes"),
             "<html>ok</html>"
         );
 
@@ -267,7 +269,7 @@ mod tests {
         assert!(
             worker.headers()[header::CONTENT_TYPE]
                 .to_str()
-                .unwrap()
+                .expect("service worker content type")
                 .starts_with("text/javascript")
         );
 
@@ -296,7 +298,9 @@ mod tests {
             .expect("API response");
         assert_eq!(api.status(), StatusCode::OK);
         assert_eq!(
-            to_bytes(api.into_body(), usize::MAX).await.unwrap(),
+            to_bytes(api.into_body(), usize::MAX)
+                .await
+                .expect("API body bytes"),
             "api route"
         );
     }

@@ -124,10 +124,12 @@ pub struct MonitorRuntime {
 #[derive(Default)]
 struct LoopActivity {
     ticks: AtomicUsize,
+    completed_ticks: AtomicUsize,
     deadline_reads: AtomicUsize,
     wait_cycles: AtomicUsize,
     watch_events: AtomicUsize,
     waited: Notify,
+    tick_completed: Notify,
     watch_event: Notify,
     watch_updated: Notify,
 }
@@ -396,6 +398,13 @@ impl MonitorRuntime {
             .last_tick_error
             .lock()
             .expect("monitor tick diagnostic") = result.as_ref().err().map(ToString::to_string);
+        #[cfg(test)]
+        {
+            self.loop_activity
+                .completed_ticks
+                .fetch_add(1, Ordering::SeqCst);
+            self.loop_activity.tick_completed.notify_one();
+        }
         result
     }
 
@@ -1307,6 +1316,20 @@ mod tests {
         .expect("monitor enters its event wait");
     }
 
+    async fn wait_for_completed_ticks(runtime: &MonitorRuntime, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let completed = runtime.loop_activity.tick_completed.notified();
+                if runtime.loop_activity.completed_ticks.load(Ordering::SeqCst) >= expected {
+                    return;
+                }
+                completed.await;
+            }
+        })
+        .await
+        .expect("monitor completes the expected tick");
+    }
+
     async fn wait_for_watch_events(runtime: &MonitorRuntime, expected: usize) {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -1607,10 +1630,11 @@ mod tests {
         let task = super::start(runtime.clone(), shutdown_rx);
 
         wait_for_probes(&port, 1).await;
-        wait_for_calls(&port, 2).await;
-        wait_for_cycles(&runtime, 1).await;
+        wait_for_calls(&port, 3).await;
+        wait_for_completed_ticks(&runtime, 3).await;
+        wait_for_cycles(&runtime, 2).await;
         assert_eq!(port.probes.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), 3);
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
@@ -1947,6 +1971,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 2).await;
+        wait_for_completed_ticks(&runtime, 2).await;
         wait_for_cycles(&runtime, 1).await;
         tokio::time::timeout(Duration::from_secs(10), registry_initial_waiter)
             .await
@@ -1962,6 +1987,7 @@ mod tests {
             async move { registry_wake.notified().await }
         });
         let calls = port.next_calls.load(Ordering::SeqCst);
+        let completed_ticks = runtime.loop_activity.completed_ticks.load(Ordering::SeqCst);
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1976,6 +2002,7 @@ mod tests {
             })
             .expect("commit worker completion");
         wait_for_calls(&port, calls + 1).await;
+        wait_for_completed_ticks(&runtime, completed_ticks + 1).await;
         tokio::time::timeout(Duration::from_secs(10), registry_waiter)
             .await
             .expect("registry receives its own commit wake")

@@ -153,11 +153,7 @@ impl Credentials {
         })?;
         // Credential creation and pending recovery follow a committed reservation:
         // a conflicting request must not create a file or apply older journal rows.
-        let identity = self.load_with_notification(
-            store,
-            &mut saved,
-            &mut after_identity_write,
-        )?;
+        let identity = self.load_with_notification(store, &mut saved, &mut after_identity_write)?;
         self.recover_with_notification(store, identity, &mut after_identity_write)
     }
 

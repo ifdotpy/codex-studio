@@ -50,15 +50,29 @@ fn snapshot_in_transaction(
     let clients = project_records(tx, "runtime_access_clients")?;
     let discovered = project_records(tx, "runtime_access_discovered")?;
     let invites = tx
-        .prepare_cached("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
+        .prepare_cached(
+            "SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100",
+        )?
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .map(|r| {
             let (id, raw) = r?;
             let v = parse("runtime_access_invites", &id, &raw)?;
-            let invite_id = v.get("inviteId").and_then(Value::as_str).ok_or_else(|| invalid("runtime_access_invites", &id, "inviteId"))?;
-            let expires = v.get("expires").and_then(Value::as_i64).ok_or_else(|| invalid("runtime_access_invites", &id, "expires"))?;
-            let created = v.get("created").and_then(Value::as_i64).ok_or_else(|| invalid("runtime_access_invites", &id, "created"))?;
-            let status = v.get("status").and_then(Value::as_str).ok_or_else(|| invalid("runtime_access_invites", &id, "status"))?;
+            let invite_id = v
+                .get("inviteId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("runtime_access_invites", &id, "inviteId"))?;
+            let expires = v
+                .get("expires")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| invalid("runtime_access_invites", &id, "expires"))?;
+            let created = v
+                .get("created")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| invalid("runtime_access_invites", &id, "created"))?;
+            let status = v
+                .get("status")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("runtime_access_invites", &id, "status"))?;
             if !["open", "used"].contains(&status) {
                 return Err(invalid("runtime_access_invites", &id, "status"));
             }
@@ -66,7 +80,11 @@ fn snapshot_in_transaction(
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
     let auto_pair = tx
-        .query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1", [], |r| r.get::<_, i64>(0))
+        .query_row(
+            "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
         .optional()?
         .unwrap_or(1)
         != 0;
@@ -76,12 +94,17 @@ fn snapshot_in_transaction(
         .cloned()
         .collect::<Vec<_>>();
     for peer in discovered {
-        if !servers.iter().any(|saved| saved.get("id") == peer.get("id")) {
+        if !servers
+            .iter()
+            .any(|saved| saved.get("id") == peer.get("id"))
+        {
             servers.push(peer);
         }
     }
 
-    Ok(json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
+    Ok(
+        json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}),
+    )
 }
 
 pub fn manage(

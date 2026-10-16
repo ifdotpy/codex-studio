@@ -566,25 +566,23 @@ async fn run_event_driven_with_wake(
             }
         }
 
-        if reconfigure_watches {
-            if let Err(error) = watcher.reconfigure() {
-                eprintln!("provider history watch update failed: {error}");
-                drop(watcher);
-                let restored = restore_history_watcher(
-                    &mut runtime,
-                    &wake,
-                    &mut shutdown,
-                    &roster,
-                    &mut watcher_failures,
-                )
-                .await?;
-                let Some(restored) = restored else {
-                    break;
-                };
-                watcher = restored;
-                wake.commit();
-                continue;
-            }
+        if reconfigure_watches && let Err(error) = watcher.reconfigure() {
+            eprintln!("provider history watch update failed: {error}");
+            drop(watcher);
+            let restored = restore_history_watcher(
+                &mut runtime,
+                &wake,
+                &mut shutdown,
+                &roster,
+                &mut watcher_failures,
+            )
+            .await?;
+            let Some(restored) = restored else {
+                break;
+            };
+            watcher = restored;
+            wake.commit();
+            continue;
         }
 
         if roster_changed {

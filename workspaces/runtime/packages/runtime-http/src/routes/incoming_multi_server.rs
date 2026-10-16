@@ -258,9 +258,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     let is_name = request.is_name();
     let is_management_invite = request.is_management_invite();
     let updates_snapshot = !is_orchestration
-        && (request.is_pairing()
-            || request.is_auto_pairing()
-            || is_management_invite);
+        && (request.is_pairing() || request.is_auto_pairing() || is_management_invite);
     let advertise_link = is_orchestration
         || request.is_status()
         || request.is_pairing()
@@ -302,10 +300,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                         &request_id,
                         &principal,
                         |request_id| {
-                            super::multi_server::publish_resource_change(
-                                &notifications,
-                                request_id,
-                            )
+                            super::multi_server::publish_resource_change(&notifications, request_id)
                         },
                     )
                     .map_err(credential_error)?;
@@ -357,8 +352,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             }
             response
         }
-        Ok(Ok(value)) => {
-            match validate_response(&method, is_name, is_management_invite, value) {
+        Ok(Ok(value)) => match validate_response(&method, is_name, is_management_invite, value) {
             Ok(v) => {
                 let mut response = Json(v).into_response();
                 if advertise_link {
@@ -367,8 +361,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 response
             }
             Err(e) => e.into_response(),
-            }
-        }
+        },
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
