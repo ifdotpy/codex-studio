@@ -5,6 +5,8 @@ Requires=codex-studio-grow.service
 Wants=network-online.target
 RequiresMountsFor=/var/lib/codex-studio
 ConditionPathIsMountPoint=/var/lib/codex-studio
+# Never give up after a run of failures (such as OOM kills); the Mac reaches the VM only here.
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

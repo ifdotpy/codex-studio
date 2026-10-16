@@ -155,6 +155,27 @@ Both states have `error` (the reason), `guestFailure` (`kernel_panic` or `unansw
 `helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
 also when the console of its last boot has a panic.
 
+### LAYR fault
+
+The guest service can answer while the layr daemon or the root broker is down. On 2026-10-14
+the guest answered every probe, `layr admin channel is unavailable` failed every layr call, and
+all VM chats paused while the status said `running`. After a guest answer the watchdog also asks
+`layr.health` (through the guest service and the root broker), at most once a minute, and saves
+the result under `layr` in `guest-health.json`. Three failed answers over 120 seconds in the same
+boot make a LAYR fault:
+
+- the state stays `running`, because the providers of the VM chats still run;
+- `status()` has `error` and `layrFault` (`layr_unavailable`, since, error), and the Linux VM
+  settings show the reason;
+- the LAYR chip of each project that is in the VM shows `failed` with the reason. The watchdog
+  updates the chips when a fault starts and when it ends.
+
+A record that is more than 5 minutes old (a stopped VM or backend) shows no fault. The watchdog
+does not act on a LAYR fault. The Mac has no root path into the guest when the root broker is
+down, and a VM restart ends every provider. In the guest, systemd restarts a dead daemon, broker
+or guest service. Their units have no start limit (`StartLimitIntervalSec=0`): with the default
+limit, a run of OOM kills could leave the daemon failed for good, and the broker requires it.
+
 ### Recovery
 
 `codex_linux_vm_watchdog.py` runs in the macOS backend whose state directory holds the VM

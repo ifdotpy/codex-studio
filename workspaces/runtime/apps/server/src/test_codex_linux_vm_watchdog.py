@@ -35,6 +35,9 @@ class FakeHelper:
         self.stop_polls = 0
         self.while_stopping: Any = None
         self.health_record_at_launch: bool | None = None
+        # layr.health through the guest service and the root broker: ready, unavailable or down.
+        self.layr = 'ready'
+        self.layr_calls = 0
 
     def host(self, method: str, timeout: float = 5) -> dict[str, Any]:
         if method == 'host.status':
@@ -66,6 +69,11 @@ class FakeHelper:
         return process
 
     def call(self, method: str, params: dict[str, Any] | None = None, **options: Any) -> dict[str, Any]:
+        if method == 'layr.health':
+            self.layr_calls += 1
+            if self.layr == 'down':
+                raise vm.LinuxVMError('The layr admin channel is unavailable')
+            return {'state': self.layr}
         if method != 'health':
             raise AssertionError(method)
         if not self.healthy:
@@ -267,6 +275,58 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(status['state'], 'unresponsive')
         self.assertEqual(status['guestFailure']['kind'], 'unanswered')
         self.assertIn('has not answered for 180 seconds', status['error'])
+
+    def check_every(self, seconds: float, count: int) -> list[str]:
+        results = []
+        for _ in range(count):
+            results.append(self.watchdog.check())
+            self.clock.now += seconds
+        return results
+
+    def test_a_layr_broker_outage_behind_an_answering_guest_is_shown_not_restarted(self) -> None:
+        # 2026-10-14: the guest answered every ping, the layr admin channel was unavailable,
+        # and all VM chats paused while the status said running and healthy.
+        changes: list[bool] = []
+        self.watchdog.on_layr_changed = lambda: changes.append(
+            self.client.layr_fault(self.helper.pid, now=self.clock.now) is not None)
+        self.helper.layr = 'down'
+        self.assertEqual(self.check_every(30, 9), ['running'] * 9)
+        status = self.client.status()
+        self.assertEqual(status['state'], 'running')  # its providers keep running
+        self.assertEqual(status['layrFault']['kind'], 'layr_unavailable')
+        self.assertIn('LAYR in the VM has not answered for 240 seconds', status['error'])
+        self.assertIn('layr admin channel is unavailable', status['error'])
+        self.assertEqual((self.helper.stops, self.helper.launches, self.records()), (0, 0, []))
+        self.assertEqual(self.helper.layr_calls, 5)  # once per minute, not at every 30-second ping
+        self.assertEqual(changes, [True])
+        self.helper.layr = 'ready'
+        self.check_every(30, 2)
+        self.assertNotIn('layrFault', self.client.status())
+        self.assertEqual(changes, [True, False])
+
+    def test_a_short_layr_outage_or_an_unavailable_answer_counts_only_with_time(self) -> None:
+        self.helper.layr = 'down'
+        self.check_every(60, 2)  # two failures over 60 seconds: one unit restart is not a fault
+        self.assertNotIn('layrFault', self.client.status())
+        self.helper.layr = 'ready'
+        self.check_every(60, 1)
+        self.helper.layr = 'unavailable'  # layr.health answers, but the daemon does not
+        self.check_every(60, 2)
+        self.assertNotIn('layrFault', self.client.status())
+        self.check_every(60, 1)
+        self.assertIn('layr state unavailable', self.client.status()['error'])
+
+    def test_no_layr_probe_without_a_guest_answer_and_an_old_fault_is_not_shown(self) -> None:
+        self.helper.healthy = False
+        self.check_every(60, 4)
+        self.assertEqual(self.helper.layr_calls, 0)
+        self.helper.healthy, self.helper.layr = True, 'down'
+        self.check_every(60, 4)
+        self.assertIsNotNone(vm.layr_fault(self.directory, now=self.clock.now))
+        # A stopped VM or backend probes no more: a record of that age shows no fault.
+        self.assertIsNone(vm.layr_fault(self.directory, now=self.clock.now + vm.LAYR_FAULT_FRESH_SECONDS + 61))
+        # A new helper (a new boot) never shows the fault of the old one.
+        self.assertIsNone(vm.layr_fault(self.directory, self.helper.pid + 1, now=self.clock.now))
 
     def test_no_answer_before_the_first_answer_or_across_a_gap_is_not_unresponsive(self) -> None:
         start = self.clock.now

@@ -225,8 +225,42 @@ PROBE_GAP_SECONDS = 90
 # a dead kernel never accepts only after 15 seconds.
 BUSY = 'busy'
 BUSY_CLOSE_SECONDS = 10.0
+# The guest service can answer while the root broker or the layr daemon is down: on
+# 2026-10-14 the layr admin channel was unavailable, every VM chat paused, and the ping
+# still answered. The watchdog asks `layr.health` at most once per LAYR_PROBE_SECONDS after
+# a ping answer. LAYR_FAULT_PROBES failed answers over LAYR_FAULT_SECONDS make a layr fault;
+# a slow layr command or one restart of a unit (2 seconds) does not. A fault record older
+# than LAYR_FAULT_FRESH_SECONDS (a stopped VM, a stopped backend) is not shown.
+LAYR_PROBE_SECONDS = 60.0
+LAYR_PROBE_TIMEOUT = 20.0
+LAYR_FAULT_SECONDS = 120
+LAYR_FAULT_PROBES = 3
+LAYR_FAULT_FRESH_SECONDS = 300
 _HEALTH_FILE = 'guest-health.json'
 _INTENT_FILE = 'intent.json'
+
+
+def layr_fault(state_dir: Path, pid: Any = None, *, now: float | None = None) -> dict[str, Any] | None:
+    """A layr daemon or root broker that has not answered for LAYR_FAULT_SECONDS while the
+    guest answers. With pid None, any fresh record counts: host records only, no VM call."""
+    try:
+        health = json.loads((state_dir / _HEALTH_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    layr = health.get('layr') if isinstance(health, dict) else None
+    if not isinstance(layr, dict):
+        return None
+    since, last = layr.get('failingSince'), layr.get('lastFailureAt')
+    now = time.time() if now is None else now
+    if ((pid is not None and health.get('helperPid') != pid)
+            or not isinstance(since, (int, float)) or not isinstance(last, (int, float))
+            or now - last > LAYR_FAULT_FRESH_SECONDS
+            or int(layr.get('failures') or 0) < LAYR_FAULT_PROBES
+            or last - since < LAYR_FAULT_SECONDS):
+        return None
+    return {'kind': 'layr_unavailable', 'since': since, 'error': layr.get('error'),
+            'reason': f'LAYR in the VM has not answered for {int(last - since)} seconds: '
+                      + str(layr.get('error') or 'no reason')}
 
 
 def _kernel_death(log: str) -> tuple[str, str] | None:
@@ -718,6 +752,38 @@ class Client:
         _atomic_json(self.state_dir / _HEALTH_FILE, saved)
         return saved
 
+    def layr_probe_due(self, pid: Any, now: float) -> bool:
+        """Whether the watchdog asks layr.health now: once per LAYR_PROBE_SECONDS per boot."""
+        saved = self._read_json(_HEALTH_FILE)
+        last = (saved.get('layr') or {}).get('lastProbeAt') if saved.get('helperPid') == pid else None
+        return not isinstance(last, (int, float)) or now - last >= LAYR_PROBE_SECONDS
+
+    def record_layr(self, pid: Any, error: str | None, *, now: float | None = None) -> dict[str, Any]:
+        """Save one layr.health answer of the guest of this helper PID: None is a ready layr
+        (daemon and root broker), any text a failure. Only after the guest itself answered."""
+        if type(pid) is not int or not self.state_dir.is_dir():
+            return {}
+        now = time.time() if now is None else now
+        saved = self._read_json(_HEALTH_FILE)
+        if saved.get('helperPid') != pid:
+            return {}
+        layr = dict(saved.get('layr') or {})
+        previous = layr.get('lastProbeAt')
+        if error is None:
+            layr.update(readyAt=now, failingSince=None, lastFailureAt=None, failures=0, error=None)
+        else:
+            if (layr.get('failingSince') is None or not isinstance(previous, (int, float))
+                    or now - previous > LAYR_PROBE_SECONDS + PROBE_GAP_SECONDS):
+                layr.update(failingSince=now, failures=0)
+            layr.update(failures=int(layr.get('failures') or 0) + 1, lastFailureAt=now, error=error[:300])
+        layr['lastProbeAt'] = now
+        saved['layr'] = layr
+        _atomic_json(self.state_dir / _HEALTH_FILE, saved)
+        return layr
+
+    def layr_fault(self, pid: Any = None, *, now: float | None = None) -> dict[str, Any] | None:
+        return layr_fault(self.state_dir, pid, now=now)
+
     def _guest_failure(self, host: dict[str, Any], log: str) -> dict[str, Any] | None:
         """A dead (kernel_panic, kernel_error) or unresponsive (unanswered) guest behind a helper that
         still reports running."""
@@ -809,6 +875,12 @@ class Client:
             # The helper and its Virtualization process stay alive after a guest panic.
             state = 'unresponsive' if failure['kind'] == 'unanswered' else 'failed'
             result.update(state=state, helperState='running', error=failure['reason'], guestFailure=failure)
+        elif result.get('state') == 'running':
+            # The VM stays `running` (its chats keep their providers), but nothing that needs
+            # layr works: new VM chats, turn saves, project commands.
+            fault = self.layr_fault(result.get('pid'))
+            if fault is not None:
+                result.update(error=fault['reason'], layrFault=fault)
         from codex_linux_vm_watchdog import summary
         watchdog = summary(self.state_dir)
         if watchdog is not None:

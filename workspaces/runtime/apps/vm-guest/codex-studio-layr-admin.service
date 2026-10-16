@@ -4,6 +4,9 @@ After=network-online.target codex-studio-layr.service
 Requires=codex-studio-layr.service
 Wants=network-online.target
 RequiresMountsFor=/var/lib/codex-studio
+# Never give up: a broker that stays down pauses every VM chat while the guest still answers
+# (2026-10-14). The Mac has no other root path into the guest.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

@@ -77,8 +77,16 @@ def project_readiness(runtime: Any, project: Mapping[str, Any]) -> dict[str, str
         return None
     layr_id = project_layr_id(project)
     readiness = import_readiness(Path(state_dir), layr_id)
+    if readiness["state"] != "ready":
+        return readiness
+    from codex_linux_vm import layr_fault
+    fault = layr_fault(Path(state_dir))
+    if fault is not None:
+        # A layr daemon or root broker that does not answer: no layr chat starts or saves its
+        # turn. The fault is VM-wide; it shows only on projects that are in the VM.
+        return {"state": "failed", "error": fault["reason"][:500], "projectId": layr_id}
     # A ready project names its layr project: the layr menu acts on it (project secrets).
-    return {**readiness, "projectId": layr_id} if readiness["state"] == "ready" else readiness
+    return {**readiness, "projectId": layr_id}
 
 
 def project_sync(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -134,10 +142,12 @@ def has_layr_chats(runtime: Any, project: Mapping[str, Any]) -> bool:
 
 def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any]:
     readiness = project_readiness(runtime, project)
-    if not readiness or (readiness["state"] == "ready" and not has_layr_chats(runtime, project)):
+    # projectId marks a project that is in the VM: ready, or ready with a VM-wide layr fault.
+    imported = bool(readiness and readiness.get("projectId"))
+    if not readiness or (imported and not has_layr_chats(runtime, project)):
         return dict(project)
     view = {**project, "layrReadiness": readiness}
-    if readiness["state"] == "ready":
+    if imported:
         sync = project_sync(runtime, project)
         if sync is not None:
             view["layrSync"] = sync
