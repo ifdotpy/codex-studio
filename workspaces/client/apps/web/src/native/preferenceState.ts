@@ -1,3 +1,4 @@
+import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { DRAFT_JOURNAL_PREFIX } from "./draftJournal";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
 type Write = {
@@ -21,7 +22,7 @@ function scopedKey(scope: string, value: unknown) {
   if (
     typeof value !== "string" ||
     !value ||
-    new TextEncoder().encode(prefix + value).length > 512
+    new TextEncoder().encode(prefix + value).length > maxPreferenceKeyBytes
   )
     throw new Error("Invalid preference key.");
   return prefix + value;

@@ -1,3 +1,4 @@
+import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { expect, it, vi } from "vitest";
 import { NativePreferenceStorage, preferenceScope } from "./preferenceState";
 
@@ -142,9 +143,9 @@ it("rejects oversized scoped keys before journaling, without blocking later writ
     vi.fn(),
     scope,
   );
-  expect(() => storage.setItem("Ж".repeat(250), "bad")).toThrow(
-    "Invalid preference key",
-  );
+  expect(() =>
+    storage.setItem("Ж".repeat(maxPreferenceKeyBytes / 2), "bad"),
+  ).toThrow("Invalid preference key");
   expect(storage.length).toBe(0);
   expect(journal.getItem("studio-native-preferences-journal-v1")).toBeNull();
   storage.setItem("theme", "dark");
@@ -201,4 +202,19 @@ it("keeps draft recovery records out of the preference import", async () => {
   expect(
     journal.getItem("studio-native-draft-journal-v1:workspace:request"),
   ).toBe("saved draft");
+});
+
+it("imports long saved answer draft keys without dropping the draft", async () => {
+  const journal = memory();
+  const key = "studio-answer-draft:" + "question".repeat(220);
+  journal.setItem(key, "saved answer");
+  const core = backend();
+  const storage = await NativePreferenceStorage.open(
+    journal,
+    preferenceScope(core.invoke, "root"),
+    vi.fn(),
+    "root",
+  );
+  expect(storage.getItem(key)).toBe("saved answer");
+  expect(core.values['browser:"root":' + key]).toBe("saved answer");
 });

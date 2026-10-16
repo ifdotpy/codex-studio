@@ -5,6 +5,17 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
+// Shared contract owns UTF-8 key bytes, including the browser-owner prefix.
+fn max_preference_key_bytes() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        serde_json::from_str::<Value>(include_str!("../../../contracts/preference-storage.json"))
+            .expect("valid preference storage contract")["maxKeyBytes"]
+            .as_u64()
+            .expect("positive preference key byte limit") as usize
+    })
+}
+
 pub struct Store {
     pub(crate) connection: Connection,
 }
@@ -188,7 +199,7 @@ impl Store {
             || entries.len() > 10_000
             || entries.iter().any(|(key, value)| {
                 key.is_empty()
-                    || key.len() > 512
+                    || key.len() > max_preference_key_bytes()
                     || value.as_str().is_none_or(|raw| raw.len() > 8 * 1024 * 1024)
             })
             || serde_json::to_vec(&request.params).unwrap().len() > 16 * 1024 * 1024
@@ -247,7 +258,7 @@ impl Store {
     fn set_raw_preference(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let key = request.params["key"]
             .as_str()
-            .filter(|v| !v.is_empty() && v.len() <= 512);
+            .filter(|v| !v.is_empty() && v.len() <= max_preference_key_bytes());
         let raw = request.params["raw"]
             .as_str()
             .filter(|v| v.len() <= 8 * 1024 * 1024);
@@ -290,7 +301,10 @@ impl Store {
             }
         };
         let value = serde_json::to_string(&command.value).expect("JSON value serialization");
-        if command.key.is_empty() || command.key.len() > 512 || value.len() > 512 * 1024 {
+        if command.key.is_empty()
+            || command.key.len() > max_preference_key_bytes()
+            || value.len() > 512 * 1024
+        {
             return Ok(Response::failure(
                 request.id.clone(),
                 "invalid_params",
@@ -443,6 +457,36 @@ mod tests {
             .result
             .unwrap()
     }
+    #[test]
+    fn long_preference_keys_survive_import_and_keep_byte_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let key = format!(
+            "browser:\"root\":studio-answer-draft:{}",
+            "question".repeat(220)
+        );
+        let mut entries = serde_json::Map::new();
+        entries.insert(key.clone(), json!("saved answer"));
+        assert!(
+            store
+                .dispatch(import("long-key", Value::Object(entries)))
+                .error
+                .is_none()
+        );
+        assert_eq!(raw(&mut store)[&key], "saved answer");
+        let oversized = "Ж".repeat(max_preference_key_bytes() / 2 + 1);
+        assert!(
+            store
+                .dispatch(Request {
+                    id: "oversized".into(),
+                    method: "preferences.raw_set".into(),
+                    params: json!({"key":oversized,"raw":"blocked"})
+                })
+                .error
+                .is_some()
+        );
+    }
+
     #[test]
     fn snapshot_import_replay_after_restart_preserves_later_edits() {
         let directory = tempfile::tempdir().unwrap();
