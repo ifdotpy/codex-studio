@@ -165,7 +165,7 @@ pub fn manage(
         let records=MultiServerRepository::audit(tx)?;
         let _=(clients,records);
         snapshot_in_transaction(tx, identity, true).map_err(MultiServerError::from)
-    })?
+    })
 }
 
 /// Create a single-use signed pairing invitation. The token is deterministically
