@@ -905,6 +905,26 @@ async function main() {
       name: "Review settings",
       exact: true,
     });
+    const reviewProvider = reviewDialog.getByLabel("Provider", {
+      exact: true,
+    });
+    const codexReviewProvider = reviewProvider
+      .locator("label")
+      .filter({ hasText: "Codex" });
+    assert.equal(
+      await codexReviewProvider.count(),
+      1,
+      "Review settings do not expose the Codex provider.",
+    );
+    await codexReviewProvider.click();
+    await reviewProvider.locator('input[value="codex"]').waitFor({
+      state: "attached",
+    });
+    assert.equal(
+      await reviewProvider.locator('input[value="codex"]').isChecked(),
+      true,
+      "Review provider is not Codex.",
+    );
     const reviewModelList = reviewDialog.getByRole("listbox", {
       name: "Default review model",
       exact: true,
@@ -912,7 +932,24 @@ async function main() {
     const reviewModel = reviewModelList.locator(
       `[role="option"][data-value="${REVIEW_MODEL}"]`,
     );
-    await reviewModel.waitFor();
+    try {
+      await reviewModel.waitFor();
+    } catch (error) {
+      const availableModels = await reviewModelList
+        .locator('[role="option"]')
+        .evaluateAll((options) =>
+          options.map((option) => ({
+            value: option.getAttribute("data-value"),
+            label: option.textContent?.trim(),
+            disabled: option.getAttribute("aria-disabled"),
+          })),
+        )
+        .catch(() => []);
+      throw new Error(
+        `${error.message}; Review provider is Codex but Sol is unavailable. ` +
+          `Visible review models: ${JSON.stringify(availableModels)}`,
+      );
+    }
     await reviewModel.click();
     await reviewModelList
       .locator(
