@@ -8,6 +8,24 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+// DraftDocumentInput in the server API uses `deleted`; local projections use
+// RxDB's `_deleted`. Keep local/master documents unchanged for acknowledgement.
+fn wire_rows(rows: &[Value]) -> Vec<Value> {
+    rows.iter()
+        .cloned()
+        .map(|mut row| {
+            for field in ["newDocumentState", "assumedMasterState"] {
+                if let Some(document) = row[field].as_object_mut() {
+                    if let Some(deleted) = document.remove("_deleted") {
+                        document.insert("deleted".into(), deleted);
+                    }
+                }
+            }
+            row
+        })
+        .collect()
+}
+
 async fn replicate(backend: &Backend, store: &StoreSender, workspace: &str) -> Result<(), String> {
     let identity = sync::identity(backend).await.map_err(|e| e.message)?;
     if identity["workspaceId"] != workspace {
@@ -58,7 +76,7 @@ async fn replicate(backend: &Backend, store: &StoreSender, workspace: &str) -> R
         return Ok(());
     }
     let response=backend.dispatch(Request{id:"core-draft-push".into(),method:"api.request".into(),params:json!({
-        "path":"/api/sync/drafts","body":{"rows":rows},"workspaceId":workspace,"timeoutMs":15000
+        "path":"/api/sync/drafts","body":{"rows":wire_rows(rows)},"workspaceId":workspace,"timeoutMs":15000
     })}).await;
     let value = response.result.ok_or_else(|| {
         response
@@ -138,5 +156,26 @@ pub async fn dispatch(
     match result {
         Ok(value) => crate::protocol::Response::success(request.id, value),
         Err(error) => crate::protocol::Response::failure(request.id, "draft_sync", error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_wire_documents_translate_tombstones_without_changing_acknowledgements() {
+        let rows = vec![
+            json!({"newDocumentState":{"id":"d:r","payload":"{}","seq":2,"_deleted":true},"assumedMasterState":{"id":"d:r","payload":"{}","seq":1,"_deleted":false}}),
+            json!({"newDocumentState":{"id":"d:s","payload":"{}","seq":0,"_deleted":false},"assumedMasterState":null}),
+        ];
+        let wire = wire_rows(&rows);
+        assert_eq!(wire[0]["newDocumentState"]["deleted"], true);
+        assert_eq!(wire[0]["assumedMasterState"]["deleted"], false);
+        assert!(wire[0]["newDocumentState"].get("_deleted").is_none());
+        assert!(wire[0]["assumedMasterState"].get("_deleted").is_none());
+        assert_eq!(wire[1]["assumedMasterState"], Value::Null);
+        assert_eq!(rows[0]["newDocumentState"]["_deleted"], true);
+        assert_eq!(wire[0]["assumedMasterState"]["seq"], 1);
     }
 }

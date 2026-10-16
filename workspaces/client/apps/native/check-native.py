@@ -126,6 +126,13 @@ with tempfile.TemporaryDirectory(prefix="studio-native-webview-") as temporary:
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             if self.path == "/api/sync/drafts":
+                rows = json.loads(body)["rows"]
+                for row in rows:
+                    for field in ("newDocumentState", "assumedMasterState"):
+                        document = row.get(field)
+                        if document is not None and ("_deleted" in document or not isinstance(document.get("deleted"), bool)):
+                            self.send(400, b'{"error":"Invalid draft wire tombstone"}')
+                            return
                 self.send(200, b'[]')
                 return
             if self.path != "/api/native-check":
