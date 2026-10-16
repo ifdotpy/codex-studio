@@ -65,6 +65,9 @@ fn service(state: &HttpState) -> Result<Arc<LoginService>, ApiError> {
 fn error(error: LoginError) -> ApiError {
     match error {
         LoginError::Persistence | LoginError::InvalidRecord(_) => ApiError::internal(),
+        invalid @ (LoginError::InvalidCode | LoginError::InvalidAuthorizationResponse) => {
+            ApiError::not_applied(invalid.to_string())
+        }
         other => ApiError::new(StatusCode::BAD_REQUEST, other.to_string()),
     }
 }

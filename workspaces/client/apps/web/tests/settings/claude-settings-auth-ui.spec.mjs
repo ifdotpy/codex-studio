@@ -161,8 +161,16 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             status: "pending",
             verificationUrl: "https://claude.ai/oauth/authorize?fixture=1",
           };
+          return route.fulfill({ json: receipt });
         }
-        return route.fulfill({ json: receipt || { error: "Unknown request" } });
+        const status = receipt || {
+          requestId: url.searchParams.get("request_id"),
+          accountKey: "claude-work",
+          status: "starting",
+        };
+        assert.equal(status.requestId, url.searchParams.get("request_id"));
+        assert.equal(status.accountKey, "claude-work");
+        return route.fulfill({ json: status });
       }
       if (url.pathname === "/api/accounts/claude/login/code") {
         authenticated = true;
@@ -209,8 +217,10 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
     assert.equal(loginStarts.length, 1);
     assert.equal(loginStarts[0].account_key, "claude-work");
-    await page.getByLabel("Authorization code").fill("fixture-code");
-    await page.getByRole("button", { name: "Submit code" }).click();
+    await page.getByLabel("Final authorization response").fill("fixture-code");
+    await page
+      .getByRole("button", { name: "Submit authorization response" })
+      .click();
     await page.waitForFunction(
       () =>
         !document.querySelector('select[aria-label="Permission mode"]')

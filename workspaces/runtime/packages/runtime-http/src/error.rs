@@ -14,6 +14,7 @@ pub struct ApiError {
     status: StatusCode,
     message: String,
     location: Option<serde_json::Value>,
+    outcome: Option<crate::generated::ErrorResponseOutcome>,
     content_type: Option<&'static str>,
     internal_cause: Option<InternalErrorKind>,
 }
@@ -80,9 +81,18 @@ impl ApiError {
             status,
             message: message.into(),
             location: None,
+            outcome: None,
             content_type: None,
             internal_cause: None,
         }
+    }
+
+    /// Mark a rejected preflight as safely retryable; callers must use this
+    /// only when the operation has not been persisted or sent to a child.
+    pub(crate) fn not_applied(message: impl Into<String>) -> Self {
+        let mut error = Self::new(StatusCode::BAD_REQUEST, message);
+        error.outcome = Some(crate::generated::ErrorResponseOutcome::NotApplied);
+        error
     }
 
     pub(crate) fn validation(location: Vec<serde_json::Value>) -> Self {
@@ -90,6 +100,7 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             message: "Invalid request".to_owned(),
             location: Some(serde_json::Value::Array(location)),
+            outcome: None,
             content_type: None,
             internal_cause: None,
         }
@@ -156,6 +167,11 @@ impl IntoResponse for ApiError {
         if let Some(location) = self.location {
             body["location"] = location;
         }
+        if let Some(outcome) = self.outcome
+            && let Ok(outcome) = serde_json::to_value(outcome)
+        {
+            body["outcome"] = outcome;
+        }
         let mut response = (self.status, Json(body)).into_response();
         if self.status == StatusCode::INTERNAL_SERVER_ERROR
             && let Some(cause) = self.internal_cause
@@ -218,9 +234,29 @@ pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{ApiError, InternalErrorCause, InternalErrorKind};
+    use axum::body::to_bytes;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
+
+    #[tokio::test]
+    async fn not_applied_outcome_is_optional_in_the_common_error_envelope() {
+        let response = ApiError::not_applied("invalid local input").into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("response body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(value["error"], "invalid local input");
+        assert_eq!(value["outcome"], "not_applied");
+
+        let response = ApiError::new(StatusCode::BAD_REQUEST, "ordinary error").into_response();
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("response body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON body");
+        assert!(value.get("outcome").is_none());
+    }
 
     #[test]
     fn malformed_stored_rows_are_unavailable_without_reclassifying_store_failures() {

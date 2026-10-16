@@ -46,6 +46,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
     let starts = [];
     let codes = [];
     let unsafeNext = false;
+    let failNextCode = false;
     await page.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
@@ -64,21 +65,31 @@ test("claude login ui", async ({ page: runnerPage }) => {
               : "https://claude.com/cai/oauth/authorize?fixture=1",
           };
           unsafeNext = false;
-        } else if (!receipt) {
-          // Let the start POST reach this route before the first status read.
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        return route.fulfill({
-          json: receipt || {
+        } else {
+          const status = receipt || {
             requestId: url.searchParams.get("request_id"),
             accountKey: "claude",
             status: "starting",
-          },
+          };
+          assert.equal(status.requestId, url.searchParams.get("request_id"));
+          assert.equal(status.accountKey, "claude");
+          return route.fulfill({ json: status });
+        }
+        return route.fulfill({
+          json: receipt,
         });
       }
       if (url.pathname.endsWith("/code")) {
         codes.push(body.code);
-        receipt = { ...receipt, status: "ready", email: "me@example.com" };
+        receipt = failNextCode
+          ? {
+              ...receipt,
+              status: "error",
+              error:
+                "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.",
+            }
+          : { ...receipt, status: "ready", email: "me@example.com" };
+        failNextCode = false;
         return route.fulfill({ json: receipt });
       }
       if (url.pathname.endsWith("/cancel")) {
@@ -138,8 +149,10 @@ test("claude login ui", async ({ page: runnerPage }) => {
     await open();
     await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
     assert.equal(starts.length, 1);
-    await page.getByLabel("Authorization code").fill("secret-code");
-    await page.getByRole("button", { name: "Submit code" }).click();
+    await page.getByLabel("Final authorization response").fill("secret-code");
+    await page
+      .getByRole("button", { name: "Submit authorization response" })
+      .click();
     await page
       .getByText("Signed in as me@example.com. You can retry the message.")
       .waitFor();
@@ -164,9 +177,37 @@ test("claude login ui", async ({ page: runnerPage }) => {
     );
     await page.getByRole("button", { name: "Cancel sign-in" }).click();
     await page.getByText("Sign-in cancelled.", { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Check sign-in status" }).count(),
+      0,
+    );
+    const cancelled = starts.at(-1);
+    await page.getByRole("button", { name: "Start new sign-in" }).click();
+    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    const afterCancel = starts.at(-1);
+    assert.notEqual(afterCancel, cancelled);
+
+    failNextCode = true;
+    await page.getByLabel("Final authorization response").fill("failed-code");
+    await page
+      .getByRole("button", { name: "Submit authorization response" })
+      .click();
+    await page
+      .getByText(
+        "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Check sign-in status" }).count(),
+      0,
+    );
+    await page.getByRole("button", { name: "Start new sign-in" }).click();
+    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    assert.notEqual(starts.at(-1), afterCancel);
     assert.deepEqual(failures, []);
     console.log(
-      "PASS Claude re-auth menu, reload, code secrecy, ready restart, unsafe URL, cancel",
+      "PASS Claude re-auth menu, reload, code secrecy, terminal restart, unsafe URL, cancel",
     );
   } finally {
     await runnerPage.close();

@@ -15,6 +15,8 @@ use serde_json::{Map, Value, json};
 const RESTARTED: &str = "Studio restarted during sign-in. Start a new sign-in request.";
 pub const CODE_UNKNOWN: &str = "Cannot confirm delivery of the code. Start a new sign-in request.";
 pub const FAILED: &str = "Claude sign-in failed. Start a new sign-in request.";
+pub const AUTHORIZATION_NOT_CONFIRMED: &str =
+    "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.";
 pub const TIMED_OUT: &str = "Claude sign-in timed out. Start a new sign-in request.";
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +35,10 @@ pub enum LoginError {
     WaitForLink,
     #[error("Paste a valid authorization code")]
     InvalidCode,
+    #[error(
+        "Paste the full authorization response from Claude after sign-in, with the code and state separated by #. Complete any email verification on Claude's sign-in page first."
+    )]
+    InvalidAuthorizationResponse,
     #[error("Cannot persist Claude sign-in receipt; outcome unknown")]
     Persistence,
     #[error("Cannot complete Claude sign-in. Start a new sign-in request.")]
@@ -201,26 +207,39 @@ impl LoginSnapshot {
             return Err(LoginError::Unavailable);
         }
         if self.adding() {
+            if self.provider_identity_mismatch(metadata)
+                || metadata.plan.as_deref().is_none_or(|v| v.trim().is_empty())
+            {
+                return Err(LoginError::Conflict);
+            }
+        } else if self.provider_identity_mismatch(metadata) {
+            return Err(LoginError::Conflict);
+        }
+        Ok(())
+    }
+    pub fn provider_rejected_completion(&self, metadata: &AuthMetadata) -> bool {
+        match metadata.status {
+            AuthStatus::SignedOut => true,
+            AuthStatus::Ready => self.provider_identity_mismatch(metadata),
+            AuthStatus::Error | AuthStatus::Unchanged => false,
+        }
+    }
+    fn provider_identity_mismatch(&self, metadata: &AuthMetadata) -> bool {
+        if self.adding() {
             let hint = self
                 .record
                 .pointer("/metadata/emailHint")
                 .and_then(Value::as_str);
-            if hint.zip(metadata.email.as_deref()).is_some_and(|(a, b)| {
+            hint.zip(metadata.email.as_deref()).is_some_and(|(a, b)| {
                 a != b && !(a.is_ascii() && b.is_ascii() && a.eq_ignore_ascii_case(b))
-            }) || metadata.plan.as_deref().is_none_or(|v| v.trim().is_empty())
-            {
-                return Err(LoginError::Conflict);
-            }
-        } else if self
-            .receipt
-            .email
-            .as_ref()
-            .map(|email| format!("claude:{email}"))
-            != metadata.account_id
-        {
-            return Err(LoginError::Conflict);
+            })
+        } else {
+            self.receipt
+                .email
+                .as_ref()
+                .map(|email| format!("claude:{email}"))
+                != metadata.account_id
         }
-        Ok(())
     }
     pub fn ready(&self, account: &Value, refreshed: bool) -> Result<Self, LoginError> {
         let mut record = self.record.clone();
@@ -273,7 +292,7 @@ pub fn validate_manual_authorization_code(code: &str) -> Result<(), LoginError> 
     if !authorization_code.trim().is_empty() && !state.trim().is_empty() && parts.next().is_none() {
         Ok(())
     } else {
-        Err(LoginError::InvalidCode)
+        Err(LoginError::InvalidAuthorizationResponse)
     }
 }
 

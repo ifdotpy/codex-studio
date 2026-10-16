@@ -2,7 +2,10 @@ import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, get, post, save, saved, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
+import { ClaudeAuthorizationCodeForm } from "./ClaudeAuthorizationCodeForm";
 import {
+  codeSubmissionNotApplied,
+  codeSubmissionResolved,
   codeVerificationPending,
   currentClaudeLoginReadMatches,
 } from "./claudeCodeSubmission";
@@ -18,6 +21,7 @@ type SavedFlow = {
   email: string;
   createdAt: number;
   unknownSince?: number;
+  codeSubmissionUncertain?: boolean;
 };
 const UNKNOWN_REQUEST_GRACE_MS = 5000;
 const terminal = (status?: string) =>
@@ -25,11 +29,17 @@ const terminal = (status?: string) =>
 const attemptKey = (key: string, id: string) => `${key}:${id}`;
 
 function readSavedFlow(key: string): SavedFlow | null {
+  const normalize = (flow: SavedFlow): SavedFlow => ({
+    ...flow,
+    createdAt: flow.createdAt || Date.now(),
+    codeSubmissionUncertain:
+      flow.codeSubmissionUncertain ?? !!flow.codeRequestId,
+  });
   const active = saved<unknown>(key, null);
   if (typeof active === "string") {
     const flow = saved<SavedFlow | null>(attemptKey(key, active), null);
     if (!flow) save(key, null);
-    return flow;
+    return flow ? normalize(flow) : null;
   }
   if (
     active &&
@@ -37,13 +47,12 @@ function readSavedFlow(key: string): SavedFlow | null {
     "requestId" in active &&
     typeof active.requestId === "string"
   ) {
-    const legacy = active as SavedFlow;
+    const legacy = normalize(active as SavedFlow);
     save(attemptKey(key, legacy.requestId), {
       ...legacy,
-      createdAt: legacy.createdAt || Date.now(),
     });
     save(key, legacy.requestId);
-    return { ...legacy, createdAt: legacy.createdAt || Date.now() };
+    return legacy;
   }
   return null;
 }
@@ -170,7 +179,11 @@ export default function ClaudeAddSignIn({
     const requestField =
       action === "code" ? "codeRequestId" : "cancelRequestId";
     const mutationId = flow[requestField] || crypto.randomUUID();
-    const nextFlow = { ...flow, [requestField]: mutationId };
+    const nextFlow: SavedFlow = {
+      ...flow,
+      [requestField]: mutationId,
+      ...(action === "code" ? { codeSubmissionUncertain: true } : {}),
+    };
     persistFlow(nextFlow);
     try {
       const result = await post(
@@ -183,10 +196,25 @@ export default function ClaudeAddSignIn({
         { requestId: mutationId },
       );
       setReceipt(result);
-      if (action === "code") setCode("");
-      persistFlow({ ...nextFlow, [requestField]: undefined });
+      if (action === "code") {
+        setCode("");
+        const confirmedSubmitted = codeSubmissionResolved(result);
+        persistFlow({
+          ...nextFlow,
+          codeRequestId: confirmedSubmitted ? undefined : mutationId,
+          codeSubmissionUncertain: !confirmedSubmitted,
+        });
+      } else {
+        persistFlow({ ...nextFlow, [requestField]: undefined });
+      }
     } catch (failure) {
-      if (action === "cancel" && isUnknownRequest(failure)) {
+      if (action === "code" && codeSubmissionNotApplied(failure)) {
+        persistFlow({ ...nextFlow, codeSubmissionUncertain: false });
+        setError(errorText(failure));
+      } else if (action === "code") {
+        persistFlow({ ...nextFlow, codeSubmissionUncertain: true });
+        setCode("");
+      } else if (action === "cancel" && isUnknownRequest(failure)) {
         clearSavedFlow(flow);
         currentRequestId.current = "";
         setFlow(null);
@@ -221,6 +249,14 @@ export default function ClaudeAddSignIn({
         )
           return;
         setReceipt(result);
+        if (flow && codeSubmissionResolved(result)) {
+          persistFlow({
+            ...flow,
+            codeSubmissionUncertain: false,
+            codeRequestId:
+              result.codeSubmitted === true ? undefined : flow?.codeRequestId,
+          });
+        }
         if (result.status === "ready" && readyRequest.current !== requestId) {
           readyRequest.current = requestId;
           void Promise.resolve(onReady()).catch((failure) =>
@@ -270,6 +306,7 @@ export default function ClaudeAddSignIn({
     !!flow?.unknownSince &&
     !receipt &&
     now - flow.unknownSince >= UNKNOWN_REQUEST_GRACE_MS;
+  const codeSubmissionUncertain = flow?.codeSubmissionUncertain === true;
   const close = () => {
     if (flow && terminal(receipt?.status)) clearSavedFlow(flow);
     onClose();
@@ -279,14 +316,11 @@ export default function ClaudeAddSignIn({
   const displayEmail = flow?.email || expectedEmail || email;
   const wrong = !!receipt?.error?.includes("different Claude account");
   const expired = !!receipt?.error?.includes("expired");
-  const invalid = !!receipt?.error?.includes("rejected");
   const shownError = wrong
     ? `You signed in as ${receipt?.email || "another account"}. This account expects ${email || "a different account"}. Studio did not save the sign-in.`
     : expired
       ? "The sign-in expired. Start a new sign-in to get a new link."
-      : invalid
-        ? "The code is not valid. Copy the full code from the Claude page, then paste it again."
-        : error || receipt?.error || "";
+      : error || receipt?.error || "";
   return (
     <Modal
       opened={opened}
@@ -337,40 +371,30 @@ export default function ClaudeAddSignIn({
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in link.</p>
             )}
+            {codeSubmissionUncertain && (
+              <p role="status">
+                Studio could not confirm whether Claude received the
+                authorization response. Check sign-in status or cancel this
+                request; do not submit it again.
+              </p>
+            )}
             {receipt?.status === "pending" &&
               (codeVerificationPending(receipt) ? (
                 <p role="status">
-                  The full code was submitted. Waiting for Claude to verify it;
-                  do not submit it again.
+                  The full authorization response was submitted. Waiting for
+                  Claude to verify it; do not submit it again.
                 </p>
-              ) : (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void run("code");
-                  }}
-                >
-                  <Stack gap="sm">
-                    <TextInput
-                      label="Paste code"
-                      description="Paste the complete code, including the #state portion shown by Claude."
-                      type="password"
-                      autoComplete="off"
-                      value={code}
-                      onChange={(event) => setCode(event.currentTarget.value)}
-                      disabled={!!busy}
-                    />
-                    <Button
-                      type="submit"
-                      disabled={!code.trim() || !!busy}
-                      loading={busy === "code"}
-                    >
-                      Finish sign-in
-                    </Button>
-                  </Stack>
-                </form>
-              ))}
-            {receipt?.status === "pending" && (
+              ) : !codeSubmissionUncertain ? (
+                <ClaudeAuthorizationCodeForm
+                  value={code}
+                  onChange={setCode}
+                  onSubmit={() => void run("code")}
+                  disabled={!!busy}
+                  loading={busy === "code"}
+                  submitLabel="Submit authorization response"
+                />
+              ) : null)}
+            {(receipt?.status === "pending" || codeSubmissionUncertain) && (
               <Button
                 variant="default"
                 disabled={!!busy}
@@ -388,7 +412,8 @@ export default function ClaudeAddSignIn({
                 {receipt ? "Start again" : "Start sign-in"}
               </Button>
             ) : (
-              !receipt && (
+              !receipt &&
+              !codeSubmissionUncertain && (
                 <Group>
                   <Button
                     onClick={() => void start(displayEmail)}
@@ -397,7 +422,7 @@ export default function ClaudeAddSignIn({
                   >
                     Retry sign-in
                   </Button>
-                  {unknownTooLong && (
+                  {unknownTooLong && !codeSubmissionUncertain && (
                     <Button
                       variant="default"
                       onClick={() => void start(displayEmail, true)}
@@ -426,7 +451,7 @@ export default function ClaudeAddSignIn({
                   Cancel
                 </Button>
               )}
-            {unknownTooLong && (
+            {unknownTooLong && !codeSubmissionUncertain && (
               <p role="status">
                 The server has not found this request. Retry it, start again, or
                 cancel.
