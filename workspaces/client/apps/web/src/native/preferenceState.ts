@@ -1,3 +1,4 @@
+import { storageKeySnapshot } from "../storageKeys";
 import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { DRAFT_JOURNAL_PREFIX } from "./draftJournal";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
@@ -82,6 +83,7 @@ export function preferenceScope(
 // synchronous durable Rust commit. Never acknowledge an enqueue as a commit.
 export class NativePreferenceStorage implements Storage {
   private values = new Map<string, string>();
+  private keySnapshot?: readonly string[];
   private writes: Write[] = [];
   private running?: Promise<void>;
   private failed = false;
@@ -205,8 +207,11 @@ export class NativePreferenceStorage implements Storage {
   get length() {
     return this.values.size;
   }
+  [storageKeySnapshot]() {
+    return (this.keySnapshot ??= Object.freeze([...this.values.keys()]));
+  }
   key(index: number) {
-    return [...this.values.keys()][index] ?? null;
+    return this[storageKeySnapshot]()[index] ?? null;
   }
   getItem(key: string) {
     return this.values.get(String(key)) ?? null;
@@ -223,6 +228,7 @@ export class NativePreferenceStorage implements Storage {
         params: { key, raw: value },
       },
     ]);
+    if (!this.values.has(key)) this.keySnapshot = undefined;
     this.values.set(key, value);
     this.start();
   }
@@ -237,6 +243,7 @@ export class NativePreferenceStorage implements Storage {
       },
     ]);
     this.values.delete(key);
+    this.keySnapshot = undefined;
     this.start();
   }
   clear() {
@@ -248,6 +255,7 @@ export class NativePreferenceStorage implements Storage {
       })),
     );
     this.values.clear();
+    this.keySnapshot = undefined;
     this.start();
   }
 }

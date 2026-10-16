@@ -1,3 +1,5 @@
+import { storageKeys } from "../storageKeys";
+import { scopedStorage } from "../servers/storage";
 import { maxPreferenceKeyBytes } from "./preferenceLimits";
 import { expect, it, vi } from "vitest";
 import { NativePreferenceStorage, preferenceScope } from "./preferenceState";
@@ -217,4 +219,42 @@ it("imports long saved answer draft keys without dropping the draft", async () =
   );
   expect(storage.getItem(key)).toBe("saved answer");
   expect(core.values['browser:"root":' + key]).toBe("saved answer");
+});
+
+it("enumerates owner journals without rescanning or copying all native keys per key", async () => {
+  const core = backend();
+  for (let i = 0; i < 40; i++) {
+    core.values[`browser:"root":server:a:journal:${i}`] = "a";
+    core.values[`browser:"root":server:b:journal:${i}`] = "b";
+  }
+  const storage = await NativePreferenceStorage.open(
+    memory(),
+    preferenceScope(core.invoke, "root"),
+    vi.fn(),
+  );
+  const a = scopedStorage(() => storage, "server:a:");
+  const b = scopedStorage(() => storage, "server:b:");
+  const key = vi.spyOn(storage, "key");
+  const initial = storageKeys(storage);
+  const selected = storageKeys(a);
+  const enumerated: string[] = [];
+  for (let i = 0; i < a.length; i++) enumerated.push(a.key(i)!);
+  expect(enumerated).toEqual(selected);
+  expect(key).not.toHaveBeenCalled();
+  expect(storageKeys(storage)).toBe(initial);
+  expect(storageKeys(a)).toBe(selected);
+  a.setItem("journal:0", "updated");
+  expect(storageKeys(storage)).toBe(initial);
+  expect(a.getItem("journal:0")).toBe("updated");
+  b.setItem("new", "b");
+  expect(storageKeys(storage)).not.toBe(initial);
+  expect(a.length).toBe(40);
+  expect(b.key(40)).toBe("new");
+  storage.removeItem("server:a:journal:0");
+  expect(a.length).toBe(39);
+  expect(a.key(0)).toBe("journal:1");
+  a.clear();
+  expect(a.length).toBe(0);
+  expect(b.length).toBe(41);
+  await storage.flush();
 });

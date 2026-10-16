@@ -1,3 +1,8 @@
+import {
+  storageKeys,
+  storageKeySnapshot,
+  type IndexedStorage,
+} from "../storageKeys";
 import { serverViewId } from "./environment";
 
 type StorageWriteObserver = (
@@ -16,24 +21,50 @@ export function scopedStorage(
   prefix: string,
   shared = new Set<string>(),
 ): Storage {
+  let sourceKeys: readonly string[] | undefined;
+  let selectedKeys: readonly string[] = [];
+  let sharedKeys: string[] = [];
   const keys = () => {
-    const target = storage();
-    return Array.from({ length: target.length }, (_, i) =>
-      target.key(i)!,
-    ).filter((key) => key.startsWith(prefix) || shared.has(key));
+    const all = storageKeys(storage());
+    if (!prefix) return all;
+    if (
+      all !== sourceKeys ||
+      sharedKeys.length !== shared.size ||
+      sharedKeys.some((key) => !shared.has(key))
+    ) {
+      sourceKeys = all;
+      sharedKeys = [...shared];
+      selectedKeys = Object.freeze(
+        all.filter((key) => key.startsWith(prefix) || shared.has(key)),
+      );
+    }
+    return selectedKeys;
   };
-  return {
+  const result: IndexedStorage = {
+    [storageKeySnapshot]() {
+      // Expose logical keys for nested adapters, with a stable snapshot below.
+      const selected = keys();
+      if (selected !== logicalSource) {
+        logicalSource = selected;
+        logicalKeys = Object.freeze(
+          selected.map((key) =>
+            shared.has(key) ? key : key.slice(prefix.length),
+          ),
+        );
+      }
+      return logicalKeys;
+    },
     get length() {
       return prefix ? keys().length : storage().length;
     },
     key(index) {
-      return prefix
-        ? keys()[index]
-          ? shared.has(keys()[index])
-            ? keys()[index]
-            : keys()[index].slice(prefix.length)
-          : null
-        : storage().key(index);
+      if (!prefix) return storage().key(index);
+      const key = keys()[index];
+      return key === undefined
+        ? null
+        : shared.has(key)
+          ? key
+          : key.slice(prefix.length);
     },
     getItem(key) {
       return storage().getItem(shared.has(key) ? key : prefix + key);
@@ -53,6 +84,9 @@ export function scopedStorage(
       else storage().clear();
     },
   };
+  let logicalSource: readonly string[] | undefined;
+  let logicalKeys: readonly string[] = [];
+  return result;
 }
 // Prefix for browser records owned by one server; local records keep their old keys.
 export const serverStoragePrefix = (owner: string | null) =>

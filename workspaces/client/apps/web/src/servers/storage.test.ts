@@ -106,3 +106,16 @@ it("retains rejected request evidence and preserves pending requests if archivin
   ).toThrow("disk full");
   expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
 });
+
+it("observes raw storage replacement and same-size external key changes", () => {
+  let raw = memoryStorage();
+  const scoped = scopedStorage(() => raw, "owner:");
+  raw.setItem("owner:first", "1");
+  expect(scoped.key(0)).toBe("first");
+  raw.removeItem("owner:first");
+  raw.setItem("owner:second", "2");
+  expect(scoped.key(0)).toBe("second");
+  raw = memoryStorage();
+  raw.setItem("owner:third", "3");
+  expect(scoped.key(0)).toBe("third");
+});
