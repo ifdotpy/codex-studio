@@ -37,6 +37,7 @@ fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
 }
 const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+const SATURATED_WAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -1690,6 +1691,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     seed_backlog(&fixture, 48, false);
     fixture.enqueue(0, "eligible-after-blocked-prefix");
+    fixture.enqueue(1, "eligible-other-account");
     let (launcher, mut writes) = scripted();
     let registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1704,7 +1706,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
         Arc::new(Notify::new()),
         stop.clone(),
     ));
-    let (_, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
         .await
         .unwrap_or_else(|_| {
             let db = fixture.store.read().unwrap();
@@ -1712,13 +1714,73 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
             panic!("fair wake hang guard: {state}")
         })
         .unwrap();
+    assert_eq!(account, "second");
+    assert_eq!(request["method"], "turn/start");
+    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+        .await
+        .unwrap_or_else(|_| panic!("eligible agent behind saturated queue was not started"))
+        .unwrap();
+    assert_eq!(account, "default");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    task.await.unwrap().unwrap();
-    assert_eq!(launcher.opened.lock().unwrap().len(), 1);
+    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+        .await
+        .expect("registry shutdown completes after saturated queue work")
+        .unwrap()
+        .unwrap();
+    assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     let db = fixture.store.read().unwrap();
     let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='annotation' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
     assert_eq!(blocked, 48);
+}
+
+#[tokio::test]
+async fn registry_drains_strict_account_pages_after_one_global_wake() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    seed_backlog(&fixture, 130, true);
+    let final_agent = "00000000-0000-4000-8000-000000000129";
+    fixture
+        .store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_remove(record,'$.contextRepairWait') WHERE id=?1",
+                [final_agent],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let (launcher, mut writes) = scripted();
+    // The first account page is consumed by predictable provider-start failures;
+    // its final strict continuation then reaches an eligible account without a
+    // timer or another store commit.
+    launcher.failures.store(128, Ordering::SeqCst);
+    let registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    let stop = Shutdown::default();
+    let task = tokio::spawn(registry.run(
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        stop.clone(),
+    ));
+    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+        .await
+        .expect("strict account continuation reaches the eligible tail")
+        .unwrap();
+    assert_eq!(account, "page-000129");
+    assert_eq!(request["method"], "turn/start");
+    stop.cancel();
+    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+        .await
+        .expect("registry shutdown completes after strict account paging")
+        .unwrap()
+        .unwrap();
+    assert_eq!(launcher.opened.lock().unwrap().len(), 2);
 }
 
 fn python_launch(

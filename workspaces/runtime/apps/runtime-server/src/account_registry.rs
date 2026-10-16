@@ -4,7 +4,7 @@
 //! an image-workspace refusal on the agent and leaves its input event pending.
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, RwLock},
@@ -97,6 +97,15 @@ enum RegistryTrigger {
     Retry,
     Ensure(EnsureRequest),
     WorkerExited(String, u64),
+    CommandCapacityAvailable(String, bool),
+}
+
+#[derive(Debug)]
+enum AccountPageDispatch {
+    Exhausted,
+    Continue,
+    Full,
+    StartFailed(WorkerError),
 }
 
 struct EnsureRequest {
@@ -112,6 +121,7 @@ struct EnsureRequest {
 pub(crate) type LaunchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AccountLaunch, WorkerError>> + Send + 'a>>;
 type WorkerCompletion = Pin<Box<dyn Future<Output = (String, u64)> + Send>>;
+type CommandCapacityWaiter = Pin<Box<dyn Future<Output = (String, bool)> + Send>>;
 pub(crate) type AccountTargetPage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
 pub(crate) struct AccountLaunch {
@@ -141,6 +151,8 @@ pub(crate) struct AccountRegistry {
     accepted_archive_batch_full: bool,
     next_worker_completion_id: u64,
     worker_completions: FuturesUnordered<WorkerCompletion>,
+    command_capacity_waiters: FuturesUnordered<CommandCapacityWaiter>,
+    command_capacity_waiting: BTreeSet<String>,
     session_broker: AccountSessionBroker,
     accepted_archive_tick_enabled: bool,
     ensure_requests: mpsc::Receiver<EnsureRequest>,
@@ -756,6 +768,8 @@ impl AccountRegistry {
             accepted_archive_batch_full: false,
             next_worker_completion_id: 0,
             worker_completions: FuturesUnordered::new(),
+            command_capacity_waiters: FuturesUnordered::new(),
+            command_capacity_waiting: BTreeSet::new(),
             session_broker,
             accepted_archive_tick_enabled: config.accepted_archive_tick_enabled,
             ensure_requests,
@@ -850,6 +864,145 @@ impl AccountRegistry {
             .ok_or(WorkerError::Closed)
     }
 
+    async fn dispatch_account_page(
+        &mut self,
+        account: &str,
+        pending_agents: Vec<(String, i64, Option<String>)>,
+        shutdown: Option<&Shutdown>,
+    ) -> Result<AccountPageDispatch, WorkerError> {
+        let page_was_full = pending_agents.len() == WAKE_PAGE;
+        let (image_agents, agents, image_recovery) =
+            classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
+        for agent_id in &image_agents {
+            self.after_agent
+                .insert(account.to_owned(), agent_id.clone());
+        }
+        // An image-only pending page must not start an account provider
+        // outside the workspace image's shared mount namespace.
+        if agents.is_empty()
+            && (!image_agents.is_empty() || image_recovery)
+            && !self.workers.contains_key(account)
+        {
+            if image_recovery {
+                eprintln!(
+                    "account registry refused recovery for account {account}: workspace-state/image-execution"
+                );
+            }
+            return Ok(if page_was_full {
+                AccountPageDispatch::Continue
+            } else {
+                AccountPageDispatch::Exhausted
+            });
+        }
+        if let Err(error) = self.start(account).await {
+            return Ok(AccountPageDispatch::StartFailed(error));
+        }
+        if shutdown.is_some_and(|stop| *stop.subscribe().borrow()) {
+            return Ok(AccountPageDispatch::Exhausted);
+        }
+        let worker = self.workers.get(account).ok_or(WorkerError::Closed)?;
+        for (agent_id, epoch) in agents {
+            match worker.try_send(AccountCommand::Wake {
+                agent_id: agent_id.clone(),
+                epoch,
+            }) {
+                Ok(()) => {
+                    self.after_agent.insert(account.to_owned(), agent_id);
+                }
+                // Durable input remains pending. A one-shot capacity waiter
+                // resumes this account's cursor when the worker drains its lane.
+                Err(error) => match *error {
+                    mpsc::error::TrySendError::Full(_) => {
+                        // The ordinary selection cursor wraps at the end of an
+                        // account. If this is the first candidate after that
+                        // wrap, restart the strict continuation at the head.
+                        if self
+                            .after_agent
+                            .get(account)
+                            .is_some_and(|after| agent_id <= *after)
+                        {
+                            self.after_agent.remove(account);
+                        }
+                        if self.command_capacity_waiting.insert(account.to_owned()) {
+                            let account_waiting = account.to_owned();
+                            let capacity = worker.wait_for_command_capacity();
+                            self.command_capacity_waiters
+                                .push(Box::pin(async move { (account_waiting, capacity.await) }));
+                        }
+                        return Ok(AccountPageDispatch::Full);
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        return Ok(AccountPageDispatch::Exhausted);
+                    }
+                },
+            }
+        }
+        Ok(if page_was_full {
+            AccountPageDispatch::Continue
+        } else {
+            AccountPageDispatch::Exhausted
+        })
+    }
+
+    async fn continue_account_after(
+        &mut self,
+        account: &str,
+        shutdown: Option<&Shutdown>,
+    ) -> Result<(), WorkerError> {
+        loop {
+            if shutdown.is_some_and(|stop| *stop.subscribe().borrow()) {
+                return Ok(());
+            }
+            let store = self.store.clone();
+            let after_agent = self.after_agent.get(account).cloned().unwrap_or_default();
+            let page_account = account.to_owned();
+            let rows = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || {
+                    let db = store.read()?;
+                    SchedulerRepository::account_wake_agents_after(
+                        &db,
+                        &page_account,
+                        &after_agent,
+                        WAKE_PAGE,
+                    )
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
+            if rows.is_empty() {
+                self.after_agent.remove(account);
+                return Ok(());
+            }
+            match self.dispatch_account_page(account, rows, shutdown).await? {
+                AccountPageDispatch::Continue => continue,
+                AccountPageDispatch::Exhausted => {
+                    self.after_agent.remove(account);
+                    return Ok(());
+                }
+                AccountPageDispatch::Full => return Ok(()),
+                AccountPageDispatch::StartFailed(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn resume_account_after_capacity(
+        &mut self,
+        account: &str,
+        shutdown: Option<&Shutdown>,
+    ) -> Result<(), WorkerError> {
+        if self
+            .worker_retry_at
+            .get(account)
+            .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
+        {
+            self.after_agent.remove(account);
+            return Ok(());
+        }
+        self.worker_retry_at.remove(account);
+        self.continue_account_after(account, shutdown).await
+    }
+
     /// Startup and post-commit use the same persisted selection, so a crash
     /// between commit and notify cannot strand a queued event.
     pub async fn reconcile(&mut self, shutdown: Option<&Shutdown>) -> Result<(), WorkerError> {
@@ -876,72 +1029,82 @@ impl AccountRegistry {
                 handled >= studio_runtime_services::work_write::ACCEPTED_ARCHIVE_PAGE_SIZE;
         }
         let stopped = || shutdown.is_some_and(|stop| *stop.subscribe().borrow());
+        // Every real startup/commit wake begins one bounded full no-wrap pass.
+        // Agent cursors are retained only for a command-capacity continuation.
+        self.after_account.clear();
         let store = self.store.clone();
-        let after_account = self.after_account.clone();
-        let after_agent = self.after_agent.clone();
-        let targets = studio_runtime_process::blocking_pool::spawn_blocking(
+        let after_agent = BTreeMap::new();
+        let mut targets = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/account_registry",
-            move || target_page(&store, &after_account, &after_agent),
+            move || target_page(&store, "", &after_agent),
         )
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
-        for (account, pending_agents) in targets {
-            if stopped() {
+        loop {
+            if targets.is_empty() || stopped() {
                 break;
             }
-            if self
-                .worker_retry_at
-                .get(&account)
-                .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
-            {
-                continue;
-            }
-            self.worker_retry_at.remove(&account);
-            self.after_account.clone_from(&account);
-            let (image_agents, agents, image_recovery) =
-                classify_pending_agents(self.store.clone(), account.clone(), pending_agents)
-                    .await?;
-            for agent_id in &image_agents {
-                self.after_agent.insert(account.clone(), agent_id.clone());
-            }
-            // An image-only pending page must not start an account provider
-            // outside the workspace image's shared mount namespace.
-            if agents.is_empty()
-                && (!image_agents.is_empty() || image_recovery)
-                && !self.workers.contains_key(&account)
-            {
-                if image_recovery {
-                    eprintln!(
-                        "account registry refused recovery for account {account}: workspace-state/image-execution"
-                    );
+            let full_account_page = targets.len() == MAX_ACCOUNTS;
+            for (account, pending_agents) in targets {
+                if stopped() {
+                    break;
                 }
-                continue;
-            }
-            if let Err(error) = self.start(&account).await {
-                failure.get_or_insert(error);
-                continue;
-            }
-            if stopped() {
-                break;
-            }
-            let worker = self.workers.get(&account).ok_or(WorkerError::Closed)?;
-            for (agent_id, epoch) in agents {
-                match worker.try_send(AccountCommand::Wake {
-                    agent_id: agent_id.clone(),
-                    epoch,
-                }) {
-                    Ok(()) => {
-                        self.after_agent.insert(account.clone(), agent_id);
+                self.after_account.clone_from(&account);
+                if self
+                    .worker_retry_at
+                    .get(&account)
+                    .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
+                {
+                    continue;
+                }
+                self.worker_retry_at.remove(&account);
+                let mut page = pending_agents;
+                loop {
+                    match self.dispatch_account_page(&account, page, shutdown).await? {
+                        AccountPageDispatch::Continue => {
+                            let store = self.store.clone();
+                            let page_account = account.clone();
+                            let after_agent =
+                                self.after_agent.get(&account).cloned().unwrap_or_default();
+                            page = studio_runtime_process::blocking_pool::spawn_blocking(
+                                "runtime-server/account_registry",
+                                move || {
+                                    let db = store.read()?;
+                                    SchedulerRepository::account_wake_agents_after(
+                                        &db,
+                                        &page_account,
+                                        &after_agent,
+                                        WAKE_PAGE,
+                                    )
+                                },
+                            )
+                            .await
+                            .map_err(|_| WorkerError::TaskFailed)??;
+                            if page.is_empty() {
+                                break;
+                            }
+                        }
+                        AccountPageDispatch::Exhausted | AccountPageDispatch::Full => break,
+                        AccountPageDispatch::StartFailed(error) => {
+                            failure.get_or_insert(error);
+                            break;
+                        }
                     }
-                    // Durable input remains pending. Timer/next commit retries
-                    // the hint; only the worker can claim and submit it.
-                    Err(error) => match *error {
-                        mpsc::error::TrySendError::Full(_) => break,
-                        mpsc::error::TrySendError::Closed(_) => break,
-                    },
                 }
             }
+            if !full_account_page || stopped() {
+                break;
+            }
+            let store = self.store.clone();
+            let after_account = self.after_account.clone();
+            let after_agent = BTreeMap::new();
+            targets = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || target_page_after(&store, &after_account, &after_agent),
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
         }
         failure.map_or(Ok(()), Err)
     }
@@ -1028,6 +1191,7 @@ impl AccountRegistry {
         let mut retry_at = Some(tokio::time::Instant::now());
         let mut archive_deadline_retry_at = None;
         let mut last_reconcile_error: Option<String> = None;
+        let mut checkpoint_retry_at = None;
         loop {
             if *stop.borrow() {
                 break;
@@ -1037,6 +1201,11 @@ impl AccountRegistry {
                     _ = Shutdown::cancelled(&mut stop) => break,
                     exit = self.worker_completions.next(), if !self.worker_completions.is_empty() => {
                         exit.map(|(account, id)| RegistryTrigger::WorkerExited(account, id))
+                    },
+                    capacity = self.command_capacity_waiters.next(), if !self.command_capacity_waiters.is_empty() => {
+                        capacity.map(|(account, available)| {
+                            RegistryTrigger::CommandCapacityAvailable(account, available)
+                        })
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
                     request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
@@ -1048,7 +1217,6 @@ impl AccountRegistry {
                     } => Some(RegistryTrigger::Retry),
                 }
             };
-            let checkpoint_retry_at;
             match trigger {
                 Some(RegistryTrigger::WorkerExited(account, id))
                     if self.worker_completion_ids.get(&account) == Some(&id) =>
@@ -1079,6 +1247,36 @@ impl AccountRegistry {
                     continue;
                 }
                 Some(RegistryTrigger::WorkerExited(_, _)) => continue,
+                Some(RegistryTrigger::CommandCapacityAvailable(account, available)) => {
+                    self.command_capacity_waiting.remove(&account);
+                    if !available {
+                        self.after_agent.remove(&account);
+                        continue;
+                    }
+                    // Capacity is a local queue event, not a store commit. Resume
+                    // only this account's strict no-wrap suffix; do not run global
+                    // archive, radio, WAL, or account-page maintenance here.
+                    match self
+                        .resume_account_after_capacity(&account, Some(&shutdown))
+                        .await
+                    {
+                        // Local queue progress says nothing about a prior global
+                        // reconciliation failure; retain its backoff unchanged.
+                        Ok(()) => {}
+                        Err(error) => {
+                            eprintln!("account registry capacity resume deferred: {error}");
+                            if last_reconcile_error.is_none() {
+                                let capacity_retry = tokio::time::Instant::now() + retry_delay;
+                                retry_at =
+                                    Some(retry_at.map_or(capacity_retry, |current| {
+                                        current.min(capacity_retry)
+                                    }));
+                                retry_delay = next_retry_delay(retry_delay);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 Some(RegistryTrigger::Ensure(request)) => {
                     let response = match self.ensure_account_session(&request.account).await {
                         Ok(scope) if scope.account == request.account => Ok(scope),
@@ -1261,6 +1459,22 @@ pub(crate) fn target_page(
     let db = store.read()?;
     SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
         .map_err(Into::into)
+}
+
+fn target_page_after(
+    store: &RuntimeStore,
+    after_account: &str,
+    after_agent: &BTreeMap<String, String>,
+) -> Result<AccountTargetPage, WorkerError> {
+    let db = store.read()?;
+    SchedulerRepository::account_wake_page_after(
+        &db,
+        after_account,
+        after_agent,
+        MAX_ACCOUNTS,
+        WAKE_PAGE,
+    )
+    .map_err(Into::into)
 }
 
 struct RuntimeRadioIngress;
@@ -1574,6 +1788,19 @@ mod tests {
             next_registry_retry_at(None, Some(checkpoint_retry_at), &BTreeMap::new()),
             Some(checkpoint_retry_at),
             "a deferred WAL checkpoint schedules the next registry wake without another commit"
+        );
+    }
+
+    #[test]
+    fn command_capacity_wake_preserves_deferred_checkpoint_deadline() {
+        let now = tokio::time::Instant::now();
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+
+        // Capacity events skip checkpoint I/O but must retain the existing retry
+        // deadline when the next scheduler wait is assembled.
+        assert_eq!(
+            next_registry_retry_at(None, Some(checkpoint_retry_at), &BTreeMap::new()),
+            Some(checkpoint_retry_at),
         );
     }
 

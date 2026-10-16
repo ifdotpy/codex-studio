@@ -95,6 +95,26 @@ fn account_wake_invalid_target_query() -> String {
     )
 }
 
+fn validate_account_wake_targets(connection: &Connection) -> StoreResult<()> {
+    if let Some(id) = connection
+        .query_row(
+            &account_wake_invalid_target_query(),
+            rusqlite::params![
+                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Err(crate::StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id,
+        });
+    }
+    Ok(())
+}
+
 fn account_wake_accounts_query() -> String {
     let target_filter = account_wake_target_filter("a.record");
     let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
@@ -153,22 +173,7 @@ impl SchedulerRepository {
         account_limit: usize,
         agent_limit: usize,
     ) -> StoreResult<AccountWakePage> {
-        if let Some(id) = connection
-            .query_row(
-                &account_wake_invalid_target_query(),
-                rusqlite::params![
-                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: "runtime_agents",
-                id,
-            });
-        }
+        validate_account_wake_targets(connection)?;
 
         let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
@@ -216,6 +221,86 @@ impl SchedulerRepository {
             result.insert(account, agents);
         }
         Ok(result)
+    }
+
+    /// Return a bounded account page strictly after the account cursor. Agent
+    /// cursors retain their ordinary wrap behavior; only the account cursor is
+    /// strict so callers can drain a real wake without cycling over its prefix.
+    pub fn account_wake_page_after(
+        connection: &Connection,
+        after_account: &str,
+        after_agents: &BTreeMap<String, String>,
+        account_limit: usize,
+        agent_limit: usize,
+    ) -> StoreResult<AccountWakePage> {
+        validate_account_wake_targets(connection)?;
+
+        let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
+        let accounts = account_statement
+            .query_map(
+                rusqlite::params![
+                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    after_account,
+                    account_limit as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(account_statement);
+
+        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let mut result = BTreeMap::new();
+        for account in accounts {
+            let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
+            let mut read_agents =
+                |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
+                    agent_statement
+                        .query_map(
+                            rusqlite::params![
+                                account,
+                                after,
+                                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                                agent_limit as i64
+                            ],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )?
+                        .collect()
+                };
+            let mut agents = read_agents(after)?;
+            if agents.is_empty() && !after.is_empty() {
+                agents = read_agents("")?;
+            }
+            result.insert(account, agents);
+        }
+        Ok(result)
+    }
+
+    /// Return a bounded page for one account strictly after the supplied agent
+    /// cursor. Unlike `account_wake_page`, this continuation never wraps; the
+    /// caller uses it only to drain a page already selected by a real wake.
+    pub fn account_wake_agents_after(
+        connection: &Connection,
+        account: &str,
+        after_agent: &str,
+        agent_limit: usize,
+    ) -> StoreResult<Vec<(String, i64, Option<String>)>> {
+        validate_account_wake_targets(connection)?;
+        let mut statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![
+                    account,
+                    after_agent,
+                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    agent_limit as i64
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// The same metadata identity used by claim replay and submit authorization.
@@ -1443,6 +1528,123 @@ mod account_wake_index_tests {
             wrapped_agent["account-a"],
             vec![("aaa".to_owned(), 1, None)]
         );
+
+        let no_wrap =
+            SchedulerRepository::account_wake_agents_after(&connection, "account-a", "zzz", 1)
+                .expect("capacity continuation does not wrap the agent cursor");
+        assert!(no_wrap.is_empty());
+    }
+
+    #[test]
+    fn strict_account_wake_pages_reach_agent_after_full_page_without_wrapping() {
+        let mut connection = old_schema();
+        for index in 0..33 {
+            let id = format!("agent-{index:03}");
+            put_agent(
+                &connection,
+                &id,
+                json!({
+                    "accountKey":"account-middle", "epoch":1, "status":"queued",
+                    "autoWake":true, "inFlight":false, "nativeFailureHold":false
+                }),
+            );
+            connection
+                .execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES(?1,?2,'user','input','pending',?3,1)",
+                    rusqlite::params![format!("event-{index:03}"), id, index as f64],
+                )
+                .expect("pending event fixture inserts");
+        }
+        install_index(&mut connection);
+
+        let first =
+            SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 1, 32)
+                .expect("initial bounded account page is selected");
+        let first = &first["account-middle"];
+        assert_eq!(first.len(), 32);
+        let next = SchedulerRepository::account_wake_agents_after(
+            &connection,
+            "account-middle",
+            &first.last().expect("first page has a final row").0,
+            32,
+        )
+        .expect("strict continuation page is selected");
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].0, "agent-032");
+        assert!(
+            SchedulerRepository::account_wake_agents_after(
+                &connection,
+                "account-middle",
+                "agent-999",
+                32,
+            )
+            .expect("strict continuation never wraps")
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn exact_account_capacity_query_is_independent_of_global_account_cursor() {
+        let mut connection = old_schema();
+        for index in 0..130 {
+            let id = format!("agent-{index:03}");
+            put_agent(
+                &connection,
+                &id,
+                json!({
+                    "accountKey":format!("account-{index:03}"), "epoch":1,
+                    "status":"queued", "autoWake":true,
+                    "inFlight":false, "nativeFailureHold":false
+                }),
+            );
+            connection
+                .execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES(?1,?2,'user','input','pending',?3,1)",
+                    rusqlite::params![format!("event-{index:03}"), id, index as f64],
+                )
+                .expect("pending event fixture inserts");
+        }
+        install_index(&mut connection);
+
+        let normal = SchedulerRepository::account_wake_page(
+            &connection,
+            "account-000",
+            &BTreeMap::new(),
+            128,
+            32,
+        )
+        .expect("ordinary account selection stays bounded");
+        assert_eq!(normal.len(), 128);
+        assert!(!normal.contains_key("account-000"));
+        assert!(normal.contains_key("account-128"));
+
+        let tail = SchedulerRepository::account_wake_page_after(
+            &connection,
+            "account-128",
+            &BTreeMap::new(),
+            128,
+            32,
+        )
+        .expect("strict account continuation reaches the final candidate account");
+        assert_eq!(tail.keys().cloned().collect::<Vec<_>>(), ["account-129"]);
+        assert!(
+            SchedulerRepository::account_wake_page_after(
+                &connection,
+                "account-129",
+                &BTreeMap::new(),
+                128,
+                32,
+            )
+            .expect("strict account continuation never wraps")
+            .is_empty()
+        );
+
+        let released =
+            SchedulerRepository::account_wake_agents_after(&connection, "account-000", "", 32)
+                .expect("released account is queried directly despite global cursor progress");
+        assert_eq!(released, vec![("agent-000".to_owned(), 1, None)]);
     }
 
     #[test]

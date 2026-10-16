@@ -398,6 +398,20 @@ impl AccountHandle {
     ) -> Result<(), Box<mpsc::error::TrySendError<AccountCommand>>> {
         self.commands.try_send(command).map_err(Box::new)
     }
+    /// Wait for one command slot without claiming it, so an owner can resume a
+    /// durable queue scan when this worker drains its bounded command lane.
+    pub fn wait_for_command_capacity(&self) -> impl Future<Output = bool> + Send + 'static {
+        let commands = self.commands.clone();
+        async move {
+            match commands.reserve_owned().await {
+                Ok(permit) => {
+                    drop(permit);
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    }
     pub fn cancel(&self) {
         self.stop.cancel();
     }
