@@ -340,3 +340,41 @@ Targeted checks:
 python3 workspaces/runtime/apps/server/tests/connection-recovery-contract.py
 pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.mjs
 ```
+
+## Rust worker-defaults verification
+
+The existing-chat verifier updates worker defaults on only the supplied chat:
+
+```sh
+node scripts/verify-rust-worker-defaults.mjs \
+  --url "$HTTPS_URL" \
+  --chat-id "$CHAT_UUID" \
+  --lead-account "$ACCOUNT_KEY" \
+  --evidence-dir "$EVIDENCE_DIR" \
+  --chromium "$CHROMIUM"
+```
+
+It keeps the lead on Claude and preserves its current model. It saves Automatic
+account selection with Luna High for future workers; it sends no prompt or agent
+turn. The create verifier checks the same worker model with a pinned Codex
+account, plus Sol High review defaults, by creating an empty chat on the local
+server. It stops before creation if the project folder is available only on a
+remote server:
+
+```sh
+node scripts/verify-rust-worker-defaults-create.mjs \
+  --url "$HTTPS_URL" \
+  --project "$PROJECT_PATH" \
+  --lead-account "$ACCOUNT_KEY" \
+  --worker-account "${WORKER_ACCOUNT_KEY:-default}" \
+  --evidence-dir "$CREATE_EVIDENCE_DIR" \
+  --chromium "$CHROMIUM"
+```
+
+The create verifier deletes only the chat whose creation it confirmed and
+recorded as owned in its evidence journal. Each command writes its request to a
+private journal before forwarding it. If a response is uncertain, rerun with
+`--resume` and the same arguments to inspect server state; resume performs
+readback only and never repeats a create, settings save, prompt, or delete.
+Set the URL, UUID, account keys, project path, evidence paths, and Chromium path
+to the intended values before running either command.

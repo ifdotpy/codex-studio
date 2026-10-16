@@ -98,10 +98,13 @@ describe("watchResourceReads", () => {
 
   it("reads the multi-server snapshot only for its targeted resource event", async () => {
     const read = vi.fn(async () => {});
+    const unrelatedRead = vi.fn(async () => {});
     const stop = watchResourceReads(multiServer, read, vi.fn(), {
       waitForBaseline: true,
     });
+    const stopUnrelated = watchResourceReads(terminals, unrelatedRead, vi.fn());
     notify(terminals, { epoch: "workspace", revision: 1 });
+    await vi.waitFor(() => expect(unrelatedRead).toHaveBeenCalledTimes(1));
     await Promise.resolve();
     expect(read).not.toHaveBeenCalled();
 
@@ -109,6 +112,7 @@ describe("watchResourceReads", () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     expect(read).toHaveBeenCalledWith({ epoch: "workspace", revision: 2 });
     stop();
+    stopUnrelated();
   });
 
   it("passes the newest resource version through a coalesced read", async () => {
