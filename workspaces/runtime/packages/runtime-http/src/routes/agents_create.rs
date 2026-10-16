@@ -89,22 +89,14 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
             let account = host_account_identity(identity);
             match self
                 .catalog
-                .resolve(key, &account, model, None, false, false)
+                .contains_model(key, &account, model)
             {
-                Ok(_) => Ok(true),
-                Err(
-                    studio_runtime_services::agents_create::CreateError::CapabilityUnavailable(
-                        name,
-                    ),
-                ) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(name)),
-                Err(
-                    studio_runtime_services::agents_create::CreateError::InvalidCreation(_)
-                    | studio_runtime_services::agents_create::CreateError::ModelUnavailable,
-                ) => {
-                    Ok(false)
-                }
-                Err(_) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                    "Worker account admission was refused",
+                Ok(available) => Ok(available),
+                Err(studio_runtime_services::agents_create::CreateError::CapabilityUnavailable(name)) => Err(
+                    studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(name),
+                ),
+                Err(_) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(
+                    "provider-session/model-list",
                 )),
             }
         };
@@ -543,54 +535,7 @@ impl CreationCatalog for RouteCreationCatalog {
         fast_mode: bool,
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
-        let home = account
-            .home
-            .as_deref()
-            .ok_or(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ))?;
-        let provider = account
-            .provider
-            .as_deref()
-            .ok_or(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ))?;
-        let (value, fresh_key, fresh_home, fresh_provider, _, expires_at) =
-            match self.service.read_for_admission(account_key, home, provider) {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
-                    value,
-                    account_key,
-                    home,
-                    provider,
-                    generation,
-                    expires_at,
-                } => (value, account_key, home, provider, generation, expires_at),
-                _ => {
-                    return Err(CreateError::CapabilityUnavailable(
-                        "provider-session/model-list",
-                    ));
-                }
-            };
-        if fresh_key != account_key
-            || fresh_home != home
-            || fresh_provider != provider
-            || expires_at <= std::time::Instant::now()
-        {
-            return Err(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ));
-        }
-        let row = value
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str) == Some(model)
-                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
-                })
-            })
-            .ok_or(CreateError::ModelUnavailable)?;
+        let row = self.model_row(account_key, account, model)?;
         let supported = row
             .get("supportedReasoningEfforts")
             .and_then(Value::as_array)
@@ -653,6 +598,76 @@ impl CreationCatalog for RouteCreationCatalog {
 }
 
 impl RouteCreationCatalog {
+    fn model_row(
+        &self,
+        account_key: &str,
+        account: &AccountIdentity,
+        model: &str,
+    ) -> Result<Value, CreateError> {
+        let home = account
+            .home
+            .as_deref()
+            .ok_or(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ))?;
+        let provider = account
+            .provider
+            .as_deref()
+            .ok_or(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ))?;
+        let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
+            match self.service.read_for_admission(account_key, home, provider) {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                    value,
+                    account_key,
+                    home,
+                    provider,
+                    expires_at,
+                    ..
+                } => (value, account_key, home, provider, expires_at),
+                _ => {
+                    return Err(CreateError::CapabilityUnavailable(
+                        "provider-session/model-list",
+                    ));
+                }
+            };
+        if fresh_key != account_key
+            || fresh_home != home
+            || fresh_provider != provider
+            || expires_at <= std::time::Instant::now()
+        {
+            return Err(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ));
+        }
+        value
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
+                        && (row.get("model").and_then(Value::as_str) == Some(model)
+                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
+                })
+            })
+            .cloned()
+            .ok_or(CreateError::ModelUnavailable)
+    }
+
+    fn contains_model(
+        &self,
+        account_key: &str,
+        account: &AccountIdentity,
+        model: &str,
+    ) -> Result<bool, CreateError> {
+        match self.model_row(account_key, account, model) {
+            Ok(_) => Ok(true),
+            Err(CreateError::ModelUnavailable) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn pricing_name(
         &self,
         account_key: &str,
@@ -733,11 +748,16 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
             let catalog = RouteCreationCatalog {
                 service: state.model_catalog.clone(),
             };
+            let managed_environment = state
+                .account_driver
+                .clone()
+                .map(|driver| managed_creation_environment(driver, state.model_catalog.clone()));
             let context = Context {
                 store,
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: Some(&catalog),
+                managed_creation_environment: managed_environment.as_deref(),
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -771,6 +791,7 @@ async fn preflight_lead_replay<
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -803,6 +824,7 @@ async fn lead_catalog_account(
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -831,6 +853,7 @@ async fn prepare_agent_admission(
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -861,6 +884,7 @@ async fn conversation_catalog_account(
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -896,6 +920,7 @@ async fn conversation_worker_catalog_account(
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators
@@ -972,26 +997,47 @@ async fn create_lead_with_model(
     wait_for_agent_catalog(
         &state,
         None,
+        None,
         catalog_account.as_deref(),
         requested_model,
         needs_catalog,
+        false,
+        requested_model.is_some(),
     )
     .await?;
     if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
-        let worker_model = defaults.model.as_deref();
-        let worker_account = defaults
-            .account_key
-            .as_ref()
-            .and_then(Option::as_deref)
-            .or(catalog_account.as_deref());
-        if worker_model.is_some() || worker_account.is_some() {
-            wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
-        }
+        let worker_model = defaults.model.as_deref().or(requested_model);
+        let worker_account = defaults.account_key.as_ref().and_then(Option::as_deref);
+        wait_for_agent_catalog(
+            &state,
+            None,
+            catalog_account.as_deref(),
+            worker_account,
+            worker_model,
+            true,
+            true,
+            true,
+        )
+        .await?;
     }
-    if let Some(Some(review)) = body.review_defaults.as_ref()
-        && let Some(model) = review.model.as_deref()
-    {
-        wait_for_agent_catalog(&state, None, catalog_account.as_deref(), Some(model), true).await?;
+    if let Some(Some(review)) = body.review_defaults.as_ref() {
+        let review_account = body
+            .worker_defaults
+            .as_ref()
+            .and_then(Option::as_ref)
+            .and_then(|defaults| defaults.account_key.as_ref())
+            .and_then(Option::as_deref);
+        wait_for_agent_catalog(
+            &state,
+            None,
+            catalog_account.as_deref(),
+            review_account,
+            review.model.as_deref(),
+            true,
+            true,
+            review.model.is_some(),
+        )
+        .await?;
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::lead(context, request)
@@ -1059,9 +1105,12 @@ async fn create_agent_with_import(
     wait_for_agent_catalog(
         &state,
         request.parent.as_deref(),
+        None,
         admission.account.as_deref().or(request.account.as_deref()),
         admission.model.as_deref(),
         admission.needs_catalog,
+        false,
+        admission.model.is_some(),
     )
     .await?;
     dispatch::<generated::AgentResponse>(state, move |context| {
@@ -1070,12 +1119,50 @@ async fn create_agent_with_import(
     .await
 }
 
+fn catalog_admission_candidates(
+    rows: &[Value],
+    ordered_keys: &[String],
+    parent_account: Option<&str>,
+    account_is_pinned: bool,
+    expected_provider: Option<&str>,
+) -> Vec<(String, String, String)> {
+    ordered_keys
+        .iter()
+        .filter_map(|key| {
+            let row = rows
+                .iter()
+                .find(|row| row.get("id").and_then(Value::as_str) == Some(key.as_str()))?;
+            let home = row.get("home")?.as_str()?.to_owned();
+            if row.get("disconnected") == Some(&Value::Bool(true))
+                || row.get("deleted") == Some(&Value::Bool(true))
+                || row.get("duplicateOf").is_some_and(|value| !value.is_null())
+                || (Some(key.as_str()) != parent_account
+                    && row.get("status").and_then(Value::as_str) != Some("ready")
+                    && row.get("canAttemptNativeProof") != Some(&Value::Bool(true)))
+            {
+                return None;
+            }
+            let provider = row
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex");
+            if !account_is_pinned && expected_provider.is_some_and(|wanted| wanted != provider) {
+                return None;
+            }
+            Some((key.clone(), home, provider.to_owned()))
+        })
+        .collect()
+}
+
 async fn wait_for_agent_catalog(
     state: &HttpState,
     parent_id: Option<&str>,
+    preferred_parent_account: Option<&str>,
     requested_account: Option<&str>,
     requested_model: Option<&str>,
     needs_catalog: bool,
+    ignore_stored_worker_account: bool,
+    require_model_match: bool,
 ) -> Result<(), ApiError> {
     if !needs_catalog {
         return Ok(());
@@ -1095,11 +1182,12 @@ async fn wait_for_agent_catalog(
     let parent_id = parent_id.map(str::to_owned);
     let requested_account = requested_account.map(str::to_owned);
     let requested_model = requested_model.map(str::to_owned);
+    let preferred_parent_account = preferred_parent_account.map(str::to_owned);
     let candidate_data = tokio::time::timeout_at(
         deadline,
         tokio::task::spawn_blocking(move || {
             let snapshot = driver.listing_snapshot().map_err(|_| ())?;
-            let mut parent_account = None;
+            let mut parent_account = preferred_parent_account;
             let mut selected_account = None;
             let mut root_model = None;
             let mut worker_model = None;
@@ -1125,15 +1213,19 @@ async fn wait_for_agent_catalog(
                     )
                     .map_err(|_| ())?
                     .unwrap_or(parent);
-                    selected_account = root
-                        .pointer("/workerDefaults/accountKey")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                    if !ignore_stored_worker_account {
+                        selected_account = root
+                            .pointer("/workerDefaults/accountKey")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                    }
                     root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
-                    worker_model = root
-                        .pointer("/workerDefaults/model")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                    if !ignore_stored_worker_account {
+                        worker_model = root
+                            .pointer("/workerDefaults/model")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                    }
                     excluded.extend(
                         root.get("excludedAccountKeys")
                             .and_then(Value::as_array)
@@ -1144,6 +1236,7 @@ async fn wait_for_agent_catalog(
                     );
                 }
             }
+            let explicit_account = requested_account.is_some();
             let explicit = requested_account;
             let model = requested_model
                 .or(worker_model)
@@ -1160,56 +1253,80 @@ async fn wait_for_agent_catalog(
             };
             let pinned = explicit.or(selected_account);
             let mut keys = Vec::new();
-            let mut add = |key: Option<&str>| {
+            let mut add = |key: Option<&str>, expected_provider: Option<&str>| {
                 if let Some(key) = key.filter(|key| !excluded.contains(*key))
                     && !keys.iter().any(|known| known == key)
+                    && expected_provider.is_none_or(|expected| {
+                        snapshot
+                            .accounts
+                            .iter()
+                            .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
+                            .and_then(|row| row.get("provider").and_then(Value::as_str))
+                            .unwrap_or("codex")
+                            == expected
+                    })
                 {
                     keys.push(key.to_owned());
                 }
             };
             if let Some(key) = pinned.as_deref() {
-                add(Some(key));
+                add(Some(key), None);
             } else {
-                add(parent_account.as_deref());
-                add(snapshot.default_account_key.as_str());
+                add(parent_account.as_deref(), provider);
+                add(snapshot.default_account_key.as_str(), provider);
                 for row in &snapshot.accounts {
                     let key = row.get("id").and_then(Value::as_str);
-                    let row_provider = row
-                        .get("provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("codex");
-                    if provider.is_none_or(|wanted| wanted == row_provider) {
-                        add(key);
-                    }
+                    add(key, provider);
                 }
             }
-            let accounts = snapshot
-                .accounts
-                .into_iter()
-                .filter_map(|row| {
-                    let key = row.get("id")?.as_str()?.to_owned();
-                    let home = row.get("home")?.as_str()?.to_owned();
-                    let provider = row
-                        .get("provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("codex")
-                        .to_owned();
-                    keys.contains(&key).then_some((key, home, provider))
-                })
-                .collect::<Vec<_>>();
-            Ok::<_, ()>((pinned.is_some(), accounts))
+            let accounts = catalog_admission_candidates(
+                &snapshot.accounts,
+                &keys,
+                parent_account.as_deref(),
+                pinned.is_some(),
+                provider,
+            );
+            Ok::<_, ()>((accounts, model, explicit_account))
         }),
     )
     .await
     .map_err(|_| operation_error(OperationError::Unavailable("provider-session/model-list")))?
     .map_err(|_| ApiError::internal())?
     .map_err(|_| ApiError::internal())?;
-    if candidate_data.1.is_empty() {
-        return Err(operation_error(OperationError::Unavailable(
-            "provider-session/model-list",
-        )));
+    let (accounts, expected_model, explicit_account) = candidate_data;
+    if accounts.is_empty() {
+        // Keep invalid automatic provider choices and explicit unknown,
+        // disabled, or excluded accounts on the synchronous selector, which
+        // reports the established 400 response.
+        return Ok(());
     }
-    for (account, home, provider) in candidate_data.1 {
+    let has_requested_model = |value: &Value| {
+        value
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
+                        && (row.get("model").and_then(Value::as_str)
+                            == Some(expected_model.as_str())
+                            || row.get("resolvedModel").and_then(Value::as_str)
+                                == Some(expected_model.as_str()))
+                })
+            })
+    };
+    let mut saw_fresh_catalog = false;
+    for (account, home, provider) in &accounts {
+        if let studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+            value, ..
+        } = catalog.read_for_admission(account, home, provider)
+        {
+            saw_fresh_catalog = true;
+            if !require_model_match || explicit_account || has_requested_model(&value) {
+                return Ok(());
+            }
+        }
+    }
+    for (account, home, provider) in accounts {
         let session = std::sync::Arc::clone(session);
         let ensured = tokio::time::timeout_at(deadline, session.ensure_session_async(&account))
             .await
@@ -1217,20 +1334,28 @@ async fn wait_for_agent_catalog(
         if !ensured {
             continue;
         }
-        let fresh = tokio::time::timeout_at(
+        let catalog_read = tokio::time::timeout_at(
             deadline,
             catalog.wait_for_admission_catalog(&account, &home, &provider),
         )
         .await
-        .is_ok_and(|result| {
-            matches!(
-                result,
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. }
-            )
-        });
-        if fresh {
+        .ok();
+        let Some(studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+            value, ..
+        }) = catalog_read
+        else {
+            continue;
+        };
+        saw_fresh_catalog = true;
+        if !require_model_match || explicit_account || has_requested_model(&value) {
             return Ok(());
         }
+    }
+    // Let the synchronous admission validator return its established 400
+    // model error when provider data is available but no eligible account has
+    // the requested model. Only a genuinely cold/unavailable catalog is 501.
+    if saw_fresh_catalog {
+        return Ok(());
     }
     Err(operation_error(OperationError::Unavailable(
         "provider-session/model-list",
@@ -1363,19 +1488,21 @@ async fn conversation(
     } else {
         None
     };
-    // This updates an existing conversation. Python resolves its stored
-    // account, then validates settings; root worker-selection exclusions only
-    // apply while creating a new child (`codex_runtime.py:4820-4837`,
-    // `5484-5491`). Therefore don't pass a parent selector here.
+    // This updates an existing conversation. Main execution uses its account;
+    // automatic worker defaults use the same parent-first account ordering as
+    // the worker catalog and exclude accounts disabled for this chat.
     let parent_id = existing_conversation_catalog_parent();
     // Runtime.update only reads the target catalog for execution changes
     // outside defaults-only updates (`codex_runtime.py:5481-5483`).
     wait_for_agent_catalog(
         &state,
         parent_id,
+        None,
         catalog_account.as_deref(),
         requested_model,
         needs_conversation_catalog,
+        false,
+        requested_model.is_some(),
     )
     .await?;
     if let Some(defaults) = value
@@ -1385,13 +1512,16 @@ async fn conversation(
         // Python resolves worker_defaults against settings_catalog after the
         // target account is known (`codex_runtime.py:5484-5486`).
         let worker_model = defaults.get("model").and_then(Value::as_str);
-        let worker_account = worker_settings_catalog_account(defaults, catalog_account.as_deref());
+        let worker_account = worker_settings_catalog_account(defaults);
         if worker_model.is_some() || worker_account.is_some() {
             wait_for_agent_catalog(
                 &state,
-                parent_id,
+                Some(&request.id),
+                None,
                 worker_account.as_deref(),
                 worker_model,
+                true,
+                true,
                 true,
             )
             .await?;
@@ -1414,14 +1544,21 @@ async fn conversation(
         let review_account = review_settings_catalog_account(
             value.get("worker_defaults"),
             stored_worker_account.as_deref(),
-            catalog_account.as_deref(),
         );
-        if let Some(account) = review_account.as_deref() {
-            let review_model = value
-                .pointer("/review_defaults/model")
-                .and_then(Value::as_str);
-            wait_for_agent_catalog(&state, parent_id, Some(account), review_model, true).await?;
-        }
+        let review_model = value
+            .pointer("/review_defaults/model")
+            .and_then(Value::as_str);
+        wait_for_agent_catalog(
+            &state,
+            Some(&request.id),
+            None,
+            review_account.as_deref(),
+            review_model,
+            true,
+            true,
+            review_model.is_some(),
+        )
+        .await?;
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::conversation(context, request)
@@ -1806,7 +1943,11 @@ mod title_http_tests {
 
 #[cfg(test)]
 mod creation_catalog_flow_tests {
-    use super::{catalog_cwd_for_conversation, existing_conversation_catalog_parent};
+    use super::{
+        catalog_admission_candidates, catalog_cwd_for_conversation,
+        existing_conversation_catalog_parent,
+    };
+    use serde_json::json;
 
     #[test]
     fn conversation_catalog_wait_does_not_apply_new_worker_account_exclusions() {
@@ -1816,31 +1957,73 @@ mod creation_catalog_flow_tests {
         assert_eq!(catalog_cwd_for_conversation(true, Some("/ignored")), None);
         assert_eq!(existing_conversation_catalog_parent(), None);
     }
+
+    #[test]
+    fn automatic_catalog_candidates_keep_selector_order_and_model_provider() {
+        let rows = vec![
+            json!({"id":"parent-claude","home":"/claude","provider":"claude","status":"ready"}),
+            json!({"id":"default-codex","home":"/codex","provider":"codex","status":"ready"}),
+            json!({"id":"later-codex","home":"/codex-2","provider":"codex","status":"ready"}),
+        ];
+        let candidates = catalog_admission_candidates(
+            &rows,
+            &[
+                "parent-claude".to_owned(),
+                "default-codex".to_owned(),
+                "later-codex".to_owned(),
+            ],
+            Some("parent-claude"),
+            false,
+            Some("codex"),
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                (
+                    "default-codex".to_owned(),
+                    "/codex".to_owned(),
+                    "codex".to_owned()
+                ),
+                (
+                    "later-codex".to_owned(),
+                    "/codex-2".to_owned(),
+                    "codex".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_automatic_provider_candidate_is_validated_by_the_selector() {
+        let rows =
+            vec![json!({"id":"only-claude","home":"/claude","provider":"claude","status":"ready"})];
+        assert!(
+            catalog_admission_candidates(
+                &rows,
+                &["only-claude".to_owned()],
+                None,
+                false,
+                Some("codex"),
+            )
+            .is_empty()
+        );
+    }
 }
 
-fn worker_settings_catalog_account(
-    defaults: &Value,
-    conversation_account: Option<&str>,
-) -> Option<String> {
+fn worker_settings_catalog_account(defaults: &Value) -> Option<String> {
     defaults
         .get("account_key")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| conversation_account.map(str::to_owned))
 }
 
 fn review_settings_catalog_account(
     request_worker_defaults: Option<&Value>,
     stored_worker_account: Option<&str>,
-    conversation_account: Option<&str>,
 ) -> Option<String> {
     request_worker_defaults.map_or_else(
-        || {
-            stored_worker_account
-                .map(str::to_owned)
-                .or_else(|| conversation_account.map(str::to_owned))
-        },
-        |defaults| worker_settings_catalog_account(defaults, conversation_account),
+        || stored_worker_account.map(str::to_owned),
+        worker_settings_catalog_account,
     )
 }
 
@@ -1875,27 +2058,48 @@ mod conversation_catalog_admission_tests {
         assert!(conversation_settings_need_conversation_account(&request));
         assert!(!conversation_needs_catalog(&request));
         assert_eq!(
-            review_settings_catalog_account(
-                None,
-                Some("worker-account"),
-                Some("conversation-account")
-            )
-            .as_deref(),
+            review_settings_catalog_account(None, Some("worker-account")).as_deref(),
             Some("worker-account")
         );
         assert_eq!(
             review_settings_catalog_account(
-                Some(&json!({"account_key": null})),
-                None,
-                Some("conversation-account")
+                Some(&json!({"account_key":"selected-worker"})),
+                Some("stored-worker")
             )
             .as_deref(),
-            Some("conversation-account")
+            Some("selected-worker")
+        );
+        assert_eq!(
+            review_settings_catalog_account(Some(&json!({"account_key": null})), None),
+            None
+        );
+        assert_eq!(review_settings_catalog_account(None, None), None);
+    }
+
+    #[test]
+    fn lead_worker_and_review_catalogs_follow_the_selected_worker_account() {
+        let request = json!({
+            "account_key": "claude-local",
+            "model": "default",
+            "worker_defaults": {
+                "account_key": "default",
+                "model": "gpt-6-luna",
+                "effort": "high",
+                "fast_mode": false
+            },
+            "review_defaults": {"model": "gpt-6.1-sol", "effort": "high"}
+        });
+        let worker = &request["worker_defaults"];
+        let worker_account = worker_settings_catalog_account(worker);
+        assert_eq!(worker_account.as_deref(), Some("default"));
+        assert_eq!(
+            review_settings_catalog_account(Some(worker), None).as_deref(),
+            Some("default")
         );
     }
 
     #[test]
-    fn unpinned_worker_defaults_admission_uses_the_conversation_account() {
+    fn unpinned_worker_defaults_admission_uses_automatic_account_selection() {
         for account_key in [None, Some(json!(null))] {
             let mut defaults = json!({"model": null, "effort": null, "fast_mode": false});
             if let Some(account_key) = account_key {
@@ -1904,10 +2108,7 @@ mod conversation_catalog_admission_tests {
             assert!(conversation_settings_need_conversation_account(&json!({
                 "worker_defaults": defaults
             })));
-            assert_eq!(
-                worker_settings_catalog_account(&defaults, Some("conversation-account")).as_deref(),
-                Some("conversation-account")
-            );
+            assert_eq!(worker_settings_catalog_account(&defaults), None);
         }
         let request = json!({
             "worker_defaults": {
@@ -1917,11 +2118,7 @@ mod conversation_catalog_admission_tests {
         });
         assert!(!conversation_settings_need_conversation_account(&request));
         assert_eq!(
-            worker_settings_catalog_account(
-                &request["worker_defaults"],
-                Some("conversation-account")
-            )
-            .as_deref(),
+            worker_settings_catalog_account(&request["worker_defaults"]).as_deref(),
             Some("worker-account")
         );
     }
@@ -2014,6 +2211,7 @@ async fn rename(
                 accounts: state.account_policy.as_deref(),
                 driver: state.account_driver.as_deref(),
                 catalog: Some(&catalog),
+                managed_creation_environment: None,
                 validate: &|schema, value| match schema {
                     "PersistedAgentRecord" => state
                         .validators

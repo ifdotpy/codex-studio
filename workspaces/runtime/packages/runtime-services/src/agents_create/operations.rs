@@ -16,6 +16,8 @@ pub struct Context<'a> {
     pub accounts: Option<&'a AccountPolicyState>,
     pub driver: Option<&'a AccountDriver>,
     pub catalog: Option<&'a dyn crate::host_worker_create::CreationCatalog>,
+    pub managed_creation_environment:
+        Option<&'a dyn crate::managed_child_create::ManagedCreationEnvironment>,
     pub validate: &'a dyn Fn(&str, &Value) -> bool,
 }
 
@@ -661,12 +663,18 @@ fn create(
                 &account,
                 &identity,
                 &settings.model,
+                &[],
             )?),
             Some(resolve_review_defaults(
                 context,
                 request.intent.get("review_defaults"),
                 &account,
                 &identity,
+                request
+                    .intent
+                    .pointer("/worker_defaults/account_key")
+                    .and_then(Value::as_str),
+                &[],
             )?),
         )
     } else {
@@ -1475,6 +1483,17 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             return Err(MutationError::Stale.into());
         }
         let identity = account_identity(context, account_key)?;
+        let excluded_account_keys = initial
+            .get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let root_model = initial
             .get("model")
             .and_then(Value::as_str)
@@ -1486,6 +1505,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 account_key,
                 &identity,
                 root_model,
+                &excluded_account_keys,
             )?,
             None => initial
                 .get("workerDefaults")
@@ -1493,7 +1513,32 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 .unwrap_or_else(|| json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1})),
         };
         let review_defaults = match request.review_defaults.as_ref() {
-            Some(value) => resolve_review_defaults(context, Some(value), account_key, &identity)?,
+            Some(value) => {
+                let worker_account_key = request
+                    .worker_defaults
+                    .as_ref()
+                    .and_then(|defaults| defaults.get("account_key"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        request
+                            .worker_defaults
+                            .is_none()
+                            .then(|| {
+                                initial
+                                    .pointer("/workerDefaults/accountKey")
+                                    .and_then(Value::as_str)
+                            })
+                            .flatten()
+                    });
+                resolve_review_defaults(
+                    context,
+                    Some(value),
+                    account_key,
+                    &identity,
+                    worker_account_key,
+                    &excluded_account_keys,
+                )?
+            }
             None => initial
                 .get("reviewDefaults")
                 .cloned()
@@ -2191,6 +2236,7 @@ fn resolve_worker_defaults(
     account_key: &str,
     account: &AccountIdentity,
     root_model: &str,
+    excluded_account_keys: &[String],
 ) -> Result<Value, OperationError> {
     let Some(value) = value else {
         return Ok(
@@ -2223,20 +2269,40 @@ fn resolve_worker_defaults(
             "worker_defaults requires model, effort, and fast_mode",
         ));
     }
-    let worker_account_key = object
-        .get("account_key")
-        .and_then(Value::as_str)
-        .unwrap_or(account_key);
-    let worker_account = if worker_account_key == account_key {
-        account.clone()
-    } else {
-        account_identity(context, worker_account_key)?
-    };
+    let requested_account_key = object.get("account_key").and_then(Value::as_str);
     let model = object
         .get("model")
         .and_then(Value::as_str)
         .filter(|model| !model.trim().is_empty())
         .unwrap_or(root_model);
+    let (worker_account_key, worker_account) =
+        if let Some(environment) = context.managed_creation_environment {
+            environment
+                .select_worker_account(
+                    account_key,
+                    requested_account_key,
+                    None,
+                    model,
+                    excluded_account_keys,
+                    None,
+                )
+                .map_err(|error| match error {
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                        message,
+                    ) => OperationError::Invalid(message),
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                        name,
+                    ) => OperationError::Unavailable(name),
+                })?
+        } else {
+            let worker_account_key = requested_account_key.unwrap_or(account_key);
+            let worker_account = if worker_account_key == account_key {
+                account.clone()
+            } else {
+                account_identity(context, worker_account_key)?
+            };
+            (worker_account_key.to_owned(), worker_account)
+        };
     let effort = match object.get("effort") {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
@@ -2268,21 +2334,23 @@ fn resolve_worker_defaults(
     if !(1..=3).contains(&depth) {
         return Err(OperationError::Invalid("delegation_depth must be 1 to 3"));
     }
-    let settings = context
-        .catalog
-        .ok_or(OperationError::Unavailable("provider-session/model-list"))?
-        .resolve(
-            worker_account_key,
-            &worker_account,
-            model,
-            effort,
-            fast_mode,
-            daybreak,
-        )?;
+    let catalog = context
+        .managed_creation_environment
+        .map(crate::managed_child_create::ManagedCreationEnvironment::catalog)
+        .or(context.catalog)
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let settings = catalog.resolve(
+        &worker_account_key,
+        &worker_account,
+        model,
+        effort,
+        fast_mode,
+        daybreak,
+    )?;
     let mut defaults = json!({"model":object.get("model").cloned().unwrap_or(Value::Null),
         "effort":settings.effort,"fastMode":settings.fast_mode,"daybreakEnabled":settings.daybreak_enabled,
         "cyberAccessProgram":settings.cyber_access_program,"delegationDepth":depth});
-    if object.contains_key("account_key") {
+    if requested_account_key.is_some() {
         defaults["accountKey"] = json!(worker_account_key);
     }
     Ok(defaults)
@@ -2293,6 +2361,8 @@ fn resolve_review_defaults(
     value: Option<&Value>,
     account_key: &str,
     account: &AccountIdentity,
+    worker_account_key: Option<&str>,
+    excluded_account_keys: &[String],
 ) -> Result<Value, OperationError> {
     let Some(value) = value else {
         return Ok(json!({"model":null,"effort":null}));
@@ -2324,10 +2394,46 @@ fn resolve_review_defaults(
         Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
         _ => return Err(OperationError::Invalid("review_defaults effort is invalid")),
     };
-    let settings = context
-        .catalog
-        .ok_or(OperationError::Unavailable("provider-session/model-list"))?
-        .resolve(account_key, account, model, effort, false, false)?;
+    let (catalog_account_key, catalog_account) =
+        if let Some(environment) = context.managed_creation_environment {
+            environment
+                .select_worker_account(
+                    account_key,
+                    worker_account_key,
+                    None,
+                    model,
+                    excluded_account_keys,
+                    None,
+                )
+                .map_err(|error| match error {
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                        message,
+                    ) => OperationError::Invalid(message),
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                        name,
+                    ) => OperationError::Unavailable(name),
+                })?
+        } else if let Some(worker_account_key) = worker_account_key {
+            (
+                worker_account_key.to_owned(),
+                account_identity(context, worker_account_key)?,
+            )
+        } else {
+            (account_key.to_owned(), account.clone())
+        };
+    let catalog = context
+        .managed_creation_environment
+        .map(|environment| environment.catalog())
+        .or(context.catalog)
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let settings = catalog.resolve(
+        &catalog_account_key,
+        &catalog_account,
+        model,
+        effort,
+        false,
+        false,
+    )?;
     Ok(json!({"model":settings.model,"effort":settings.effort}))
 }
 
@@ -2545,7 +2651,373 @@ fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_worker_create::CreationCatalog as _;
     use std::cell::{Cell, RefCell};
+
+    struct CatalogFixture {
+        models: std::collections::BTreeMap<String, Vec<String>>,
+    }
+
+    impl crate::host_worker_create::CreationCatalog for CatalogFixture {
+        fn resolve(
+            &self,
+            account_key: &str,
+            account: &AccountIdentity,
+            model: &str,
+            effort: Option<&str>,
+            fast_mode: bool,
+            daybreak_enabled: bool,
+        ) -> Result<ExecutionSettings, CreateError> {
+            if !self
+                .models
+                .get(account_key)
+                .is_some_and(|models| models.iter().any(|candidate| candidate == model))
+            {
+                return Err(CreateError::ModelUnavailable);
+            }
+            if daybreak_enabled && account.provider.as_deref() != Some("codex") {
+                return Err(CreateError::InvalidCreation("daybreak_enabled"));
+            }
+            Ok(ExecutionSettings {
+                model: model.to_owned(),
+                effort: effort.map(str::to_owned),
+                native_effort: effort.unwrap_or("medium").to_owned(),
+                fast_mode,
+                daybreak_enabled,
+                cyber_access_program: if daybreak_enabled {
+                    "daybreakBlue"
+                } else {
+                    "standard"
+                }
+                .to_owned(),
+            })
+        }
+    }
+
+    struct AccountFixture {
+        listing: crate::provider_callbacks::ManagedCreationAccountListing,
+    }
+
+    impl crate::provider_callbacks::ManagedCreationAccountRead for AccountFixture {
+        fn worker_accounts(
+            &self,
+        ) -> Result<
+            crate::provider_callbacks::ManagedCreationAccountListing,
+            crate::provider_callbacks::ManagedCreationAccountError,
+        > {
+            Ok(self.listing.clone())
+        }
+
+        fn resolve_identity(
+            &self,
+            account_key: &str,
+            _parent_account_key: &str,
+        ) -> Result<
+            crate::provider_callbacks::ManagedAccountIdentity,
+            crate::provider_callbacks::ManagedCreationAccountError,
+        > {
+            self.listing
+                .accounts
+                .iter()
+                .find(|candidate| candidate.account_key == account_key)
+                .map(|candidate| candidate.identity.clone())
+                .ok_or(crate::provider_callbacks::ManagedCreationAccountError::Unknown)
+        }
+    }
+
+    struct ManagedFixture {
+        accounts: AccountFixture,
+        catalog: CatalogFixture,
+    }
+
+    impl crate::managed_child_create::ManagedCreationEnvironment for ManagedFixture {
+        fn select_worker_account(
+            &self,
+            parent_account_key: &str,
+            requested_account_key: Option<&str>,
+            default_account_key: Option<&str>,
+            model: &str,
+            excluded_account_keys: &[String],
+            project_account_keys: Option<&[String]>,
+        ) -> Result<
+            (String, AccountIdentity),
+            crate::managed_child_create::ManagedCreationEnvironmentError,
+        > {
+            let mut available = |key: &str,
+                                 identity: &crate::provider_callbacks::ManagedAccountIdentity,
+                                 model: &str| {
+                let account = AccountIdentity {
+                    provider: identity.provider.clone(),
+                    home: identity.home.clone(),
+                    account_id: identity.account_id.clone(),
+                    email: identity.email.clone(),
+                };
+                match self
+                    .catalog
+                    .resolve(key, &account, model, None, false, false)
+                {
+                    Ok(_) => Ok(true),
+                    Err(CreateError::ModelUnavailable | CreateError::InvalidCreation(_)) => {
+                        Ok(false)
+                    }
+                    Err(CreateError::CapabilityUnavailable(name)) => Err(
+                        crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                            name,
+                        ),
+                    ),
+                    Err(_) => Err(
+                        crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                            "Worker account admission was refused",
+                        ),
+                    ),
+                }
+            };
+            let (key, identity) = crate::provider_callbacks::select_worker_account(
+                crate::provider_callbacks::WorkerAccountSelection {
+                    accounts: &self.accounts,
+                    parent_account_key,
+                    requested_account_key,
+                    default_account_key,
+                    model,
+                    excluded_account_keys,
+                    project_account_keys,
+                    model_available: &mut available,
+                },
+            )?;
+            Ok((
+                key,
+                AccountIdentity {
+                    provider: identity.provider,
+                    home: identity.home,
+                    account_id: identity.account_id,
+                    email: identity.email,
+                },
+            ))
+        }
+
+        fn validate_worker_choice(
+            &self,
+            _store: &RuntimeStore,
+            _account_key: &str,
+            _account: &AccountIdentity,
+            _requested: &str,
+            _default: &str,
+        ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+            Ok(())
+        }
+
+        fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
+            &self.catalog
+        }
+
+        fn prepare_workspace(
+            &self,
+            _store: &RuntimeStore,
+            _actor: &AgentRecord,
+            _args: &Value,
+            _request_id: &str,
+        ) -> Result<
+            Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+            crate::managed_child_create::ManagedCreationEnvironmentError,
+        > {
+            Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "workspace-state/host-preparation",
+                ),
+            )
+        }
+    }
+
+    fn managed_fixture() -> ManagedFixture {
+        use crate::provider_callbacks::{
+            ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
+            ManagedCreationAccountListing,
+        };
+        let candidate = |key: &str, provider: &str, ready: bool| Candidate {
+            account_key: key.to_owned(),
+            identity: ManagedAccountIdentity {
+                provider: Some(provider.to_owned()),
+                home: Some(format!("/profiles/{key}")),
+                account_id: None,
+                email: None,
+            },
+            ready,
+            can_attempt_native_proof: false,
+            disconnected: false,
+            deleted: false,
+            duplicate: false,
+        };
+        ManagedFixture {
+            accounts: AccountFixture {
+                listing: ManagedCreationAccountListing {
+                    default_account_key: Some("default".to_owned()),
+                    accounts: vec![
+                        candidate("claude-local", "claude", true),
+                        candidate("default", "codex", true),
+                    ],
+                },
+            },
+            catalog: CatalogFixture {
+                models: std::collections::BTreeMap::from([
+                    (
+                        "claude-local".to_owned(),
+                        vec!["default".to_owned(), "opus".to_owned()],
+                    ),
+                    (
+                        "default".to_owned(),
+                        vec![
+                            "gpt-6-luna".to_owned(),
+                            "gpt-6.1-sol".to_owned(),
+                            "gpt-6-astra".to_owned(),
+                        ],
+                    ),
+                ]),
+            },
+        }
+    }
+
+    fn worker_defaults_context<'a>(
+        store: &'a RuntimeStore,
+        environment: &'a dyn crate::managed_child_create::ManagedCreationEnvironment,
+        validate: &'a dyn Fn(&str, &Value) -> bool,
+    ) -> Context<'a> {
+        Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: Some(environment),
+            validate,
+        }
+    }
+
+    #[test]
+    fn managed_worker_settings_use_ordered_account_selection_and_keep_automatic_unpinned() {
+        let root = tempfile::tempdir().expect("isolated settings state");
+        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let environment = managed_fixture();
+        let validate = |_: &str, _: &Value| true;
+        let context = worker_defaults_context(&store, &environment, &validate);
+        let claude = AccountIdentity {
+            provider: Some("claude".to_owned()),
+            home: Some("/profiles/claude-local".to_owned()),
+            account_id: None,
+            email: None,
+        };
+        let automatic_luna = json!({
+            "account_key": null,
+            "model": "gpt-6-luna",
+            "effort": "high",
+            "fast_mode": false
+        });
+        let resolved = resolve_worker_defaults(
+            &context,
+            Some(&automatic_luna),
+            "claude-local",
+            &claude,
+            "default",
+            &[],
+        )
+        .expect("automatic Luna resolves through the eligible Codex account");
+        assert_eq!(resolved["model"], "gpt-6-luna");
+        assert_eq!(
+            resolved.get("accountKey"),
+            None,
+            "automatic choice stays unpinned"
+        );
+
+        let explicit_claude_luna = json!({
+            "account_key": "claude-local",
+            "model": "gpt-6-luna",
+            "effort": "high",
+            "fast_mode": false
+        });
+        assert!(matches!(
+            resolve_worker_defaults(
+                &context,
+                Some(&explicit_claude_luna),
+                "claude-local",
+                &claude,
+                "default",
+                &[],
+            ),
+            Err(OperationError::Invalid(_))
+        ));
+
+        let cleared_pin = json!({
+            "account_key": null,
+            "model": null,
+            "effort": null,
+            "fast_mode": false
+        });
+        let cleared = resolve_worker_defaults(
+            &context,
+            Some(&cleared_pin),
+            "claude-local",
+            &claude,
+            "gpt-6-astra",
+            &[],
+        )
+        .expect("null model inherits the current lead model");
+        assert_eq!(cleared["model"], Value::Null);
+        assert_eq!(
+            cleared.get("accountKey"),
+            None,
+            "null clears an old account pin"
+        );
+        assert_eq!(cleared["cyberAccessProgram"], "standard");
+    }
+
+    #[test]
+    fn lead_worker_and_review_models_validate_on_the_explicit_codex_worker_account() {
+        let root = tempfile::tempdir().expect("isolated create state");
+        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let environment = managed_fixture();
+        let validate = |_: &str, _: &Value| true;
+        let context = worker_defaults_context(&store, &environment, &validate);
+        let claude = AccountIdentity {
+            provider: Some("claude".to_owned()),
+            home: Some("/profiles/claude-local".to_owned()),
+            account_id: None,
+            email: None,
+        };
+        let payload = json!({
+            "account_key": "claude-local",
+            "model": "default",
+            "worker_defaults": {
+                "account_key": "default",
+                "model": "gpt-6-luna",
+                "effort": "high",
+                "fast_mode": false
+            },
+            "review_defaults": {"model": "gpt-6.1-sol", "effort": "high"}
+        });
+        let workers = resolve_worker_defaults(
+            &context,
+            Some(&payload["worker_defaults"]),
+            "claude-local",
+            &claude,
+            "default",
+            &[],
+        )
+        .expect("Codex worker model validates");
+        assert_eq!(workers["accountKey"], "default");
+        assert_eq!(workers["model"], "gpt-6-luna");
+        let review = resolve_review_defaults(
+            &context,
+            Some(&payload["review_defaults"]),
+            "claude-local",
+            &claude,
+            payload
+                .pointer("/worker_defaults/account_key")
+                .and_then(Value::as_str),
+            &[],
+        )
+        .expect("review model validates against the worker's Codex catalog");
+        assert_eq!(review, json!({"model":"gpt-6.1-sol","effort":"high"}));
+        assert_eq!(payload["account_key"], "claude-local");
+        assert_eq!(payload["model"], "default");
+    }
 
     #[test]
     fn image_provision_failure_persists_a_visible_paused_phase() {
@@ -2892,6 +3364,7 @@ mod tests {
             accounts: None,
             driver: None,
             catalog: None,
+            managed_creation_environment: None,
             validate: &validate,
         };
         let request = Conversation {
@@ -2969,6 +3442,7 @@ mod tests {
             accounts: Some(&accounts),
             driver: None,
             catalog: None,
+            managed_creation_environment: None,
             validate: &validate,
         };
 
@@ -3172,6 +3646,7 @@ mod tests {
                 accounts: None,
                 driver: Some(&driver),
                 catalog: None,
+                managed_creation_environment: None,
                 validate: &validate,
             };
             let request = Creation {

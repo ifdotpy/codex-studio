@@ -256,6 +256,23 @@ def agent_projection_snapshot(path: Path, agent_id: str):
         return record, payload["value"]
 
 
+def wait_for_agent_thread_projection(
+    backend, agent_id: str, expected_identity: dict[str, object],
+) -> None:
+    """Wait for the runtime record's thread identity to reach its canonical projection."""
+    def projection_settled() -> bool:
+        record, projection = agent_projection_snapshot(
+            backend.state / "canvas.sqlite3", agent_id,
+        )
+        return (
+            native_name_identity(record) == expected_identity
+            and record.get("nativeNameSynced") == expected_identity
+            and projection.get("threadId") == expected_identity.get("threadId")
+        )
+
+    backend.wait_until(projection_settled, f"agent {agent_id} native thread projection")
+
+
 def python_direct_message(
     backend, agent_id: str, message_id: str, text: str, delivery: str,
     *, hold_for_dispatch: bool = False,
@@ -518,7 +535,8 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
             ).fetchone()[0])
             agent["threadId"] = "same-managed-thread"
-            agent["nativeNameSynced"] = native_name_identity(agent)
+            expected_identity = native_name_identity(agent)
+            agent["nativeNameSynced"] = expected_identity
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
             database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
                 "registered-child", json.dumps({"id": "registered-child", "parentId": self.agent_id}),
@@ -531,6 +549,9 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "name": "Inherited team", "members": [self.agent_id, "registered-child"],
         }, headers=self.headers())
         self.assertEqual(inherited.status, 200, inherited.body[:1000])
+        # This direct record fixture bypasses projection publishing; settle that
+        # background-owned write before proving the next request made no writes.
+        wait_for_agent_thread_projection(self.backend, self.agent_id, expected_identity)
         before = no_write_snapshot(path.parent)
         alias = self.backend.request("POST", "/api/chats", body={
             "id": "15151515-1515-1515-1515-151515151515",
