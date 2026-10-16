@@ -1825,6 +1825,29 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .unwrap();
 }
 
+fn rust_supervisor_binary() -> PathBuf {
+    std::env::var_os("STUDIO_SUPERVISOR_BINARY")
+        .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "Rust supervisor integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
+            )
+        })
+}
+
+fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> std::process::Child {
+    std::process::Command::new(rust_supervisor_binary())
+        .arg("--state")
+        .arg(root)
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(stderr).unwrap())
+        .spawn()
+        .unwrap_or_else(|error| panic!("could not start Rust supervisor test fixture: {error}"))
+}
+
 async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Value {
     use tokio::io::AsyncWriteExt;
     let mut peer = tokio::io::BufReader::new(
@@ -1918,8 +1941,11 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
         });
         let (peer, _) = listener.accept().await.unwrap();
         let mut peer = tokio::io::BufReader::new(peer);
-        let _hello = wire_read(&mut peer).await;
-        wire_send(&mut peer, json!({"ok":true})).await;
+        let hello = wire_read(&mut peer).await;
+        assert_eq!(hello["protocol"], 2);
+        assert_eq!(hello["stateDir"], root.path().to_string_lossy().as_ref());
+        assert_eq!(hello["backendId"], "fixture");
+        wire_send(&mut peer, json!({"ok":true,"protocol":2})).await;
         let status = wire_read(&mut peer).await;
         wire_send(
             &mut peer,
@@ -2008,19 +2034,7 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let stderr = root.path().join("supervisor.log");
-    let child = std::process::Command::new("python3")
-        .arg("-B")
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../server/src/codex_process_supervisor.py"),
-        )
-        .arg("--state")
-        .arg(root.path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::fs::File::create(&stderr).unwrap())
-        .spawn()
-        .unwrap();
+    let child = spawn_rust_supervisor(root.path(), &stderr);
     let identity = studio_runtime_process::BackendIdentity {
         backend_id: studio_runtime_process::BackendId("cwd-fixture".into()),
         state_dir: root.path().into(),
@@ -2274,17 +2288,6 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let python = prepared_python::prepared_python(&source);
-    let import = std::process::Command::new(&python)
-        .args(["-c", "import studio_operations_native"])
-        .output()
-        .expect("prepared Python interpreter runs");
-    assert!(
-        import.status.success(),
-        "Python supervisor requires the native module studio_operations_native. Prepare the isolated interpreter with `python3 workspaces/runtime/apps/server/src/codex_python.py --prepare`, build it with `cargo build --release -p studio-operations-python`, and install the resulting module into that interpreter. Import error: {}",
-        String::from_utf8_lossy(&import.stderr)
-    );
     // Isolate the supervisor-mode environment without mutating process globals.
     if std::env::var_os("STUDIO_W7_P01_HOST_CHILD").is_none() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
@@ -2334,19 +2337,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = tokio::task::spawn_blocking(move || {
         let stderr = root.join("supervisor.log");
-        let child = std::process::Command::new("python3")
-            .arg("-B")
-            .arg(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../server/src/codex_process_supervisor.py"),
-            )
-            .arg("--state")
-            .arg(&root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::fs::File::create(&stderr).unwrap())
-            .spawn()
-            .unwrap();
+        let child = spawn_rust_supervisor(&root, &stderr);
         let mut fixture = SupervisorFixture {
             child,
             native: Vec::new(),
@@ -2695,6 +2686,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             .env("STUDIO_TEST_CLAUDE_NODE_LOG", &node_log)
             .env("STUDIO_CLAUDE_BIN", &fake_cli)
             .env("STUDIO_NODE_BIN", &node_wrapper)
+            .env("CODEX_NODE", &node_wrapper)
             .env("NODE_OPTIONS", format!("--import={}", loader.display()))
             .env("CLAUDE_CONFIG_DIR", &config)
             .env("HOME", &home)
