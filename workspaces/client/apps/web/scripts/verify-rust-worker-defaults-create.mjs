@@ -1066,6 +1066,7 @@ async function main() {
     const row = page.locator(
       `[data-sidebar-item=${JSON.stringify(journal.create.id)}]`,
     );
+    await row.hover();
     await row.getByRole("button", { name: /^Actions for / }).click();
     await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
     const confirm = page.getByRole("dialog", {
