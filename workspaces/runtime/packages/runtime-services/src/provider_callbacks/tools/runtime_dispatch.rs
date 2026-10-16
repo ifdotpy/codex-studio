@@ -113,9 +113,13 @@ pub fn validate_worker_model_choice(
     }
     let provider = worker_model_provider(default);
     if provider.is_some() && worker_model_provider(requested) != provider {
-        return Err(CreationError::Invalid(
-            "Choose a model from the provider selected in chat settings",
-        ));
+        // The worker provider follows the chat's default subagent model, not
+        // the lead's provider; tell the caller which family is allowed.
+        return Err(CreationError::Invalid(if provider == Some("codex") {
+            "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
+        } else {
+            "Choose default, sonnet, opus, haiku or a claude-* model: chat settings fix the worker provider to Claude"
+        }));
     }
     let Some((Some(requested), Some(default))) = prices else {
         if prices.is_some() {
@@ -621,7 +625,9 @@ fn child_creation_result(result: OperationResult) -> DispatchedOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_creation_result, managed_input_receipt, validate_worker_model_choice};
+    use super::{
+        CreationError, child_creation_result, managed_input_receipt, validate_worker_model_choice,
+    };
     use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
 
@@ -660,7 +666,19 @@ mod tests {
 
     #[test]
     fn managed_spawn_refuses_cross_provider_and_more_expensive_model_choices() {
-        assert!(validate_worker_model_choice("claude-sonnet-4", "gpt-6", None).is_err());
+        assert_eq!(
+            validate_worker_model_choice("claude-opus-5-5", "gpt-6-luna", None),
+            Err(CreationError::Invalid(
+                "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
+            ))
+        );
+        assert!(
+            matches!(
+                validate_worker_model_choice("gpt-6-luna", "claude-opus-5-5", None),
+                Err(CreationError::Invalid(message)) if message.contains("claude-*")
+            ),
+            "a Claude chat default names the Claude family"
+        );
         assert!(
             validate_worker_model_choice(
                 "gpt-6-expensive",

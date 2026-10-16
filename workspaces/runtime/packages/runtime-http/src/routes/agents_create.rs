@@ -154,8 +154,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
         studio_runtime_services::provider_callbacks::validate_worker_model_choice(
             requested, default, None,
-        )
-        .map_err(|_| E::Invalid("Choose a model from the provider selected in chat settings"))?;
+        )?;
         if requested == default {
             return Ok(());
         }

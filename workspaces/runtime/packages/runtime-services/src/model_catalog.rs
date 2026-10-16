@@ -119,7 +119,17 @@ async fn read_account_session_catalog(
         }
         let session_clone = session.clone();
         let account_clone = account.clone();
-        let current_scope = session.current_scope(&account).ok_or(())?;
+        // An idle or not-yet-started account worker has no scope. Start it
+        // (bounded) instead of reporting the catalog unavailable.
+        let current_scope = match session.current_scope(&account) {
+            Some(scope) => scope,
+            None => tokio::select! {
+                _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
+                result = tokio::time::timeout(CATALOG_TIMEOUT, session.ensure_session(&account)) => {
+                    result.map_err(|_| ())?.map_err(|_| ())?
+                }
+            },
+        };
         let operation = format!(
             "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
@@ -1136,6 +1146,91 @@ pub(crate) mod tests {
                 json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"includeHidden":true}),
                 json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"includeHidden":true,"cursor":"next"}),
             ]
+        );
+    }
+
+    /// Idle worker: no scope until `ensure_session` starts it.
+    struct LazySession {
+        inner: AccountSessionPages,
+        started: std::sync::atomic::AtomicBool,
+        ensure_fails: bool,
+    }
+    impl crate::account_session_runtime::AccountSessionPort for LazySession {
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<crate::account_session_runtime::ConnectionScope> {
+            if self.started.load(Ordering::SeqCst) {
+                self.inner.current_scope(account)
+            } else {
+                None
+            }
+        }
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> crate::account_session_runtime::AccountSessionFuture<
+            'a,
+            crate::account_session_runtime::ConnectionScope,
+        > {
+            Box::pin(async move {
+                if self.ensure_fails {
+                    return Err(crate::account_session_runtime::AccountSessionError::Unknown);
+                }
+                self.started.store(true, Ordering::SeqCst);
+                Ok(self.inner.current_scope(account).expect("scope"))
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: crate::account_session_runtime::ProviderRequest,
+        ) -> crate::account_session_runtime::AccountSessionFuture<
+            'a,
+            crate::account_session_runtime::SessionReceipt,
+        > {
+            self.inner.provider_request(request)
+        }
+    }
+
+    fn lazy_session(ensure_fails: bool) -> Arc<LazySession> {
+        Arc::new(LazySession {
+            inner: AccountSessionPages {
+                pages: StdMutex::new(vec![json!({"data":[{"model":"gpt-6-luna"}]})]),
+                params: StdMutex::new(Vec::new()),
+                operations: StdMutex::new(Vec::new()),
+            },
+            started: std::sync::atomic::AtomicBool::new(false),
+            ensure_fails,
+        })
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_starts_an_idle_account_worker() {
+        let session = lazy_session(false);
+        let result = read_account_session_catalog(
+            session.clone(),
+            "codex2".into(),
+            "codex".into(),
+            Shutdown::default(),
+        )
+        .await
+        .expect("catalog after lazy start");
+        assert_eq!(result["data"][0]["model"], "gpt-6-luna");
+        assert!(session.started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_reports_unavailable_when_worker_cannot_start() {
+        let session = lazy_session(true);
+        assert!(
+            read_account_session_catalog(
+                session,
+                "codex2".into(),
+                "codex".into(),
+                Shutdown::default(),
+            )
+            .await
+            .is_err()
         );
     }
 
