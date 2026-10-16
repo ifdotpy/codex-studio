@@ -4,6 +4,8 @@
 //! `stored_only`; that row claims no delivery and is not resent. The remote owner is not notified
 //! until `cross-server/remote-events` lands.
 
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
@@ -208,32 +210,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
     if !exists {
         return Ok(0);
     }
-    let mut statement = tx
-        .prepare_cached("SELECT id,record FROM runtime_monitors ORDER BY id")
-        .map_err(studio_runtime_store::StoreError::from)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(studio_runtime_store::StoreError::from)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
-    drop(statement);
-    let mut ids = Vec::new();
-    for (id, raw) in rows {
-        match serde_json::from_str::<Value>(&raw) {
-            Ok(record)
-                if matches!(
-                    record.get("status").and_then(Value::as_str),
-                    Some("running" | "starting" | "approval")
-                ) =>
-            {
-                ids.push(id);
-            }
-            Ok(_) => {}
-            Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
-        }
-    }
+    let ids = active_monitor_ids(tx)?;
     let mut recovered = 0;
     for id in &ids {
         let result = (|| {
@@ -285,6 +262,82 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
         recovered += 1;
     }
     Ok(recovered)
+}
+
+fn active_monitor_ids(tx: &Transaction<'_>) -> Result<Vec<String>, MonitorError> {
+    let mut statement = tx
+        .prepare_cached("SELECT id,record FROM runtime_monitors ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, raw) = row.map_err(studio_runtime_store::StoreError::from)?;
+        match serde_json::from_str::<RecoverySelection>(&raw) {
+            Ok(RecoverySelection {
+                status:
+                    Some(
+                        policy::MonitorStatus::Running
+                        | policy::MonitorStatus::Starting
+                        | policy::MonitorStatus::Approval,
+                    ),
+            }) => ids.push(id),
+            Ok(_) => {}
+            Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
+        }
+    }
+    Ok(ids)
+}
+
+struct RecoverySelectionVisitor;
+
+impl<'de> Visitor<'de> for RecoverySelectionVisitor {
+    type Value = RecoverySelection;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a persisted monitor record")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut status = None;
+        while let Some(key) = map.next_key::<RecoveryField>()? {
+            if matches!(key, RecoveryField::Status) {
+                let raw = map.next_value::<&serde_json::value::RawValue>()?;
+                status = serde_json::from_str::<policy::MonitorStatus>(raw.get()).ok();
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(RecoverySelection { status })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(field_identifier)]
+enum RecoveryField {
+    #[serde(rename = "status")]
+    Status,
+    #[serde(other)]
+    Other,
+}
+
+struct RecoverySelection {
+    status: Option<policy::MonitorStatus>,
+}
+
+impl<'de> Deserialize<'de> for RecoverySelection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(RecoverySelectionVisitor)
+    }
 }
 
 fn store_remote_exit_event(
@@ -1179,4 +1232,46 @@ pub fn bind_rule_in_transaction(
         deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
     })?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod recovery_selection_tests {
+    use super::active_monitor_ids;
+    use rusqlite::Connection;
+
+    #[test]
+    fn startup_monitor_selection_keeps_only_active_statuses_in_id_order() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 INSERT INTO runtime_monitors(id, record) VALUES
+                    ('z-running', '{\"status\":\"running\",\"futureField\":{\"enabled\":true}}'),
+                    ('b-starting', '{\"status\":\"starting\"}'),
+                    ('a-approval', '{\"status\":\"approval\"}'),
+                    ('terminal-completed', '{\"status\":\"completed\"}'),
+                    ('terminal-failed', '{\"status\":\"failed\"}'),
+                    ('terminal-cancelled', '{\"status\":\"cancelled\"}'),
+                    ('terminal-lost', '{\"status\":\"lost\"}'),
+                    ('unknown', '{\"status\":\"future-status\"}'),
+                    ('duplicate-invalid-first', '{\"status\":17,\"status\":\"running\"}'),
+                    ('duplicate-invalid-last', '{\"status\":\"running\",\"status\":17}'),
+                    ('duplicate-unknown-last', '{\"status\":\"running\",\"status\":\"future-status\"}'),
+                    ('duplicate-escaped-key', '{\"status\":\"completed\",\"sta\\u0074us\":\"approval\"}'),
+                    ('malformed', '{invalid json}');",
+            )
+            .expect("monitor fixture");
+        let tx = connection.transaction().expect("fixture transaction");
+
+        assert_eq!(
+            active_monitor_ids(&tx).expect("active monitor selection"),
+            vec![
+                "a-approval",
+                "b-starting",
+                "duplicate-escaped-key",
+                "duplicate-invalid-first",
+                "z-running"
+            ]
+        );
+    }
 }

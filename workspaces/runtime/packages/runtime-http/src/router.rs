@@ -908,6 +908,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encoded_dynamic_voice_fallback_keeps_raw_route_and_request_identity() {
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
+        let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/voice/unknown%2Faction")
+            .header("host", "127.0.0.1:4620")
+            .header("x-canvas-token", "token")
+            .header("content-type", "application/json")
+            .header("x-studio-request-id", "encoded-route-request")
+            .extension(peer)
+            .body(Body::from("{}"))
+            .expect("request builds");
+
+        let response = app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers()["x-studio-request-id"],
+            "encoded-route-request"
+        );
+    }
+
+    #[tokio::test]
     async fn sync_preferences_write_is_registered_in_the_production_router() {
         let directory = tempfile::tempdir().expect("isolated state directory");
         let store =

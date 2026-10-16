@@ -412,7 +412,10 @@ impl LoginService {
     pub async fn code(&self, id: &str, code: String) -> Result<Value, LoginError> {
         self.available()?;
         request_id(id)?;
-        validate_code(&code)?;
+        // Validate the provider-specific delimiter before persisting the
+        // one-shot code intent or writing to the child. A malformed local
+        // input is safe to correct; once the pipe write starts it is not.
+        super::validate_manual_authorization_code(&code)?;
         let entry = self.jobs.entry(id)?;
         let mut job = entry.lock().await;
         let (next, write) = job
@@ -650,7 +653,16 @@ impl LoginService {
             self.finish(id, LoginStatus::Error, Some(FAILED)).await?;
             return Ok(());
         };
-        let metadata = self.probe(id, launch, commands).await?;
+        let (metadata, probe_conclusive) = self.probe(id, launch, commands).await?;
+        if !probe_conclusive {
+            let entry = self.jobs.entry(id)?;
+            let code_submitted = entry.lock().await.snapshot.code_submitted();
+            if code_submitted {
+                return Err(LoginError::Unavailable);
+            }
+            self.finish(id, LoginStatus::Error, Some(FAILED)).await?;
+            return Ok(());
+        }
         let entry = self.jobs.entry(id)?;
         let mut job = entry.lock().await;
         if !job.snapshot.active() {
@@ -661,7 +673,15 @@ impl LoginService {
             .validate_completion(&metadata, success)
             .is_err()
         {
-            let next = job.snapshot.finish(LoginStatus::Error, Some(FAILED))?;
+            let error = if job.snapshot.code_submitted()
+                && probe_conclusive
+                && job.snapshot.provider_rejected_completion(&metadata)
+            {
+                AUTHORIZATION_NOT_CONFIRMED
+            } else {
+                FAILED
+            };
+            let next = job.snapshot.finish(LoginStatus::Error, Some(error))?;
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
@@ -755,7 +775,7 @@ impl LoginService {
         id: &str,
         launch: &Launch,
         commands: &mut mpsc::Receiver<Command>,
-    ) -> Result<AuthMetadata, LoginError> {
+    ) -> Result<(AuthMetadata, bool), LoginError> {
         let mut child = self
             .launcher
             .spawn(
@@ -773,21 +793,24 @@ impl LoginService {
         let mut output = Vec::new();
         let deadline = tokio::time::sleep(PROBE_DEADLINE);
         tokio::pin!(deadline);
-        let success = loop {
+        let exited_successfully = loop {
             tokio::select! {
-                _=&mut deadline=>break false,
+                _=&mut deadline=>break None,
                 command=commands.recv()=>match command {
                     Some(Command::Code(_, reply))=>{drop(reply.send(Err(LoginError::Unavailable)));},
-                    Some(Command::Cancel)|None=>break false,
+                    Some(Command::Cancel)|None=>break None,
                 },
-                event=child.next_event()=>match event?{Some(LoginEvent::Output(bytes))=>append_tail(&mut output,&bytes),Some(LoginEvent::Diagnostic(_))=>{},Some(LoginEvent::Exited(success))=>break success,None=>break false}
+                event=child.next_event()=>match event?{Some(LoginEvent::Output(bytes))=>append_tail(&mut output,&bytes),Some(LoginEvent::Diagnostic(_))=>{},Some(LoginEvent::Exited(success))=>break Some(success),None=>break None}
             }
         };
         child.close().await?;
         self.record_child(id, None).await?;
-        Ok(crate::account_driver::claude::auth_metadata_from_output(
-            &output, success,
-        ))
+        Ok(
+            crate::account_driver::claude::auth_status_probe_from_output(
+                &output,
+                exited_successfully,
+            ),
+        )
     }
     async fn record_child(
         &self,

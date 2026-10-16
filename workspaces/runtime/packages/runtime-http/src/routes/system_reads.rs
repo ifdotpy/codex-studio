@@ -17,6 +17,26 @@ const DIAGNOSTICS_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("runtime-process/process-tree"),
 ];
 
+const DIAGNOSTICS_RESPONSE_FIELDS: &[&str] = &[
+    "at",
+    "processTree",
+    "hostResources",
+    "resourceAttribution",
+    "nativeAccounts",
+    "studioLoadedThreads",
+    "queues",
+    "runtimeLockSamples",
+    "executions",
+    "sqliteContention",
+    "httpRequestMetrics",
+    "analyticsCapture",
+    "migrations",
+    "searchMigrationError",
+    "runtimeLockOperations",
+    "supervisor",
+    "blockingPoolMetrics",
+];
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -217,13 +237,20 @@ async fn diagnostics(
             let Some(process_tree) = process_tree else {
                 return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
             };
+            studio_runtime_services::diagnostics::log_on_demand_memory_snapshot();
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::DurableInputPending)
+                })?;
             let ledger = studio_runtime_services::diagnostics::execution_ledger(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::ExecutionLedger)
+                })?;
             let migrations = studio_runtime_services::diagnostics::migration_status(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::MigrationStatus)
+                })?;
             Ok::<_, ApiError>((
                 provider,
                 supervisor,
@@ -306,13 +333,87 @@ async fn diagnostics(
     });
     let mut value = value;
     redact_untrusted_diagnostic_text(&mut value);
+    strip_diagnostics_execution_extras(&state.validators, &mut value);
     if !state
         .validators
         .validate_stored("DiagnosticsResponse", &value)
     {
+        let (field, keyword) = diagnostics_schema_rejection(&state.validators, &value);
+        eprintln!(
+            "diagnostics response schema rejection: schema=DiagnosticsResponse field={field} keyword={keyword}"
+        );
         return Err(ApiError::internal());
     }
     super::generated_json::<crate::generated::DiagnosticsResponse>(value).map(Json)
+}
+
+fn diagnostics_schema_rejection(
+    registry: &crate::validation::Registry,
+    value: &Value,
+) -> (&'static str, &'static str) {
+    let rejection = registry.first_stored_error("DiagnosticsResponse", value);
+    let Some((pointer, keyword)) = rejection else {
+        return ("unlocated", "unavailable");
+    };
+    let field = pointer
+        .strip_prefix('/')
+        .and_then(|path| path.split('/').next())
+        .and_then(|field| {
+            DIAGNOSTICS_RESPONSE_FIELDS
+                .iter()
+                .copied()
+                .find(|known| *known == field)
+        })
+        .unwrap_or("unlocated");
+    let keyword = match keyword.as_str() {
+        "additionalProperties" => "additionalProperties",
+        "anyOf" => "anyOf",
+        "const" => "const",
+        "enum" => "enum",
+        "format" => "format",
+        "maximum" => "maximum",
+        "minimum" => "minimum",
+        "required" => "required",
+        "type" => "type",
+        "unevaluatedProperties" => "unevaluatedProperties",
+        "uniqueItems" => "uniqueItems",
+        _ => "other",
+    };
+    (field, keyword)
+}
+
+fn strip_diagnostics_execution_extras(
+    registry: &crate::validation::Registry,
+    response: &mut Value,
+) {
+    if let Some(executions) = response.get_mut("executions") {
+        registry.strip_stored_extra_fields("ExecutionLedger", executions);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiagnosticsCollectionFailure {
+    DurableInputPending,
+    ExecutionLedger,
+    MigrationStatus,
+}
+
+impl DiagnosticsCollectionFailure {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DurableInputPending => "durable_input_pending",
+            Self::ExecutionLedger => "execution_ledger",
+            Self::MigrationStatus => "migration_status",
+        }
+    }
+}
+
+fn diagnostics_collection_error(failure: DiagnosticsCollectionFailure) -> ApiError {
+    eprintln!(
+        "diagnostics collection failed: operation={}",
+        failure.label()
+    );
+    ApiError::internal()
 }
 
 async fn ui_summary(
@@ -426,7 +527,10 @@ fn redact_untrusted_diagnostic_text(value: &mut Value) {
 
 #[cfg(test)]
 mod diagnostics_http_tests {
-    use super::redact_untrusted_diagnostic_text;
+    use super::{
+        DIAGNOSTICS_RESPONSE_FIELDS, redact_untrusted_diagnostic_text,
+        strip_diagnostics_execution_extras,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -447,6 +551,125 @@ mod diagnostics_http_tests {
 
     use crate::router::{HttpState, router};
     use crate::validation::Registry;
+
+    #[test]
+    fn diagnostics_schema_rejection_logs_only_known_fields_and_keywords() {
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
+        for value in [
+            json!({
+                "executions": {"runs": [{"unexpected-private-name": "secret-value"}]}
+            }),
+            json!({"private-root-name": "secret-value"}),
+        ] {
+            let (field, keyword) = super::diagnostics_schema_rejection(&registry, &value);
+            assert!(
+                field == "unlocated" || DIAGNOSTICS_RESPONSE_FIELDS.contains(&field),
+                "the log field must come from the known response DTO"
+            );
+            assert!(matches!(
+                keyword,
+                "additionalProperties"
+                    | "anyOf"
+                    | "const"
+                    | "enum"
+                    | "format"
+                    | "maximum"
+                    | "minimum"
+                    | "required"
+                    | "type"
+                    | "unevaluatedProperties"
+                    | "uniqueItems"
+                    | "other"
+                    | "unavailable"
+            ));
+            assert!(!format!("{field}{keyword}").contains("secret"));
+        }
+    }
+
+    #[test]
+    fn diagnostics_projects_legacy_execution_extras_without_changing_stored_rows() {
+        let connection = Connection::open_in_memory().expect("in-memory read fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_execution_runs (
+                    id TEXT PRIMARY KEY, agent TEXT, account TEXT, epoch INTEGER,
+                    thread TEXT, turn TEXT, created REAL, record TEXT NOT NULL
+                );
+                CREATE TABLE runtime_execution_attempts (
+                    id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL
+                );",
+            )
+            .expect("fixture tables");
+        let run = json!({
+            "id": "run-1", "agent": "agent-1", "accountKey": "default",
+            "epoch": 1, "threadId": null, "turnId": null, "created": 1.0,
+            "status": "running", "firstAttemptId": null, "rootAttemptId": null,
+            "latestAttemptId": null,
+            "restartRecovery": {"startAttempt": {"id": "restart-attempt", "legacyField": true}},
+            "disconnectRecovery": {"startAttempt": {"id": "disconnect-attempt", "legacyField": true}},
+            "attempts": [], "nodes": [], "effects": [], "attemptIds": [],
+            "requestIds": [], "inputEventIds": []
+        });
+        let attempt = json!({"id": "attempt-1", "legacyField": true});
+        let raw_run = run.to_string();
+        let raw_attempt = attempt.to_string();
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_runs(id, created, record) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["run-1", 1.0, raw_run],
+            )
+            .expect("stored run fixture");
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_attempts(id, run, record) VALUES (?1, ?2, ?3)",
+                rusqlite::params!["attempt-1", "run-1", raw_attempt],
+            )
+            .expect("stored attempt fixture");
+
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
+        let mut response = json!({
+            "executions": studio_runtime_services::diagnostics::execution_ledger(&connection)
+                .expect("read-only execution projection")
+        });
+        strip_diagnostics_execution_extras(&registry, &mut response);
+        assert!(registry.validate_stored("ExecutionLedger", &response["executions"]));
+        assert!(
+            response["executions"]["runs"][0]["attempts"][0]
+                .get("legacyField")
+                .is_none()
+        );
+        assert!(
+            response["executions"]["runs"][0]["restartRecovery"]["startAttempt"]
+                .get("legacyField")
+                .is_none()
+        );
+        assert!(
+            response["executions"]["runs"][0]["disconnectRecovery"]["startAttempt"]
+                .get("legacyField")
+                .is_none()
+        );
+
+        let mut malformed_known_field = response["executions"].clone();
+        malformed_known_field["runs"][0]["attempts"][0]["epoch"] = json!("invalid");
+        assert!(!registry.validate_stored("ExecutionLedger", &malformed_known_field));
+
+        let stored_run: String = connection
+            .query_row(
+                "SELECT record FROM runtime_execution_runs WHERE id='run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read persisted run after projection");
+        let stored_attempt: String = connection
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='attempt-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read persisted attempt after projection");
+        assert_eq!(stored_run, run.to_string());
+        assert_eq!(stored_attempt, attempt.to_string());
+    }
 
     #[test]
     fn diagnostics_redacts_free_form_errors_and_results_without_dropping_ids() {
@@ -572,32 +795,13 @@ mod diagnostics_http_tests {
             .expect("bounded diagnostics response");
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let value: Value = serde_json::from_slice(&body).expect("JSON diagnostics response");
-        let expected_fields = [
-            "at",
-            "processTree",
-            "hostResources",
-            "resourceAttribution",
-            "nativeAccounts",
-            "studioLoadedThreads",
-            "queues",
-            "runtimeLockSamples",
-            "executions",
-            "sqliteContention",
-            "httpRequestMetrics",
-            "analyticsCapture",
-            "migrations",
-            "searchMigrationError",
-            "runtimeLockOperations",
-            "supervisor",
-            "blockingPoolMetrics",
-        ];
         assert_eq!(
             value.as_object().map(|fields| fields.len()),
-            Some(expected_fields.len())
+            Some(DIAGNOSTICS_RESPONSE_FIELDS.len())
         );
-        for field in expected_fields {
+        for field in DIAGNOSTICS_RESPONSE_FIELDS {
             assert!(
-                value.get(field).is_some(),
+                value.get(*field).is_some(),
                 "missing Python response field {field}"
             );
         }

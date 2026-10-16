@@ -22,6 +22,18 @@ pub fn auth_metadata_from_output(stdout: &[u8], succeeded: bool) -> AuthMetadata
     parse_claude_status(stdout, succeeded)
 }
 
+/// Parse an auth-status child result, distinguishing a conclusive provider
+/// response from timeout, EOF, cancellation, failed exit, or invalid JSON.
+pub(crate) fn auth_status_probe_from_output(
+    stdout: &[u8],
+    exited_successfully: Option<bool>,
+) -> (AuthMetadata, bool) {
+    match exited_successfully {
+        Some(succeeded) => super::parse_claude_status_with_outcome(stdout, succeeded),
+        None => (auth_metadata_from_output(stdout, false), false),
+    }
+}
+
 impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Saved identity only; the sign-in path must not block on a native probe.
     pub fn claude_profile(&self, key: &str) -> Result<Value, ClaudeAccountError> {

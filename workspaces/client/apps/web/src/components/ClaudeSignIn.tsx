@@ -1,9 +1,16 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
+import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
+import { ClaudeAuthorizationCodeForm } from "./ClaudeAuthorizationCodeForm";
+import {
+  codeSubmissionNotApplied,
+  codeSubmissionResolved,
+  codeVerificationPending,
+  currentClaudeLoginReadMatches,
+} from "./claudeCodeSubmission";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
@@ -49,23 +56,42 @@ export default function ClaudeSignIn({
   const [requestId, setRequestId] = useState(() =>
     saved<string>(storageKey, ""),
   );
+  const uncertaintyKey = `${storageKey}:code-submission-uncertain`;
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [copied, setCopied] = useState(false);
+  const [codeSubmissionUncertain, setCodeSubmissionUncertain] = useState(() =>
+    saved<boolean>(uncertaintyKey, false),
+  );
   const lock = useRef(false);
+  const preflightRejected = useRef(false);
   const refreshed = useRef("");
-  const recoveredRequest = useRef(requestId);
+  const currentRequestId = useRef(requestId);
+  const statusReadGeneration = useRef(0);
+  const refreshStatus = useRef<() => void>(() => {});
   const ready = useRef(onReady);
   ready.current = onReady;
-  const store = (result: Receipt, id: string) => {
+  const setCodeSubmissionUnknown = (value: boolean) => {
+    save(uncertaintyKey, value);
+    setCodeSubmissionUncertain(value);
+  };
+  const store = (result: Receipt, id: string, fromStatusRead = false) => {
     if (result.requestId !== id || result.accountKey !== account.id)
       throw new Error(
         "The sign-in response belongs to another account or request.",
       );
     setReceipt(result);
-    setError("");
+    if (
+      !fromStatusRead ||
+      result.status !== "pending" ||
+      result.codeSubmitted === true
+    ) {
+      preflightRejected.current = false;
+      setError("");
+    }
+    if (codeSubmissionResolved(result)) setCodeSubmissionUnknown(false);
     if (result.status === "ready" && refreshed.current !== id) {
       refreshed.current = id;
       void Promise.resolve(ready.current()).catch((failure) =>
@@ -74,31 +100,58 @@ export default function ClaudeSignIn({
     }
   };
   useEffect(() => {
-    if (!requestId || !active(receipt)) return;
+    if (!requestId || !active(receipt) || busy) return;
     let live = true;
-    const watch = watchResourceReads(
-      { kind: "accounts" },
-      async () => {
+    const readStatus = async () => {
+      if (lock.current) return;
+      const readGeneration = statusReadGeneration.current;
+      const id = requestId;
+      try {
         const result = await get("/api/accounts/claude/login", {
-          query: { request_id: requestId },
+          query: { request_id: id },
         });
-        if (live) store(result, requestId);
-      },
+        if (
+          !live ||
+          lock.current ||
+          !currentClaudeLoginReadMatches(
+            currentRequestId.current,
+            id,
+            result.requestId,
+            statusReadGeneration.current,
+            readGeneration,
+          )
+        )
+          return;
+        store(result, id, true);
+      } catch (failure) {
+        if (
+          live &&
+          !lock.current &&
+          currentRequestId.current === id &&
+          statusReadGeneration.current === readGeneration
+        )
+          throw failure;
+      }
+    };
+    const stop = watchResourceReads(
+      { kind: "accounts" },
+      readStatus,
       (failure) => {
         if (live) setError(errorText(failure));
       },
     );
-    if (recoveredRequest.current === requestId) {
-      recoveredRequest.current = "";
-      watch.refresh();
-    }
+    const refresh = stop.refresh;
+    refreshStatus.current = refresh;
+    refresh();
     return () => {
       live = false;
-      watch();
+      stop();
+      if (refreshStatus.current === refresh) refreshStatus.current = () => {};
     };
-  }, [requestId, receipt?.status, watchResourceReads]);
+  }, [busy, requestId, receipt?.status, watchResourceReads]);
   const run = async (action: LoginAction) => {
     if (lock.current) return;
+    statusReadGeneration.current += 1;
     lock.current = true;
     setBusy(action);
     setError("");
@@ -108,11 +161,18 @@ export default function ClaudeSignIn({
           ? crypto.randomUUID()
           : requestId;
       if (action === "start") {
+        if (id !== requestId) {
+          setCodeSubmissionUnknown(false);
+          preflightRejected.current = false;
+        }
         save(storageKey, id);
         setRequestId(id);
+        currentRequestId.current = id;
         setReceipt(null);
       }
       const submittedCode = code.trim();
+      if (action === "code") preflightRejected.current = false;
+      if (action === "code") setCodeSubmissionUnknown(true);
       const mutationKey = `${storageKey}:${id}:${action}`;
       const requestOptions = {
         timeoutMs: 30000,
@@ -137,9 +197,22 @@ export default function ClaudeSignIn({
                 requestOptions,
               );
       clearStableRequestId(mutationKey);
-      if (action === "code") setCode("");
+      if (action === "code") {
+        setCode("");
+        setCodeSubmissionUnknown(!codeSubmissionResolved(result));
+      }
       store(result, id);
     } catch (failure) {
+      if (action === "code") {
+        if (codeSubmissionNotApplied(failure)) {
+          setCodeSubmissionUnknown(false);
+          preflightRejected.current = true;
+        } else {
+          setCodeSubmissionUnknown(true);
+          preflightRejected.current = false;
+          setCode("");
+        }
+      }
       setError(errorText(failure));
     } finally {
       lock.current = false;
@@ -170,9 +243,13 @@ export default function ClaudeSignIn({
           <>
             {pending && (
               <p role="status">
-                {receipt?.status === "pending"
-                  ? "Complete sign-in in your browser."
-                  : "Waiting for the sign-in request."}
+                {codeSubmissionUncertain
+                  ? "Studio could not confirm whether Claude received the authorization response. Check sign-in status or cancel this request; do not submit it again."
+                  : codeVerificationPending(receipt)
+                    ? "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again."
+                    : receipt?.status === "pending"
+                      ? "Complete sign-in in your browser."
+                      : "Waiting for the sign-in request."}
               </p>
             )}
             {url && (
@@ -206,45 +283,54 @@ export default function ClaudeSignIn({
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in URL.</p>
             )}
-            {receipt?.status === "pending" && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void run("code");
-                }}
-              >
-                <Stack gap="sm">
-                  <TextInput
-                    label="Authorization code"
-                    description="Paste the code if Claude asks you to return it here."
-                    type="password"
-                    autoComplete="off"
-                    value={code}
-                    onChange={(event) => setCode(event.currentTarget.value)}
-                    disabled={!!busy}
-                  />
-                  <Button
-                    type="submit"
-                    disabled={!code.trim() || !!busy}
-                    loading={busy === "code"}
-                  >
-                    Submit code
-                  </Button>
-                </Stack>
-              </form>
-            )}
+            {receipt?.status === "pending" &&
+              !codeVerificationPending(receipt) &&
+              !codeSubmissionUncertain && (
+                <ClaudeAuthorizationCodeForm
+                  value={code}
+                  onChange={(value) => {
+                    setCode(value);
+                    if (preflightRejected.current) {
+                      preflightRejected.current = false;
+                      setError("");
+                    }
+                  }}
+                  onSubmit={() => void run("code")}
+                  disabled={!!busy}
+                  loading={busy === "code"}
+                  submitLabel="Submit authorization response"
+                />
+              )}
             {receipt?.status === "cancelled" && (
               <p role="status">Sign-in cancelled.</p>
             )}
             <Group>
-              <Button
-                onClick={() => void run("start")}
-                disabled={!!busy || (!!receipt && active(receipt))}
-                loading={busy === "start"}
-              >
-                {pending ? "Check sign-in request" : "Start sign-in"}
-              </Button>
-              {pending && (
+              {!requestId ? (
+                <Button
+                  onClick={() => void run("start")}
+                  disabled={!!busy}
+                  loading={busy === "start"}
+                >
+                  Start sign-in
+                </Button>
+              ) : pending ? (
+                <Button
+                  onClick={() => refreshStatus.current()}
+                  disabled={!!busy}
+                >
+                  Check sign-in status
+                </Button>
+              ) : null}
+              {requestId && !receipt && !codeSubmissionUncertain && (
+                <Button
+                  onClick={() => void run("start")}
+                  disabled={!!busy}
+                  loading={busy === "start"}
+                >
+                  Retry sign-in
+                </Button>
+              )}
+              {pending && requestId && (
                 <Button
                   variant="subtle"
                   disabled={!!busy}
@@ -261,6 +347,11 @@ export default function ClaudeSignIn({
           <p role="alert">{error || errorText(receipt?.error)}</p>
         )}
         {receipt?.status === "ready" && (
+          <Button disabled={!!busy} onClick={() => void run("start")}>
+            Start new sign-in
+          </Button>
+        )}
+        {(receipt?.status === "error" || receipt?.status === "cancelled") && (
           <Button disabled={!!busy} onClick={() => void run("start")}>
             Start new sign-in
           </Button>

@@ -344,6 +344,8 @@ where
 }
 
 fn same_selected_account(selected: &Value, current: &Value) -> bool {
+    let selected = claude_auth_wait::account_pin(selected);
+    let current = claude_auth_wait::account_pin(current);
     [
         "id",
         "provider",
@@ -523,8 +525,9 @@ pub fn confirm_account_read(account_pin: &Value, proof: &Value) -> Result<Value>
 
 #[cfg(test)]
 mod tests {
-    use super::confirm_account_read;
-    use serde_json::json;
+    use super::{confirm_account_read, same_selected_account};
+    use crate::claude_auth_wait;
+    use serde_json::{Value, json};
 
     #[test]
     fn account_read_requires_the_pinned_first_party_subscription_identity() {
@@ -539,5 +542,62 @@ mod tests {
         let wrong =
             json!({"account":{"type":"claude","email":"other@example.test","planType":"max"}});
         assert!(confirm_account_read(&pin, &wrong).is_err());
+    }
+
+    #[test]
+    fn selected_account_comparison_normalizes_missing_optional_fields() {
+        let current = json!({
+            "id": "claude-local",
+            "provider": "claude",
+            "home": "/fixture/claude",
+            "accountId": "claude:fixture@example.test",
+            "_credentialIdentity": "claude:fixture@example.test"
+        });
+        let selected_pin = claude_auth_wait::account_pin(&current);
+
+        assert_eq!(selected_pin["claudeOptions"], Value::Null);
+        assert!(same_selected_account(&selected_pin, &current));
+
+        let explicit_null = json!({
+            "id": "claude-local",
+            "provider": "claude",
+            "home": "/fixture/claude",
+            "claudeOptions": null,
+            "accountId": "claude:fixture@example.test",
+            "_credentialIdentity": "claude:fixture@example.test"
+        });
+        assert!(same_selected_account(&current, &explicit_null));
+        assert!(same_selected_account(&explicit_null, &current));
+    }
+
+    #[test]
+    fn selected_account_comparison_rejects_identity_and_profile_changes() {
+        let current = json!({
+            "id": "claude-local",
+            "provider": "claude",
+            "home": "/fixture/claude",
+            "claudeOptions": {"binaryPath": "/fixture/claude-bin"},
+            "accountId": "claude:fixture@example.test",
+            "_credentialIdentity": "claude:fixture@example.test"
+        });
+        let selected_pin = claude_auth_wait::account_pin(&current);
+        for (field, changed) in [
+            ("id", json!("other-profile")),
+            ("provider", json!("codex")),
+            ("home", json!("/fixture/other-home")),
+            (
+                "claudeOptions",
+                json!({"binaryPath": "/fixture/other-claude-bin"}),
+            ),
+            ("accountId", json!("claude:other@example.test")),
+            ("_credentialIdentity", json!("claude:other@example.test")),
+        ] {
+            let mut changed_profile = current.clone();
+            changed_profile[field] = changed;
+            assert!(
+                !same_selected_account(&selected_pin, &changed_profile),
+                "changed {field} must invalidate the retained account pin"
+            );
+        }
     }
 }

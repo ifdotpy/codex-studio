@@ -298,7 +298,7 @@ async fn compare_claude(expected: &Value, adding: bool) {
     let code = if adding {
         Some(
             service
-                .code(id, "fixture-code".into())
+                .code(id, "fixture-code#fixture-state".into())
                 .await
                 .expect("Claude code"),
         )
@@ -316,7 +316,7 @@ async fn compare_claude(expected: &Value, adding: bool) {
         .await;
     let final_replay = final_replay.expect("Claude replay with same request content");
     let expected_writes = if adding {
-        vec![b"fixture-code\n".to_vec()]
+        vec![b"fixture-code#fixture-state\n".to_vec()]
     } else {
         Vec::new()
     };

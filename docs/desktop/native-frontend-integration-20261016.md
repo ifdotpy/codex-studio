@@ -137,3 +137,14 @@ All three type-check stages passed. The full run took 1,311.485 seconds with fou
 server and Rust workers. The prior three deadline failures completed in 44.88,
 23.78 and 18.34 seconds. Strict runtime typing separately passed all 369 files.
 The only subsequent candidate edit before recording the merge is this result.
+
+Before publication, main advanced to `471ae6674` with 14 commits. The lead
+reviewed the overlapping native integration boundaries again. Exact-ID chat
+confirmation now runs inside the owning server's creation store before UI work;
+the regression covers equal request IDs on two servers and mismatched replies.
+Claude sign-in retains main's explicit not-applied/unknown distinction and read
+generation guards, using owner-scoped API calls and event subscriptions. Saved
+add-account flow recovery now also reads and migrates through that same owner's
+storage. The two independently added free-space ports were consolidated without
+changing the production probe; both low-capacity regressions remain. The combined
+candidate requires a new complete fast gate before publication.

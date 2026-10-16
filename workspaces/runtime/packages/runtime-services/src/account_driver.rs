@@ -18,6 +18,8 @@ use process_wrap::std::ChildWrapper;
 use process_wrap::std::CommandWrap;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
@@ -508,35 +510,122 @@ fn configure_claude_status_command(command: &mut Command, options: Option<&Value
         .stderr(Stdio::null());
 }
 
-fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
-    let Ok(value) = serde_json::from_slice::<Value>(stdout) else {
-        return AuthMetadata::error(Some("parser"));
-    };
-    if !value.is_object() {
-        return AuthMetadata::error(Some("parser"));
+#[derive(Default)]
+struct ClaudeStatusOutput {
+    logged_in: Option<bool>,
+    auth_method: Option<String>,
+    email: Option<String>,
+    subscription_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Lenient<T> {
+    Expected(T),
+    Other(IgnoredAny),
+}
+
+fn lenient_value<T>(value: Lenient<T>) -> Option<T> {
+    match value {
+        Lenient::Expected(value) => Some(value),
+        Lenient::Other(_) => None,
     }
-    if !succeeded
-        || value.get("loggedIn").and_then(Value::as_bool) != Some(true)
-        || value.get("authMethod").and_then(Value::as_str) != Some("claude.ai")
+}
+
+impl<'de> Deserialize<'de> for ClaudeStatusOutput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
     {
-        return AuthMetadata::signed_out();
+        struct ClaudeStatusVisitor;
+        impl<'de> Visitor<'de> for ClaudeStatusVisitor {
+            type Value = ClaudeStatusOutput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a Claude auth status object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut value = ClaudeStatusOutput::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "loggedIn" => {
+                            value.logged_in = lenient_value(map.next_value::<Lenient<bool>>()?);
+                        }
+                        "authMethod" => {
+                            value.auth_method = lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
+                        "email" => {
+                            value.email = lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
+                        "subscriptionType" => {
+                            value.subscription_type =
+                                lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
+                        _ => {
+                            let _ignored = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(value)
+            }
+        }
+        deserializer.deserialize_map(ClaudeStatusVisitor)
     }
-    let Some(email) = value.get("email").and_then(nonempty_str) else {
-        return AuthMetadata::error(Some("parser"));
+}
+
+fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
+    parse_claude_status_with_outcome(stdout, succeeded).0
+}
+
+/// Parse the native status result and report whether it is conclusive enough
+/// to tell the user that Claude rejected the completed sign-in.
+pub(crate) fn parse_claude_status_with_outcome(
+    stdout: &[u8],
+    succeeded: bool,
+) -> (AuthMetadata, bool) {
+    let Ok(value) = serde_json::from_slice::<ClaudeStatusOutput>(stdout) else {
+        return (AuthMetadata::error(Some("parser")), false);
     };
-    let account_id = format!("claude:{email}");
-    AuthMetadata {
-        status: AuthStatus::Ready,
-        account_id: Some(account_id.clone()),
-        email: Some(email.to_owned()),
-        plan: value
-            .get("subscriptionType")
-            .and_then(nonempty_str)
-            .map(str::to_owned),
-        credential_identity: Some(account_id),
-        error: None,
-        error_kind: None,
-    }
+    let metadata = if !succeeded
+        || value.logged_in != Some(true)
+        || value.auth_method.as_deref() != Some("claude.ai")
+    {
+        AuthMetadata::signed_out()
+    } else {
+        let Some(email) = value.email.as_deref().filter(|email| !email.is_empty()) else {
+            return (AuthMetadata::error(Some("parser")), false);
+        };
+        let account_id = format!("claude:{email}");
+        AuthMetadata {
+            status: AuthStatus::Ready,
+            account_id: Some(account_id.clone()),
+            email: Some(email.to_owned()),
+            plan: value.subscription_type.filter(|plan| !plan.is_empty()),
+            credential_identity: Some(account_id),
+            error: None,
+            error_kind: None,
+        }
+    };
+    let conclusive = if !succeeded || metadata.status == AuthStatus::Error {
+        false
+    } else {
+        match value.logged_in {
+            Some(false) => true,
+            Some(true) => value
+                .auth_method
+                .as_deref()
+                .filter(|method| !method.is_empty())
+                .is_some_and(|method| {
+                    method != "claude.ai" || metadata.status == AuthStatus::Ready
+                }),
+            None => false,
+        }
+    };
+    (metadata, conclusive)
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -2776,6 +2865,76 @@ print(store.path)
             let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
             assert_eq!(metadata.status, AuthStatus::Ready);
         }
+    }
+
+    #[test]
+    fn auth_status_probe_marks_only_successful_parseable_results_conclusive() {
+        use AuthStatus::{Ready, SignedOut};
+
+        let cases = [
+            (None, br#"{"loggedIn":false}"#.as_slice(), SignedOut, false),
+            (
+                Some(false),
+                br#"{"loggedIn":false}"#.as_slice(),
+                SignedOut,
+                false,
+            ),
+            (Some(true), b"not-json".as_slice(), AuthStatus::Error, false),
+            (Some(true), b"{}".as_slice(), SignedOut, false),
+            (
+                Some(true),
+                br#"{"loggedIn":1}"#.as_slice(),
+                SignedOut,
+                false,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":true}"#.as_slice(),
+                SignedOut,
+                false,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":true,"authMethod":7}"#.as_slice(),
+                SignedOut,
+                false,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":true,"authMethod":"claude.ai","email":7}"#.as_slice(),
+                AuthStatus::Error,
+                false,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":false,"futureProviderField":{"value":1}}"#.as_slice(),
+                SignedOut,
+                true,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":true,"loggedIn":false}"#.as_slice(),
+                SignedOut,
+                true,
+            ),
+            (
+                Some(true),
+                br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test"}"#
+                    .as_slice(),
+                Ready,
+                true,
+            ),
+        ];
+        for (exit, output, status, conclusive) in cases {
+            let (metadata, actual_conclusive) = claude::auth_status_probe_from_output(output, exit);
+            assert_eq!(metadata.status, status);
+            assert_eq!(actual_conclusive, conclusive);
+        }
+        assert_eq!(parse_claude_status(b"{}", true).status, SignedOut);
+        assert_eq!(
+            parse_claude_status(br#"{"loggedIn":true}"#, true).status,
+            SignedOut
+        );
     }
 
     #[test]

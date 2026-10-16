@@ -1419,6 +1419,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn monitor_waits_idle_and_a_pre_wait_wake_is_not_lost() {
         let (_root, store, port) = fixture();
+        // Exclude receipt-directory creation from the monitor's native startup watch.
+        std::fs::create_dir_all(store.root().join("monitor-results"))
+            .expect("prepare receipt watch directory before monitor startup");
         let runtime = Arc::new(MonitorRuntime::new(
             store,
             port.clone(),
@@ -1428,7 +1431,8 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 2).await;
-        wait_for_cycles(&runtime, 1).await;
+        wait_for_completed_ticks(&runtime, 2).await;
+        wait_for_cycles(&runtime, 2).await;
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         let reads = runtime.loop_activity.deadline_reads.load(Ordering::SeqCst);
         tokio::time::advance(Duration::from_secs(3600)).await;

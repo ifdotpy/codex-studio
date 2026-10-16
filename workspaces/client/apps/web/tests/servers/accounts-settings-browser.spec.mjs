@@ -331,7 +331,9 @@ test("accounts settings show per-server state and provider choices", async ({
   await claudeSignIn
     .getByRole("button", { name: "Retry sign-in", exact: true })
     .click();
-  await expect(claudeSignIn.getByLabel("Paste code")).toBeVisible();
+  await expect(
+    claudeSignIn.getByLabel("Final authorization response"),
+  ).toBeVisible();
   expect(addStarts[1]?.loginId).toBe(addStarts[0]?.loginId);
   expect(addStarts[1]?.requestId).toBe(addStarts[0]?.requestId);
   await expect(
@@ -352,15 +354,122 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-claude-signin-mobile.png"),
   });
   await page.setViewportSize({ width: 1280, height: 1100 });
+  let codeWasSubmitted = false;
+  let statusConfirmsCodeSubmission = false;
+  let verificationReady = false;
+  let finalStatusBarrier;
+  const loginRequestId = addStarts[0]?.loginId;
+  const codeAttempts = [];
+  await page.route("**/api/accounts/claude/login/code", async (route) => {
+    const request = route.request();
+    codeAttempts.push({
+      body: request.postDataJSON(),
+      requestId: request.headers()["x-studio-request-id"],
+    });
+    if (codeAttempts.length === 1) {
+      return route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error:
+            "Paste the full authorization response from Claude after sign-in, with the code and state separated by #. Complete any email verification on Claude's sign-in page first.",
+          outcome: "not_applied",
+        }),
+      });
+    }
+    await route.fetch();
+    codeWasSubmitted = true;
+    await route.abort();
+  });
+  await page.route("**/api/accounts/claude/login?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      !codeWasSubmitted ||
+      url.searchParams.get("request_id") !== loginRequestId
+    )
+      return route.continue();
+    await finalStatusBarrier;
+    await route.fulfill({
+      json: {
+        requestId: loginRequestId,
+        accountKey: loginRequestId,
+        status: verificationReady ? "ready" : "pending",
+        codeSubmitted: statusConfirmsCodeSubmission,
+        email: "new@example.test",
+        plan: "Max",
+      },
+    });
+  });
   const submittedCode = "FAKE-CLAUDE-CODE#FAKE-STATE";
-  await claudeSignIn.getByLabel("Paste code").fill(submittedCode);
-  const codeResponse = waitForPost(
+  await claudeSignIn.getByLabel("Final authorization response").fill("123456");
+  const rejectedEmailCode = waitForPost(
     page,
     "/api/accounts/claude/login/code",
-    (body) => body.code === submittedCode,
+    (body) => body.code === "123456",
   );
-  await claudeSignIn.getByRole("button", { name: "Finish sign-in" }).click();
-  expect((await codeResponse).ok()).toBe(true);
+  await claudeSignIn
+    .getByRole("button", { name: "Submit authorization response" })
+    .click();
+  expect((await rejectedEmailCode).ok()).toBe(false);
+  await expect(
+    claudeSignIn.getByLabel("Final authorization response"),
+  ).toHaveValue("123456");
+  await expect(claudeSignIn).toContainText(
+    "Complete any email verification on Claude's sign-in page first.",
+  );
+  await claudeSignIn
+    .getByLabel("Final authorization response")
+    .fill(submittedCode);
+  const lostCodeResponse = page.waitForEvent("requestfailed", (request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/accounts/claude/login/code" &&
+      request.method() === "POST" &&
+      request.postDataJSON().code === submittedCode
+    );
+  });
+  await claudeSignIn
+    .getByRole("button", { name: "Submit authorization response" })
+    .click();
+  await lostCodeResponse;
+  expect(codeAttempts).toHaveLength(2);
+  expect(codeAttempts[0].body.login_id).toBe(codeAttempts[1].body.login_id);
+  expect(codeAttempts[0].requestId).toBe(codeAttempts[1].requestId);
+  await expect(claudeSignIn).toContainText(
+    "Studio could not confirm whether Claude received the authorization response.",
+  );
+  await expect(
+    claudeSignIn.getByLabel("Final authorization response"),
+  ).toBeHidden();
+  const checkStatus = claudeSignIn.getByRole("button", {
+    name: "Check sign-in status",
+  });
+  await expect(checkStatus).toBeVisible();
+  await checkStatus.click();
+  await expect(claudeSignIn).toContainText(
+    "Studio could not confirm whether Claude received the authorization response.",
+  );
+  await expect(
+    claudeSignIn.getByLabel("Final authorization response"),
+  ).toBeHidden();
+  expect(codeAttempts).toHaveLength(2);
+  statusConfirmsCodeSubmission = true;
+  await checkStatus.click();
+  await expect(claudeSignIn).toContainText(
+    "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again.",
+  );
+  // An account event may schedule a read while Playwright waits for the button
+  // to settle. Keep that read pending until the manual refresh is dispatched.
+  let releaseFinalStatus;
+  finalStatusBarrier = new Promise((resolve) => {
+    releaseFinalStatus = resolve;
+  });
+  try {
+    await checkStatus.click();
+    verificationReady = true;
+  } finally {
+    releaseFinalStatus();
+  }
   await expect(claudeSignIn).toContainText("Signed in as new@example.test");
   expect(remote.accountWrites).toEqual(
     expect.arrayContaining([

@@ -44,6 +44,16 @@ export function createChatCreationStore(localStorage: Storage) {
     if (legacy?.id === id) localStorage.removeItem(key);
   }
 
+  function confirmChatCreationResponse(
+    key: string,
+    requestId: string,
+    responseId: string,
+  ): boolean {
+    if (requestId !== responseId) return false;
+    confirmChatCreation(key, requestId);
+    return true;
+  }
+
   function rejectChatCreation(key: string, id: string, reason: string): void {
     const request = pendingChatCreations(key).find((item) => item.id === id);
     if (!request) return;
@@ -59,6 +69,7 @@ export function createChatCreationStore(localStorage: Storage) {
     pendingChatCreations,
     saveChatCreation,
     confirmChatCreation,
+    confirmChatCreationResponse,
     rejectChatCreation,
   };
 }
@@ -67,5 +78,6 @@ export const {
   pendingChatCreations,
   saveChatCreation,
   confirmChatCreation,
+  confirmChatCreationResponse,
   rejectChatCreation,
 } = createChatCreationStore(serverLocalStorage);

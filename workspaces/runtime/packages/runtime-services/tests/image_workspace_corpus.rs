@@ -34,10 +34,6 @@ impl ScriptedBackend {
 }
 
 impl WorkspaceBackend for ScriptedBackend {
-    fn available_bytes(&self, _: &Path) -> Result<u64, ImageWorkspaceError> {
-        Ok(u64::MAX)
-    }
-
     fn supported(&self, _root: &Path) -> Result<(), ImageWorkspaceError> {
         Ok(())
     }
@@ -149,6 +145,10 @@ impl WorkspaceBackend for ScriptedBackend {
 
     fn private_bytes(&self, _path: &Path) -> Result<Option<u64>, ImageWorkspaceError> {
         Ok(Some(0))
+    }
+
+    fn available_bytes(&self, _path: &Path) -> Result<u64, ImageWorkspaceError> {
+        Ok(u64::MAX)
     }
 
     fn exec_prefix(&self) -> Vec<String> {

@@ -57,7 +57,15 @@ it("keeps requests and synchronous drafts with their owner despite matching keys
   const b = createChatCreationStore(storage("b"));
   a.saveChatCreation("same-key", { id: "same-request", project: "a" });
   b.saveChatCreation("same-key", { id: "same-request", project: "b" });
-  b.confirmChatCreation("same-key", "same-request");
+  expect(
+    b.confirmChatCreationResponse("same-key", "same-request", "other"),
+  ).toBe(false);
+  expect(b.pendingChatCreations("same-key")).toEqual([
+    { id: "same-request", project: "b" },
+  ]);
+  expect(
+    b.confirmChatCreationResponse("same-key", "same-request", "same-request"),
+  ).toBe(true);
   expect(a.pendingChatCreations("same-key")).toEqual([
     { id: "same-request", project: "a" },
   ]);

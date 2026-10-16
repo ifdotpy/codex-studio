@@ -33,8 +33,11 @@ Style: match the accepted Settings > Servers style (existing ActionButton, Setti
 ## Claude sign-in (dialog)
 
 - Title "Sign in to Claude · <name>" (+ server).
-- Step 1: Open sign-in page (Open, Copy link); hint "Sign in as <email>".
-- Step 2: paste code field (accepts code#state). Cancel / Finish sign-in.
+- Step 1: Open the Claude sign-in page (Open, Copy link); hint "Sign in as <email>". Complete any email verification on that page; do not paste the email verification code into Studio.
+- Step 2: paste the final authorization response shown by Claude, with the code and state separated by `#`.
+- A typed `not_applied` response means the code was not submitted. Keep the entered response and the same sign-in and mutation identities so the user can correct it and retry.
+- If the POST response is lost or its outcome is unknown, keep the response submission locked. Offer manual status checking and cancel; do not replay the code automatically or start another sign-in silently. A `pending` status without confirmation of code submission does not resolve the uncertainty. A confirmed terminal result or cancellation permits a new sign-in.
+- The code is not stored in the local flow journal. The submitted response remains available for correction only after `not_applied`.
 
 ## Errors
 

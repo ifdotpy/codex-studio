@@ -6,7 +6,7 @@ use super::{
     update_common_agent_fields,
 };
 use super::{items, notices, questions};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, NotificationDispatchRepository, PlanRecord, StoreError, Table, TaskId, TaskRecord,
@@ -333,7 +333,7 @@ pub(super) fn put_task(
     task: &Value,
 ) -> Result<(), NotificationDispatchError> {
     checked("runtime_tasks", task)?;
-    Table::<TaskRecord>::new(tx).put(&TaskRecord::from_value(task.clone())?)?;
+    let task_record = TaskRecord::from_value(task.clone())?;
     let migrated: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated')",
@@ -341,8 +341,34 @@ pub(super) fn put_task(
             |r| r.get(0),
         )
         .map_err(StoreError::from)?;
+    let previous = if migrated {
+        let task_id = task_record
+            .value()
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        let previous_raw: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_tasks WHERE id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StoreError::from)?;
+        previous_raw
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .filter(|previous| checked("runtime_tasks", previous).is_ok())
+    } else {
+        None
+    };
+    Table::<TaskRecord>::new(tx).put(&task_record)?;
     if migrated {
-        crate::sync_policy::maintain_task_window(tx, &|_, _, _, _| true)?;
+        crate::sync_policy::maintain_task_window_after_write(
+            tx,
+            previous.as_ref(),
+            task,
+            &|_, _, _, _| true,
+        )?;
     }
     Ok(())
 }

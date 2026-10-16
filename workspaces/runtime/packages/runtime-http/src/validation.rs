@@ -125,6 +125,7 @@ impl Registry {
             "ComplaintRecordResponse",
             "ConfigureResponse",
             "DiagnosticsResponse",
+            "ExecutionLedger",
             "ErrorResponse",
             "EdgeEntityDto",
             "EventEntityDto",
@@ -367,6 +368,10 @@ impl Registry {
             Some(method),
             path,
         )?;
+        self.match_template(method, template)
+    }
+
+    pub(crate) fn match_template(&self, method: &str, template: &str) -> Option<MatchedOperation> {
         let key = format!("{method} {template}");
         let operation = self.operations.get(&key)?;
         Some(MatchedOperation {
@@ -392,7 +397,23 @@ impl Registry {
         false
     }
 
-    #[cfg(test)]
+    pub(crate) fn first_stored_error(
+        &self,
+        schema: &str,
+        value: &Value,
+    ) -> Option<(String, String)> {
+        self.stored_schemas
+            .get(schema)?
+            .iter_errors(value)
+            .next()
+            .map(|error| {
+                (
+                    error.instance_path().to_string(),
+                    error.kind().keyword().to_owned(),
+                )
+            })
+    }
+
     pub(crate) fn strip_stored_extra_fields(&self, schema: &str, value: &mut Value) {
         if let Some(validator) = self.stored_schemas.get(schema) {
             studio_runtime_schema::strip_extra_fields_with_validator(validator, value);
