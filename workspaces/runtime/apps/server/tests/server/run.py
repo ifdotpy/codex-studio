@@ -947,6 +947,9 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment["XDG_CONFIG_HOME"] = str(temp_root / "config")
     environment["CODEX_HOME"] = str(temp_root / "codex-home")
     environment["CODEX_AGENTS_PYTHON"] = sys.executable
+    # Keep Python's fatal-signal traceback enabled in every isolated suite
+    # process, including native and extension-module crashes.
+    environment["PYTHONFAULTHANDLER"] = "1"
     # Prevent host Git settings and background index maintenance from changing
     # fixture repositories while another suite copies or fingerprints them.
     isolated_git_config = isolated_home / ".gitconfig"

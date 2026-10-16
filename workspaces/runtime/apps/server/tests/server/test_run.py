@@ -171,9 +171,11 @@ class ServerSuiteRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="server-git-config-") as directory:
             suite_root = Path(directory) / "suite"
             suite_root.mkdir()
-            environment = RUNNER._suite_environment(ROOT, suite_root)
+            with mock.patch.dict(os.environ, {"PYTHONFAULTHANDLER": "0"}):
+                environment = RUNNER._suite_environment(ROOT, suite_root)
 
             self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(environment["PYTHONFAULTHANDLER"], "1")
             global_config = Path(environment["GIT_CONFIG_GLOBAL"])
             self.assertEqual(global_config, Path(environment["HOME"]) / ".gitconfig")
             self.assertTrue(global_config.is_file())
