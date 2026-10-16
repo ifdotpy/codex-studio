@@ -1,4 +1,10 @@
 mod close;
+#[cfg(desktop)]
+mod desktop_menu;
+#[cfg(desktop)]
+mod desktop_recovery;
+#[cfg(desktop)]
+mod window_state;
 mod frame_assets;
 mod local_backend;
 #[cfg(feature = "native-check")]
@@ -477,6 +483,8 @@ pub fn run() {
             close::close_response
         ])
         .on_window_event(|window, event| {
+            #[cfg(desktop)]
+            window_state::event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" && close::request(window.app_handle()) {
                     api.prevent_close();
@@ -501,6 +509,12 @@ pub fn run() {
             #[cfg(feature = "native-check")]
             let directory = native_check::directory().unwrap_or(directory);
             app.manage(lock_profile(&directory)?);
+            #[cfg(desktop)]
+            desktop_menu::install(app)?;
+            #[cfg(desktop)]
+            if let Err(error) = desktop_recovery::install(app, &directory, hidden) {
+                eprintln!("Desktop recovery is unavailable: {error}");
+            }
             let handle = app.handle().clone();
             let mut navigation = studio_client_core::notifications::navigation().subscribe();
             tauri::async_runtime::spawn(async move {
@@ -520,6 +534,10 @@ pub fn run() {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("LAYR Studio")
+            // The renderer owns sidebar/queue reordering and file attachments.
+            // Tauri's native handler consumes drops before HTML5 can receive them.
+            .disable_drag_drop_handler()
+            .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
             .inner_size(1200.0, 800.0)
             .visible(!hidden);
             // Explicit test profiles never reuse the installed WebKit data store.
@@ -532,7 +550,12 @@ pub fn run() {
             let window = window.incognito(ephemeral);
             // Keep the installed default store. Explicit persistent profiles
             // must never fall back to that store or share another profile's IDB.
-            let custom_profile = std::env::var_os("CODEX_DESKTOP_PROFILE").is_some_and(|v| !v.is_empty());
+            // The recovery launcher passes the saved default path explicitly.
+            // Keep its original WebKit store instead of treating that restart as
+            // a new isolated profile.
+            let custom_profile = std::env::var_os("CODEX_DESKTOP_PROFILE").is_some_and(|v| !v.is_empty())
+                && !(std::env::args().any(|arg| arg == "--background-recovery")
+                    && directory == app.path().app_data_dir()?);
             let window = if custom_profile && !ephemeral {
                 window.data_store_identifier(studio_client_core::platform::webkit_profile_identifier(&directory)?)
             } else { window };
@@ -570,12 +593,19 @@ pub fn run() {
             } else { window };
             #[cfg(desktop)]
             let window = window.focused(!hidden);
-            window.build()?;
+            let window = window.build()?;
+            #[cfg(desktop)]
+            window_state::install(&window, &directory, hidden)?;
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("The native Studio host could not start")
         .run(|app, event| {
+            #[cfg(desktop)]
+            if matches!(event, tauri::RunEvent::Exit) {
+                window_state::flush(app);
+                desktop_recovery::close(app);
+            }
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = event

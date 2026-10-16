@@ -91,6 +91,16 @@ pub fn loaded(window: &tauri::Webview) {
         return;
     }
     eprintln!("Hidden native check: page loaded");
+    #[cfg(desktop)]
+    {
+        let menu = window.app_handle().menu().expect("Desktop menu must be installed");
+        for id in ["reload-workspace", "reset-zoom", "zoom-in", "zoom-out"] {
+            assert!(menu.items().unwrap().iter().any(|item| match item {
+                tauri::menu::MenuItemKind::Submenu(submenu) => submenu.get(id).is_some(),
+                _ => false,
+            }), "Missing desktop command: {id}");
+        }
+    }
     let mode = std::env::var("STUDIO_NATIVE_CHECK_MODE").unwrap_or_else(|_| "write".into());
     let script = format!(
         "window.__studioCheckMode = {};\n{}",

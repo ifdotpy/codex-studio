@@ -13,12 +13,8 @@ pub fn origin() -> Result<String, String> {
 }
 
 #[cfg(desktop)]
-pub async fn verify(
-    origin: &str,
-    resources: &std::path::Path,
-    allow_start: bool,
-) -> Result<(), String> {
-    let state =
+pub fn state_directory() -> Result<PathBuf, String> {
+    Ok(
         if let Some(value) = std::env::var_os("CODEX_AGENTS_STATE_DIR").filter(|v| !v.is_empty()) {
             PathBuf::from(value)
         } else {
@@ -30,7 +26,17 @@ pub async fn verify(
                         .join(".local/state")
                 };
             root.join("codex-agents")
-        };
+        },
+    )
+}
+
+#[cfg(desktop)]
+pub async fn verify(
+    origin: &str,
+    resources: &std::path::Path,
+    allow_start: bool,
+) -> Result<(), String> {
+    let state = state_directory()?;
     if allow_start {
         std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
     }

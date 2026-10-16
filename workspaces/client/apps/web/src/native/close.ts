@@ -117,8 +117,27 @@ export async function initializeNativeClose() {
   }
   const host = nativeHost();
   if (!host?.event) return;
+  await host.event.listen("studio-desktop-error", ({ payload }) => {
+    const value = payload as { message?: unknown };
+    if (typeof value.message !== "string") return;
+    document.getElementById("studio-desktop-error")?.remove();
+    const message = document.createElement("div");
+    message.id = "studio-desktop-error";
+    message.role = "alert";
+    message.style.cssText =
+      "position:fixed;inset:0 0 auto;z-index:2147483647;padding:16px;background:#7f1d1d;color:white";
+    message.textContent = value.message;
+    const dismiss = document.createElement("button");
+    dismiss.textContent = "Dismiss";
+    dismiss.onclick = () => message.remove();
+    message.append(dismiss);
+    document.body.append(message);
+  });
   await host.event.listen("studio-close-request", async ({ payload }) => {
-    const id = (payload as { id: number }).id;
+    const { id, action } = payload as {
+      id: number;
+      action?: "close" | "reload";
+    };
     const release = freeze();
     document.getElementById("studio-close-error")?.remove();
     try {
@@ -133,7 +152,7 @@ export async function initializeNativeClose() {
       message.role = "alert";
       message.style.cssText =
         "position:fixed;inset:0 0 auto;z-index:2147483647;padding:16px;background:#7f1d1d;color:white";
-      message.textContent = `The window is still open because changes may not be saved. ${String(error)}`;
+      message.textContent = `${action === "reload" ? "Reload was cancelled" : "The window is still open"} because changes may not be saved. ${String(error)}`;
       document.body.append(message);
       await host.core.invoke("close_response", { id, ready: false });
     }

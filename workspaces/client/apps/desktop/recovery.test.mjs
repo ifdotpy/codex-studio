@@ -66,6 +66,18 @@ test("only the installed Studio bundle can configure background recovery", async
   try {
     assert.equal(isInstalledApplication(data.applicationPath), true);
     assert.equal(
+      isInstalledApplication(
+        "/Applications/Codex Studio.app/Contents/MacOS/studio-native-client",
+      ),
+      true,
+    );
+    assert.equal(
+      isInstalledApplication(
+        "/tmp/Codex Studio.app/Contents/MacOS/studio-native-client",
+      ),
+      false,
+    );
+    assert.equal(
       isInstalledApplication(path.join(data.root, "Codex Studio.app/app.asar")),
       false,
     );

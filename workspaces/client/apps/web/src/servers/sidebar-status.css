@@ -14,12 +14,9 @@
   height: 11px;
 }
 .chat-server-alias {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 3ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .chat-server-offline-wrap {
   display: flex;
