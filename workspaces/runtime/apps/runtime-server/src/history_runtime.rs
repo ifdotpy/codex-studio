@@ -1028,7 +1028,7 @@ mod tests {
             "deletedAt": null
         }))
         .expect("typed recovery fixture agent");
-        let second_agent_id = second_agent.id().to_owned();
+        let second_agent_id = second_agent.id().as_ref().to_owned();
         store
             .transaction(|tx| Table::<AgentRecord>::new(tx).put(&second_agent))
             .expect("persist recovery fixture agent");

@@ -1026,7 +1026,6 @@ impl AccountRegistry {
         let mut stop = shutdown.subscribe();
         let mut retry_delay = RETRY_DELAY;
         let mut retry_at = Some(tokio::time::Instant::now());
-        let mut checkpoint_retry_at = None;
         let mut archive_deadline_retry_at = None;
         let mut last_reconcile_error: Option<String> = None;
         loop {
@@ -1049,6 +1048,7 @@ impl AccountRegistry {
                     } => Some(RegistryTrigger::Retry),
                 }
             };
+            let checkpoint_retry_at;
             match trigger {
                 Some(RegistryTrigger::WorkerExited(account, id))
                     if self.worker_completion_ids.get(&account) == Some(&id) =>

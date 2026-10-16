@@ -1865,7 +1865,9 @@ mod limits_runtime_tests {
             let gate = (call == 1).then(|| self.first_read_gate.clone()).flatten();
             Box::pin(async move {
                 if let Some(gate) = gate {
-                    drop(gate.entered.send(()));
+                    gate.entered
+                        .send(())
+                        .expect("the cold-read test receiver remains alive until entry");
                     let mut released = gate.released.lock().unwrap();
                     while !*released {
                         released = gate.wake.wait(released).unwrap();
@@ -2005,7 +2007,9 @@ mod limits_runtime_tests {
         let (started, started_rx) = mpsc::channel();
         let runtime = Arc::clone(&fixture.runtime);
         let second = thread::spawn(move || {
-            drop(started.send(()));
+            started
+                .send(())
+                .expect("the concurrency test receiver remains alive until the second read starts");
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
         });
         let second_started = started_rx.recv_timeout(Duration::from_secs(2));
