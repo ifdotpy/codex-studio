@@ -750,15 +750,16 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
     .await
     .expect("send only the active-session stop");
     assert_eq!(receipts.len(), 1);
-    let calls = provider.calls.lock().expect("provider call log");
-    assert_eq!(
-        calls.as_slice(),
-        &[(
-            format!("voice:delete-stop:{active_session}"),
-            Method::ThreadRealtimeStop,
-        )]
-    );
-    drop(calls);
+    {
+        let calls = provider.calls.lock().expect("provider call log");
+        assert_eq!(
+            calls.as_slice(),
+            &[(
+                format!("voice:delete-stop:{active_session}"),
+                Method::ThreadRealtimeStop,
+            )]
+        );
+    }
     let persisted = voice::provider::pending_delete_intents(&store)
         .await
         .expect("reload held uncertainty after sending active stop")

@@ -278,7 +278,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                 Err(certainty) => return VoiceRequestReceipt { certainty },
             };
             let certainty = match callbacks
-                .answer_on_live_session(&request_id, &reply.result, now, &context)
+                .answer_on_live_session(request_id, &reply.result, now, &context)
                 .await
             {
                 Ok(_) => VoiceWriteCertainty::Written,

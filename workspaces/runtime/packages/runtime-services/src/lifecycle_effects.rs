@@ -1353,14 +1353,15 @@ mod tests {
             request_interrupt(&broker, &request).await,
             InterruptWriteResult::NotSent
         );
-        let observed = broker.observed.lock().expect("observed request lock");
-        assert_eq!(
-            observed
-                .as_ref()
-                .and_then(|request| request.expected_scope.as_ref()),
-            Some(&request.scope)
-        );
-        drop(observed);
+        {
+            let observed = broker.observed.lock().expect("observed request lock");
+            assert_eq!(
+                observed
+                    .as_ref()
+                    .and_then(|request| request.expected_scope.as_ref()),
+                Some(&request.scope)
+            );
+        }
 
         let broker = Broker {
             scope: Some(request.scope.clone()),

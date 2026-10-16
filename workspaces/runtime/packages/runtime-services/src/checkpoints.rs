@@ -217,8 +217,6 @@ async fn capture_before_restore_inner(
     if let Some(existing) = existing {
         return Ok(checkpoint_summary(existing.record));
     }
-    let agent_id = agent_id;
-    let operation_id = operation_id;
     let git_agent_id = agent_id.clone();
     let git_checkpoint_id = checkpoint_id.clone();
     let git_cwd = cwd.clone();

@@ -330,11 +330,11 @@ impl Credentials {
         .map_err(|_| CredentialError::Storage)?
     }
 
-    async fn load<'a>(
+    async fn load(
         store: Arc<RuntimeStore>,
-        saved: &'a mut Option<StoredMultiServerIdentity>,
+        saved: &mut Option<StoredMultiServerIdentity>,
         #[cfg(test)] write_gate: Option<Arc<TestWriteGate>>,
-    ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
+    ) -> Result<&mut StoredMultiServerIdentity, CredentialError> {
         Self::load_with_notification(
             store,
             saved,

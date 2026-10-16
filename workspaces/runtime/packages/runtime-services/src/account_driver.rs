@@ -702,6 +702,12 @@ impl AccountChangeSignal {
     }
 }
 
+impl Default for AccountChangeSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegistryState {
     fn publish_profile_change(&mut self) {
         self.revision = self.revision.wrapping_add(1);

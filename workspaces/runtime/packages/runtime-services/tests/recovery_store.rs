@@ -13,6 +13,7 @@ use studio_runtime_services::{
     },
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
+    recovery_runtime::ObservationSource,
     recovery_store::{CompletionWriter, RecoveryStore},
     scheduler::lifecycle_transaction,
 };
@@ -601,14 +602,8 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
             stopped: Arc::clone(&stopped),
         };
         let current_observation = observation.clone();
-        let current: Arc<
-            dyn Fn(
-                    &ConnectionScope,
-                )
-                    -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                + Send
-                + Sync,
-        > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+        let current: Arc<ObservationSource> =
+            Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
         let mut effects = RecoveryStore {
             store: Arc::clone(&store),
             connection_current: Arc::new(|_| true),
@@ -687,14 +682,8 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             let observation: studio_runtime_services::recovery_absence::RecoveryObservation =
                 serde_json::from_value(case["observation"].clone()).expect("observation");
             let current_observation = observation.clone();
-            let current: Arc<
-                dyn Fn(
-                        &ConnectionScope,
-                    )
-                        -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+            let current: Arc<ObservationSource> =
+                Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
             let writer = HoldWriter::default();
             let result = RecoveryStore {
                 store: Arc::clone(&store),
@@ -771,14 +760,8 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             let observation: studio_runtime_services::recovery_absence::RecoveryObservation =
                 serde_json::from_value(case["observation"].clone()).expect("observation");
             let current_observation = observation.clone();
-            let current: Arc<
-                dyn Fn(
-                        &ConnectionScope,
-                    )
-                        -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+            let current: Arc<ObservationSource> =
+                Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
             let writer = HoldWriter::default();
             let result = RecoveryStore {
                 store: Arc::clone(&store),
@@ -968,14 +951,8 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             case["name"]
         );
         let current_observation = observation.clone();
-        let current: Arc<
-            dyn Fn(
-                    &ConnectionScope,
-                )
-                    -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                + Send
-                + Sync,
-        > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+        let current: Arc<ObservationSource> =
+            Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
         let mut first = observation.clone();
         first.quiet = case["options"]
             .get("quiet")
@@ -1076,14 +1053,8 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
             let observation: RecoveryObservation =
                 serde_json::from_value(case["observation"].clone()).expect("observation");
             let current_observation = observation.clone();
-            let current: Arc<
-                dyn Fn(
-                        &ConnectionScope,
-                    )
-                        -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+            let current: Arc<ObservationSource> =
+                Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
             let decision = if mode == "lost" {
                 TaskAbsenceDecision::Lost
             } else {
@@ -1141,14 +1112,8 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         if change == "connection" {
             current_observation.scope.generation += 1;
         }
-        let current: Arc<
-            dyn Fn(
-                    &ConnectionScope,
-                )
-                    -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-                + Send
-                + Sync,
-        > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+        let current: Arc<ObservationSource> =
+            Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
         TaskRecoveryStore {
             store: Arc::clone(&store),
             observation_current: current,
@@ -1191,14 +1156,8 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     let observation: RecoveryObservation =
         serde_json::from_value(case["observation"].clone()).expect("observation");
     let current_observation = observation.clone();
-    let current: Arc<
-        dyn Fn(
-                &ConnectionScope,
-            )
-                -> Option<studio_runtime_services::recovery_absence::RecoveryObservation>
-            + Send
-            + Sync,
-    > = Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
+    let current: Arc<ObservationSource> =
+        Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
     let hold = TaskAbsenceDecision::Hold {
         reason: "native-command-absence-unproved".into(),
     };

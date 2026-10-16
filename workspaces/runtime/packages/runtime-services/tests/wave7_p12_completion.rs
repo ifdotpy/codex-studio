@@ -614,16 +614,17 @@ async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_lat
     let wake_error =
         continuation_runtime::committed(&first, &wake).expect_err("all wake errors are aggregated");
     assert!(matches!(wake_error, ContinuationError::WakeFailures(ref errors) if errors.len() == 1));
-    let attempts = wake.0.lock().expect("wake attempts");
-    assert_eq!(
-        attempts.len(),
-        33,
-        "one failed wake does not stop later wakes"
-    );
-    for index in 0..32 {
-        assert!(attempts.contains(&format!("alpha-agent-{index:02}")));
+    {
+        let attempts = wake.0.lock().expect("wake attempts");
+        assert_eq!(
+            attempts.len(),
+            33,
+            "one failed wake does not stop later wakes"
+        );
+        for index in 0..32 {
+            assert!(attempts.contains(&format!("alpha-agent-{index:02}")));
+        }
     }
-    drop(attempts);
 
     let rows_after_completions = complete_continuation_rows(&store);
     let before_ticks = all_usage_rows(&store);

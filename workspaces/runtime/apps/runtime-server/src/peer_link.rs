@@ -208,8 +208,10 @@ impl PeerLinkRuntime {
 
     pub async fn shutdown(&mut self) {
         self.stop.cancel();
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
+        if let Some(task) = self.task.take()
+            && let Err(error) = task.await
+        {
+            eprintln!("peer-link owner task failed during shutdown: {error}");
         }
     }
 }
@@ -723,9 +725,23 @@ async fn stop_link(link: RunningLink) {
 async fn stop_child(mut child: Child) {
     match tokio::time::timeout(CHILD_STOP_TIMEOUT, child.wait()).await {
         Ok(Ok(_)) => {}
-        Ok(Err(_)) | Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+        Ok(Err(wait_error)) => {
+            eprintln!("peer-link child wait failed during shutdown: {wait_error}");
+            if let Err(kill_error) = child.kill().await {
+                eprintln!("peer-link child kill failed during shutdown: {kill_error}");
+            }
+            if let Err(reap_error) = child.wait().await {
+                eprintln!("peer-link child reap failed during shutdown: {reap_error}");
+            }
+        }
+        Err(_) => {
+            eprintln!("peer-link child did not stop before shutdown deadline");
+            if let Err(kill_error) = child.kill().await {
+                eprintln!("peer-link child kill failed after shutdown deadline: {kill_error}");
+            }
+            if let Err(reap_error) = child.wait().await {
+                eprintln!("peer-link child reap failed after shutdown deadline: {reap_error}");
+            }
         }
     }
 }
@@ -757,8 +773,8 @@ mod tests {
             serde_json::from_str(r#"{"ready":true,"port":4621,"protocolVersion":2}"#)
                 .expect("additive readiness fields remain compatible");
         assert!(ready.is_valid());
-        let unready: PeerLinkReady =
-            serde_json::from_str(r#"{"ready":false,"port":4621}"#).unwrap();
+        let unready: PeerLinkReady = serde_json::from_str(r#"{"ready":false,"port":4621}"#)
+            .expect("unready readiness response parses");
         assert!(!unready.is_valid());
         assert!(serde_json::from_str::<PeerLinkReady>(r#"{"ready":"yes","port":4621}"#).is_err());
     }
@@ -779,7 +795,7 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .expect("disabled origin skips the peer snapshot reader");
 
         assert_eq!(peers, None);
         assert_eq!(reads.load(Ordering::Relaxed), 0);
@@ -800,7 +816,7 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .expect("last good peers are reused without a database read");
 
         assert_eq!(peers, Some(last_peers));
         assert_eq!(reads.load(Ordering::Relaxed), 0);
@@ -831,7 +847,12 @@ mod tests {
         let start = tokio::time::Instant::now();
         let mut work = PeerLinkWorkState::new();
         work.start_failed(start);
-        assert_eq!(work.retry_start_at.unwrap() - start, FIRST_RETRY_DELAY);
+        assert_eq!(
+            work.retry_start_at
+                .expect("failed start schedules first retry")
+                - start,
+            FIRST_RETRY_DELAY
+        );
 
         let first_retry = start + FIRST_RETRY_DELAY;
         assert!(work.take_start_if_due(first_retry));
@@ -839,7 +860,9 @@ mod tests {
         let quick_exit = first_retry + Duration::from_millis(10);
         work.child_exited(quick_exit, Duration::from_millis(10));
         assert_eq!(
-            work.retry_start_at.unwrap() - quick_exit,
+            work.retry_start_at
+                .expect("quick child exit schedules retry")
+                - quick_exit,
             FIRST_RETRY_DELAY * 2
         );
 
@@ -848,7 +871,9 @@ mod tests {
             LINK_HEALTHY_RESET_AFTER,
         );
         assert_eq!(
-            work.retry_start_at.unwrap() - (quick_exit + LINK_HEALTHY_RESET_AFTER),
+            work.retry_start_at
+                .expect("healthy child exit schedules retry")
+                - (quick_exit + LINK_HEALTHY_RESET_AFTER),
             FIRST_RETRY_DELAY
         );
     }
@@ -861,12 +886,14 @@ mod tests {
         work.snapshot_failed(start);
         work.snapshot_failed(start);
         work.snapshot_failed(start);
-        let snapshot_deadline = work.retry_snapshot_at.unwrap();
+        let snapshot_deadline = work
+            .retry_snapshot_at
+            .expect("snapshot failure schedules retry");
         assert_eq!(snapshot_deadline - start, Duration::from_secs(1));
 
         let child_exit = start + Duration::from_millis(10);
         work.child_exited(child_exit, Duration::from_millis(10));
-        let start_deadline = work.retry_start_at.unwrap();
+        let start_deadline = work.retry_start_at.expect("child exit schedules retry");
         assert!(work.take_start_if_due(start_deadline));
         work.start_succeeded();
 
@@ -882,7 +909,7 @@ mod tests {
         use tokio::process::Command;
         use tokio_util::sync::CancellationToken;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().expect("temporary startup directory creates");
         let marker = directory.path().join("child-stopped");
         let mut child = Command::new("sh")
             .args([
@@ -895,9 +922,9 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+            .expect("fixture child starts");
+        let stdin = child.stdin.take().expect("fixture child has piped stdin");
+        let stdout = child.stdout.take().expect("fixture child has piped stdout");
         let stopped = CancellationToken::new();
         let task_stopped = stopped.clone();
         let startup =
@@ -907,7 +934,15 @@ mod tests {
 
         tokio::task::yield_now().await;
         stopped.cancel();
-        assert!(startup.await.unwrap().is_none());
-        assert_eq!(std::fs::read_to_string(marker).unwrap(), "stopped");
+        assert!(
+            startup
+                .await
+                .expect("startup cancellation task completes")
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("child writes stop marker"),
+            "stopped"
+        );
     }
 }

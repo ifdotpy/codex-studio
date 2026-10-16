@@ -380,7 +380,7 @@ async fn accept_peer(
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     if crate::federation_delivery::pair_peer(
         Arc::clone(&store),
-        &state_id,
+        state_id,
         now,
         &transport,
         Arc::new(cancelled),

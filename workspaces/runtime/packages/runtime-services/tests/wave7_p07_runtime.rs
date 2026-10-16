@@ -22,6 +22,9 @@ use studio_runtime_services::{
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, TaskRecord, TaskRepository, Transaction,
 };
+
+type RuntimeCorpusCase = (&'static str, Pin<Box<dyn Future<Output = ()>>>);
+
 fn scope() -> ConnectionScope {
     ConnectionScope {
         account: "default".into(),
@@ -1381,7 +1384,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
 
 #[tokio::test]
 async fn wave7_p07_runtime_corpus() {
-    let mut cases: [(&str, Pin<Box<dyn Future<Output = ()>>>); 20] = [
+    let mut cases: [RuntimeCorpusCase; 20] = [
         (
             "python_terminal_notification_count_decodes_without_changing_attempt_events",
             Box::pin(python_terminal_notification_count_decodes_without_changing_attempt_events()),

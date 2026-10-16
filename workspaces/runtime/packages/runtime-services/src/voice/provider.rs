@@ -2816,7 +2816,7 @@ mod tests {
             Some(provider.clone()),
             "voice-agent".into(),
             "orphan-start".into(),
-            old_offer.into(),
+            old_offer,
             21.0,
         )
         .await

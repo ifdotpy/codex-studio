@@ -6,6 +6,7 @@ use crate::{
     },
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
+    recovery_runtime::ObservationSource,
     scheduler::lifecycle_transaction_with,
 };
 use serde_json::{Value, json};
@@ -41,11 +42,7 @@ pub struct RecoveryStore {
     pub connection_current: Arc<dyn Fn(&ConnectionScope) -> bool + Send + Sync>,
     pub completion: Arc<Mutex<Box<dyn CompletionWriter>>>,
     pub at: f64,
-    pub observation_current: Arc<
-        dyn Fn(&ConnectionScope) -> Option<crate::recovery_absence::RecoveryObservation>
-            + Send
-            + Sync,
-    >,
+    pub observation_current: Arc<ObservationSource>,
 }
 impl From<rusqlite::Error> for RecoveryError {
     fn from(error: rusqlite::Error) -> Self {

@@ -114,7 +114,7 @@ async fn voice_accepts_unrelated_operation_started_after_preparation() {
         ready,
         release,
     ));
-    operation.await.unwrap();
+    operation.await.expect("late operation task completes");
     let receipt = caller.await.expect("caller joins").expect("voice accepted");
     assert_eq!(receipt["status"], "queued");
     assert!(

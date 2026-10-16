@@ -4,6 +4,7 @@ use crate::{
     recovery::RecoveryError,
     recovery_absence::{LOST_COMMAND, RecoveryObservation, TaskAbsenceDecision},
     recovery_history::ConnectionScope,
+    recovery_runtime::ObservationSource,
     scheduler::lifecycle_transaction_with,
     task_recovery::{TaskRecoveryEffects, TaskRecoverySnapshot},
 };
@@ -29,8 +30,7 @@ pub trait TaskCompletionWriter: Send + Sync {
 pub struct TaskRecoveryStore {
     pub store: Arc<RuntimeStore>,
     /// Synchronous worker-owned observation, checked under the writer lock.
-    pub observation_current:
-        Arc<dyn Fn(&ConnectionScope) -> Option<RecoveryObservation> + Send + Sync>,
+    pub observation_current: Arc<ObservationSource>,
     pub completion: Arc<dyn TaskCompletionWriter>,
 }
 impl TaskRecoveryEffects for TaskRecoveryStore {

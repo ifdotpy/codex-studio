@@ -214,7 +214,13 @@ pub(super) fn records(
 #[derive(Clone)]
 pub(super) struct FilesystemSnapshot {
     resolved_paths: BTreeMap<String, String>,
+    pub thread_inputs: ThreadFilesystemInputs,
+}
+
+#[derive(Clone)]
+pub(super) struct ThreadFilesystemInputs {
     pub progress_directory: Option<String>,
+    pub python_tool: Option<PathBuf>,
 }
 impl FilesystemSnapshot {
     pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
@@ -262,8 +268,20 @@ impl FilesystemSnapshot {
         .then(|| progress.to_string_lossy().into_owned());
         Ok(Self {
             resolved_paths,
-            progress_directory,
+            thread_inputs: ThreadFilesystemInputs {
+                progress_directory,
+                python_tool: None,
+            },
         })
+    }
+
+    pub fn capture_for_thread_snapshot(
+        store: &RuntimeStore,
+        id: &str,
+    ) -> Result<Self, WorkerError> {
+        let mut snapshot = Self::capture(store, id)?;
+        snapshot.thread_inputs.python_tool = crate::python_tool::resolve_python_tool();
+        Ok(snapshot)
     }
 }
 
@@ -571,9 +589,8 @@ pub(super) fn thread_snapshot(
     record: &Value,
     connection: &str,
     state_root: &Path,
-    progress_directory: Option<String>,
+    filesystem: &ThreadFilesystemInputs,
     account_transfer_owner: Option<&str>,
-    python: Option<PathBuf>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
     let root_id = record["rootId"]
@@ -597,7 +614,9 @@ pub(super) fn thread_snapshot(
     } else {
         thread::Role::Implementer
     });
-    let progress_directory = lead.then_some(progress_directory).flatten();
+    let progress_directory = lead
+        .then_some(filesystem.progress_directory.clone())
+        .flatten();
     let owned_transfer = account_transfer_owner
         .map(|transfer_id| {
             crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
@@ -687,7 +706,12 @@ pub(super) fn thread_snapshot(
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
-        guidance: guidance(resources, record, state_root, python)?,
+        guidance: guidance(
+            resources,
+            record,
+            state_root,
+            filesystem.python_tool.clone(),
+        )?,
         catalog: thread::CatalogSnapshot {
             source,
             definitions,
@@ -715,13 +739,18 @@ pub(super) fn submission_snapshot(
     record: &Value,
     intent: &TurnIntent,
     state_root: &Path,
-    python: Option<PathBuf>,
+    filesystem: &ThreadFilesystemInputs,
 ) -> Result<(turn::PreparationSnapshot, Vec<turn::Event>), WorkerError> {
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let guidance = guidance(resources, record, state_root, python)?;
+    let guidance = guidance(
+        resources,
+        record,
+        state_root,
+        filesystem.python_tool.clone(),
+    )?;
     let plans = records(tx, "runtime_plans")?;
     let plan=plans.get(root_id).map(|s|serde_json::from_str::<Value>(s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();

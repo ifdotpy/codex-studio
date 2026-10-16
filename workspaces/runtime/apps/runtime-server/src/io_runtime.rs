@@ -391,7 +391,7 @@ mod tests {
                 .is_err()
         );
         let saved =
-            TerminalsRepository::get(&*store.read().expect("store read"), "terminal-fixture")
+            TerminalsRepository::get(&store.read().expect("store read"), "terminal-fixture")
                 .expect("terminal read")
                 .expect("terminal exists");
         assert_eq!(

@@ -422,9 +422,11 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
         assert_eq!(capacity_state(&store), before);
         let result = continuation_driver::drive_with_hooks(
             &store,
-            "a",
-            ContinuationTable::Capacity,
-            Some("retry"),
+            continuation_driver::ContinuationTarget {
+                agent: "a",
+                table: ContinuationTable::Capacity,
+                record: Some("retry"),
+            },
             1000.0,
             |s| {
                 capacity_retry::transition(
@@ -450,9 +452,11 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
             .expect("restart");
         let committed = continuation_driver::drive_with_hooks(
             &store,
-            "a",
-            ContinuationTable::Capacity,
-            Some("retry"),
+            continuation_driver::ContinuationTarget {
+                agent: "a",
+                table: ContinuationTable::Capacity,
+                record: Some("retry"),
+            },
             1000.0,
             |s| {
                 capacity_retry::transition(

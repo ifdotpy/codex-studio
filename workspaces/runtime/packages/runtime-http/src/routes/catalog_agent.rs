@@ -530,13 +530,13 @@ async fn native_command_cancel(
         delivery: studio_runtime_services::native_actions::Delivery::Written(result),
     };
     let store = state.store.ok_or_else(ApiError::internal)?;
-    Ok(store
+    store
         .transaction_with(move |tx| {
             studio_runtime_services::native_actions::command_cancel_settle(tx, &receipt)
                 .map_err(native_command_error)
         })
         .await
-        .map_err(|_| ApiError::internal())?)
+        .map_err(|_| ApiError::internal())
 }
 
 async fn provider_call(

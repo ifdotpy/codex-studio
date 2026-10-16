@@ -1339,14 +1339,15 @@ mod tests {
             .await
             .expect("64 KiB input");
         assert_eq!(result, serde_json::json!({"ok":true,"delivery":"sent"}));
-        let request = driver.session.requests.lock().expect("requests");
-        let (_, method, params) = request.last().expect("input request");
-        assert_eq!(method, "process/writeStdin");
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(params["deltaBase64"].as_str().expect("base64 text"))
-            .expect("valid base64");
+        let decoded = {
+            let request = driver.session.requests.lock().expect("requests");
+            let (_, method, params) = request.last().expect("input request");
+            assert_eq!(method, "process/writeStdin");
+            base64::engine::general_purpose::STANDARD
+                .decode(params["deltaBase64"].as_str().expect("base64 text"))
+                .expect("valid base64")
+        };
         assert_eq!(decoded.len(), INPUT_LIMIT);
-        drop(request);
 
         let before = TerminalsRepository::receipt(
             &state.store.as_ref().expect("store").read().expect("read"),

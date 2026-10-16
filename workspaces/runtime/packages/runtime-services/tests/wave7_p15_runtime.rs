@@ -873,11 +873,12 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .await
         .expect("written receipt");
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
-    let submitted = port.submitted.lock().expect("submitted");
-    assert_eq!(submitted.len(), 3);
-    assert_eq!(submitted[0], submitted[1]);
-    assert_eq!(submitted[1], submitted[2]);
-    drop(submitted);
+    {
+        let submitted = port.submitted.lock().expect("submitted");
+        assert_eq!(submitted.len(), 3);
+        assert_eq!(submitted[0], submitted[1]);
+        assert_eq!(submitted[1], submitted[2]);
+    }
     restarted_runtime
         .cancel(&id, None, 2005.0)
         .await

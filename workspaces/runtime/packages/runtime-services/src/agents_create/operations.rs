@@ -11,6 +11,8 @@ use studio_runtime_schema::agent_limits_generated::{
 };
 use studio_runtime_store::RuntimeStore;
 
+pub type PersistedRecordValidator = std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>;
+
 pub struct Context<'a> {
     pub store: std::sync::Arc<RuntimeStore>,
     pub accounts: Option<&'a AccountPolicyState>,
@@ -18,7 +20,7 @@ pub struct Context<'a> {
     pub catalog: Option<std::sync::Arc<dyn crate::host_worker_create::CreationCatalog>>,
     pub managed_creation_environment:
         Option<&'a dyn crate::managed_child_create::ManagedCreationEnvironment>,
-    pub validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+    pub validate: PersistedRecordValidator,
 }
 
 async fn with_read<T, F>(
@@ -1024,7 +1026,7 @@ async fn create_child(
     id: &str,
     execution_intent: &Value,
     creation_intent: &Value,
-    validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+    validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
     let parent_id_for_read = parent_id.to_owned();
@@ -3218,7 +3220,7 @@ mod tests {
     fn worker_defaults_context<'a>(
         store: std::sync::Arc<RuntimeStore>,
         environment: &'a dyn crate::managed_child_create::ManagedCreationEnvironment,
-        validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+        validate: PersistedRecordValidator,
     ) -> Context<'a> {
         Context {
             store,
@@ -4008,8 +4010,10 @@ mod tests {
                 if schema == "PersistedAgentRecord"
                     && first_validation.swap(false, std::sync::atomic::Ordering::AcqRel)
                 {
-                    if let Some(signal) = observed_tx.lock().ok().and_then(|mut tx| tx.take()) {
-                        let _ = signal.send(());
+                    if let Some(signal) = observed_tx.lock().ok().and_then(|mut tx| tx.take())
+                        && signal.send(()).is_err()
+                    {
+                        return false;
                     }
                     if release_rx
                         .lock()
@@ -4033,13 +4037,19 @@ mod tests {
             let writer_scenario = scenario.to_owned();
             let writer_record = record.clone();
             let writer = tokio::spawn(async move {
-                struct ReleaseOnDrop(std::sync::mpsc::Sender<()>);
+                struct ReleaseOnDrop {
+                    release: std::sync::mpsc::Sender<()>,
+                }
                 impl Drop for ReleaseOnDrop {
                     fn drop(&mut self) {
-                        let _ = self.0.send(());
+                        if self.release.send(()).is_err() {
+                            // Receiver closure means no callback remains blocked.
+                        }
                     }
                 }
-                let release_on_drop = ReleaseOnDrop(release_tx);
+                let release_on_drop = ReleaseOnDrop {
+                    release: release_tx,
+                };
                 tokio::time::timeout(INTERLEAVING_DEADLINE, observed_rx)
                     .await
                     .map_err(|_| "validation signal deadline elapsed")?

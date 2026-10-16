@@ -12,6 +12,9 @@ use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseB
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
 
+type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type Case = (&'static str, fn() -> CaseFuture);
+
 struct Template {
     _scratch: tempfile::TempDir,
     value: Value,
@@ -1108,8 +1111,7 @@ mod review_regressions;
 
 #[tokio::test]
 async fn provider_callbacks_corpus() {
-    type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-    let cases: &[(&str, fn() -> CaseFuture)] = &[
+    let cases: &[Case] = &[
         ("python_answer_corpus", || {
             Box::pin(provider_callbacks_python_answer_corpus())
         }),

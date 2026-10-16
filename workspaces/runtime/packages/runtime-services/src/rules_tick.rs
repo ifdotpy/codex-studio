@@ -44,6 +44,9 @@ pub enum CheckSubmission {
     Unknown,
 }
 
+/// Rule file identity: modification time in Unix nanoseconds, size in bytes, inode number.
+pub type RuleFileFingerprint = (i64, u64, u64);
+
 /// Implemented by the monitor driver after preparation/approval and native session
 /// admission are installed. It MUST revalidate owner and check identity before I/O.
 /// Launch MUST be idempotent for the exact monitor identity and reserve its durable
@@ -90,7 +93,7 @@ pub trait RuleFiles {
     fn fingerprint<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>>;
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<RuleFileFingerprint>, RulesTickError>>;
 }
 
 pub struct LocalRuleFiles;
@@ -98,7 +101,8 @@ impl RuleFiles for LocalRuleFiles {
     fn fingerprint<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>> {
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<RuleFileFingerprint>, RulesTickError>>
+    {
         Box::pin(async move {
             let path = path.to_owned();
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -111,7 +115,7 @@ impl RuleFiles for LocalRuleFiles {
     }
 }
 
-fn fingerprint_path(path: &str) -> Result<Option<(i64, u64, u64)>, RulesTickError> {
+fn fingerprint_path(path: &str) -> Result<Option<RuleFileFingerprint>, RulesTickError> {
     match std::fs::metadata(Path::new(path)) {
         #[cfg(unix)]
         Ok(metadata) => {

@@ -1014,7 +1014,7 @@ pub async fn execute(
     id: String,
     ticket: ProviderTicket,
     session: &impl RetainedSession,
-    effects: Arc<impl Acceptance + Send + Sync + 'static>,
+    effects: Arc<impl Acceptance + 'static>,
     deadline: tokio::time::Instant,
 ) -> Result<Outcome> {
     let claim_id = id.clone();

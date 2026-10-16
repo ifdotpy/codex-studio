@@ -1149,12 +1149,12 @@ async fn lost_push_response(corpus: &Corpus) {
     assert_eq!(effect_rows(&receiver).0.len(), 1);
     assert_eq!(effect_rows(&receiver).1.len(), 2);
     assert_eq!(
-        wire.state.lock().unwrap().calls,
+        wire.state.lock().expect("peer transport state lock").calls,
         3,
         "two pushes and one pull"
     );
     let (push_deadline, pull_deadline) = {
-        let state = wire.state.lock().unwrap();
+        let state = wire.state.lock().expect("peer transport state lock");
         (state.deadlines[1], state.deadlines[2])
     };
     assert_eq!(
@@ -1242,7 +1242,10 @@ async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_rout
         .await
         .is_err()
     );
-    assert_eq!(fake.state.lock().unwrap().calls, 1);
+    assert_eq!(
+        fake.state.lock().expect("peer transport state lock").calls,
+        1
+    );
 
     let queued = rows(&sender, "runtime_federation_outbox");
     assert_eq!(queued.len(), 1);
@@ -1441,7 +1444,10 @@ async fn delivery_failures(corpus: &Corpus) {
                 .expect("expired pass"),
                 0
             );
-            assert_eq!(wire.state.lock().unwrap().calls, 0);
+            assert_eq!(
+                wire.state.lock().expect("peer transport state lock").calls,
+                0
+            );
             assert_eq!(counts(&sender), before);
             continue;
         }
@@ -1457,7 +1463,7 @@ async fn delivery_failures(corpus: &Corpus) {
             .is_err()
         );
         assert_eq!(
-            wire.state.lock().unwrap().calls,
+            wire.state.lock().expect("peer transport state lock").calls,
             1,
             "pass stops on failure or cancellation"
         );

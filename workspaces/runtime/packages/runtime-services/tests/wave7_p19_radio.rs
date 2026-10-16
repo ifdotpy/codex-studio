@@ -2,12 +2,7 @@
 mod python_support;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-    sync::{Mutex, OnceLock},
-};
+use std::{fs, path::Path, process::Command, sync::OnceLock};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
@@ -50,7 +45,7 @@ struct RadioCorpus {
     databases: Vec<(String, Vec<u8>)>,
     cases: Vec<Value>,
 }
-static CREATE_CASE_LOCK: Mutex<()> = Mutex::new(());
+static CREATE_CASE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn corpus() -> &'static RadioCorpus {
     static CORPUS: OnceLock<RadioCorpus> = OnceLock::new();
@@ -289,14 +284,16 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
         "create" => {
             // The shared Python fixture names one filesystem path. Keep its
             // create/remove lifetime atomic across parallel corpus consumers.
-            let _guard = CREATE_CASE_LOCK.lock().expect("create fixture lock");
-            let path = case["body"]["path"].as_str().expect("project path");
-            fs::create_dir_all(path).expect("project directory");
-            let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
-            let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
-            let result = radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await;
-            fs::remove_dir(path).expect("remove fixture project directory");
-            result
+            {
+                let _guard = CREATE_CASE_LOCK.lock().await;
+                let path = case["body"]["path"].as_str().expect("project path");
+                fs::create_dir_all(path).expect("project directory");
+                let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
+                let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
+                let result = radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await;
+                fs::remove_dir(path).expect("remove fixture project directory");
+                result
+            }
         },
         "project-binding" => store.transaction_with(move |db| {
             let path=case["body"]["path"].as_str().expect("project path");

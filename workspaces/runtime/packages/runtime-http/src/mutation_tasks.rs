@@ -193,7 +193,10 @@ mod tests {
         );
         started.notified().await;
         request.abort();
-        let _ = request.await;
+        let join_error = request
+            .await
+            .expect_err("aborted request task is cancelled");
+        assert!(join_error.is_cancelled());
         assert_eq!(commits.load(Ordering::SeqCst), 0);
         finish.notify_one();
 
@@ -297,21 +300,23 @@ mod tests {
         );
         started.notified().await;
         request.abort();
-        let _ = request.await;
+        let join_error = request
+            .await
+            .expect_err("aborted request task is cancelled");
+        assert!(join_error.is_cancelled());
         assert!(dropped.load(Ordering::SeqCst));
         tasks.shutdown().await;
     }
 
     #[tokio::test]
     async fn tracked_handler_panic_becomes_a_context_logged_internal_error() {
+        async fn fixture_panics() -> &'static str {
+            panic!("fixture panic")
+        }
+
         let tasks = Arc::new(MutationTasks::new());
         let app = Router::new()
-            .route(
-                "/api/write",
-                any(|| async {
-                    Result::<&str, &str>::Err("fixture panic").expect("fixture panic")
-                }),
-            )
+            .route("/api/write", any(fixture_panics))
             .layer(from_fn_with_state(tasks, own_mutations));
         let response = app
             .oneshot(

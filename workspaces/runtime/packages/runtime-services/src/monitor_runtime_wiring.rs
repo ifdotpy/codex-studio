@@ -1767,14 +1767,15 @@ mod tests {
         wait_for_cycles(&runtime, 1).await;
         assert_eq!(runtime.last_tick_error().as_deref(), Some("test transient"));
         wait_for_calls(&port, 2).await;
-        let call_times = port.next_call_times.lock().expect("read port call times");
-        let error_times = port.next_error_times.lock().expect("read port error times");
+        let (second_call_time, first_error_time) = {
+            let call_times = port.next_call_times.lock().expect("read port call times");
+            let error_times = port.next_error_times.lock().expect("read port error times");
+            (call_times[1], error_times[0])
+        };
         assert!(
-            call_times[1].duration_since(error_times[0]) >= ERROR_RETRY_MIN,
+            second_call_time.duration_since(first_error_time) >= ERROR_RETRY_MIN,
             "transient failures must honor the configured retry backoff"
         );
-        drop(error_times);
-        drop(call_times);
         wait_for_cycles(&runtime, 2).await;
         assert_eq!(runtime.last_tick_error(), None);
         stop_task(&shutdown_tx, task).await;

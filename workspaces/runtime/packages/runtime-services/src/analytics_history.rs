@@ -351,11 +351,14 @@ async fn read_history_checkpoint(
     Ok(previous)
 }
 
+type HistoryCheckpointRepair = (String, String, Value);
+type HistoryCheckpointRead = (Option<Value>, Option<HistoryCheckpointRepair>);
+
 fn read_history_checkpoint_stage(
     root: &Path,
     key: &str,
     agent: &Value,
-) -> Result<(Option<Value>, Option<(String, String, Value)>), HistoryError> {
+) -> Result<HistoryCheckpointRead, HistoryError> {
     let read = AnalyticsRepository::new(root)
         .open_read_only()
         .map_err(|_| HistoryError::Read)?;

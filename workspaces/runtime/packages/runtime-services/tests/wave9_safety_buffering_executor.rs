@@ -1306,10 +1306,13 @@ async fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             .is_err(),
             "interrupted stage {interrupted_stage}"
         );
-        let calls = first.calls.lock().expect("calls");
-        let operation_id = calls[interrupted_stage]["operation"].clone();
-        let stage = calls[interrupted_stage]["stage"].clone();
-        drop(calls);
+        let (operation_id, stage) = {
+            let calls = first.calls.lock().expect("calls");
+            (
+                calls[interrupted_stage]["operation"].clone(),
+                calls[interrupted_stage]["stage"].clone(),
+            )
+        };
         drop(first);
         drop(store);
 

@@ -648,7 +648,6 @@ pub(super) async fn submitted(
         guard,
         connection_id,
     } = evidence;
-    let connection_id = connection_id;
     let account = account.to_owned();
     let blocked_intent = context.intent.clone();
     let result = scheduler::lifecycle_transaction_with(store, move |tx| {

@@ -1497,13 +1497,13 @@ impl AccountSessionPort for AccountSessionRuntime {
     fn discover<'a>(&'a self) -> AccountSessionFuture<'a, Value> {
         Box::pin(async move {
             let runtime = self.clone();
-            Ok(spawn_account_driver(move || runtime.discover_sync()).await??)
+            spawn_account_driver(move || runtime.discover_sync()).await?
         })
     }
     fn profile<'a>(&'a self, request: ProfileRequest) -> AccountSessionFuture<'a, Value> {
         Box::pin(async move {
             let runtime = self.clone();
-            Ok(spawn_account_driver(move || runtime.profile_sync(request)).await??)
+            spawn_account_driver(move || runtime.profile_sync(request)).await?
         })
     }
 }

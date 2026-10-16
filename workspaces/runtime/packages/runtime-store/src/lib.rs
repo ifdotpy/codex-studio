@@ -149,6 +149,9 @@ pub enum ObservedTable {
     UsageResumes,
 }
 
+type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
+type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<ChangeObserver>>>;
+
 impl ObservedTable {
     fn name(self) -> &'static str {
         match self {
@@ -258,10 +261,7 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     }
 }
 
-fn fire_table_change_observers(
-    observers: &Mutex<HashMap<ObservedTable, Vec<Arc<dyn Fn() + Send + Sync>>>>,
-    changed_tables: u8,
-) {
+fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_tables: u8) {
     for table in OBSERVED_TABLES {
         if changed_tables & table.change_bit() == 0 {
             continue;
@@ -273,7 +273,11 @@ fn fire_table_change_observers(
             .cloned()
             .unwrap_or_default();
         for callback in callbacks {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
+            if let Err(_panic_payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+            {
+                // A table observer panic must not interrupt other invalidations.
+            }
         }
     }
 }
@@ -504,7 +508,7 @@ pub struct RuntimeStore {
     identity_registry_path: PathBuf,
     identity_registry_lease: Arc<IdentityRegistryLease>,
     commit_notifiers: Arc<Mutex<CommitNotifiers>>,
-    table_commit_observers: Arc<Mutex<HashMap<ObservedTable, Vec<Arc<dyn Fn() + Send + Sync>>>>>,
+    table_commit_observers: Arc<TableChangeObserverRegistry>,
     table_change_flags: Arc<AtomicU8>,
     #[cfg(test)]
     simulate_unknown_commit_after_success: Arc<AtomicBool>,
@@ -1016,12 +1020,13 @@ impl RuntimeStore {
         &self,
         callback: Option<StoreDiagnosticsCallback>,
     ) -> StoreResult<()> {
-        let mut current = diagnostics_callback()
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?;
-        DIAGNOSTICS_ENABLED.store(callback.is_some(), Ordering::Release);
-        *current = callback;
-        drop(current);
+        {
+            let mut current = diagnostics_callback()
+                .lock()
+                .map_err(|_| StoreError::WriterPoisoned)?;
+            DIAGNOSTICS_ENABLED.store(callback.is_some(), Ordering::Release);
+            *current = callback;
+        }
         self.writer
             .call(|writer| {
                 install_profile(writer, StoreDatabaseKind::Canvas);
@@ -1352,10 +1357,13 @@ impl RuntimeStore {
                                 abandoned_checkpoint.store(true, Ordering::Release);
                                 // Fire the synchronous wake directly; no Runtime handle or
                                 // detached task is required for this committed transaction.
-                                let _ =
+                                if let Err(_panic_payload) =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         fire_commit_observers(&abandoned_notifiers);
-                                    }));
+                                    }))
+                                {
+                                    // A dropped response cannot report observer panics.
+                                }
                             }
                             (*changed_tables, Some(value))
                         }
@@ -1735,7 +1743,7 @@ mod diagnostics_hook_tests {
 
     static EVENTS: Mutex<Vec<StoreDiagnosticsEvent>> = Mutex::new(Vec::new());
     static EVENTS_READY: Condvar = Condvar::new();
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn record_event(event: StoreDiagnosticsEvent) {
         EVENTS.lock().expect("diagnostic events lock").push(event);
@@ -1765,7 +1773,7 @@ mod diagnostics_hook_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
-        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let _test_guard = TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
@@ -1882,7 +1890,7 @@ mod diagnostics_hook_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn analytics_writer_waits_for_canvas_actor_while_raw_reads_remain_independent() {
-        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let _test_guard = TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
@@ -1950,7 +1958,7 @@ mod diagnostics_hook_tests {
 
     #[tokio::test]
     async fn sync_pull_completion_after_a_commit_does_not_checkpoint_the_wal() {
-        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let _test_guard = TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path()))
             .await
@@ -2658,7 +2666,12 @@ mod commit_notification_tests {
         };
         entered.wait();
         transaction_task.abort();
-        let _ = transaction_task.await;
+        assert!(
+            transaction_task
+                .await
+                .is_err_and(|error| error.is_cancelled()),
+            "aborted writer caller must report task cancellation"
+        );
         drop(store);
 
         release.wait();

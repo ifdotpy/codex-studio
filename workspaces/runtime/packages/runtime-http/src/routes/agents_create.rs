@@ -765,9 +765,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
     super::generated_json::<T>(result).map(Json)
 }
 
-fn validation_callback(
-    state: &HttpState,
-) -> std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync> {
+fn validation_callback(state: &HttpState) -> agents_create::PersistedRecordValidator {
     let validators = state.validators.clone();
     std::sync::Arc::new(move |schema, value| match schema {
         "PersistedAgentRecord" => validators.validate_table_record("runtime_agents", value),

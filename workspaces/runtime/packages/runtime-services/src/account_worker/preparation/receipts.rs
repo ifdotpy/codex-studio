@@ -31,14 +31,17 @@ pub(crate) fn accept_thread(
         thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
         _ => None,
     };
+    let filesystem = ThreadFilesystemInputs {
+        progress_directory,
+        python_tool: None,
+    };
     let current = thread_snapshot(
         tx,
         resources,
         &record,
         &ticket.generation.to_string(),
         root,
-        progress_directory,
-        None,
+        &filesystem,
         None,
     )?;
     let receipt = thread::ProviderReceipt {

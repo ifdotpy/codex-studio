@@ -416,7 +416,7 @@ pub(super) async fn dispatch_with_ports(
                             {
                                 return Ok((saved, Vec::new()));
                             }
-                            finalize_dispatched(tx, &call, &mut record, now, dispatched)
+                            finalize_dispatched(tx, call, &mut record, now, dispatched)
                         })
                         .await?
                 } else {
@@ -450,7 +450,7 @@ pub(super) async fn dispatch_with_ports(
                             execute_once(
                                 tx,
                                 &snapshot,
-                                &call,
+                                call,
                                 &mut record,
                                 now,
                                 ports_for_local.as_ref(),
@@ -479,7 +479,7 @@ pub(super) async fn dispatch_with_ports(
             }
             let record = records::get(tx, "runtime_tool_requests", &call.id)?
                 .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-            let projected = super::project_tool_result(&result, &call.id, &record["outcome"])?;
+            let projected = super::project_tool_result(result, &call.id, &record["outcome"])?;
             let reply = Reply::new(identity, ResponseBody::Result(projected))?;
             Ok::<_, CallbackError>((CallbackDecision::Answer(reply), signals_for_reply))
         })

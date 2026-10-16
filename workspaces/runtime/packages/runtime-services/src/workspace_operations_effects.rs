@@ -26,7 +26,7 @@ enum TurnCheckpointPreflight {
     Skip,
     Existing(Value),
     Reserve {
-        snapshot: studio_runtime_store::WorkspaceSnapshot,
+        snapshot: Box<studio_runtime_store::WorkspaceSnapshot>,
         idle: Result<(), CheckpointsError>,
     },
 }
@@ -68,7 +68,10 @@ pub async fn checkpoint_after_turn(
                 return Ok(TurnCheckpointPreflight::Existing(summary));
             }
             let idle = checkpoints::ensure_workspace_idle(&snapshot, None);
-            Ok(TurnCheckpointPreflight::Reserve { snapshot, idle })
+            Ok(TurnCheckpointPreflight::Reserve {
+                snapshot: Box::new(snapshot),
+                idle,
+            })
         },
     )
     .await
@@ -76,7 +79,7 @@ pub async fn checkpoint_after_turn(
     let (snapshot, idle) = match preflight {
         TurnCheckpointPreflight::Skip => return Ok(None),
         TurnCheckpointPreflight::Existing(summary) => return Ok(Some(summary)),
-        TurnCheckpointPreflight::Reserve { snapshot, idle } => (snapshot, idle),
+        TurnCheckpointPreflight::Reserve { snapshot, idle } => (*snapshot, idle),
     };
     checkpoints::ensure_agent_available(&snapshot.agent)?;
     let transaction_snapshot = snapshot;

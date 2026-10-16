@@ -8,9 +8,12 @@ use rusqlite::OpenFlags;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 
+type ActorResponseCompletion<R, E> =
+    Box<dyn FnOnce(&Result<R, E>, ActorResponseDisposition) + Send>;
+
 pub(crate) struct ActorResponse<R, E> {
     result: Option<Result<R, E>>,
-    completion: Option<Box<dyn FnOnce(&Result<R, E>, ActorResponseDisposition) + Send>>,
+    completion: Option<ActorResponseCompletion<R, E>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,10 +49,13 @@ impl<R, E> ActorResponse<R, E> {
 
 impl<R, E> Drop for ActorResponse<R, E> {
     fn drop(&mut self) {
-        if let (Some(result), Some(completion)) = (&self.result, self.completion.take()) {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                completion(result, ActorResponseDisposition::Abandoned);
-            }));
+        if let (Some(result), Some(completion)) = (&self.result, self.completion.take())
+            && let Err(_panic_payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    completion(result, ActorResponseDisposition::Abandoned);
+                }))
+        {
+            // A dropped response cannot report observer panics to its caller.
         }
     }
 }

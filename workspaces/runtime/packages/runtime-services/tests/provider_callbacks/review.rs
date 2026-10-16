@@ -519,8 +519,7 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
 }
 
 pub(super) async fn run_corpus() {
-    type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-    let cases: &[(&str, fn() -> CaseFuture)] = &[
+    let cases: &[Case] = &[
         (
             "work_commands_match_python_arguments_bounds_and_provenance",
             || Box::pin(work_commands_match_python_arguments_bounds_and_provenance()),

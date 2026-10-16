@@ -9,6 +9,15 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
+type TaskRecoveryTransaction = Arc<
+    dyn Fn(
+            &studio_runtime_store::Transaction<'_>,
+        )
+            -> Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError>
+        + Send
+        + Sync,
+>;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -188,13 +197,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             };
             use studio_runtime_store::NotificationDispatchRepository;
             let recovery_item = step["frame"]["params"]["item"].clone();
-            let recover: Arc<
-                dyn Fn(
-                        &studio_runtime_store::Transaction<'_>,
-                    ) -> Result<(), NotificationDispatchError>
-                    + Send
-                    + Sync,
-            > = Arc::new(move |tx| {
+            let recover: TaskRecoveryTransaction = Arc::new(move |tx| {
                 let agent =
                     NotificationDispatchRepository::agent_record(tx, "agent")?.expect("agent");
                 let raw: String = tx

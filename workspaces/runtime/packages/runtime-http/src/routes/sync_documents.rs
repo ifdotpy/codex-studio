@@ -1230,10 +1230,14 @@ mod vault_maintenance_tests {
                     let release = release_first_rx.take();
                     Box::pin(async move {
                         if let Some(started) = started {
-                            let _ = started.send(());
+                            started
+                                .send(())
+                                .expect("test waits for first maintenance start");
                         }
                         if let Some(release) = release {
-                            let _ = release.await;
+                            release
+                                .await
+                                .expect("test retains first maintenance release sender");
                         }
                     })
                 },
@@ -1260,7 +1264,10 @@ mod vault_maintenance_tests {
             .await
             .expect("first maintenance reaches its pre-commit hold");
         waiting_response.abort();
-        let _ = waiting_response.await;
+        assert!(matches!(
+            waiting_response.await,
+            Err(error) if error.is_cancelled()
+        ));
 
         let (second_started_tx, second_started_rx) = tokio::sync::oneshot::channel();
         let (second_reached_tx, second_reached_rx) = tokio::sync::oneshot::channel();
@@ -1268,7 +1275,9 @@ mod vault_maintenance_tests {
         let second_validators = validators.clone();
         let second_state_dir = state_dir.clone();
         let second = tokio::spawn(async move {
-            let _ = second_started_tx.send(());
+            second_started_tx
+                .send(())
+                .expect("test waits for second maintenance start");
             let mut second_reached_tx = Some(second_reached_tx);
             pull_with_maintenance(
                 second_store,
@@ -1285,7 +1294,9 @@ mod vault_maintenance_tests {
                     let reached = second_reached_tx.take();
                     Box::pin(async move {
                         if let Some(reached) = reached {
-                            let _ = reached.send(());
+                            reached
+                                .send(())
+                                .expect("test waits for the second preparation gate");
                         }
                     })
                 },

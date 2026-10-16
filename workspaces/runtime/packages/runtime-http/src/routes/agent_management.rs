@@ -474,14 +474,14 @@ impl NativeActionPreparationRun {
         request: &native_actions::Request,
     ) -> native_actions::Result<()> {
         let preparation = self.clone();
-        let request = request.clone();
+        let request_for_preflight = request.clone();
         let provider_home = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/agent_management/preparation",
             move || {
-                if preparation.is_vm(&request)? {
+                if preparation.is_vm(&request_for_preflight)? {
                     Ok::<_, NativeError>(None)
                 } else {
-                    preparation.provider_home(&request).map(Some)
+                    preparation.provider_home(&request_for_preflight).map(Some)
                 }
             },
         )
@@ -517,10 +517,12 @@ impl NativeActionPreparationRun {
             "runtime-http/routes/agent_management/preparation",
             move || {
                 let connection = store.read()?;
-                AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
-                    .ok_or(NativeError::Changed)?
-                    .value()
-                    .clone()
+                Ok::<_, NativeError>(
+                    AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
+                        .ok_or(NativeError::Changed)?
+                        .value()
+                        .clone(),
+                )
             },
         )
         .await

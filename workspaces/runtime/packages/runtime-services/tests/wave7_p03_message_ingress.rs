@@ -690,7 +690,6 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
         },
     ] {
         let before = snapshot(&store);
-        let policy = policy;
         let result = store
             .transaction_with_error(move |tx| {
                 coordination::post_message_with_admission(

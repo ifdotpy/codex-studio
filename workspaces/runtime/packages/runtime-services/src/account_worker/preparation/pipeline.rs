@@ -16,7 +16,6 @@ pub(crate) struct CommitGuard {
     state_root: std::path::PathBuf,
     filesystem: FilesystemSnapshot,
     prepared_host: Option<crate::host_project_runtime::PreparedHost>,
-    python_tool: Option<PathBuf>,
 }
 pub(crate) struct Admission {
     selection: gates::ExecutionSelection,
@@ -49,15 +48,6 @@ async fn compile_turn(
             let result = turn::compile(&snapshot, &events);
             (snapshot, events, result)
         },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)
-}
-
-async fn resolve_python_tool_off_thread() -> Result<Option<PathBuf>, WorkerError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_python_tool",
-        crate::python_tool::resolve_python_tool,
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)
@@ -619,7 +609,7 @@ pub(crate) async fn prepare_with_connection_id(
     let token = workspace(Arc::clone(&store), resources, intent).await?;
     prepare_ready(
         store,
-        &resources,
+        resources,
         intent,
         method,
         generation,
@@ -765,7 +755,10 @@ pub(crate) async fn prepare_monitor_command(
     let (filesystem, observed) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_monitor_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id)?;
+            let filesystem = FilesystemSnapshot::capture_for_thread_snapshot(
+                &snapshot_store,
+                &snapshot_agent_id,
+            )?;
             let observed = AgentRepository::get(
                 &*snapshot_store.read()?,
                 &AgentId::from(snapshot_agent_id.as_str()),
@@ -798,7 +791,6 @@ pub(crate) async fn prepare_monitor_command(
     let agent_id = agent_id.to_owned();
     let resources_for_snapshot = resources.clone();
     let state_root = store.root().to_path_buf();
-    let python_tool = resolve_python_tool_off_thread().await?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
         validate_monitor_actor(&current, epoch)?;
@@ -812,9 +804,8 @@ pub(crate) async fn prepare_monitor_command(
             &current,
             connection,
             &state_root,
-            filesystem.progress_directory.clone(),
+            &filesystem.thread_inputs,
             None,
-            python_tool,
         )?;
         let thread_id = snapshot
             .actor
@@ -1079,7 +1070,9 @@ async fn prepare_native_snapshot(
     let filesystem_agent_id = agent_id.to_owned();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_native_snapshot_filesystem",
-        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
+        move || {
+            FilesystemSnapshot::capture_for_thread_snapshot(&filesystem_store, &filesystem_agent_id)
+        },
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
@@ -1089,7 +1082,6 @@ async fn prepare_native_snapshot(
     let resources_for_snapshot = resources.clone();
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
-    let python_tool = resolve_python_tool_off_thread().await?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current =
             preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start, None)?;
@@ -1115,9 +1107,8 @@ async fn prepare_native_snapshot(
             &frozen,
             &generation,
             &state_root,
-            filesystem.progress_directory.clone(),
+            &filesystem.thread_inputs,
             transfer_owner.as_deref(),
-            python_tool,
         )
     })
     .await
@@ -1164,7 +1155,9 @@ pub(crate) async fn prepare_safety_retry(
     let filesystem_agent_id = request.agent_id.clone();
     let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_safety_retry_filesystem",
-        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
+        move || {
+            FilesystemSnapshot::capture_for_thread_snapshot(&filesystem_store, &filesystem_agent_id)
+        },
     )
     .await
     .map_err(|_| WorkerError::TaskFailed)??;
@@ -1177,7 +1170,6 @@ pub(crate) async fn prepare_safety_retry(
     let snapshot_request = request.clone();
     let resources_for_snapshot = resources.clone();
     let state_root = store.root().to_path_buf();
-    let python_tool = resolve_python_tool_off_thread().await?;
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
         if current.get("threadId").and_then(Value::as_str)
@@ -1192,9 +1184,8 @@ pub(crate) async fn prepare_safety_retry(
             &current,
             &connection_id,
             &state_root,
-            filesystem.progress_directory.clone(),
+            &filesystem.thread_inputs,
             None,
-            python_tool,
         )
     })
     .await?;
@@ -1288,7 +1279,8 @@ pub(crate) async fn prepare_ready(
     let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/account_worker_ready_snapshot",
         move || {
-            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent)?;
+            let filesystem =
+                FilesystemSnapshot::capture_for_thread_snapshot(&snapshot_store, &snapshot_agent)?;
             let prepared_host = if radio_authorized {
                 let host = crate::host_project_runtime::PreparedHost::load(&snapshot_store)
                     .map_err(|error| refusal(error.to_string()))?;
@@ -1310,7 +1302,6 @@ pub(crate) async fn prepare_ready(
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
     let resources_for_snapshot = resources.clone();
-    let python_tool = resolve_python_tool_off_thread().await?;
     let (
         mut snapshot,
         mut turn_snapshot,
@@ -1319,7 +1310,6 @@ pub(crate) async fn prepare_ready(
         vm_reviewer,
         filesystem,
         prepared_host,
-        python_tool,
     ) = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let record = preconditions(
             tx,
@@ -1347,9 +1337,8 @@ pub(crate) async fn prepare_ready(
             &frozen,
             &generation,
             &state_root,
-            filesystem.progress_directory.clone(),
+            &filesystem.thread_inputs,
             None,
-            python_tool.clone(),
         )?;
         let (turn_snapshot, events) = submission_snapshot(
             tx,
@@ -1357,7 +1346,7 @@ pub(crate) async fn prepare_ready(
             &frozen,
             &intent_for_snapshot,
             &state_root,
-            python_tool.clone(),
+            &filesystem.thread_inputs,
         )?;
         let mut prepared_intent = intent_for_snapshot.clone();
         prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
@@ -1371,7 +1360,6 @@ pub(crate) async fn prepare_ready(
             vm_reviewer,
             filesystem,
             prepared_host,
-            python_tool,
         ))
     })
     .await?;
@@ -1385,7 +1373,6 @@ pub(crate) async fn prepare_ready(
         state_root: store.root().to_path_buf(),
         filesystem,
         prepared_host,
-        python_tool,
     };
     if method == Method::ThreadResume {
         let method = if snapshot.actor.thread_id.is_some() {
@@ -1590,7 +1577,7 @@ pub(crate) fn commit(
             &current,
             &context.intent,
             &guard.state_root,
-            guard.python_tool.clone(),
+            &guard.filesystem.thread_inputs,
         )?;
         // Recompile with the exact operation, clock and verified artifact paths.
         // The compiler's manifest and output record the effective dependencies;
@@ -1612,9 +1599,8 @@ pub(crate) fn commit(
         &current,
         &guard.thread.account.connection_id,
         &guard.state_root,
-        guard.filesystem.progress_directory.clone(),
+        &guard.filesystem.thread_inputs,
         None,
-        guard.python_tool.clone(),
     )?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));

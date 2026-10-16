@@ -1297,8 +1297,12 @@ mod tests {
         let credentials = Arc::clone(&state.credentials);
         let operation_store = Arc::clone(&store);
         let operation = async move {
-            let _ = started_tx.send(());
-            let _ = release_rx.await;
+            started_tx
+                .send(())
+                .expect("test observes credential operation start");
+            release_rx
+                .await
+                .expect("test releases credential operation");
             let result = credentials.identity(operation_store, None).await;
             axum::response::Response::builder()
                 .status(if result.is_ok() {

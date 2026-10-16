@@ -388,13 +388,14 @@ mod tests {
                 assert!(matches!(first, Err(CallbackError::Unknown)));
             }
 
-            let delivered = port.delivered.lock().unwrap();
-            assert_eq!(delivered.len(), 1);
-            assert_eq!(
-                delivered[0].body,
-                studio_runtime_providers::ResponseBody::Result(json!({"answers":{}}),)
-            );
-            drop(delivered);
+            {
+                let delivered = port.delivered.lock().unwrap();
+                assert_eq!(delivered.len(), 1);
+                assert_eq!(
+                    delivered[0].body,
+                    studio_runtime_providers::ResponseBody::Result(json!({"answers":{}}),)
+                );
+            }
 
             if outcome == ReplyOutcome::Unknown {
                 assert!(matches!(

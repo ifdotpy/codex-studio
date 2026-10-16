@@ -953,7 +953,6 @@ async fn persist_stage_receipt(
         Some(ProviderResponse::Reply(value)) => Some(value.clone()),
         _ => None,
     };
-    let receipt_value = receipt_value;
     let (current, still_active) = store
         .transaction_with::<_, Error>(move |tx| {
             let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;

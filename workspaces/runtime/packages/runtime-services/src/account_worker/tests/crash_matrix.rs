@@ -109,7 +109,6 @@ async fn restart(context: &Context, label: &str) {
                     Ok::<(), WorkerError>(())
                 })
                 .await
-                .map_err(WorkerError::from)
         })
         .await
         .unwrap();
@@ -451,7 +450,6 @@ async fn prove_ready_for_new_turn(
                     Ok::<(), WorkerError>(())
                 })
                 .await
-                .map_err(WorkerError::from)
         })
         .await
         .unwrap();
