@@ -316,7 +316,7 @@ impl MonitorRuntime {
                       AND json_extract(record,'$.cancelRequested')=1
                       AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
                 )",
-                [
+                rusqlite::params![
                     crate::monitor_policy::PROBE_LEASE_SECONDS,
                     crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
                 ],
@@ -1084,7 +1084,7 @@ fn install_file_watcher(
     #[cfg(test)]
     if runtime
         .watcher_failures
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
             if remaining > 0 {
                 Some(remaining - 1)
             } else {
@@ -1239,7 +1239,7 @@ mod tests {
             self.drained_results.fetch_add(queued, Ordering::SeqCst);
             if self
                 .fail_next
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
                     if count > 0 { Some(count - 1) } else { None }
                 })
                 .is_ok()

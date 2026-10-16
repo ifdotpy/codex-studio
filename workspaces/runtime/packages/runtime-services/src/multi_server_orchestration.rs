@@ -2042,7 +2042,7 @@ fn outbox_next_due_at(
 mod tests {
     use super::{
         DeliveryDecision, DeliverySnapshot, ExchangeOutcome, HttpsPairedTransport, decide_delivery,
-        peer_retry_delay,
+        outbox_next_due_at, peer_retry_delay,
     };
     use rusqlite::params;
     use std::sync::{Arc, mpsc};
