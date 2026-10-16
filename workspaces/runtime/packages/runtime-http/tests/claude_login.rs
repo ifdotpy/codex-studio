@@ -12,6 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::claude_login::ports::LoginEvent;
 use tower::ServiceExt;
 
 struct ReadyNotificationGate {
