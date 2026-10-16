@@ -188,6 +188,8 @@ pub fn decide_workspace(
             None => recovery(None, actor.cwd.clone(), "Workspace directory is missing"),
         };
     }
+    // The registered worktree directory is the identity. The tool contract lets a
+    // worker commit on a branch it names, so the checked-out branch may change.
     if actor.worktree_ready {
         if let Some(cwd) = cwd
             && observed.registered
@@ -195,8 +197,6 @@ pub fn decide_workspace(
                 .directory
                 .as_ref()
                 .is_some_and(|root| cwd.starts_with(root))
-            && actor.branch.is_some()
-            && actor.branch == observed.branch
         {
             return WorkspaceDecision::Ready {
                 token: ReadyToken::new(record, cwd.clone()),

@@ -81,12 +81,12 @@
   },
   {
     "id": "WR6",
-    "description": "ready-ignores-branch",
+    "description": "ready-ignores-worktree-root",
     "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
     "edits": [
       {
-        "before": "&& actor.branch == observed.branch",
-        "after": "&& true"
+        "before": ".is_some_and(|root| cwd.starts_with(root))",
+        "after": ".is_some_and(|_| true)"
       }
     ],
     "witnesses": [

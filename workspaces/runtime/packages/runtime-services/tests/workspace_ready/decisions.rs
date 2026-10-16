@@ -199,7 +199,23 @@ fn ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree() {
             token: ReadyToken::new(&record, plan.cwd.clone())
         }
     );
-    observed.branch = Some("other".into());
+    // A worker may switch its own worktree to a branch it names.
+    observed.branch = Some("feature/named-by-worker".into());
+    assert_eq!(
+        decide_workspace(
+            &actor,
+            &record,
+            Some(&plan.cwd),
+            &[],
+            None,
+            false,
+            &observed
+        ),
+        WorkspaceDecision::Ready {
+            token: ReadyToken::new(&record, plan.cwd.clone())
+        }
+    );
+    observed.registered = false;
     assert!(matches!(
         decide_workspace(
             &actor,
@@ -210,6 +226,12 @@ fn ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree() {
             false,
             &observed
         ),
+        WorkspaceDecision::Refuse(_)
+    ));
+    observed.registered = true;
+    let outside = std::path::PathBuf::from("/elsewhere");
+    assert!(matches!(
+        decide_workspace(&actor, &record, Some(&outside), &[], None, false, &observed),
         WorkspaceDecision::Refuse(_)
     ));
     assert!(matches!(
