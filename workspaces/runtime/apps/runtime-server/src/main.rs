@@ -1049,6 +1049,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .with_graceful_shutdown(async move {
         let reason = shutdown_signal().await;
         mutation_shutdown.close_mutation_admission();
+        shutdown_sync_changes.close();
         eprintln!("{}", shutdown_exit_log(reason));
         shutdown_cost_scans.store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = shutdown_requested.send(()) {
@@ -1067,7 +1068,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )
     .await?;
     durable_session_cleanup.map_err(std::io::Error::other)?;
-    shutdown_sync_changes.close();
     monitor_shutdown.send_replace(true);
     #[cfg(unix)]
     stop_runtime.cancel();

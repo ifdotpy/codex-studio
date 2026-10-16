@@ -43,6 +43,24 @@ callback, and future size does not grow with callback capture size; the
 [`transaction_entry_futures_do_not_store_operation_capture` test](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
 covers all five entrypoints.
 
+Account workers also serialize complete logical account operations with the
+`StoreBridge` semaphore. `scope_account_worker_operation` places its owned
+permit in a Tokio task-local context. `RuntimeStore` clones that lease only
+after writer admission succeeds, then moves the clone into the synchronous SQL
+actor callback. If the caller is cancelled or times out after admission, the
+callback keeps the account slot until SQL work completes, so a later account
+operation cannot overtake it. Cancellation while waiting for writer admission
+still drops the caller future, submits no SQL, and releases the account slot.
+Tokio task-local context does not propagate through `tokio::spawn`; spawned
+writer work must explicitly establish its own scope before relying on this
+serialization lease.
+
+The source regressions are
+[`admitted_write_keeps_account_operation_lease_after_caller_cancellation`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
+and
+[`cancelled_writer_admission_does_not_retain_account_operation_lease`](../../workspaces/runtime/packages/runtime-store/src/lib.rs).
+Their test gate remains pending with the rest of the actor integration checks.
+
 The runtime server opens one `Arc<RuntimeStore>` in
 [`runtime-server/src/main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs)
 and passes it to runtime services and HTTP routes. The writer API is async;
@@ -92,10 +110,12 @@ identity, buffer another body copy, or bypass validation. Cold entity-pull
 maintenance is a narrow GET exception: its projection commit and cache mark
 remain owned together after the response waiter is dropped. Ordinary read-only
 GET, HEAD, and OPTIONS work stays on the request future. Admission and shutdown
-close share a short gate so no task can be registered after drain begins.
-Shutdown closes admission and drains tracked requests plus durable account
-login/cancellation work while account workers and providers remain live, then
-stops those dependencies.
+close share a short gate so no task can be registered after drain begins. When
+the shutdown signal arrives, the server closes mutation admission and the sync
+resource hub before awaiting Axum's graceful serve future, so open event streams
+can exit instead of consuming the shutdown watchdog. After `serve` resolves, it
+drains tracked requests plus durable account login/cancellation work while
+account workers and providers remain live, then stops those dependencies.
 This graceful drain is bounded by the existing 20-second
 `SERVER_SHUTDOWN_GRACE` watchdog; it is not an unconditional completion
 guarantee. If the watchdog forces process exit, submitted operations retain
@@ -143,6 +163,15 @@ actor admission submits no SQL; cancellation after submission leaves an unknown
 outcome resolved through the original receipt without automatic resend. Preserve
 the current preparation failpoint boundaries and test each boundary against both
 successful commit and stale identity.
+
+The optional Python tool's `PATH` lookup and initial turn preparation/compile run
+on the bounded blocking pool before the final writer transaction. `CommitGuard`
+retains the resolved optional executable path as part of the preparation guidance
+snapshot; the final writer reuses that value and does not resolve `PATH` again.
+The final CPU recompile inside the writer remains intentional: it compares the
+prepared submission with the current durable identity. Keep that comparison
+explicit when describing this path; do not claim all compilation is outside the
+writer or remove the identity check as part of the async cutover.
 
 The owner-defined
 [`MAX_PENDING_WRITES`](../../workspaces/runtime/packages/runtime-store/src/sqlite_actor.rs)

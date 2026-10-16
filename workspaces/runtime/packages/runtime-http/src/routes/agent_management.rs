@@ -473,10 +473,23 @@ impl NativeActionPreparationRun {
         &self,
         request: &native_actions::Request,
     ) -> native_actions::Result<()> {
-        if self.is_vm(request)? {
+        let preparation = self.clone();
+        let request = request.clone();
+        let provider_home = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agent_management/preparation",
+            move || {
+                if preparation.is_vm(&request)? {
+                    Ok::<_, NativeError>(None)
+                } else {
+                    preparation.provider_home(&request).map(Some)
+                }
+            },
+        )
+        .await
+        .map_err(|_| NativeError::Unavailable("context-repair/repair-idle-broker"))??;
+        let Some(provider_home) = provider_home else {
             return Ok(());
-        }
-        let provider_home = self.provider_home(request)?;
+        };
         self.repair
             .as_ref()
             .ok_or(NativeError::Unavailable(
@@ -498,13 +511,20 @@ impl NativeActionPreparationRun {
         request: &native_actions::Request,
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
     ) -> native_actions::Result<()> {
-        let agent = {
-            let connection = self.store.read()?;
-            AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
-                .ok_or(NativeError::Changed)?
-                .value()
-                .clone()
-        };
+        let store = Arc::clone(&self.store);
+        let agent_id = request.agent.clone();
+        let agent = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agent_management/preparation",
+            move || {
+                let connection = store.read()?;
+                AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
+                    .ok_or(NativeError::Changed)?
+                    .value()
+                    .clone()
+            },
+        )
+        .await
+        .map_err(|_| NativeError::Unavailable("workspace-state/vm-workspace"))??;
         if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
             return Ok(());
         }

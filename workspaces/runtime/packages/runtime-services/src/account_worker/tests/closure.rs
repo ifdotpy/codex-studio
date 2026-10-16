@@ -61,16 +61,16 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
     assert_eq!(text, "acknowledged full answer");
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn stopped_pending_text_survives_fresh_process_recovery() {
     pending_text_recovery(true).await;
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn pending_text_survives_fresh_process_recovery() {
     pending_text_recovery(false).await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -167,7 +167,7 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     replacement.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn elapsed_flush_deadline_wins_over_replenished_events() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -188,8 +188,10 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
         peer.frame(json!({"method":"test/barrier","params":{}}))
             .await;
     }
+    tokio::time::pause();
     tokio::time::advance(STREAM_CADENCE).await;
     drop(permit);
+    tokio::time::resume();
     let mut count = 0;
     loop {
         peer.acknowledged(cursor + 1 + count).await;
@@ -262,7 +264,7 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn competing_workers_transfer_claim_to_destination_session() {
     let state = State::new().await;
     let mut old_peer = Peer::new();
@@ -321,17 +323,17 @@ async fn competing_workers_transfer_claim_to_destination_session() {
     destination.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_submit_and_settlement_keep_one_replay_identity() {
     scenario_retained_submit_and_settlement_keep_one_replay_identity().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn old_generation_pending_text_is_materialized_and_receipts_retire() {
     scenario_old_generation_pending_text_is_materialized_and_receipts_retire().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn written_callback_replay_compacts_its_journal_without_resending() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -513,7 +515,7 @@ pub(super) async fn scenario_preparation_drains_journal_and_stop() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn preparation_drains_journal_and_stop() {
     scenario_preparation_drains_journal_and_stop().await;
 }
@@ -560,16 +562,16 @@ pub(super) async fn unresolved_thread_receipt_survives_replacement(rejected: boo
     replacement.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn old_generation_thread_receipt_remains_unknown() {
     unresolved_thread_receipt_survives_replacement(false).await;
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn recovered_thread_rejection_replaces_receipt_pending_hold() {
     unresolved_thread_receipt_survives_replacement(true).await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
     let state = State::new().await;
     let id = state.agent.clone();
@@ -602,7 +604,9 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
         held["startAttempt"]["prepareError"],
         "model-catalog/refresh-pending"
     );
+    tokio::time::pause();
     tokio::time::advance(PREPARATION_RETRY).await;
+    tokio::time::resume();
     let list = catalog_peer.write("model/list").await;
     // The one-off exchange does not require journal ACK for its final response.
     catalog_peer.frame(json!({"id":list["id"],"result":{"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}})).await;
@@ -690,12 +694,12 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     assert!(state.record().await.get("lastWorkspaceWait").is_none());
     replacement.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn workspace_retry_wakes_after_restart() {
     scenario_workspace_retry_wakes_after_restart().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_surfaces_unconfirmed_provider_cleanup() {
     let state = State::new().await;
     let peer =

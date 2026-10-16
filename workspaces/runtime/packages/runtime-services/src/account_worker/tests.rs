@@ -4,12 +4,17 @@ mod claude_preparation;
 mod retained;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
-use std::{path::PathBuf, process::Command, sync::Arc};
+use std::{
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, atomic::AtomicUsize},
+};
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
 const FIXTURE_LOCK_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
     preparation::PreparationResources::bundled(
         String::new(),
@@ -846,7 +851,7 @@ async fn scenario_normal_turn_commits_transcript_before_ack_and_pending_event_wa
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     let state = State::new().await;
     let bad_id = "invalid-neighbor".to_owned();
@@ -1245,7 +1250,9 @@ async fn scenario_deadline_unknown_is_not_resent_and_late_reply_refines_it() {
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
+    tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(61)).await;
+    tokio::time::resume();
     // A journal barrier proves the timeout outcome was consumed before inspection.
     let cursor = peer
         .frame(json!({"method":"test/barrier","params":{}}))
@@ -1658,7 +1665,7 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn managed_callback_same_account_provider_request_is_written_without_blocking_worker() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1979,83 +1986,83 @@ async fn scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement() {
     scenario_normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement()
         .await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn interrupt_before_start_reply_uses_observed_turn_and_revokes_epoch() {
     scenario_interrupt_before_start_reply_uses_observed_turn_and_revokes_epoch().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_full_queue_and_silent_provider_is_bounded() {
     scenario_shutdown_full_queue_and_silent_provider_is_bounded().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn deadline_unknown_is_not_resent_and_late_reply_refines_it() {
     scenario_deadline_unknown_is_not_resent_and_late_reply_refines_it().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn provider_exit_mid_turn_retains_unknown_without_retry() {
     scenario_provider_exit_mid_turn_retains_unknown_without_retry().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn duplicate_stale_and_completion_before_reply_preserve_order() {
     scenario_duplicate_stale_and_completion_before_reply_preserve_order().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cancel_queued_input_prevents_provider_admission() {
     scenario_cancel_queued_input_prevents_provider_admission().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn generation_closed_holds_the_old_submission() {
     scenario_generation_closed_holds_the_old_submission().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn restart_after_submitted_before_written_recovers_unknown_without_resend() {
     scenario_restart_after_submitted_before_written_recovers_unknown_without_resend().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn unsupported_approval_is_answered_after_commit() {
     scenario_unsupported_approval_is_answered_after_commit().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn unsupported_question_is_answered_after_commit() {
     scenario_unsupported_question_is_answered_after_commit().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn unsupported_dynamic_tool_is_answered_after_commit() {
     scenario_unsupported_dynamic_tool_is_answered_after_commit().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn unknown_provider_method_is_answered_after_commit() {
     scenario_unknown_provider_method_is_answered_after_commit().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn foreign_account_stop_cannot_revoke_agent() {
     scenario_foreign_account_stop_cannot_revoke_agent().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn callback_unknown_write_is_not_resent_on_replay() {
     scenario_callback_unknown_write_is_not_resent_on_replay().await
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_new_stop_can_retry_a_definitely_rejected_interrupt() {
     scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt().await
 }
@@ -2112,7 +2119,7 @@ async fn worker_barrier(worker: &AccountHandle) {
         .expect("worker command barrier");
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
     let state = State::new().await;
     let peer = Peer::new();
@@ -2151,11 +2158,13 @@ async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
     )
     .await
     .expect("setup barrier deadline");
+    tokio::time::pause();
     tokio::time::advance(SHUTDOWN_GRACE * 2).await;
     assert!(matches!(
         worker.completion().await,
         Err(WorkerError::ShutdownTimeout)
     ));
+    tokio::time::resume();
     assert!(!state.bridge.accounts.lock().unwrap().contains("default"));
     drop(permit);
     assert_eq!(
@@ -2172,7 +2181,7 @@ async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
     replacement.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2192,7 +2201,7 @@ async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn rejected_start_restarts_without_unresolved_transport_receipts() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2211,7 +2220,7 @@ async fn rejected_start_restarts_without_unresolved_transport_receipts() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn committed_stop_survives_crash_before_interrupt_admission() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2256,7 +2265,7 @@ fn only_explicit_admission_rejection_can_mark_not_sent() {
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn transfer_between_resume_and_start_never_writes_to_old_account() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2287,7 +2296,7 @@ async fn transfer_between_resume_and_start_never_writes_to_old_account() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn acknowledged_journal_prefix_is_compacted() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2303,7 +2312,7 @@ async fn acknowledged_journal_prefix_is_compacted() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn consecutive_journal_events_share_one_store_transaction() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2377,7 +2386,7 @@ async fn consecutive_journal_events_share_one_store_transaction() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
     async fn start(state: &State, peer: &mut Peer) -> AccountHandle {
         let worker = peer.worker(state.bridge.clone()).await;
@@ -2484,7 +2493,7 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
     assert_eq!(streams(&baseline_state).await, committed_snapshot);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn callback_replay_waits_for_initialization_before_admission() {
     let state = State::new().await;
     let (release, gate) = oneshot::channel();
@@ -2558,12 +2567,12 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
     assert_eq!(bases, 0);
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn durable_stream_batch_recovers_before_flush() {
     scenario_durable_stream_batch_recovers_before_flush().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn unrelated_store_failure_after_enqueue_keeps_write_unknown() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2663,12 +2672,12 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     assert_eq!(bases, 0);
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn stream_base_survives_replaced_visible_item() {
     scenario_stream_base_survives_replaced_visible_item().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2756,7 +2765,7 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
     let _completed = worker.completion().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2777,43 +2786,56 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_releases_account_while_store_writer_is_blocked() {
     let state = State::new().await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let (entered, observed) = oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
+    let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
+    let blocked = Arc::new(std::sync::Mutex::new(blocked));
+    let agent = state.agent.clone();
     let store = state.bridge.store.clone();
-    let lock = tokio::spawn(async move {
-        store
-            .transaction_with(move |_| {
-                entered.send(()).unwrap();
-                blocked.recv().unwrap();
-                Ok::<_, WorkerError>(())
-            })
-            .await
-    });
-    observed.await.unwrap();
+    store
+        .transaction(move |tx| {
+            tx.create_scalar_function(
+                "account_worker_claim_gate",
+                0,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                move |_| {
+                    if let Some(entered) = entered
+                        .lock()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?
+                        .take()
+                    {
+                        entered
+                            .send(())
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    }
+                    blocked
+                        .lock()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?
+                        .recv()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    Ok(0_i64)
+                },
+            )?;
+            tx.execute_batch(&format!(
+                "CREATE TEMP TRIGGER account_worker_claim_gate BEFORE UPDATE ON runtime_events \
+                 WHEN OLD.agent='{agent}' AND OLD.status='pending' AND NEW.status='reserved' \
+                 BEGIN SELECT account_worker_claim_gate(); END;"
+            ))?;
+            Ok(())
+        })
+        .await
+        .expect("claim gate is installed on the store writer");
     state.wake(&worker).await;
-    let claim_identity = ("claim".to_owned(), 0, None);
     tokio::time::timeout(std::time::Duration::from_secs(120), async {
-        loop {
-            if state
-                .bridge
-                .faults
-                .operations
-                .lock()
-                .unwrap()
-                .contains(&claim_identity)
-            {
-                break;
-            }
-            state.bridge.faults.entered.notified().await;
-        }
+        observed.await.expect("claim gate reports entry")
     })
     .await
-    .expect("claim operation reaches the writer-blocked store job");
+    .expect("claim transaction reaches its admitted SQL update");
     assert_eq!(
         state.bridge.operation_slot.available_permits(),
         0,
@@ -2826,26 +2848,61 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
     )
     .await
     .expect("setup barrier deadline");
+    tokio::time::pause();
     tokio::time::advance(SHUTDOWN_GRACE * 2).await;
     assert!(matches!(
         worker.completion().await,
         Err(WorkerError::ShutdownTimeout)
     ));
+    tokio::time::resume();
     assert!(!state.bridge.accounts.lock().unwrap().contains("default"));
     assert_eq!(
         state.bridge.operation_slot.available_permits(),
         0,
         "started job retains permit"
     );
+    let second_operation_calls = Arc::new(AtomicUsize::new(0));
+    let calls_in_operation = Arc::clone(&second_operation_calls);
+    let mut second_operation = Box::pin(state.bridge.run(move |_store| async move {
+        calls_in_operation.fetch_add(1, std::sync::atomic::Ordering::Release);
+        Ok::<(), WorkerError>(())
+    }));
+    let second_operation_poll = std::future::poll_fn(|context| {
+        std::task::Poll::Ready(second_operation.as_mut().poll(context))
+    })
+    .await;
+    assert!(
+        second_operation_poll.is_pending(),
+        "a later bridge operation waits for the admitted writer callback"
+    );
+    assert_eq!(
+        second_operation_calls.load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
     release.send(()).unwrap();
-    lock.await.unwrap().unwrap();
+    second_operation
+        .await
+        .expect("second operation follows the admitted claim");
+    assert_eq!(
+        second_operation_calls.load(std::sync::atomic::Ordering::Acquire),
+        1
+    );
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER account_worker_claim_gate")?;
+            Ok(())
+        })
+        .await
+        .expect("claim gate is removed");
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     assert_eq!(state.event_status("input").await, "pending");
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn stream_base_and_metadata_rollback_together() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -2936,15 +2993,15 @@ async fn transfer_at_admission(call: usize, interrupt: bool) {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn transfer_after_claim_before_resume_submission_is_refused() {
     transfer_at_admission(1, false).await;
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn transfer_before_claim_transaction_leaves_input_pending() {
     transfer_at_admission(0, false).await;
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn transfer_after_stop_before_interrupt_submission_is_refused() {
     transfer_at_admission(1, true).await;
 }
@@ -3018,7 +3075,7 @@ async fn scenario_new_thread_freezes_settings_and_accepts_context() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn new_thread_freezes_settings_and_accepts_context() {
     scenario_new_thread_freezes_settings_and_accepts_context().await;
 }
@@ -3038,7 +3095,7 @@ async fn scenario_child_result_materializes_before_submission() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn child_result_materializes_before_submission() {
     scenario_child_result_materializes_before_submission().await;
 }
@@ -3072,7 +3129,7 @@ async fn scenario_workspace_refusal_retains_queue() {
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn workspace_refusal_retains_queue() {
     scenario_workspace_refusal_retains_queue().await;
 }
@@ -3968,7 +4025,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
 }
 
 #[cfg(unix)]
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
     let state = State::new().await;
     let agent_id = state.agent.clone();
@@ -4040,7 +4097,10 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
     .expect("Claude VM turn remains attached");
 
     let failed_sweep = resolver.attempted.notified();
+    tokio::time::pause();
     tokio::time::advance(crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
     tokio::time::timeout(std::time::Duration::from_secs(10), failed_sweep)
         .await
         .expect("first account-level Claude refresh attempt fails transiently");
@@ -4051,7 +4111,10 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
     );
 
     let refreshed = resolver.refreshed.notified();
+    tokio::time::pause();
     tokio::time::advance(crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
     tokio::time::timeout(std::time::Duration::from_secs(10), refreshed)
         .await
         .expect("later account-level Claude refresh sweep recovers");
@@ -5133,7 +5196,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn workspace_pending_reuses_reserved_attempt() {
     scenario_workspace_pending_reuses_reserved_attempt().await;
 }

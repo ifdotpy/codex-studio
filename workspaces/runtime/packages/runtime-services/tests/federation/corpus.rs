@@ -1153,9 +1153,12 @@ async fn lost_push_response(corpus: &Corpus) {
         3,
         "two pushes and one pull"
     );
+    let (push_deadline, pull_deadline) = {
+        let state = wire.state.lock().unwrap();
+        (state.deadlines[1], state.deadlines[2])
+    };
     assert_eq!(
-        wire.state.lock().unwrap().deadlines[1],
-        wire.state.lock().unwrap().deadlines[2],
+        push_deadline, pull_deadline,
         "push and pull share one absolute deadline"
     );
     let reverse = PeerTransport {

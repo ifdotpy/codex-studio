@@ -774,7 +774,7 @@ impl ProductionLifecyclePorts {
             let store = Arc::clone(&self.store);
             let dispatching = Arc::clone(&self.voice_dispatching);
             handle.spawn(async move {
-                let held_deadline = Instant::now() + VOICE_DELETE_HELD_WAIT;
+                let held_deadline = tokio::time::Instant::now() + VOICE_DELETE_HELD_WAIT;
                 let mut session_attempts = HashMap::<String, usize>::new();
                 let mut poll_attempt = 0;
                 loop {
@@ -788,7 +788,7 @@ impl ProductionLifecyclePorts {
                             }),
                         Err(error) => {
                             eprintln!("deleted voice sessions remain pending: {error}");
-                            if Instant::now() >= held_deadline {
+                            if tokio::time::Instant::now() >= held_deadline {
                                 break;
                             }
                             tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;
@@ -811,7 +811,9 @@ impl ProductionLifecyclePorts {
                         })
                         .collect();
                     if dispatchable.is_empty() {
-                        if pending.held_uncertain.is_empty() || Instant::now() >= held_deadline {
+                        if pending.held_uncertain.is_empty()
+                            || tokio::time::Instant::now() >= held_deadline
+                        {
                             break;
                         }
                         tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;

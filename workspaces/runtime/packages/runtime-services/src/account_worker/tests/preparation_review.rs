@@ -40,7 +40,7 @@ pub(super) async fn scenario_completed_repair_and_missing_complaint_deliver() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn completed_repair_and_missing_complaint_deliver() {
     scenario_completed_repair_and_missing_complaint_deliver().await;
 }
@@ -432,7 +432,7 @@ async fn sibling_completion_does_not_refuse_non_lead() {
     scenario_sibling_completion_does_not_refuse_non_lead().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
     for expired in [false, true] {
         let state = State::new().await;

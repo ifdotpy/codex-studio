@@ -27,6 +27,8 @@ use studio_runtime_services::{
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 use tokio::sync::Notify;
 
+const COMPOSED_DELETE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
         "../../runtime-store/tests/fixtures/live-state-schema.json"
@@ -1119,7 +1121,7 @@ async fn production_restart_scan_settles_durable_deleted_agent_state() {
     assert_eq!(settled["startAttempt"]["activeAtReservation"], false);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops_after_commit() {
     use studio_runtime_services::voice_runtime::{
         Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
@@ -1129,9 +1131,10 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     struct RecordingVoice {
         store: Arc<RuntimeStore>,
         calls: Mutex<Vec<String>>,
+        call_times: Mutex<Vec<(String, tokio::time::Instant)>>,
+        completion_times: Mutex<Vec<(String, tokio::time::Instant)>>,
         dispatched_after_commit: Mutex<Vec<bool>>,
-        called: Notify,
-        completed: std::sync::atomic::AtomicUsize,
+        completed: Arc<std::sync::atomic::AtomicUsize>,
         completion_changed: Notify,
     }
     impl VoiceRequestPort for RecordingVoice {
@@ -1170,14 +1173,23 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
                 .lock()
                 .expect("dispatched lock")
                 .push(deleted);
-            let is_released_held_session = operation_id == "voice:delete-stop:delete-unknown-voice";
-            self.calls.lock().expect("calls lock").push(operation_id);
-            if is_released_held_session {
-                self.called.notify_one();
-            }
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push(operation_id.clone());
+            let completion_operation_id = operation_id.clone();
+            self.call_times
+                .lock()
+                .expect("call times lock")
+                .push((operation_id, tokio::time::Instant::now()));
             let completed = &self.completed;
             let completion_changed = &self.completion_changed;
+            let completion_times = &self.completion_times;
             Box::pin(async move {
+                completion_times
+                    .lock()
+                    .expect("completion times lock")
+                    .push((completion_operation_id, tokio::time::Instant::now()));
                 completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 completion_changed.notify_one();
                 VoiceRequestReceipt {
@@ -1203,6 +1215,54 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
 
     struct NoBroker;
     impl AccountSessionPort for NoBroker {}
+
+    async fn wait_for_completed_requests(voice: &RecordingVoice, expected: usize) {
+        tokio::time::timeout(COMPOSED_DELETE_EVENT_TIMEOUT, async {
+            loop {
+                let changed = voice.completion_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if voice.completed.load(std::sync::atomic::Ordering::SeqCst) >= expected {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("voice request completion arrives");
+    }
+
+    async fn wait_for_voice_commits(
+        committed_requests: &std::sync::atomic::AtomicUsize,
+        changed: &Notify,
+        expected: usize,
+    ) {
+        tokio::time::timeout(COMPOSED_DELETE_EVENT_TIMEOUT, async {
+            loop {
+                let notification = changed.notified();
+                tokio::pin!(notification);
+                notification.as_mut().enable();
+                if committed_requests.load(std::sync::atomic::Ordering::SeqCst) >= expected {
+                    return;
+                }
+                notification.await;
+            }
+        })
+        .await
+        .expect("voice result commit follows completed request");
+    }
+
+    fn read_delete_receipt(store: &RuntimeStore) -> Value {
+        let reader = store.read().expect("read deletion receipt");
+        let raw: String = reader
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:lead:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("durable voice deletion intent");
+        serde_json::from_str(&raw).expect("deletion receipt JSON")
+    }
 
     let case = cases()
         .into_iter()
@@ -1261,9 +1321,10 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     let voice = Arc::new(RecordingVoice {
         store: Arc::clone(&store),
         calls: Mutex::new(Vec::new()),
+        call_times: Mutex::new(Vec::new()),
+        completion_times: Mutex::new(Vec::new()),
         dispatched_after_commit: Mutex::new(Vec::new()),
-        called: Notify::new(),
-        completed: std::sync::atomic::AtomicUsize::new(0),
+        completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         completion_changed: Notify::new(),
     });
     let voice_port: Arc<dyn VoiceRequestPort> = voice.clone();
@@ -1275,6 +1336,19 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         Some(voice_port),
     );
 
+    let committed_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let committed_requests_for_observer = Arc::clone(&committed_requests);
+    let completed_requests_for_observer = Arc::clone(&voice.completed);
+    let commit_changed = Arc::new(Notify::new());
+    let commit_changed_for_observer = Arc::clone(&commit_changed);
+    store.add_commit_observer(move || {
+        committed_requests_for_observer.fetch_max(
+            completed_requests_for_observer.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        commit_changed_for_observer.notify_one();
+    });
+
     let dispatch_started = tokio::time::Instant::now();
     ports
         .execute(
@@ -1285,10 +1359,46 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         )
         .await
         .expect("delete commits and dispatches voice stop");
-    tokio::task::yield_now().await;
-    for _ in 0..8 {
-        tokio::time::advance(std::time::Duration::from_secs(2)).await;
-        tokio::task::yield_now().await;
+    for completed in 1..=8 {
+        wait_for_completed_requests(&voice, completed).await;
+    }
+    wait_for_voice_commits(&committed_requests, &commit_changed, 8).await;
+
+    // Keep the retained stop Unknown while the active session reaches its own
+    // retry cap, then advance the held window to 30s without a SQLite write in
+    // flight. The later NotSent commit must make the held stop dispatchable
+    // before the original 35s deadline.
+    let elapsed = dispatch_started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(30));
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(30) - elapsed).await;
+    let held_receipt = read_delete_receipt(&store);
+    assert_eq!(
+        held_receipt["voiceEndHeldUncertain"][0]["sessionId"], "delete-unknown-voice",
+        "the held stop remains uncertain at the 30s checkpoint"
+    );
+    {
+        let calls = voice.calls.lock().expect("calls lock");
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|operation| {
+                    operation.as_str() == "voice:delete-stop:delete-retry-voice"
+                })
+                .count(),
+            8,
+            "the active session reaches its own bounded retry budget"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|operation| {
+                    operation.as_str() == "voice:delete-stop:delete-unknown-voice"
+                })
+                .count(),
+            0,
+            "an Unknown retained stop remains held through its deadline"
+        );
     }
     assert_eq!(
         voice
@@ -1301,15 +1411,12 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         8,
         "the active session exhausts its own bounded retry budget"
     );
-    for _ in 0..7 {
-        tokio::time::advance(std::time::Duration::from_secs(2)).await;
-        tokio::task::yield_now().await;
-    }
     let stop_operation = "voice:stop:delete-unknown-voice";
     let retained_id = format!(
         "account-worker:retained:voice-account:{}:result",
         studio_runtime_store::sha256_hex(stop_operation.as_bytes())
     );
+    tokio::time::resume();
     store
         .transaction(move |tx| {
             tx.execute(
@@ -1319,26 +1426,15 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             Ok(())
         }).await
         .expect("ordinary stop settles as proven not sent after deletion");
-    for _ in 0..8 {
-        tokio::time::advance(std::time::Duration::from_secs(2)).await;
-        tokio::task::yield_now().await;
+    for completed in 9..=16 {
+        wait_for_completed_requests(&voice, completed).await;
     }
+    wait_for_voice_commits(&committed_requests, &commit_changed, 16).await;
     assert!(
-        tokio::time::Instant::now()
-            .duration_since(dispatch_started)
-            .as_secs()
-            >= 35
+        tokio::time::Instant::now().duration_since(dispatch_started)
+            >= std::time::Duration::from_secs(35)
     );
-    tokio::time::timeout(std::time::Duration::from_secs(2), voice.called.notified())
-        .await
-        .expect("post-commit voice stop dispatched");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while voice.completed.load(std::sync::atomic::Ordering::SeqCst) < 16 {
-            voice.completion_changed.notified().await;
-        }
-    })
-    .await
-    .expect("every dispatched voice request future completed");
+    wait_for_completed_requests(&voice, 16).await;
     assert_eq!(
         voice.completed.load(std::sync::atomic::Ordering::SeqCst),
         16,
@@ -1362,6 +1458,34 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         8
     );
     drop(calls);
+    let first_held_call_at = voice
+        .call_times
+        .lock()
+        .expect("call times lock")
+        .iter()
+        .find_map(|(operation, at)| {
+            (operation == "voice:delete-stop:delete-unknown-voice").then_some(*at)
+        })
+        .expect("held stop call follows its 35s deadline");
+    assert!(
+        first_held_call_at.duration_since(dispatch_started) < std::time::Duration::from_secs(35),
+        "a retained stop dispatches when its receipt becomes NotSent before the held deadline"
+    );
+    let last_held_completion_at = voice
+        .completion_times
+        .lock()
+        .expect("completion times lock")
+        .iter()
+        .filter_map(|(operation, at)| {
+            (operation == "voice:delete-stop:delete-unknown-voice").then_some(*at)
+        })
+        .max()
+        .expect("held stop has completed retries");
+    assert!(
+        last_held_completion_at.duration_since(dispatch_started)
+            >= std::time::Duration::from_secs(35),
+        "the held session retains its own retry budget beyond the original deadline"
+    );
     let dispatched_after_commit = voice
         .dispatched_after_commit
         .lock()
@@ -1377,6 +1501,14 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         )
         .expect("durable voice deletion intent");
     let saved: Value = serde_json::from_str(&saved).expect("intent JSON");
+    assert_eq!(
+        saved["voiceEndResults"]["delete-retry-voice"], "not_sent",
+        "active retry receipts are durable"
+    );
+    assert_eq!(
+        saved["voiceEndResults"]["delete-unknown-voice"], "not_sent",
+        "held retry receipts are durable"
+    );
     let pending_session_ids = saved["voiceEndSessions"]
         .as_array()
         .expect("pending deletion sessions")

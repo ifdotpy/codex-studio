@@ -153,9 +153,8 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     use std::time::Duration;
     let (root, _) = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-    let (writer_started, started) = mpsc::channel();
+    let (writer_started, started) = tokio::sync::oneshot::channel();
     let (release_writer, release) = mpsc::channel();
-    let (reader_done, read_done) = mpsc::channel();
     let writer_store = Arc::clone(&store);
     let writer = tokio::spawn(async move {
         writer_store
@@ -168,27 +167,27 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
             .await
             .expect("writer commit");
     });
-    started
-        .recv_timeout(Duration::from_secs(5))
+    tokio::time::timeout(Duration::from_secs(5), started)
+        .await
+        .expect("writer starts before deadline")
         .expect("writer holds transaction");
     let reader_store = Arc::clone(&store);
-    tokio::spawn(async move {
-        reader_done
-            .send(reader_store.read_transaction(|tx| {
-                Ok(
-                    tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
-                        r.get::<_, String>(0)
-                    })?,
-                )
-            }))
-            .expect("reader result receiver");
+    let reader = tokio::task::spawn_blocking(move || {
+        reader_store.read_transaction(|tx| {
+            Ok(
+                tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
+                    r.get::<_, String>(0)
+                })?,
+            )
+        })
     });
-    let result = read_done.recv_timeout(Duration::from_secs(5));
+    let result = tokio::time::timeout(Duration::from_secs(5), reader).await;
     release_writer.send(()).expect("release writer");
     writer.await.expect("writer task");
     assert_eq!(
         result
             .expect("reader completed before writer release")
+            .expect("reader task")
             .expect("read"),
         "a"
     );

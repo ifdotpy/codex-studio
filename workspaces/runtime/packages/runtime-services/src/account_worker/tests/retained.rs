@@ -190,6 +190,7 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     lose_response.notify_one();
     let uncertain = first.await.unwrap().unwrap();
     assert_eq!(uncertain["outcome"], "uncertain");
+    drop(reset_store);
 
     // Opening the durable service store again models recovery after a process restart.
     let reset_store = Arc::new(
@@ -335,7 +336,7 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -367,7 +368,7 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -436,7 +437,7 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -499,7 +500,7 @@ async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -538,7 +539,7 @@ async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_retry_lost_response_replays_unknown_without_another_send() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -576,7 +577,7 @@ async fn retained_retry_lost_response_replays_unknown_without_another_send() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -608,7 +609,7 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_retry_intent_crash_before_transport_replays_unknown_without_sending() {
     use crate::account_worker::retained::Call;
 
@@ -673,7 +674,7 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
     second_worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     let state = State::new().await;
     let mut first_peer = Peer::identity("default", 1, None);
@@ -740,7 +741,7 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     second_worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
     let state = State::new().await;
     for generation in 1..=8 {
@@ -780,7 +781,7 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
     let state = State::new().await;
     let mut first_peer = Peer::identity("default", 1, None);
@@ -809,7 +810,7 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
     second_worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1096,7 +1097,7 @@ async fn restart_history_case(outcome: &str) {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn startup_first_pass_reconciles_exact_history_without_replaying_unknown_input() {
     for outcome in [
         "delivered",
@@ -1109,7 +1110,7 @@ async fn startup_first_pass_reconciles_exact_history_without_replaying_unknown_i
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let state = State::new().await;
     let agent_id = state.agent.clone();
@@ -1268,7 +1269,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     );
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1295,7 +1296,7 @@ async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_write() {
     let state = State::new().await;
     let peer = Peer::new();
@@ -1313,7 +1314,7 @@ async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_wr
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
     let state = State::new().await;
     let old_peer = Peer::new();
@@ -1339,7 +1340,7 @@ async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
     replacement_worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_authorization_refuses_deleted_agent() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1373,7 +1374,7 @@ async fn retained_authorization_refuses_deleted_agent() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1437,7 +1438,7 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     use crate::{
         account_worker::retained::consumers::HistoryPort,
@@ -1527,7 +1528,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     assert_eq!(second_result.body["thread"]["status"]["type"], "idle");
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1557,7 +1558,7 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn connection_recovery_history_receipt_survives_worker_restart_without_resend() {
     use crate::{
         account_worker::retained::consumers::HistoryPort,
@@ -1638,7 +1639,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
     second_worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn connection_recovery_repeated_request_returns_saved_status_without_history_read() {
     let state = State::new().await;
     let before = state.record().await;
@@ -1686,7 +1687,7 @@ async fn connection_recovery_repeated_request_returns_saved_status_without_histo
     assert_eq!(result.receipt, saved);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     use crate::{
         recovery::{RecoveryError, RecoveryOutcome},
@@ -1834,7 +1835,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     ));
     worker.shutdown().await.unwrap();
 }
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1872,7 +1873,7 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     replacement.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1918,7 +1919,7 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_deadline_during_intent_never_writes_after_expiry() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1926,13 +1927,26 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
     let port = worker.retained_session();
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("retained_submitted".into());
     let mut call = request(&state, &port, "expires-in-queue");
-    call.deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(2)).into_std();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    call.deadline = deadline.into_std();
     let sender = port.clone();
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
-    state.bridge.faults.paused.notified().await;
-    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("retained request reaches its intent pause before expiry");
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    assert!(
+        !remaining.is_zero(),
+        "intent pause is reached before deadline"
+    );
+    tokio::time::pause();
+    tokio::time::advance(remaining).await;
     assert_eq!(waiter.await.unwrap().unwrap_err(), PortError::Unknown);
+    tokio::time::resume();
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state.bridge.faults.release.notify_waiters();
     worker_barrier(&worker).await;
@@ -1959,7 +1973,7 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn retained_response_before_write_receipt_stays_positive() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1993,7 +2007,7 @@ async fn retained_response_before_write_receipt_stays_positive() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
     use crate::claude_controls::service::{ControlScope, ControlSession};
     let state = State::new().await;
@@ -2038,7 +2052,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn claude_adapter_distinguishes_not_sent_from_unknown() {
     use crate::claude_controls::service::ControlSession;
     use crate::claude_controls::{ControlError, service::ControlScope};

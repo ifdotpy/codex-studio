@@ -268,9 +268,8 @@ impl StoreBridge {
             .acquire_owned()
             .await
             .map_err(|_| WorkerError::Closed)?;
-        let result = operation(self.store.clone()).await;
-        drop(permit);
-        result
+        studio_runtime_store::scope_account_worker_operation(permit, operation(self.store.clone()))
+            .await
     }
     async fn prepare_run<T, F, Fut>(
         &self,

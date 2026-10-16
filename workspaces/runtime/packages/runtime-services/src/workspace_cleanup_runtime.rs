@@ -1386,7 +1386,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn crash_with_pending_intent_becomes_unknown_after_reopen() {
+    async fn panicking_effect_is_marked_unknown_and_stays_held_after_reopen() {
         struct CrashPort;
         impl CleanupPorts for CrashPort {
             fn perform(
@@ -1406,17 +1406,20 @@ mod tests {
                 "agentArchive":{"cleanupPending":true}}),
         )
         .await;
-        let task_store = std::sync::Arc::clone(&store);
-        let crash = tokio::spawn(async move {
+        assert!(matches!(
             cleanup_agent_workspace_with_ports(
-                task_store,
+                Arc::clone(&store),
                 "cleanup-agent".to_owned(),
                 CleanupAction::Archive,
                 Arc::new(CrashPort),
             )
-            .await
-        });
-        assert!(crash.await.expect_err("fake effect panics").is_panic());
+            .await,
+            Err(WorkspaceCleanupError::Held)
+        ));
+        assert_eq!(
+            agent(&store).pointer("/workspaceCleanupIntent/phase"),
+            Some(&json!("unknown"))
+        );
         drop(store);
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
@@ -1536,7 +1539,7 @@ mod tests {
         .await
         .expect("intent commits");
         assert!(replay.is_none());
-        let mut changed = expected;
+        let mut changed = agent(&store);
         changed["epoch"] = json!(8);
         store
             .transaction(move |tx| {

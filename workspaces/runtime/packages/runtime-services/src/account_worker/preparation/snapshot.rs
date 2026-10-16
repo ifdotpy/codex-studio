@@ -388,13 +388,9 @@ pub(super) fn guidance(
     resources: &PreparationResources,
     record: &Value,
     state_root: &Path,
+    python: Option<PathBuf>,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
-    guidance_with_python(
-        resources,
-        record,
-        state_root,
-        crate::python_tool::resolve_python_tool(),
-    )
+    guidance_with_python(resources, record, state_root, python)
 }
 
 fn guidance_with_python(
@@ -577,6 +573,7 @@ pub(super) fn thread_snapshot(
     state_root: &Path,
     progress_directory: Option<String>,
     account_transfer_owner: Option<&str>,
+    python: Option<PathBuf>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
     let root_id = record["rootId"]
@@ -690,7 +687,7 @@ pub(super) fn thread_snapshot(
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
-        guidance: guidance(resources, record, state_root)?,
+        guidance: guidance(resources, record, state_root, python)?,
         catalog: thread::CatalogSnapshot {
             source,
             definitions,
@@ -718,12 +715,13 @@ pub(super) fn submission_snapshot(
     record: &Value,
     intent: &TurnIntent,
     state_root: &Path,
+    python: Option<PathBuf>,
 ) -> Result<(turn::PreparationSnapshot, Vec<turn::Event>), WorkerError> {
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let guidance = guidance(resources, record, state_root)?;
+    let guidance = guidance(resources, record, state_root, python)?;
     let plans = records(tx, "runtime_plans")?;
     let plan=plans.get(root_id).map(|s|serde_json::from_str::<Value>(s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();

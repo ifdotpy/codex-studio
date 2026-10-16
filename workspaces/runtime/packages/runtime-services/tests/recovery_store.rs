@@ -652,6 +652,7 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
         let queue = events(&store);
         assert_eq!(queue[0].1, case["events"][0][3], "{}", case["name"]);
         let saved = snapshot(&store).record().clone();
+        drop(effects);
         drop(store);
         let reopened = open_store(root.path()).await;
         assert_eq!(snapshot(&reopened).record(), &saved);
@@ -1037,6 +1038,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             assert_eq!(rows[1], case["item"]);
             assert!(rows[0].get("finished").is_none());
         }
+        drop(effects);
         drop(store);
         let reopened = open_store(root.path()).await;
         assert_eq!(task_rows(&reopened), rows);

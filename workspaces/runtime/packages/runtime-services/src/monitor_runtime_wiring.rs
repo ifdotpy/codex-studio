@@ -1236,8 +1236,8 @@ mod tests {
     use crate::rules_engine::RuleCheck;
     use crate::rules_tick::{CheckReconciliation, CheckSubmission, RuleMonitor, RulesTickError};
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use studio_runtime_store::RuntimeStore;
     use tokio::sync::{Notify, watch};
@@ -1249,6 +1249,8 @@ mod tests {
         queued_results: AtomicUsize,
         drained_results: AtomicUsize,
         probes: AtomicUsize,
+        next_call_times: Mutex<Vec<tokio::time::Instant>>,
+        next_error_times: Mutex<Vec<tokio::time::Instant>>,
         called: Notify,
         probe_called: Notify,
     }
@@ -1293,6 +1295,10 @@ mod tests {
         ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
             Box::pin(async move {
                 self.next_calls.fetch_add(1, Ordering::SeqCst);
+                self.next_call_times
+                    .lock()
+                    .expect("record monitor port call time")
+                    .push(tokio::time::Instant::now());
                 self.called.notify_one();
                 let queued = self.queued_results.swap(0, Ordering::SeqCst);
                 self.drained_results.fetch_add(queued, Ordering::SeqCst);
@@ -1303,6 +1309,10 @@ mod tests {
                     })
                     .is_ok()
                 {
+                    self.next_error_times
+                        .lock()
+                        .expect("record monitor port error time")
+                        .push(tokio::time::Instant::now());
                     return Err(MonitorError::Refused("test transient"));
                 }
                 Ok(None)
@@ -1496,7 +1506,7 @@ mod tests {
         assert!(rule_error.fatal_for_tick());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn monitor_waits_idle_and_a_pre_wait_wake_is_not_lost() {
         let (_root, store, port) = fixture().await;
         // Exclude receipt-directory creation from the monitor's native startup watch.
@@ -1515,6 +1525,7 @@ mod tests {
         wait_for_cycles(&runtime, 2).await;
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         let reads = runtime.loop_activity.deadline_reads.load(Ordering::SeqCst);
+        tokio::time::pause();
         tokio::time::advance(Duration::from_secs(3600)).await;
         tokio::task::yield_now().await;
         assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), ticks);
@@ -1522,10 +1533,11 @@ mod tests {
             runtime.loop_activity.deadline_reads.load(Ordering::SeqCst),
             reads
         );
+        tokio::time::resume();
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn queued_output_and_exit_results_wake_a_sleeping_consumer() {
         let (_root, store, port) = fixture().await;
         let runtime = Arc::new(MonitorRuntime::new(
@@ -1544,7 +1556,7 @@ mod tests {
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn watcher_failure_does_not_gate_committed_dispatch_wakes() {
         let (_root, store, port) = fixture().await;
         let runtime = Arc::new(MonitorRuntime::new(
@@ -1669,7 +1681,7 @@ mod tests {
         assert!(matches!(&second.effects[0].1, Effect::Probe { .. }));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn monitor_loop_reaches_a_due_sixty_fifth_monitor_then_sleeps() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
@@ -1732,13 +1744,15 @@ mod tests {
             expected_ticks
         );
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
+        tokio::time::pause();
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
         assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), ticks);
+        tokio::time::resume();
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn transient_port_error_retries_after_backoff_and_restarts_from_durable_state() {
         let (root, store, port) = fixture().await;
         port.fail_next.store(1, Ordering::SeqCst);
@@ -1752,8 +1766,15 @@ mod tests {
         wait_for_calls(&port, 1).await;
         wait_for_cycles(&runtime, 1).await;
         assert_eq!(runtime.last_tick_error().as_deref(), Some("test transient"));
-        tokio::time::advance(ERROR_RETRY_MIN).await;
         wait_for_calls(&port, 2).await;
+        let call_times = port.next_call_times.lock().expect("read port call times");
+        let error_times = port.next_error_times.lock().expect("read port error times");
+        assert!(
+            call_times[1].duration_since(error_times[0]) >= ERROR_RETRY_MIN,
+            "transient failures must honor the configured retry backoff"
+        );
+        drop(error_times);
+        drop(call_times);
         wait_for_cycles(&runtime, 2).await;
         assert_eq!(runtime.last_tick_error(), None);
         stop_task(&shutdown_tx, task).await;
@@ -2026,7 +2047,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn low_worker_commit_wakes_monitor_without_stealing_registry_wake() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
@@ -2130,7 +2151,7 @@ mod tests {
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn due_low_worker_alert_settles_then_monitor_waits_without_past_next_at_spin() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
@@ -2181,9 +2202,11 @@ mod tests {
             None
         );
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
+        tokio::time::pause();
         tokio::time::advance(Duration::from_secs(3600)).await;
         tokio::task::yield_now().await;
         assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), ticks);
+        tokio::time::resume();
         stop_task(&shutdown_tx, task).await;
     }
 

@@ -1471,7 +1471,7 @@ async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
@@ -1512,8 +1512,11 @@ async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
         wake.clone(),
     ));
     let (stop, receiver) = tokio::sync::watch::channel(false);
+    let first_ack = first_ack_attempt.notified();
+    tokio::pin!(first_ack);
+    first_ack.as_mut().enable();
     let task = studio_runtime_services::monitor_runtime_wiring::start(runtime.clone(), receiver);
-    tokio::time::timeout(Duration::from_secs(5), first_ack_attempt.notified())
+    tokio::time::timeout(Duration::from_secs(5), first_ack)
         .await
         .expect("first ACK attempt");
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 1);

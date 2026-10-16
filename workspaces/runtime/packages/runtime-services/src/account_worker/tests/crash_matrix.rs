@@ -600,7 +600,9 @@ async fn every_scenario_recovers_at_every_bridge_boundary() {
     } else {
         FAST_SCENARIOS.into()
     };
-    // Each scenario owns a paused clock; a deadline advance cannot affect peers.
+    // Each scenario owns its current-thread runtime; native SQLite actor work
+    // must run against real Tokio time, and timer-specific scenarios control
+    // their own clock only around the deadline assertion.
     let slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut tasks = tokio::task::JoinSet::new();
     for index in scenarios {
@@ -609,7 +611,6 @@ async fn every_scenario_recovers_at_every_bridge_boundary() {
             let _permit = permit;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .start_paused(true)
                 .build()
                 .unwrap()
                 .block_on(scenario_matrix(index))

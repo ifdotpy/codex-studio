@@ -13,7 +13,8 @@ use std::{
 };
 use tempfile::tempdir;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
     process::Command,
     time::timeout,
 };
@@ -266,8 +267,10 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .env("XDG_STATE_HOME", prefix.path().join("source-xdg-state"))
         .env("TMPDIR", prefix.path())
         .env("CODEX_AGENTS_STATE_DIR", &state)
+        .env("CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .stdin(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -285,7 +288,58 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         "source-layout server failed to start: {source_line}"
     );
     assert_eq!(source_child.try_wait().unwrap(), None);
-    source_child.kill().await.unwrap();
-    source_child.wait().await.unwrap();
+    let port = source_line
+        .trim()
+        .strip_prefix("Codex Canvas: http://127.0.0.1:")
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET /api/sync/stream?protocol=3&resources=%5B%7B%22kind%22%3A%22accounts%22%7D%5D HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let stream_ready = timeout(Duration::from_secs(5), async {
+        loop {
+            let count = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "sync stream ended before its initial event");
+            response.extend_from_slice(&buffer[..count]);
+            let text = String::from_utf8_lossy(&response);
+            if text.contains("\r\n\r\n") && text.contains("event: resources") {
+                assert!(
+                    text.starts_with("HTTP/1.1 200"),
+                    "unexpected SSE response: {text}"
+                );
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        stream_ready.is_ok(),
+        "sync stream did not send its initial event"
+    );
+
+    drop(source_child.stdin.take());
+    let status = match timeout(Duration::from_secs(10), source_child.wait()).await {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            source_child.kill().await.unwrap();
+            let status = source_child.wait().await.unwrap();
+            panic!("server did not finish graceful shutdown with an open sync stream: {status}");
+        }
+    };
+    assert!(
+        status.success(),
+        "server exited unsuccessfully after shutdown: {status}"
+    );
+    drop(stream);
     assert!(!binary_dir.join("python-invoked").exists());
 }

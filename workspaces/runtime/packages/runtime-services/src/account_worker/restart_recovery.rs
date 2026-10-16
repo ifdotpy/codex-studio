@@ -81,7 +81,7 @@ async fn reconcile_first_pass(
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
     for _ in 0..MAX_STARTUP_SCAN_PAGES {
-        let jobs = load_recovery_jobs(&store, account, &mut cursor)?;
+        let jobs = load_recovery_jobs_blocking(Arc::clone(&store), account, &mut cursor).await?;
         if jobs.is_empty() {
             break;
         }
@@ -163,6 +163,26 @@ async fn reconcile_first_pass(
         ready: recovered,
         streams: recovered_streams,
     })
+}
+
+async fn load_recovery_jobs_blocking(
+    store: Arc<RuntimeStore>,
+    account: &str,
+    cursor: &mut RecoveryCursor,
+) -> Result<Vec<RecoveryJob>, RecoveryError> {
+    let account = account.to_owned();
+    let mut page_cursor = std::mem::take(cursor);
+    let (jobs, updated_cursor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/restart_recovery_scan",
+        move || {
+            let jobs = load_recovery_jobs(&store, &account, &mut page_cursor)?;
+            Ok::<_, RecoveryError>((jobs, page_cursor))
+        },
+    )
+    .await
+    .map_err(|_| RecoveryError::CommitFailed)??;
+    *cursor = updated_cursor;
+    Ok(jobs)
 }
 
 #[derive(Default)]

@@ -2502,10 +2502,10 @@ mod tests {
             ("https://peer.invalid".to_owned(), "public-key".to_owned())
         );
         let (ready_tx, ready_rx) = mpsc::channel();
-        const READ_POOL_SLOTS: usize = 4;
-        let mut release_senders = Vec::with_capacity(READ_POOL_SLOTS);
+        let mut release_senders =
+            Vec::with_capacity(studio_runtime_store::READ_CONNECTION_POOL_CAPACITY);
         std::thread::scope(|scope| {
-            for _ in 0..READ_POOL_SLOTS {
+            for _ in 0..studio_runtime_store::READ_CONNECTION_POOL_CAPACITY {
                 let store = Arc::clone(&store);
                 let ready_tx = ready_tx.clone();
                 let (release_tx, release_rx) = mpsc::channel();
@@ -2517,7 +2517,7 @@ mod tests {
                 });
             }
             drop(ready_tx);
-            for _ in 0..READ_POOL_SLOTS {
+            for _ in 0..studio_runtime_store::READ_CONNECTION_POOL_CAPACITY {
                 ready_rx
                     .recv_timeout(std::time::Duration::from_secs(2))
                     .expect("every pooled slot is available after credential lookup");

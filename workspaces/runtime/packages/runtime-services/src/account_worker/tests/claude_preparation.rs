@@ -40,7 +40,7 @@ pub(super) fn claude_resources(state: &State) -> preparation::PreparationResourc
 }
 
 #[cfg(unix)]
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn claude_turn_freezes_exact_input_before_native_write() {
     let state = State::new().await;
     let agent = state.agent.clone();

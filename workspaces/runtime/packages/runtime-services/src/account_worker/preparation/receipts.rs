@@ -39,6 +39,7 @@ pub(crate) fn accept_thread(
         root,
         progress_directory,
         None,
+        None,
     )?;
     let receipt = thread::ProviderReceipt {
         identity: thread::ReceiptIdentity {

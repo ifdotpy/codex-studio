@@ -313,6 +313,7 @@ mod preparation_retry_tests {
         )
         .await
         .expect("stop retries with current lifecycle inputs");
+        drop(hook_changes);
         drop(changes);
         writer.await.expect("interleaving writer task exits");
 
@@ -365,6 +366,7 @@ mod preparation_retry_tests {
         )
         .await
         .expect("last attempt captures under writer admission and stops current state");
+        drop(hook_changes);
         drop(changes);
         writer.await.expect("interleaving writer task exits");
 

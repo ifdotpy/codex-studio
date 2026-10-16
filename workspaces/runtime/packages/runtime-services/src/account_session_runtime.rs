@@ -2103,12 +2103,11 @@ mod limits_runtime_tests {
 
     struct Fixture {
         _root: tempfile::TempDir,
-        _tokio: tokio::runtime::Runtime,
         runtime: Arc<AccountSessionRuntime>,
         provider: Arc<FakeLimitsSession>,
     }
 
-    fn fixture(
+    async fn fixture(
         replies: impl IntoIterator<Item = Reply>,
         gate: bool,
     ) -> (Fixture, mpsc::Receiver<()>) {
@@ -2129,11 +2128,6 @@ mod limits_runtime_tests {
         fs::write(&registry_path, &registry).unwrap();
         let driver = Arc::new(AccountDriver::open(&registry_path).unwrap());
         let policy = Arc::new(AccountPolicyState::from_startup(Some(&registry), []).unwrap());
-        let tokio = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
         let scope = ConnectionScope {
             account: "default".into(),
             connection: "fixture-connection".into(),
@@ -2155,16 +2149,12 @@ mod limits_runtime_tests {
         });
         let store_path = root.path().join("store");
         fs::create_dir_all(&store_path).unwrap();
-        let store = Arc::new(
-            tokio
-                .block_on(RuntimeStore::open(Some(&store_path)))
-                .unwrap(),
-        );
+        let store = Arc::new(RuntimeStore::open(Some(&store_path)).await.unwrap());
         let runtime = Arc::new(
             AccountSessionRuntime::new(
                 driver,
                 Some(provider.clone()),
-                tokio.handle().clone(),
+                tokio::runtime::Handle::current(),
                 root.path().join("accounts"),
                 home.clone(),
                 home,
@@ -2175,7 +2165,6 @@ mod limits_runtime_tests {
         (
             Fixture {
                 _root: root,
-                _tokio: tokio,
                 runtime,
                 provider,
             },
@@ -2186,7 +2175,7 @@ mod limits_runtime_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_stale_cold_reads_share_one_native_request() {
         let (fixture, entered) =
-            fixture([Reply::Data(json!({"accountId":"fixture-account"}))], true);
+            fixture([Reply::Data(json!({"accountId":"fixture-account"}))], true).await;
         let gate = Arc::clone(fixture.provider.first_read_gate.as_ref().unwrap());
         let _release_on_exit = ReleaseFirstReadGate(Arc::clone(&gate));
         let runtime = Arc::clone(&fixture.runtime);
@@ -2226,7 +2215,8 @@ mod limits_runtime_tests {
                 Reply::Data(json!({"accountId":"fixture-account"})),
             ],
             false,
-        );
+        )
+        .await;
         assert!(
             AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default")
                 .await
@@ -2260,7 +2250,8 @@ mod limits_runtime_tests {
                 "userCode":"ABCD"
             }))],
             true,
-        );
+        )
+        .await;
         let request = LoginRequest {
             login_id: "11000000-0000-4000-8000-000000000009".into(),
             account_key: Some("default".into()),

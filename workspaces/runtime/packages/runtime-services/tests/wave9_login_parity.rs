@@ -156,14 +156,10 @@ async fn compare_codex(expected: &Value) {
     std::fs::write(&registry, initial.to_string()).expect("initial registry");
     let driver = Arc::new(AccountDriver::open(&registry).expect("account driver"));
     let session = Arc::new(CodexSession(AtomicUsize::new(0)));
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("account runtime");
     let service = AccountSessionRuntime::new(
         driver.clone(),
         Some(session.clone()),
-        runtime.handle().clone(),
+        tokio::runtime::Handle::current(),
         accounts_root.clone(),
         base_home,
         home,
