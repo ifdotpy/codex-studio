@@ -38,6 +38,7 @@ const acknowledgedStatuses = {
   stored_only: true,
 } satisfies Record<MessageDelivery["status"], true>;
 const AGENT_ENTITY_ID_PREFIX = "entity:agent:";
+const OUTBOX_RETRY_DELAY_MS = 5_000;
 
 export function matchesMessageDelivery(value: unknown, messageId: string) {
   if (!value || typeof value !== "object") return false;
@@ -546,6 +547,27 @@ export function useOutbox() {
     let unsubscribe = () => {};
     let queuedIdentity = "";
     let drainAgain = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearRetry = () => {
+      if (retryTimer === undefined) return;
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    const scheduleRetry = () => {
+      if (
+        retryTimer !== undefined ||
+        stop ||
+        isApiSchemaMismatch() ||
+        !navigator.onLine
+      )
+        return;
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
+        if (subscribed) void drain();
+        else void subscribe();
+      }, OUTBOX_RETRY_DELAY_MS);
+    };
     const drain = async () => {
       if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
       if (draining) {
@@ -578,6 +600,12 @@ export function useOutbox() {
                 // Per-message rejection is already stored beside that message.
                 if (!(e instanceof ApiError)) throw e;
               });
+              if (
+                result?.kind === "local" &&
+                result.status === "queued" &&
+                result.error
+              )
+                scheduleRetry();
               if (result?.queued) break;
             }
           }
@@ -588,10 +616,19 @@ export function useOutbox() {
         );
         if (!stop && !isApiSchemaMismatch()) setError("");
       } catch (e) {
-        if (!stop) setError(errorText(e));
+        if (!stop) {
+          setError(errorText(e));
+          scheduleRetry();
+        }
       } finally {
         draining = false;
-        if (drainAgain && !stop && !isApiSchemaMismatch()) void drain();
+        if (
+          drainAgain &&
+          retryTimer === undefined &&
+          !stop &&
+          !isApiSchemaMismatch()
+        )
+          void drain();
       }
     };
     let subscribing = false,
@@ -606,44 +643,77 @@ export function useOutbox() {
           recoveringReceipts = false;
         });
     };
+    const handleOutboxDocuments = (docs: any[]) => {
+      const nextQueued = JSON.stringify(
+        queuedDocuments(docs).map((doc) => doc.id),
+      );
+      const queuedChanged = nextQueued !== queuedIdentity;
+      if (queuedChanged) {
+        queuedIdentity = nextQueued;
+        clearRetry();
+        void drain();
+      }
+      setEntries(
+        docs
+          .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))
+          .sort((a, b) => a.created - b.created),
+      );
+      return queuedChanged;
+    };
     const subscribe = async () => {
       if (stop || subscribing || subscribed) return;
       subscribing = true;
       try {
         const { db } = await syncDatabase();
         if (stop) return;
-        const sub = db.outbox.find().$.subscribe((docs: any[]) => {
-          const nextQueued = JSON.stringify(
-            queuedDocuments(docs).map((doc) => doc.id),
-          );
-          if (nextQueued !== queuedIdentity) {
-            queuedIdentity = nextQueued;
-            void drain();
-          }
-          setEntries(
-            docs
-              .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))
-              .sort((a, b) => a.created - b.created),
-          );
-        });
+        let subscriptionReady = false;
+        let bufferedDocs: any[] | undefined;
+        const sub = db.outbox.find().$.subscribe(
+          (docs: any[]) => {
+            if (!subscriptionReady) bufferedDocs = docs;
+            else handleOutboxDocuments(docs);
+          },
+          (error: unknown) => {
+            subscribed = false;
+            unsubscribe();
+            unsubscribe = () => {};
+            if (!stop) {
+              setError(errorText(error));
+              scheduleRetry();
+            }
+          },
+        );
         unsubscribe = () => sub.unsubscribe();
+        if (sub.closed) {
+          unsubscribe();
+          unsubscribe = () => {};
+          subscribed = false;
+          scheduleRetry();
+          return;
+        }
         subscribed = true;
+        clearRetry();
+        subscriptionReady = true;
+        if (bufferedDocs) handleOutboxDocuments(bufferedDocs);
         void drain();
         recoverReceipts();
       } catch (error) {
-        if (!stop) setError(errorText(error));
+        if (!stop) {
+          setError(errorText(error));
+          scheduleRetry();
+        }
       } finally {
         subscribing = false;
       }
     };
     const resume = () => {
+      clearRetry();
       void subscribe();
       void drain();
     };
-    const timer = setInterval(resume, 5000);
     void subscribe();
     const stopForSchemaMismatch = onApiSchemaMismatch(() => {
-      clearInterval(timer);
+      clearRetry();
     });
     const stopResume = onResume(() => {
       resume();
@@ -651,7 +721,7 @@ export function useOutbox() {
     });
     return () => {
       stop = true;
-      clearInterval(timer);
+      clearRetry();
       unsubscribe();
       stopResume();
       stopForSchemaMismatch();
