@@ -198,7 +198,10 @@ class TerminalsContract(unittest.TestCase):
         script.write_text(
             "import os,pathlib,signal,sys,time\n"
             "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
-            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "marker = pathlib.Path(sys.argv[1])\n"
+            "pending = marker.with_suffix('.pending')\n"
+            "pending.write_text(str(os.getpid()))\n"
+            "pending.replace(marker)\n"
             "time.sleep(60)\n"
         )
         children = []
@@ -250,7 +253,10 @@ class TerminalsContract(unittest.TestCase):
         script.write_text(
             "import os,pathlib,signal,time\n"
             "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
-            f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+            f"marker = pathlib.Path({str(marker)!r})\n"
+            "pending = marker.with_suffix('.pending')\n"
+            "pending.write_text(str(os.getpid()))\n"
+            "pending.replace(marker)\n"
             "time.sleep(60)\n"
         )
         pid = None

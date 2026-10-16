@@ -148,3 +148,80 @@ add-account flow recovery now also reads and migrates through that same owner's
 storage. The two independently added free-space ports were consolidated without
 changing the production probe; both low-capacity regressions remain. The combined
 candidate requires a new complete fast gate before publication.
+
+The next combined fast gate passed with 6,004 server tests, 2,213 Rust tests,
+1,050 web tests, 63 bridge tests, ten tooling tests and six browser smoke tests.
+That reviewed integration is recorded at `cb056836a`. Main then advanced to
+`614ad88de`; the pending merge preserves the shared 32 MiB supervisor frame bound
+and the earlier native ownership and cleanup changes.
+
+The new server run passed 6,002 checks and exposed a PID fixture publication race.
+The fixture now publishes the fully written PID by atomic rename and lets its
+registered owner reap the child on assertion failure. All eight focused harness
+checks pass. The Rust remainder passed 2,219 checks and failed seven: six attempted
+Linux-only retained-child ownership on macOS, and one lost a VM control reply.
+Retained-child tests stay enabled on Linux; macOS v1 compatibility tests use the
+supported Python supervisor even when the Rust binary is configured. Portable
+protocol and framing tests remain enabled.
+
+A deterministic socket-pair regression reproduced the VM reply failure: macOS
+rejects changing SO_RCVTIMEO after peer close with EINVAL, although a complete
+response remains buffered. The RPC reader now polls an owned nonblocking socket
+with the remaining operation deadline. Complete replies survive close; partial
+replies and silent peers remain uncertain failures. Request IDs, send behavior,
+frame limits and lost-response rules are unchanged. The seven focused guest RPC
+tests pass, including the regression that failed before the change. The earlier
+fixture workaround that held the response socket open is removed. The HTTP
+settings assertion now includes the response body on failure.
+
+The non-Rust remainder passes with 1,050 web tests, 63 bridge tests, ten tooling
+tests and three type-check stages. A focused combined platform/RPC check and the
+full fast gate remain required before publication of this pending merge.
+
+Before the final run, main advanced once more to `28f1768ad` with two fixture
+corrections. The reviewed merge retains its explicit vault-pull completion gate
+and atomic PID publication, plus native graceful fixture cleanup. The combined
+platform/RPC check passed all 17 selected tests. No production service restarted.
+
+The full run on candidate tree `e1ffc30dcde56e35e2a11583bf67e6c20d45d9d2`
+passed 6,002 server checks and stopped on one terminal fixture. Its PID marker
+existed before the integer was written, so parsing observed an empty string.
+Both terminal child fixtures now publish the completed marker by atomic rename;
+the foreground/background ownership and independent-terminal assertions remain
+unchanged. This is a fixture correction, not a live terminal restart. The
+remaining gate stages did not run after the server failure.
+
+After the PID fix, all 16 focused terminal checks passed. The next full server
+run passed 5,971 checks but hit two aggregate 120-second suite deadlines and a
+worker lifecycle fixture race. That fixture now waits for native start delivery
+to settle before capturing recovery identity; its full 17-check run passed.
+Profiling the runtime suite alone completed all 78 cases in 120.999 seconds,
+including its pinned expected failure. Repeated isolated Runtime/SQLite creation
+and teardown dominated the accumulated time. The two reviewed per-test Runtime
+suites now use the existing test-ID slicing mechanism with a maximum of 12 cases
+per process. The worker pool, timeout and every case remain unchanged. The runner
+regression checks full-run selection, unique complete IDs, failure reporting and
+unchanged deadlines. This change addresses aggregate suite duration rather than
+claiming an improvement to live application performance.
+
+The sliced runtime and multi-server groups passed all 78 and 59 outcomes. Their
+longest slices took 78.10 and 70.48 seconds, below the unchanged 120-second limit.
+The subsequent Rust remainder passed 2,224 tests, skipped ten platform-specific
+tests, and failed one batching fixture. That fixture waited for native readiness
+but not account startup recovery; the latter can enqueue a command that correctly
+ends a journal batch. It now uses the existing worker startup barrier before
+measuring its four consecutive events. The one-transaction assertion is unchanged.
+The focused batching test passed. The full fast gate on the final candidate
+remains required before merge or publication.
+
+The full gate on tree `73223698d75ef11971ebf9d3d172602cb07da846` stopped
+in the server stage: 6,001 passed, two failed, 226 skipped. One process-group
+fixture expired its 0.2-second timer before its grandchild could start. Its test
+clock now expires only after the actual child marker; the real termination path
+and post-timeout child assertion are retained. The analytics shutdown fixture
+completed in 5.77 seconds but asserted a five-second budget for all runtime
+teardown. It now requires shutdown completion while the external SQLite writer
+is still locked, within the shared hang guard, and still checks every queued
+capture, retained receipt and closed lease. These are deterministic ordering
+checks, not relaxed production timeout settings. Focused suites passed: 31 analytics outcomes and 78 runner outcomes.
+The complete gate has not passed on this candidate.

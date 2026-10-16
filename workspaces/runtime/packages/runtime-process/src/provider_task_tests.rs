@@ -98,6 +98,67 @@ async fn rpc_absolute_deadline_expires_without_new_input() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn persistent_next_batch_read_has_no_rpc_timeout_and_cancels_cleanly() {
+    let (client, server) = tokio::io::duplex(4096);
+    let mut server = BufReader::new(server);
+    let shutdown = Shutdown::default();
+    let mut stop = shutdown.subscribe();
+    let task = tokio::spawn(async move {
+        let mut rpc = Rpc {
+            stream: BufReader::new(client),
+            sequence: 0,
+            started: false,
+            received_at: Instant::now(),
+        };
+        rpc.call_wait::<_, NextBatchResult>(
+            SupervisorAction::NextBatch,
+            NextBatchRequest {
+                handle: SupervisorHandle("account:unit".into()),
+                cursor: EventCursor(0),
+                generation: Generation(1),
+                limit: SUPERVISOR_NEXT_BATCH_MAX_EVENTS,
+            },
+            &mut stop,
+        )
+        .await
+    });
+    let request = read_request(&mut server).await;
+    assert_eq!(request["action"], "nextBatch");
+    assert_eq!(request["limit"], SUPERVISOR_NEXT_BATCH_MAX_EVENTS);
+    tokio::time::advance(RPC_TIMEOUT * 2).await;
+    assert!(!task.is_finished());
+    shutdown.cancel();
+    assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+}
+
+#[test]
+fn v2_handshake_and_event_keep_typed_envelope_and_raw_payload() {
+    let identity = BackendIdentity {
+        backend_id: BackendId("backend:test".into()),
+        state_dir: PathBuf::from("/tmp/state"),
+    };
+    let request = handshake_request_v2(&identity);
+    let encoded = serde_json::to_value(request).unwrap();
+    assert_eq!(encoded["protocol"], SUPERVISOR_PROTOCOL_V2);
+    assert!(validate_handshake_v2(r#"{"ok":true}"#).is_err());
+    assert!(validate_handshake_v2(r#"{"ok":true,"protocol":2}"#).is_ok());
+
+    let event = SupervisorEventV2 {
+        sequence: EventCursor(9),
+        generation: Generation(2),
+        kind: EventKind::Unknown("future".into()),
+        payload: serde_json::value::RawValue::from_string(
+            r#"{"nested":{"text":"escaped\\n雪"},"number":1e+02}"#.into(),
+        )
+        .unwrap(),
+    };
+    let frame = serde_json::to_string(&event).unwrap();
+    assert!(frame.contains(r#""payload":{"nested":{"text":"escaped\\n雪"},"number":1e+02}"#));
+    let decoded: SupervisorEventV2 = serde_json::from_str(&frame).unwrap();
+    assert_eq!(decoded.payload.get(), event.payload.get());
+}
+
+#[tokio::test(start_paused = true)]
 async fn sticky_shutdown_interrupts_connect_future_and_closed_sender() {
     let shutdown = Shutdown::default();
     shutdown.cancel();
@@ -252,19 +313,97 @@ async fn read_request<S: AsyncRead + Unpin>(server: &mut BufReader<S>) -> Value 
     assert_ne!(server.read_line(&mut line).await.unwrap(), 0);
     serde_json::from_str(&line).unwrap()
 }
-async fn empty_reply(server: &mut BufReader<tokio::io::DuplexStream>, request: Value) {
-    let response = serde_json::json!({"requestId":request["requestId"],"result":{"event":null,"returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}});
-    server
-        .get_mut()
-        .write_all(format!("{response}\n").as_bytes())
-        .await
-        .unwrap();
-}
-
 #[tokio::test(start_paused = true)]
-async fn sole_next_pause_is_exact_and_sticky_stop_never_waits_for_it() {
+async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let shutdown = Shutdown::default();
     let (mut actor, commands, _journal) = actor(&shutdown);
+    let (socket, server) = tokio::io::duplex(4096);
+    let mut server = BufReader::new(server);
+    let (_pump_sender, pump) = mpsc::channel(1);
+    let event_pump = tokio::spawn(std::future::pending::<Result<(), AdapterError>>());
+    let task = tokio::spawn(async move {
+        let mut rpc = Rpc {
+            stream: BufReader::new(socket),
+            sequence: 0,
+            started: false,
+            received_at: Instant::now(),
+        };
+        actor
+            .serve(&mut rpc, pump, event_pump, EventCursor(0))
+            .await
+    });
+    let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
+    commands
+        .send(ack)
+        .await
+        .unwrap_or_else(|_| panic!("closed"));
+    assert!(matches!(
+        barrier.receive().await,
+        CommandReceipt::Acknowledged(_)
+    ));
+    let mut read = Box::pin(read_request(&mut server));
+    assert!(std::future::poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx).is_pending())).await);
+    drop(read);
+    let before_stop = Instant::now();
+    shutdown.cancel();
+    assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+    assert_eq!(Instant::now(), before_stop);
+}
+
+#[tokio::test]
+async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
+    let shutdown = Shutdown::default();
+    let (mut actor, commands, mut journal) = actor(&shutdown);
+    actor.info = Some(AttachmentInfo {
+        handle: actor.handle.clone(),
+        generation: Generation(1),
+        pid: 1,
+        acknowledged: EventCursor(0),
+        resumed: false,
+    });
+    actor.initialize_id = Some(Value::String("initialized".into()));
+    let mut status = actor.status.subscribe();
+
+    for sequence in 1..=LANE_CAPACITY as u64 {
+        assert!(
+            actor
+                .events
+                .try_send(JournalEntry {
+                    received_at_ms: 0,
+                    cursor: EventCursor(sequence),
+                    generation: Generation(1),
+                    payload: JournalPayload::Stderr(Value::Null),
+                })
+                .is_ok()
+        );
+    }
+
+    let (pump_sender, pump) = mpsc::channel(1);
+    let event_pump = tokio::spawn(async move {
+        let (accepted, acceptance) = oneshot::channel();
+        pump_sender
+            .send(Ok(PumpMessage::Event {
+                event: SupervisorEventV2 {
+                    sequence: EventCursor(LANE_CAPACITY as u64 + 1),
+                    generation: Generation(1),
+                    kind: EventKind::Stdout,
+                    payload: serde_json::value::RawValue::from_string(
+                        r#"{"id":"initialized"}"#.into(),
+                    )
+                    .unwrap(),
+                },
+                received_at: Instant::now(),
+                accepted,
+            }))
+            .await
+            .map_err(|_| AdapterError::Cancelled)?;
+        acceptance.await.map_err(|_| AdapterError::Cancelled)?;
+        pump_sender
+            .send(Ok(PumpMessage::Terminal))
+            .await
+            .map_err(|_| AdapterError::Cancelled)?;
+        Ok::<(), AdapterError>(())
+    });
     let (socket, server) = tokio::io::duplex(4096);
     let mut server = BufReader::new(server);
     let task = tokio::spawn(async move {
@@ -274,36 +413,53 @@ async fn sole_next_pause_is_exact_and_sticky_stop_never_waits_for_it() {
             started: false,
             received_at: Instant::now(),
         };
-        actor.serve(&mut rpc, EventCursor(0)).await
+        actor
+            .serve(
+                &mut rpc,
+                pump,
+                event_pump,
+                EventCursor(LANE_CAPACITY as u64),
+            )
+            .await
     });
-    let first = read_request(&mut server).await;
-    let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
-    commands
-        .send(ack)
+
+    status
+        .wait_for(|status| status.initialization == InitializationStatus::InitializedWritePending)
         .await
-        .unwrap_or_else(|_| panic!("closed"));
-    empty_reply(&mut server, first).await;
+        .unwrap();
+    assert_eq!(journal.len(), LANE_CAPACITY);
+
+    let (ack, barrier) = AdapterCommand::ack(EventCursor(LANE_CAPACITY as u64));
+    commands.send(ack).await.unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(2), read_request(&mut server))
+        .await
+        .unwrap();
+    assert_eq!(request["action"], "ack");
+    assert_eq!(request["sequence"], LANE_CAPACITY as u64);
+    let response = serde_json::json!({
+        "requestId": request["requestId"],
+        "result": {"acknowledged": LANE_CAPACITY as u64}
+    });
+    server
+        .get_mut()
+        .write_all(format!("{response}\n").as_bytes())
+        .await
+        .unwrap();
     assert!(matches!(
         barrier.receive().await,
-        CommandReceipt::Acknowledged(_)
+        CommandReceipt::Acknowledged(EventCursor(cursor)) if cursor == LANE_CAPACITY as u64
     ));
-    tokio::time::advance(NEXT_QUERY_PAUSE - Duration::from_nanos(1)).await;
-    let mut read = Box::pin(read_request(&mut server));
-    assert!(std::future::poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx).is_pending())).await);
-    drop(read);
-    tokio::time::advance(Duration::from_nanos(1)).await;
-    let second = read_request(&mut server).await;
-    let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
-    commands
-        .send(ack)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    empty_reply(&mut server, second).await;
-    barrier.receive().await;
-    let before_stop = Instant::now();
+    assert_eq!(journal.len(), LANE_CAPACITY);
+
+    for expected in 1..=LANE_CAPACITY as u64 {
+        assert_eq!(journal.recv().await.unwrap().cursor, EventCursor(expected));
+    }
+    assert_eq!(
+        journal.recv().await.unwrap().cursor,
+        EventCursor(LANE_CAPACITY as u64 + 1)
+    );
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
-    assert_eq!(Instant::now(), before_stop);
 }
 
 #[tokio::test(start_paused = true)]
@@ -367,35 +523,21 @@ async fn shutdown_interrupts_registered_connect_wait() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn journal_arrival_clock_is_sampled_before_consumer_admission() {
+async fn v2_journal_entry_uses_the_frame_arrival_clock() {
     let shutdown = Shutdown::default();
-    let (mut actor, _commands, mut journal) = actor(&shutdown);
-    let (socket, server) = tokio::io::duplex(4096);
-    let mut server = BufReader::new(server);
-    let task = tokio::spawn(async move {
-        let mut rpc = Rpc {
-            stream: BufReader::new(socket),
-            sequence: 0,
-            started: false,
-            received_at: Instant::now(),
-        };
-        actor.serve(&mut rpc, EventCursor(0)).await
-    });
-    let request = read_request(&mut server).await;
+    let (mut actor, _commands, _journal) = actor(&shutdown);
+    let received_at = Instant::now();
     tokio::time::advance(Duration::from_millis(7)).await;
-    let response = serde_json::json!({"requestId":request["requestId"],"result":{
-        "event":{"sequence":1,"generation":1,"kind":"stderr","payload":"{\"data\":\"output\"}"},
-        "returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}});
-    server
-        .get_mut()
-        .write_all(format!("{response}\n").as_bytes())
-        .await
-        .unwrap();
-    read_request(&mut server).await; // proves previous response is queued
-    tokio::time::advance(Duration::from_secs(5)).await;
-    assert_eq!(journal.recv().await.unwrap().received_at_ms, 7);
-    shutdown.cancel();
-    assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+    let event = SupervisorEventV2 {
+        sequence: EventCursor(1),
+        generation: Generation(1),
+        kind: EventKind::Stderr,
+        payload: serde_json::value::RawValue::from_string(r#"{"data":"output"}"#.into()).unwrap(),
+    };
+    let received_at_ms = actor.clock.millis_at(received_at);
+    let entry = actor.journal_entry_v2(event, received_at_ms).unwrap();
+    assert_eq!(entry.received_at_ms, 0);
+    assert_eq!(actor.clock.now_ms(), 7);
 }
 
 #[tokio::test(start_paused = true)]
@@ -618,7 +760,10 @@ async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery
         let (socket, _) = listener.accept().await.unwrap();
         let mut peer = BufReader::new(socket);
         let _handshake = read_request(&mut peer).await;
-        peer.get_mut().write_all(b"{\"ok\":true}\n").await.unwrap();
+        peer.get_mut()
+            .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+            .await
+            .unwrap();
         let status = read_request(&mut peer).await;
         assert_eq!(status["action"], "status");
         peer.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":status["requestId"], "error":"Unknown supervisor handle"})).as_bytes()).await.unwrap();
@@ -631,4 +776,17 @@ async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery
         assert_eq!(recovery.generation, None);
         assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
     }).await.unwrap();
+}
+
+#[test]
+fn closed_pump_classification_preserves_sticky_shutdown_and_terminal_state() {
+    assert!(matches!(
+        pump_channel_closed(false, false),
+        Some(AdapterError::TaskFailed)
+    ));
+    assert!(matches!(
+        pump_channel_closed(true, false),
+        Some(AdapterError::Cancelled)
+    ));
+    assert!(pump_channel_closed(true, true).is_none());
 }

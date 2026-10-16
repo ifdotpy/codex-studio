@@ -201,10 +201,11 @@ mod tests {
             ))
             .await
             .expect("settings POST response");
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("POST response body reads");
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
         let value = serde_json::from_slice::<Value>(&bytes).expect("fixture operation succeeds");
         assert_eq!(value["settings"]["cpus"], 1);
         assert_eq!(value["state"], "stopped");

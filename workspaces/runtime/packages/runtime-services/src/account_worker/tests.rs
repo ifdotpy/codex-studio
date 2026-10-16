@@ -89,6 +89,8 @@ pub(super) struct Faults {
     pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
     pub(super) startup_recovery: tokio::sync::Notify,
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
+    pub(super) shutdown_phase: std::sync::Mutex<&'static str>,
+    pub(super) callback_phase: std::sync::Mutex<&'static str>,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);
@@ -109,6 +111,22 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink for Rejecti
     }
 }
 impl Faults {
+    pub(super) fn mark_shutdown_phase(&self, phase: &'static str) {
+        *self.shutdown_phase.lock().unwrap() = phase;
+    }
+
+    pub(super) fn current_shutdown_phase(&self) -> &'static str {
+        *self.shutdown_phase.lock().unwrap()
+    }
+
+    pub(super) fn mark_callback_phase(&self, phase: &'static str) {
+        *self.callback_phase.lock().unwrap() = phase;
+    }
+
+    pub(super) fn current_callback_phase(&self) -> &'static str {
+        *self.callback_phase.lock().unwrap()
+    }
+
     pub(super) async fn pause(&self, index: usize) {
         let pause = *self.pause_at.lock().unwrap() == Some(index)
             || self
@@ -2220,6 +2238,10 @@ async fn consecutive_journal_events_share_one_store_transaction() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    // Native initialization does not finish account restart recovery. Its queued
+    // commands deliberately end a journal batch, so settle them before measuring
+    // consecutive provider events with no intervening account commands.
+    worker_barrier(&worker).await;
     state
         .bridge
         .faults
@@ -4546,10 +4568,10 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
     let guest = Arc::new(VmTurnGuest::default());
     guest.state.lock().unwrap().codex_refresh_on_start = true;
     let account_generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
-    let mut resources = test_resources().unwrap();
-    resources.guest_rpc = Some(guest.clone());
     let account_checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let account_checked = Arc::new(tokio::sync::Notify::new());
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
     resources.account_session = Some(Arc::new(FakeVmAccountSession {
         generation: account_generation,
         checks: account_checks.clone(),
@@ -4578,6 +4600,11 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
     .await
     .expect("stale callback reaches its account-generation fence");
     worker_barrier(&worker).await;
+    assert_eq!(
+        worker.faults.current_callback_phase(),
+        "stale callback actor retired",
+        "the worker barrier must follow stale callback retirement"
+    );
     assert!(
         !guest
             .state
@@ -4588,10 +4615,96 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
             .any(|write| write["id"] == "vm-auth-refresh"),
         "a reconnect after callback resolution must prevent the token reply"
     );
-    worker
-        .shutdown()
+    let shutdown = worker.shutdown().await;
+    assert!(
+        shutdown.is_ok(),
+        "stale actor callback does not terminate its account worker; last phase: {}",
+        worker.faults.current_shutdown_phase()
+    );
+}
+
+#[tokio::test]
+async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                record.extra.insert("layrReady".into(), json!(true));
+                record
+                    .extra
+                    .insert("cwd".into(), json!("/home/studio/project"));
+                record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
         .await
-        .expect("stale actor callback does not terminate its account worker");
+        .expect("fixture becomes VM actor");
+
+    let guest = Arc::new(VmTurnGuest::default());
+    guest.state.lock().unwrap().codex_refresh_on_start = true;
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    resources.account_session = Some(Arc::new(FakeVmAccountSession {
+        generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        checks: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        checked: Arc::new(tokio::sync::Notify::new()),
+        reconnect_on_second_check: true,
+    }));
+    resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
+    let peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.expect("account worker ready");
+    }
+
+    *worker.faults.pause_operation.lock().unwrap() = Some("callback_admission".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        worker.faults.paused.notified(),
+    )
+    .await
+    .expect("callback reaches admission immediately before the final generation fence");
+    worker.cancel();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        worker.faults.shutdown_wait.notified(),
+    )
+    .await
+    .expect("account worker enters shutdown while the callback fence is held");
+    worker.faults.release.notify_one();
+
+    let shutdown = worker.completion().await;
+    assert!(
+        shutdown.is_ok(),
+        "stale actor callback does not terminate its account worker; last phase: {}",
+        worker.faults.current_shutdown_phase()
+    );
+    assert_eq!(
+        worker.faults.current_callback_phase(),
+        "stale callback actor retired",
+        "shutdown must let the stale callback retire before cleanup completes"
+    );
+    assert!(
+        !guest
+            .state
+            .lock()
+            .unwrap()
+            .writes
+            .iter()
+            .any(|write| write["id"] == "vm-auth-refresh"),
+        "a reconnect at the final fence must prevent the token reply"
+    );
 }
 
 #[tokio::test]

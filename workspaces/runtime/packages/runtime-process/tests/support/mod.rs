@@ -98,17 +98,37 @@ impl SupervisorProcess {
             Path::new(SUPERVISOR).is_file(),
             "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
         );
-        let stderr_path = state.0.join("supervisor-stderr.log");
-        let log = File::create(&stderr_path).unwrap();
+        // The Rust retained-child daemon has Linux process identity support.
+        // Keep v1 compatibility tests on the supported Python daemon elsewhere.
+        #[cfg(target_os = "linux")]
         let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
             .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into));
-        let mut command = if let Some(binary) = binary {
-            Command::new(binary)
+        #[cfg(not(target_os = "linux"))]
+        let binary: Option<std::ffi::OsString> = None;
+        let (command, description) = if let Some(binary) = binary {
+            (Command::new(binary), "configured supervisor")
         } else {
             let mut command = Command::new(python);
             command.arg(SUPERVISOR);
-            command
+            (command, "Python supervisor")
         };
+        Self::start_command(state, command, description)
+    }
+
+    pub(crate) fn start_v2(state: &DisposableState) -> Self {
+        let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
+            .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
+            .unwrap_or_else(|| {
+                panic!(
+                    "v2 provider integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
+                )
+            });
+        Self::start_command(state, Command::new(binary), "Rust v2 supervisor")
+    }
+
+    fn start_command(state: &DisposableState, mut command: Command, description: &str) -> Self {
+        let stderr_path = state.0.join("supervisor-stderr.log");
+        let log = File::create(&stderr_path).unwrap();
         let child = command
             .arg("--state")
             .arg(&state.0)
@@ -120,11 +140,7 @@ impl SupervisorProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
             .spawn()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "Rust supervisor integration test requires Python 3; could not start {python:?}: {error}"
-                )
-            });
+            .unwrap_or_else(|error| panic!("could not start {description}: {error}"));
         let mut process = Self {
             child,
             owned_children: Vec::new(),

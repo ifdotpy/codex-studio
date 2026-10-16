@@ -436,6 +436,15 @@ fn read_line(
     deadline: Instant,
     buffer: &mut Vec<u8>,
 ) -> Result<Vec<u8>, GuestError> {
+    // Darwin may reject SO_RCVTIMEO after the peer closes, even when its full
+    // response is buffered. Poll an owned nonblocking socket instead, so both
+    // buffered EOF responses and incomplete responses obey the same deadline.
+    channel
+        .set_nonblocking(true)
+        .map_err(|error| GuestError::Transport {
+            message: error.to_string(),
+            uncertain: true,
+        })?;
     let mut chunk = [0; BUFFER_READ_BYTES];
     loop {
         if let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
@@ -460,13 +469,22 @@ fn read_line(
             message: "response exceeded its timeout",
             uncertain: true,
         })?;
-        // UnixStream honors this per-read timeout. The deadline is recomputed after each frame.
-        channel
-            .set_read_timeout(Some(wait))
-            .map_err(|error| GuestError::Transport {
+        let timeout =
+            rustix::event::Timespec::try_from(wait).map_err(|error| GuestError::Transport {
                 message: error.to_string(),
                 uncertain: true,
             })?;
+        let mut socket = rustix::event::PollFd::new(&*channel, rustix::event::PollFlags::IN);
+        match rustix::event::poll(std::slice::from_mut(&mut socket), Some(&timeout)) {
+            Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+            Ok(_) => {}
+            Err(error) => {
+                return Err(GuestError::Transport {
+                    message: error.to_string(),
+                    uncertain: true,
+                });
+            }
+        }
         match channel.read(&mut chunk) {
             Ok(0) => {
                 return Err(GuestError::Transport {
@@ -475,6 +493,14 @@ fn read_line(
                 });
             }
             Ok(length) => buffer.extend_from_slice(&chunk[..length]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
             Err(error) => {
                 return Err(GuestError::Transport {
                     message: error.to_string(),
@@ -556,6 +582,59 @@ mod tests {
 
     const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+    #[test]
+    fn completed_response_survives_peer_close_before_read() {
+        let (mut client, mut server) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let response = b"{\"id\":\"closed-peer\",\"result\":{}}\n";
+        server.write_all(response).expect("complete response");
+        drop(server);
+        let line = super::read_line(
+            &mut client,
+            std::time::Instant::now() + TEST_TIMEOUT,
+            &mut Vec::new(),
+        )
+        .expect("a complete buffered response survives peer close");
+        assert_eq!(line, &response[..response.len() - 1]);
+    }
+
+    #[test]
+    fn incomplete_response_after_peer_close_remains_uncertain() {
+        let (mut client, mut server) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        server.write_all(b"{\"result\":").expect("partial response");
+        drop(server);
+        let error = super::read_line(
+            &mut client,
+            std::time::Instant::now() + TEST_TIMEOUT,
+            &mut Vec::new(),
+        )
+        .expect_err("partial response cannot confirm an operation");
+        assert!(matches!(
+            error,
+            GuestError::Transport {
+                uncertain: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn silent_peer_cannot_extend_response_deadline() {
+        let (mut client, _server) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let error = super::read_line(
+            &mut client,
+            std::time::Instant::now() + std::time::Duration::from_millis(20),
+            &mut Vec::new(),
+        )
+        .expect_err("silent peer times out without closing");
+        assert!(matches!(
+            error,
+            GuestError::Protocol {
+                message: "response exceeded its timeout",
+                uncertain: true
+            }
+        ));
+    }
+
     fn fake_guest(response: Value) -> (tempfile::TempDir, UnixGuestRpc, mpsc::Receiver<Value>) {
         let directory = tempfile::tempdir().expect("temporary fake guest directory");
         let rpc = UnixGuestRpc::new(directory.path());
@@ -579,18 +658,6 @@ mod tests {
             connection
                 .write_all(&response)
                 .expect("fake guest writes response");
-            connection
-                .shutdown(std::net::Shutdown::Write)
-                .expect("finish response frame");
-            // The client owns consumption of this frame. Keep the socket alive
-            // until it closes, rather than racing its read with fixture teardown.
-            let mut trailing = [0];
-            assert_eq!(
-                connection
-                    .read(&mut trailing)
-                    .expect("client closes response"),
-                0
-            );
         });
         (directory, rpc, receiver)
     }

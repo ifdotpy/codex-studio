@@ -3,9 +3,10 @@
 ## Change Contract
 
 - **Responsibility:** Process boundary ports, bounded Tokio provider attachments,
-  owned asynchronous pipe children, advisory owned-child priorities, and the typed
-  client for the existing supervisor v1 protocol. This crate does not start the
-  production supervisor, make HTTP requests, or access SQLite.
+  owned asynchronous pipe children, advisory owned-child priorities, and the
+  typed client for supervisor v1 plus explicitly negotiated v2 event waits. This
+  crate does not start the production supervisor, make HTTP requests, or access
+  SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
   models for each v1 action; `provider_seam::ProviderTaskFactory`,
   `provider_task::SupervisorProviderTaskFactory`, and the Unix temporary-child adapter
@@ -44,6 +45,13 @@ server replies `{ok: true}`. The version is owned by
 generated for this crate. A wrong protocol or state directory is rejected with
 an `error` frame before requests are accepted. Operator CLI connections use the
 same protocol field with `{stateDir, operator: true}`.
+
+The Rust provider factory uses a separate v2 handshake and requires the daemon
+to echo protocol 2. It does not fall back to v1. V2 `nextBatch` uses the shared
+request/result/event DTOs in [`protocol.rs`](src/protocol.rs), including the
+owned event-count limit. It waits on a dedicated event connection while the
+primary connection continues to carry ACK and other control actions. The
+existing generated frame-size contract remains the frame limit owner.
 
 The action DTOs and methods in `lib.rs` cover the complete `Supervisor.handle`
 inventory:
@@ -199,8 +207,11 @@ watch, and cancellation-safe `completion()` / `shutdown()` futures. Both channel
 hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
 JSON allocation overhead). One outstanding RPC and at most 32 numeric response
 mappings are retained. Startup replay uses the same channel and no deferred queue.
-A receive slot is reserved before issuing `next`. Write/ACK receipts and shutdown
-never depend on journal capacity. The sole 50 ms empty-`next` pause is cancellable.
+A receive slot is reserved before reading events. The legacy v1 provider path
+uses immediate `next` calls with a cancellable 50 ms pause after an empty result.
+The production Rust provider factory negotiates v2 and waits for `nextBatch` on
+its separate event connection; it does not periodically query an idle journal.
+Write/ACK receipts and shutdown never depend on journal capacity.
 
 `JournalEntry { cursor, generation, received_at_ms, payload }` distinguishes `Frame`, `RawStdout`,
 `Stderr`, `Exit`, and future supervisor event kinds. `PreparedWrite::new` validates
@@ -224,7 +235,7 @@ Use `SessionState::next_deadline_ms()` as the session's deadline authority.
 Process startup replay while waiting for readiness instead of draining it into
 another queue. Commit a contiguous durable prefix before sending ACK; the adapter
 never sends ACK itself, including for the launch spec's recovered handled cursor.
-Terminal EOF stops next queries but keeps ACK admission until the final delivered
+Terminal EOF stops event waits but keeps ACK admission until the final delivered
 prefix settles or the caller explicitly shuts down.
 
 `TaskExit::recovery_needed` identifies incomplete initialization separately from

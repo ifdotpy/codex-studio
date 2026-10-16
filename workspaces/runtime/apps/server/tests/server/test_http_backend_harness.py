@@ -30,6 +30,7 @@ class BackendEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="http-backend-interrupt-") as temporary:
             root = Path(temporary)
             pid_file = root / "child.pid"
+            pid_temp_file = root / "child.pid.tmp"
             runner_code = f"""
 import signal, subprocess, sys
 from pathlib import Path
@@ -39,7 +40,9 @@ child = subprocess.Popen(
     [sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True,
 )
 harness._register_owned_process(child)
-Path({str(pid_file)!r}).write_text(str(child.pid), encoding='ascii')
+pid_temp = Path({str(pid_temp_file)!r})
+pid_temp.write_text(str(child.pid), encoding='ascii')
+pid_temp.replace({str(pid_file)!r})
 signal.pause()
 """
             runner = subprocess.Popen(
@@ -62,8 +65,16 @@ signal.pause()
                     os.kill(child_pid, 0)
             finally:
                 if runner.poll() is None:
-                    os.killpg(runner.pid, signal.SIGKILL)
-                    runner.wait(timeout=5)
+                    # Let the registered owner reap its separate child group even
+                    # when the readiness assertion fails.
+                    runner.send_signal(signal.SIGTERM)
+                    try:
+                        runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(runner.pid, signal.SIGKILL)
+                        runner.wait(timeout=5)
+                if runner.stderr is not None:
+                    runner.stderr.close()
 
     @unittest.skipIf(os.name == 'nt', 'POSIX process groups')
     def test_group_permission_error_requires_exited_child_and_closed_pipes(self) -> None:

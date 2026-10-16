@@ -42,6 +42,16 @@ pub struct StoredHandle {
     pub recovery_proof: bool,
 }
 
+/// A committed event row with its payload left in its original JSON encoding.
+/// Protocol adapters can embed the raw payload without parsing and re-encoding it.
+#[derive(Debug)]
+pub struct StoredEvent {
+    pub sequence: u64,
+    pub kind: String,
+    pub payload: Box<serde_json::value::RawValue>,
+    pub generation: u64,
+}
+
 fn snapshot(db: &Connection, handle: &str) -> Result<HandleSnapshot> {
     let raw = db.query_row("SELECT sequence,acknowledged,rpc_sequence,generation FROM handles WHERE id=?", [handle], |row| {
         Ok(json!({"sequence":row.get::<_,i64>(0)?,"acknowledged":row.get::<_,i64>(1)?,"rpc_sequence":row.get::<_,i64>(2)?,"generation":row.get::<_,i64>(3)?}))
@@ -311,6 +321,79 @@ impl SupervisorJournal {
         }
         Ok(json!({"events":events,"sequence":state.sequence(),"acknowledged":state.acknowledged()}))
     }
+
+    /// Read an ordered event batch without loading payloads that cannot fit the wire frame.
+    pub fn events_v2(
+        &self,
+        handle: &str,
+        cursor: u64,
+        generation: u64,
+        limit: usize,
+        frame_bytes: usize,
+    ) -> Result<Vec<StoredEvent>> {
+        let db = self.lock()?;
+        let state = snapshot(&db, handle)?;
+        if state.generation() != generation {
+            return Err(Refusal("Supervisor handle generation changed").into());
+        }
+        state.cursor(cursor, false)?;
+        let mut statement = db.prepare(
+            "SELECT sequence,kind,length(CAST(payload AS BLOB)),generation FROM events WHERE handle=? AND sequence>? ORDER BY sequence LIMIT ?",
+        )?;
+        let candidates = statement
+            .query_map(params![handle, sql(cursor)?, sql(limit as u64)?], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut selected = Vec::new();
+        let mut frame_usage = 256usize;
+        for (sequence, kind, payload_bytes, event_generation) in candidates {
+            if !matches!(kind.as_str(), "stdout" | "stderr" | "exit") {
+                return Err(Refusal("Invalid supervisor event kind").into());
+            }
+            let payload_bytes = usize::try_from(payload_bytes)
+                .map_err(|_| Refusal("Invalid supervisor event payload size"))?;
+            // Reserve room for all event metadata and the enclosing RPC frame.
+            let candidate_usage = frame_usage
+                .saturating_add(payload_bytes)
+                .saturating_add(128);
+            if candidate_usage > frame_bytes {
+                if selected.is_empty() {
+                    return Err(Refusal("Supervisor event exceeds the frame size limit").into());
+                }
+                break;
+            }
+            frame_usage = candidate_usage;
+            selected.push((sequence, kind, event_generation));
+        }
+        selected
+            .into_iter()
+            .map(|(sequence, kind, event_generation)| {
+                let sequence = u64::try_from(sequence)
+                    .map_err(|_| Refusal("Invalid supervisor event sequence"))?;
+                let generation = u64::try_from(event_generation)
+                    .map_err(|_| Refusal("Invalid supervisor event generation"))?;
+                let payload = db.query_row(
+                    "SELECT payload FROM events WHERE handle=? AND sequence=?",
+                    params![handle, sql(sequence)?],
+                    |row| row.get::<_, String>(0),
+                )?;
+                let payload = serde_json::value::RawValue::from_string(payload)?;
+                Ok(StoredEvent {
+                    sequence,
+                    kind,
+                    payload,
+                    generation,
+                })
+            })
+            .collect()
+    }
+
     pub fn retire(
         &self,
         handle: &str,
@@ -495,6 +578,47 @@ fn migrate(db: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v2_batch_rejects_an_oversized_first_event_without_advancing_ack() {
+        let root = tempfile::tempdir().expect("temporary supervisor journal root");
+        let journal = SupervisorJournal::open(root.path()).expect("open journal");
+        journal
+            .reserve("server-command:oversized", "signature", 1.0)
+            .expect("reserve handle");
+        let generation = journal
+            .opened("server-command:oversized", "signature", 41, "start")
+            .expect("open child handle");
+        let payload = json!({"text": "x".repeat(1024)});
+        assert_eq!(
+            journal
+                .append(
+                    "server-command:oversized",
+                    generation,
+                    1,
+                    "stdout",
+                    &payload
+                )
+                .expect("append output"),
+            AppendResult::Saved
+        );
+
+        let error = journal
+            .events_v2("server-command:oversized", 0, generation, 64, 512)
+            .expect_err("oversized first event must be refused");
+        assert!(error.to_string().contains("frame size limit"));
+        let row = journal
+            .handle("server-command:oversized")
+            .expect("load handle")
+            .expect("saved handle");
+        assert_eq!(row.snapshot.sequence(), 1);
+        assert_eq!(row.snapshot.acknowledged(), 0);
+        let batch = journal
+            .events_v2("server-command:oversized", 0, generation, 64, 2048)
+            .expect("read event with a sufficient frame budget");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].payload.get(), payload.to_string());
+    }
 
     #[test]
     fn retiring_handle_drops_its_buffered_cache_entry() {

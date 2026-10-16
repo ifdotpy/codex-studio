@@ -1,5 +1,6 @@
-//! One Tokio task owns one supervisor socket. No automatic reconnect, replay
-//! batch, acknowledgment, or write retry exists at this boundary.
+//! One provider task owns the command socket; its event pump owns a second
+//! supervisor socket for cancellable event waits. Writes and durable ACKs stay
+//! on the command socket. No automatic reconnect or write retry exists here.
 use crate::{provider_seam::*, provider_shared::*, *};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,8 +17,6 @@ use tokio::{
     time::Instant,
 };
 
-/// Supervisor v1 `next` is nonblocking. This is the only polling delay.
-const NEXT_QUERY_PAUSE: Duration = Duration::from_millis(50);
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct SupervisorProviderTaskFactory {
@@ -258,7 +257,7 @@ struct Rpc<S> {
     received_at: Instant,
 }
 impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
-    async fn exchange(&mut self, bytes: &[u8]) -> Result<String, AdapterError> {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), AdapterError> {
         self.started = true;
         self.stream
             .get_mut()
@@ -272,6 +271,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
             .map_err(SupervisorError::from)?;
         #[cfg(test)]
         tests::panic_on_open_write(bytes);
+        Ok(())
+    }
+
+    async fn read_frame(&mut self) -> Result<String, AdapterError> {
         let mut frame = Vec::new();
         loop {
             let available = self
@@ -300,6 +303,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
         }
     }
 
+    async fn exchange(&mut self, bytes: &[u8]) -> Result<String, AdapterError> {
+        self.send_frame(bytes).await?;
+        self.read_frame().await
+    }
+
     async fn call<R: Serialize + SupervisorRequest, O: for<'de> Deserialize<'de>>(
         &mut self,
         action: SupervisorAction,
@@ -314,6 +322,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
         let request_id = self.sequence;
         let bytes = request_frame(action, request_id, request)?;
         let response = interruptible(stop, self.exchange(&bytes)).await?;
+        response_value(action, request_id, &response).map_err(Into::into)
+    }
+
+    async fn call_wait<R: Serialize + SupervisorRequest, O: for<'de> Deserialize<'de>>(
+        &mut self,
+        action: SupervisorAction,
+        request: R,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<O, AdapterError> {
+        self.started = false;
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(AdapterError::InvalidConfiguration)?;
+        let request_id = self.sequence;
+        let bytes = request_frame(action, request_id, request)?;
+        tokio::select! {
+            biased;
+            _ = Shutdown::cancelled(stop) => return Err(AdapterError::Cancelled),
+            result = tokio::time::timeout(RPC_TIMEOUT, self.send_frame(&bytes)) => {
+                result.unwrap_or(Err(AdapterError::Timeout))?;
+            }
+        }
+        let response = tokio::select! {
+            biased;
+            _ = Shutdown::cancelled(stop) => return Err(AdapterError::Cancelled),
+            result = self.read_frame() => result?,
+        };
         response_value(action, request_id, &response).map_err(Into::into)
     }
 }
@@ -340,6 +376,16 @@ struct AdapterTask {
     initialize_id: Option<Value>,
     cached_initialize: Option<Value>,
     open_attempted: bool,
+}
+
+fn pump_channel_closed(shutdown: bool, terminal: bool) -> Option<AdapterError> {
+    if terminal {
+        None
+    } else if shutdown {
+        Some(AdapterError::Cancelled)
+    } else {
+        Some(AdapterError::TaskFailed)
+    }
 }
 
 impl AdapterTask {
@@ -380,9 +426,9 @@ impl AdapterTask {
             started: false,
             received_at: Instant::now(),
         };
-        let handshake = serialize_frame(&handshake_request(&self.identity, false))?;
+        let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
         let reply = interruptible(&mut self.stop, rpc.exchange(&handshake)).await?;
-        validate_handshake(&reply)?;
+        validate_handshake_v2(&reply)?;
         let status: Result<StatusResult, _> = rpc
             .call(
                 SupervisorAction::Status,
@@ -469,7 +515,39 @@ impl AdapterTask {
                 .map(|(remote, local)| (remote, Value::from(local)))
                 .collect();
         }
-        self.serve(&mut rpc, EventCursor(opened.acknowledged)).await
+        let event_socket = interruptible(&mut self.stop, async {
+            UnixStream::connect(&self.endpoint)
+                .await
+                .map_err(|error| SupervisorError::Io(error).into())
+        })
+        .await?;
+        let mut event_rpc = Rpc {
+            stream: BufReader::new(event_socket),
+            sequence: 0,
+            started: false,
+            received_at: Instant::now(),
+        };
+        let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
+        let reply = interruptible(&mut self.stop, event_rpc.exchange(&handshake)).await?;
+        validate_handshake_v2(&reply)?;
+        let (pump_sender, pump_receiver) = mpsc::channel(1);
+        let pump_stop = self.stop.clone();
+        let handle = self.open.handle.clone();
+        let generation = opened.generation;
+        let cursor = EventCursor(opened.acknowledged);
+        let event_pump = tokio::spawn(async move {
+            event_pump(
+                event_rpc,
+                handle,
+                generation,
+                cursor,
+                pump_sender,
+                pump_stop,
+            )
+            .await
+        });
+        self.serve(&mut rpc, pump_receiver, event_pump, cursor)
+            .await
     }
 
     #[cfg(target_os = "linux")]
@@ -523,55 +601,81 @@ impl AdapterTask {
     async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         rpc: &mut Rpc<S>,
+        mut pump: mpsc::Receiver<Result<PumpMessage, AdapterError>>,
+        event_pump: tokio::task::JoinHandle<Result<(), AdapterError>>,
         mut cursor: EventCursor,
     ) -> Result<(), AdapterError> {
-        let mut poll_at = Instant::now();
         let mut terminal = false;
-        loop {
+        let mut pump_open = true;
+        let mut pending_event: Option<(JournalEntry, oneshot::Sender<()>)> = None;
+        let result = loop {
             if terminal
                 && self
                     .info
                     .as_ref()
                     .is_some_and(|info| info.acknowledged >= cursor)
             {
-                return Ok(());
+                break Ok(());
             }
             if *self.stop.borrow() {
-                return Err(AdapterError::Cancelled);
+                break Err(AdapterError::Cancelled);
+            }
+            if self.events.is_closed() {
+                break Err(AdapterError::ConsumerClosed);
             }
             tokio::select! {
-                _ = Shutdown::cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
-                _ = self.events.closed() => return Err(AdapterError::ConsumerClosed),
-                command = self.commands.recv() => {
-                    let Some(command) = command else { return Ok(()); };
-                    if terminal && matches!(command, AdapterCommand::Write { .. }) { command.reject(); }
-                    else { self.command(rpc, command, cursor).await?; }
+                _ = Shutdown::cancelled(&mut self.stop) => break Err(AdapterError::Cancelled),
+                slot = self.events.clone().reserve_owned(), if pending_event.is_some() => {
+                    let slot = match slot {
+                        Ok(slot) => slot,
+                        Err(_) => break Err(AdapterError::ConsumerClosed),
+                    };
+                    let Some((entry, accepted)) = pending_event.take() else {
+                        break Err(AdapterError::TaskFailed);
+                    };
+                    let delivered = entry.cursor;
+                    slot.send(entry);
+                    cursor = delivered;
+                    if accepted.send(()).is_err() {
+                        break Err(AdapterError::Cancelled);
+                    }
                 }
-                slot = async {
-                    tokio::time::sleep_until(poll_at).await;
-                    self.events.clone().reserve_owned().await
-                }, if !terminal => {
-                    let slot = slot.map_err(|_| AdapterError::ConsumerClosed)?;
-                    let result: NextResult = rpc.call(SupervisorAction::Next, CursorRequest {
-                        handle: self.open.handle.clone(), cursor, extra: Default::default(),
-                    }, &mut self.stop).await?;
-                    let received_at_ms = self.clock.millis_at(rpc.received_at);
-                    if let Some(event) = result.event {
-                        if event.sequence <= cursor {
-                            // A stale replay cannot be delivered twice or create a hot loop.
-                            return Err(SupervisorError::InvalidFrame("non-advancing journal cursor".into()).into());
+                command = self.commands.recv() => {
+                    let Some(command) = command else { break Ok(()); };
+                    if terminal && matches!(command, AdapterCommand::Write { .. }) { command.reject(); }
+                    else if let Err(error) = self.command(rpc, command, cursor).await { break Err(error); }
+                }
+                message = pump.recv(), if pump_open => {
+                    match message {
+                        Some(Ok(PumpMessage::Event { event, received_at, accepted })) => {
+                            let received_at_ms = self.clock.millis_at(received_at);
+                            let entry = match self.journal_entry_v2(event, received_at_ms) {
+                                Ok(entry) => entry,
+                                Err(error) => break Err(error),
+                            };
+                            if pending_event.replace((entry, accepted)).is_some() {
+                                break Err(AdapterError::TaskFailed);
+                            }
                         }
-                        cursor = event.sequence;
-                        slot.send(self.journal_entry(event, received_at_ms)?);
-                        poll_at = Instant::now();
-                    } else if result.return_code.is_some() && !result.stdout_reader_alive && !result.stderr_reader_alive {
-                        terminal = true;
-                    } else {
-                        poll_at = Instant::now() + NEXT_QUERY_PAUSE;
+                        Some(Ok(PumpMessage::Terminal)) => terminal = true,
+                        Some(Err(error)) => break Err(error),
+                        None => {
+                            pump_open = false;
+                            if let Some(error) =
+                                pump_channel_closed(*self.stop.borrow(), terminal)
+                            {
+                                break Err(error);
+                            }
+                        }
                     }
                 }
             }
+        };
+        if !event_pump.is_finished() {
+            event_pump.abort();
         }
+        let _ignored = event_pump.await;
+        result
     }
 
     async fn command<S: AsyncRead + AsyncWrite + Unpin>(
@@ -805,6 +909,136 @@ impl AdapterTask {
             generation: event.generation,
             payload,
         })
+    }
+
+    fn journal_entry_v2(
+        &mut self,
+        event: SupervisorEventV2,
+        received_at_ms: u64,
+    ) -> Result<JournalEntry, AdapterError> {
+        let payload = serde_json::from_str(event.payload.get()).map_err(SupervisorError::from)?;
+        self.journal_entry(
+            SupervisorEvent {
+                sequence: event.sequence,
+                kind: event.kind,
+                payload,
+                generation: event.generation,
+                extra: BTreeMap::new(),
+            },
+            received_at_ms,
+        )
+    }
+}
+
+enum PumpMessage {
+    Event {
+        event: SupervisorEventV2,
+        received_at: Instant,
+        accepted: oneshot::Sender<()>,
+    },
+    Terminal,
+}
+
+async fn send_pump_message(
+    sender: &mpsc::Sender<Result<PumpMessage, AdapterError>>,
+    stop: &mut watch::Receiver<bool>,
+    message: Result<PumpMessage, AdapterError>,
+) -> Result<(), AdapterError> {
+    tokio::select! {
+        biased;
+        _ = Shutdown::cancelled(stop) => Err(AdapterError::Cancelled),
+        sent = sender.send(message) => sent.map_err(|_| AdapterError::Cancelled),
+    }
+}
+
+async fn event_pump(
+    mut rpc: Rpc<UnixStream>,
+    handle: SupervisorHandle,
+    generation: Generation,
+    mut cursor: EventCursor,
+    sender: mpsc::Sender<Result<PumpMessage, AdapterError>>,
+    mut stop: watch::Receiver<bool>,
+) -> Result<(), AdapterError> {
+    loop {
+        let result: NextBatchResult = match rpc
+            .call_wait(
+                SupervisorAction::NextBatch,
+                NextBatchRequest {
+                    handle: handle.clone(),
+                    cursor,
+                    generation,
+                    limit: SUPERVISOR_NEXT_BATCH_MAX_EVENTS,
+                },
+                &mut stop,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ignored = send_pump_message(&sender, &mut stop, Err(error)).await;
+                return Ok(());
+            }
+        };
+        let received_at = rpc.received_at;
+        let terminal = result.return_code.is_some()
+            && !result.stdout_reader_alive
+            && !result.stderr_reader_alive;
+        if result.events.len() > SUPERVISOR_NEXT_BATCH_MAX_EVENTS {
+            let error = SupervisorError::InvalidFrame(
+                "nextBatch exceeded the requested event limit".into(),
+            )
+            .into();
+            let _ignored = send_pump_message(&sender, &mut stop, Err(error)).await;
+            return Ok(());
+        }
+        if result.events.is_empty() && !terminal {
+            let error = SupervisorError::InvalidFrame(
+                "nextBatch returned empty before end of stream".into(),
+            )
+            .into();
+            let _ignored = send_pump_message(&sender, &mut stop, Err(error)).await;
+            return Ok(());
+        }
+        for event in result.events {
+            if event.sequence <= cursor {
+                let error = SupervisorError::InvalidFrame(
+                    "nextBatch returned a non-advancing cursor".into(),
+                )
+                .into();
+                let _ignored = send_pump_message(&sender, &mut stop, Err(error)).await;
+                return Ok(());
+            }
+            let accepted_cursor = event.sequence;
+            let (accepted, acceptance) = oneshot::channel();
+            if send_pump_message(
+                &sender,
+                &mut stop,
+                Ok(PumpMessage::Event {
+                    event,
+                    received_at,
+                    accepted,
+                }),
+            )
+            .await
+            .is_err()
+            {
+                return Err(AdapterError::Cancelled);
+            }
+            tokio::select! {
+                biased;
+                _ = Shutdown::cancelled(&mut stop) => return Err(AdapterError::Cancelled),
+                result = acceptance => {
+                    if result.is_err() { return Err(AdapterError::Cancelled); }
+                }
+            }
+            // A cursor only moves after the adapter accepted the event into its
+            // bounded journal channel. The durable ACK remains a separate command.
+            cursor = accepted_cursor;
+        }
+        if terminal {
+            let _ignored = send_pump_message(&sender, &mut stop, Ok(PumpMessage::Terminal)).await;
+            return Ok(());
+        }
     }
 }
 

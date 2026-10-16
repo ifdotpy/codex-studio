@@ -73,6 +73,14 @@ OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm", "heavy"}
 FAST_SUITE_BUDGET_SECONDS = 10.0
 FOCUSED_SUITE_TEST_SLICES = 4
 FOCUSED_MIN_TESTS_FOR_SLICING = 5
+# Maximum test methods per process for reviewed, per-test Runtime fixtures.
+# These suites have no class/module fixture lifetime; keep every method while
+# preventing aggregate database setup/teardown from consuming one deadline.
+RUNTIME_SUITE_MAX_TESTS_PER_SLICE = 12
+RUNTIME_SLICED_SUITES = frozenset({
+    f"{TESTS_REL}/runtime-contract.py",
+    f"{TESTS_REL}/multi-server-orchestration-contract.py",
+})
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
@@ -1922,7 +1930,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             deadline = expensive_timeout if kind == "expensive" else timeout
             slices = None
             listing_error = None
-            if (focused
+            if ((focused or relative in RUNTIME_SLICED_SUITES)
                     and relative not in NEVER_SLICE_SUITES
                     and not is_http_boundary_suite(relative)
                     and is_unittest_suite(root / relative)
@@ -1940,7 +1948,10 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                         ids = None
                 if ids:
                     selectors = [test_id.removeprefix(prefix) for test_id in ids]
-                    slice_count = _focused_suite_slice_count(relative, len(selectors), workers)
+                    if relative in RUNTIME_SLICED_SUITES:
+                        slice_count = math.ceil(len(selectors) / RUNTIME_SUITE_MAX_TESTS_PER_SLICE)
+                    else:
+                        slice_count = _focused_suite_slice_count(relative, len(selectors), workers)
                     if slice_count > 1:
                         slices = _slice_test_ids(selectors, slice_count)
                     expected_prefix = prefix

@@ -56,8 +56,10 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
     let (socket, _) = listener.accept().await.unwrap();
     let mut stream = BufReader::new(socket);
     let hello = request(&mut stream).await;
-    assert_eq!(hello["protocol"], 1);
-    respond(&mut stream, json!({"protocol":1,"ok":true})).await;
+    assert_eq!(hello["protocol"], 2);
+    assert_eq!(hello["stateDir"], root.path().to_string_lossy().as_ref());
+    assert_eq!(hello["backendId"], "fixture");
+    respond(&mut stream, json!({"protocol":2,"ok":true})).await;
     let status = request(&mut stream).await;
     respond(
         &mut stream,
@@ -110,9 +112,20 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
             .await
             .is_err()
     );
-    let next = request(&mut stream).await;
-    assert_eq!(next["action"], "next");
-    respond(&mut stream,json!({"requestId":next["requestId"],"result":{"event":{"sequence":1,"generation":17,"kind":"stdout","payload":"{\"id\":81,\"result\":{}}"},"returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}})).await;
+    let (event_socket, _) = listener.accept().await.unwrap();
+    let mut event_stream = BufReader::new(event_socket);
+    let event_hello = request(&mut event_stream).await;
+    assert_eq!(event_hello["protocol"], 2);
+    assert_eq!(
+        event_hello["stateDir"],
+        root.path().to_string_lossy().as_ref()
+    );
+    assert_eq!(event_hello["backendId"], "fixture");
+    respond(&mut event_stream, json!({"protocol":2,"ok":true})).await;
+    let next = request(&mut event_stream).await;
+    assert_eq!(next["action"], "nextBatch");
+    assert_eq!(next["cursor"], 0);
+    respond(&mut event_stream,json!({"requestId":next["requestId"],"result":{"events":[{"sequence":1,"generation":17,"kind":"stdout","payload":{"id":81,"result":{}}}],"returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}})).await;
     let entry = attachment.journal.recv().await.unwrap();
     match entry.payload {
         JournalPayload::Frame(Frame::Response { id, .. }) => {

@@ -328,6 +328,14 @@ class whose methods create independent data; put restart durability in its own
 class, keep process-owning suites unsliced, and record readiness timings without
 asserting on speed.
 
+The existing per-test Runtime fixture suites `runtime-contract.py` and
+`multi-server-orchestration-contract.py` run in bounded test-ID slices in both
+full and focused runs. `RUNTIME_SUITE_MAX_TESTS_PER_SLICE` in `tests/server/run.py`
+owns their maximum test count per process. Each case still creates and closes
+its own Runtime. The selected worker pool, per-process deadline, exact outcome
+inventory and expected-failure ledger apply unchanged. This does not enable
+slicing for HTTP or shared process fixtures.
+
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed
 Python cache and command-bin directory in a dedicated temporary root; never
