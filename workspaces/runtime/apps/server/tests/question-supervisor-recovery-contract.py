@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_question_recovery import recover_native_questions
+from codex_native_request_recovery import recover_native_requests
 from codex_runtime import Runtime
 
 
@@ -176,7 +176,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
         self.server.proc.generation = 9
         self.native_match.stop()
         with patch('codex_process_supervisor.process_start_matches', return_value=False):
-            self.assertEqual(recover_native_questions(self.runtime, 'default', self.connection), 0)
+            self.assertEqual(recover_native_requests(self.runtime, 'default', self.connection), 0)
         self.assertEqual(self.stored()['status'], 'expired')
 
     def test_legacy_new_child_birth_and_accepted_reply_remain_unknown(self):
@@ -188,7 +188,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
         with closing(sqlite3.connect(self.root / 'supervisor.sqlite3')) as db, db:
             db.execute('UPDATE child_identities SET start_time=?', (str(self.request['createdAt'] - 100),))
             db.execute('INSERT INTO operations VALUES (?,?)', ('account:default', self.rpc_id))
-        self.assertEqual(recover_native_questions(self.runtime, 'default', self.connection), 0)
+        self.assertEqual(recover_native_requests(self.runtime, 'default', self.connection), 0)
         self.assertEqual(self.stored()['status'], 'expired')
 
     def test_answering_uncertain_and_answer_signature_never_restore(self):
@@ -224,10 +224,10 @@ class QuestionSupervisorRecovery(unittest.TestCase):
                 changed[field] = value
                 self.runtime.put(db, 'agents', changed)
                 db.commit()
-                self.assertEqual(recover_native_questions(self.runtime, 'default', self.connection), 0)
+                self.assertEqual(recover_native_requests(self.runtime, 'default', self.connection), 0)
                 self.runtime.put(db, 'agents', owner)
         self.update_request(answerSignature='saved-answer')
-        self.assertEqual(recover_native_questions(self.runtime, 'default', self.connection), 0)
+        self.assertEqual(recover_native_requests(self.runtime, 'default', self.connection), 0)
         self.assertEqual(self.server.responses, [])
 
     def test_native_proof_runs_without_runtime_writer_and_race_cannot_restore(self):
@@ -240,7 +240,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
                 db.rollback()
             self.update_request(status='deleted')
             return _native_proof(runtime, server, request)
-        with patch('codex_question_recovery._native_proof', proof):
+        with patch('codex_native_request_recovery._native_proof', proof):
             self.restore()
         self.assertEqual(self.stored()['status'], 'deleted')
         self.assertEqual(self.server.responses, [])
@@ -258,7 +258,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
                 runtime.put(db, 'requests', duplicate)
             self.assertEqual(self.stored(), original)
             return _native_proof(runtime, server, request)
-        with patch('codex_question_recovery._native_proof', proof):
+        with patch('codex_native_request_recovery._native_proof', proof):
             self.restore()
         self.assertEqual(self.stored(), original)
         with self.runtime.read_db() as db:
@@ -294,17 +294,17 @@ class QuestionSupervisorRecovery(unittest.TestCase):
         ))
         with self.runtime.db() as db:
             self.runtime.put(db, 'agents', owner)
-        from codex_question_recovery import _question_requests
-        original = _question_requests
+        from codex_native_request_recovery import _native_requests
+        original = _native_requests
 
-        def requests(db, owner_id, item_id):
+        def requests(db, owner_id, item_id, question):
             if item_id == 'malformed-question':
                 return [('malformed', '{')]
             if item_id == 'non-object-question':
                 return [('non-object', '[]')]
-            return original(db, owner_id, item_id)
+            return original(db, owner_id, item_id, question)
 
-        with patch('codex_question_recovery._question_requests', requests):
+        with patch('codex_native_request_recovery._native_requests', requests):
             self.restore()
         self.assertEqual(self.stored()['status'], 'pending')
         self.assertEqual(self.runtime.agent('owner')['status'], 'approval')
@@ -355,7 +355,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
                 db.set_trace_callback(queries.append)
                 yield db
         with patch.object(self.runtime, 'read_db', limited):
-            self.assertEqual(recover_native_questions(self.runtime, 'default', self.connection), 1)
+            self.assertEqual(recover_native_requests(self.runtime, 'default', self.connection), 1)
         lookup = next(query for query in queries if 'FROM runtime_requests WHERE' in query)
         self.assertIn('LIMIT 2', lookup)
         with original() as db:

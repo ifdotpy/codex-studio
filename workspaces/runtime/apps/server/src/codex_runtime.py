@@ -1747,6 +1747,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),
                     json_extract(record,'$.status'))
                     WHERE json_valid(record) AND json_extract(record,'$.method')='item/tool/requestUserInput';
+                CREATE INDEX IF NOT EXISTS runtime_request_native_approval ON runtime_requests(
+                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),
+                    json_extract(record,'$.status'))
+                    WHERE json_valid(record) AND json_extract(record,'$.method') IN
+                    ('item/commandExecution/requestApproval','item/fileChange/requestApproval');
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_completed_turns (id TEXT PRIMARY KEY);
@@ -4193,8 +4198,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record.pop("reattachRecovery", None)
                 self.put(db, "tasks", record)
             self.changed.set()
-        from codex_question_recovery import recover_native_questions
-        recover_native_questions(self, account_key, connection_id, agent_id=agent_id)
+        from codex_native_request_recovery import recover_native_requests
+        recover_native_requests(self, account_key, connection_id, agent_id=agent_id)
         self._publish_desktop_resource()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None, *, agent_id=None):
@@ -4360,11 +4365,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def reply(self, message, account_key="default", connection_id=None, *, operation_id=None):
         # Never deliver an old approval or tool result to a replacement process.
         server = self.server_for(account_key, connection_id)
+        # Both refusals precede any write, so the caller can keep its request answerable.
         if not self.connection_current(account_key, connection_id):
-            raise RuntimeError("The original account connection is no longer active")
+            raise SubmissionRejected("The original account connection is no longer active")
         if server is None:
             if connection_id is not None:
-                raise RuntimeError("The account connection is not ready")
+                raise SubmissionRejected("The account connection is not ready")
             server = self.connect(account_key)
         rpc_id = message.get("id")
         if (operation_id is None and "method" not in message
@@ -11227,12 +11233,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Answer a request card. `local_window` is true only for a window on the Mac that runs
         this server; a sign-in link (browser/open) opens only there."""
         from codex_browser_bridge import METHOD as BROWSER_OPEN, answer as answer_browser_open
+        from codex_native_request_recovery import APPROVALS, QUESTION, recover_native_requests
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
-            browser_open = bool(row) and json.loads(row[0]).get("method") == BROWSER_OPEN
+            saved = json.loads(row[0]) if row else {}
+            browser_open = saved.get("method") == BROWSER_OPEN
+            account = saved.get("accountKey", "default")
+            current_connection = None
+            if (saved.get("status") == "pending" and isinstance(saved.get("agent"), str)
+                    and saved.get("method") in {QUESTION, *APPROVALS}
+                    and not self.connection_current(account, saved.get("connectionId"))):
+                current_connection = self.connection_ids.get(account)
         if browser_open:
             # Binds a Mac port and calls the guest, so it runs without the runtime lock.
             return answer_browser_open(self, key, data, local=local_window)
+        if current_connection is not None:
+            # The retained native child can outlive a connection change that this
+            # request missed. Rebind it with the reattach proofs, outside the lock.
+            recover_native_requests(self, account, current_connection, agent_id=saved["agent"])
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
             if not row:
