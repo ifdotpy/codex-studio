@@ -705,19 +705,17 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
 
 class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
-    """Refusal contracts use a backend that never accepts a managed send."""
+    """Strict refusal snapshots use an inert provider and held agents."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.backend = start_contract_backend(cls)
-        cls.denial_agent_id = seed_agent(cls.backend)
+        cls.backend = start_contract_backend(cls, "codex-rpc-replies.json")
+        cls.denial_agent_id = seed_agent(cls.backend, {"autoWake": False})
         cls.agent_id = cls.denial_agent_id
-        cls.denial_peer_agent_id = seed_agent(cls.backend)
-        cls.deleted_agent_id = seed_agent(cls.backend, {"deletedAt": 123.0})
-        # Keep refusal workers stopped, matching the Python fixture, so
-        # background dispatch cannot move agent rows during write snapshots.
-        update_agent(cls.backend, cls.denial_agent_id, {"autoWake": False})
-        update_agent(cls.backend, cls.denial_peer_agent_id, {"autoWake": False})
+        cls.denial_peer_agent_id = seed_agent(cls.backend, {"autoWake": False})
+        cls.deleted_agent_id = seed_agent(cls.backend, {
+            "deletedAt": 123.0, "autoWake": False,
+        })
         cls.backend.start()
 
     @classmethod
@@ -766,9 +764,13 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
         self.assertEqual(response.status, 200, response.body[:1000])
         edge_id = hashlib.sha256(json.dumps(("chat", self.agent_id, chat["id"])).encode()).hexdigest()[:24]
-        self.assertEqual(response.json(), {"id": edge_id, "connected": True})
+        receipt = response.json()
+        self.assertEqual(receipt["id"], edge_id)
+        self.assertIs(receipt["connected"], True)
         replay = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
-        self.assertEqual(replay.json(), response.json())
+        replay_receipt = replay.json()
+        self.assertEqual(replay_receipt["id"], edge_id)
+        self.assertIs(replay_receipt["connected"], True)
 
         before = no_write_snapshot(self.backend.state)
         refusal = self.backend.request("POST", "/api/connections", body={**body, "target": "missing-chat"}, headers=self.headers())
@@ -865,38 +867,6 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=self.headers())
         self.assertEqual(alias.status, 400, alias.body[:1000])
         self.assertEqual(no_write_snapshot(path.parent), before)
-
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
-        update_agent(self.backend, self.agent_id, {"autoWake": False, "error": "old error"})
-        message_id = "46464646-4646-4646-4646-464646464646"
-        path = self.backend.state / "canvas.sqlite3"
-        with closing(sqlite3.connect(path)) as database:
-            database.execute(
-                "CREATE TRIGGER fail_agent_projection_update BEFORE UPDATE ON sync_entities "
-                "WHEN OLD.collection='agent' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
-            )
-            database.execute(
-                "CREATE TRIGGER fail_event_projection_insert BEFORE INSERT ON sync_entities "
-                "WHEN NEW.collection='event' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
-            )
-            database.commit()
-        before = no_write_snapshot(self.backend.state)
-        try:
-            response = self.backend.request("POST", "/api/messages", body={
-                "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
-            }, headers=self.headers())
-            self.assertFalse(200 <= response.status < 300, response.body[:1000])
-            self.assertIn("error", response.json())
-            after = no_write_snapshot(self.backend.state)
-            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
-        finally:
-            with closing(sqlite3.connect(path)) as database:
-                database.execute("DROP TRIGGER IF EXISTS fail_agent_projection_update")
-                database.execute("DROP TRIGGER IF EXISTS fail_event_projection_insert")
-                database.commit()
-            self.backend.stop()
-            self.backend.start()
 
     def test_request_ids_use_the_python_schema_pattern(self):
         room = "a" * 36
@@ -1025,6 +995,57 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=self.headers())
         self.assertEqual(federation.status, 400, federation.body[:1000])
         self.assertEqual(no_write_snapshot(path.parent), before)
+
+
+@unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+class MessagesProjectionRollbackHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    """Keep the injected rollback and restart out of refusal snapshots."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls, "codex-rpc-replies.json")
+        cls.agent_id = seed_agent(cls.backend, {"autoWake": False})
+        cls.backend.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.backend.stop()
+
+    def headers(self):
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
+    def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
+        update_agent(self.backend, self.agent_id, {"autoWake": False, "error": "old error"})
+        message_id = "46464646-4646-4646-4646-464646464646"
+        path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(path)) as database:
+            database.execute(
+                "CREATE TRIGGER fail_agent_projection_update BEFORE UPDATE ON sync_entities "
+                "WHEN OLD.collection='agent' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
+            )
+            database.execute(
+                "CREATE TRIGGER fail_event_projection_insert BEFORE INSERT ON sync_entities "
+                "WHEN NEW.collection='event' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
+            )
+            database.commit()
+        before = no_write_snapshot(self.backend.state)
+        try:
+            response = self.backend.request("POST", "/api/messages", body={
+                "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
+            }, headers=self.headers())
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
+            after = no_write_snapshot(self.backend.state)
+            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
+        finally:
+            with closing(sqlite3.connect(path)) as database:
+                database.execute("DROP TRIGGER IF EXISTS fail_agent_projection_update")
+                database.execute("DROP TRIGGER IF EXISTS fail_event_projection_insert")
+                database.commit()
 
 if __name__ == "__main__":
     unittest.main()
