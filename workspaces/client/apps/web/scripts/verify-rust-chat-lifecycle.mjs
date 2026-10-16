@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_MODEL = "gpt-6-luna";
@@ -682,28 +682,40 @@ async function main() {
       traffic.stage = "create";
       const projectSections = page.locator("[data-project-path]");
       await projectSections.first().waitFor();
-      const projectIndex = await projectSections.evaluateAll(
+      const projectPath = await projectSections.evaluateAll(
         (sections, wanted) =>
-          sections.findIndex(
-            (section) =>
-              section.getAttribute("data-project-path") === wanted ||
-              section
-                .querySelector(".project-tree-toggle > span[title]")
-                ?.getAttribute("title") === wanted ||
-              section
-                .querySelector(".project-tree-toggle")
-                ?.getAttribute("title") === wanted,
-          ),
+          sections
+            .find(
+              (section) =>
+                section.getAttribute("data-project-path") === wanted ||
+                section
+                  .querySelector(".project-tree-toggle > span[title]")
+                  ?.getAttribute("title") === wanted ||
+                section
+                  .querySelector(".project-tree-toggle")
+                  ?.getAttribute("title") === wanted,
+            )
+            ?.getAttribute("data-project-path") ?? null,
         options.project,
       );
       assert.ok(
-        projectIndex >= 0,
-        `Project ${options.project} was not found in the UI.`,
+        projectPath,
+        `Project ${options.project} was not found in the UI or has no project path.`,
       );
-      const projectSection = projectSections.nth(projectIndex);
-      const projectPath =
-        await projectSection.getAttribute("data-project-path");
-      assert.ok(projectPath, "The selected project row has no project path.");
+      if (isAbsolute(options.project))
+        assert.equal(
+          projectPath,
+          options.project,
+          `Selected project path does not match ${options.project}.`,
+        );
+      const projectSection = page.locator(
+        `[data-project-path=${JSON.stringify(projectPath)}]`,
+      );
+      assert.equal(
+        await projectSection.count(),
+        1,
+        `Expected exactly one project row for ${projectPath}.`,
+      );
       journal.projectPath = projectPath;
       const projectName = await projectSection
         .locator(".project-tree-toggle > span[title]")
