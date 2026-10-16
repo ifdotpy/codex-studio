@@ -20,6 +20,7 @@ use tokio::{
 
 const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
 const MAX_STARTUP_STDERR_BYTES: u64 = 4096;
+const STARTUP_STDERR_CAPTURE_TIMEOUT: Duration = Duration::from_secs(1);
 
 async fn startup_stderr(child: &mut tokio::process::Child) -> String {
     use tokio::io::AsyncReadExt;
@@ -28,12 +29,18 @@ async fn startup_stderr(child: &mut tokio::process::Child) -> String {
         return String::new();
     };
     let mut bytes = Vec::new();
-    stream
-        .take(MAX_STARTUP_STDERR_BYTES)
-        .read_to_end(&mut bytes)
-        .await
-        .unwrap();
+    let read = timeout(
+        STARTUP_STDERR_CAPTURE_TIMEOUT,
+        stream
+            .take(MAX_STARTUP_STDERR_BYTES)
+            .read_to_end(&mut bytes),
+    )
+    .await;
     let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    if !matches!(read, Ok(Ok(_))) {
+        output.push_str("\n[stderr capture timed out or failed]");
+        return output;
+    }
     if bytes.len() as u64 == MAX_STARTUP_STDERR_BYTES {
         output.push_str("\n[stderr capture limit reached]");
     }
