@@ -388,12 +388,12 @@ timeout --kill-after=5 600 dpkg --configure -a || true
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd setfacl; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd setfacl apparmor_parser; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
 if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd acl
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd acl apparmor
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
@@ -458,7 +458,7 @@ if [ "$(codex --version 2>/dev/null || true)" != 'codex-cli @CODEX@' ]; then
     (cd /tmp && sha256sum -c codex-check)
     failure_cause=
     mkdir -p /opt/codex-studio/codex
-    tar -xzf "/tmp/$asset" -C /opt/codex-studio/codex
+    tar --no-same-owner -xzf "/tmp/$asset" -C /opt/codex-studio/codex
     # The release package contains the CLI and its companion executables.
     ln -sf /opt/codex-studio/codex/bin/codex /usr/local/bin/codex
     rm "/tmp/$asset" /tmp/codex-sums /tmp/codex-check
@@ -493,7 +493,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     files = []
     for path in sorted(guest_dir.rglob('*')):
         if (path.is_file() and not path.is_symlink() and '__pycache__' not in path.parts
-                and path.suffix in {'.py', '.sh', '.service'} and not path.name.startswith('test')
+                and path.suffix in {'.py', '.sh', '.service', '.apparmor'} and not path.name.startswith('test')
                 and path.name not in {'workspace.py', 'namespace_exec.py'}):
             files.append({'path': '/opt/codex-studio/vm/guest/' + path.relative_to(guest_dir).as_posix(),
                           'permissions': '0644', 'encoding': 'gz+b64',
