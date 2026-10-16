@@ -25,6 +25,7 @@ from typing import Any, Protocol, cast
 import uuid
 import zlib
 
+from codex_server_transport import receive_export
 from codex_peer_updates import (
     ACTIONS as UPDATE_ACTIONS,
     EXPORT_METADATA_SUFFIX as UPDATE_EXPORT_METADATA_SUFFIX,
@@ -36,6 +37,8 @@ from codex_multi_server_transport_limits import (
 )
 
 TIMEOUT = 20
+# One QUIC link stream of an export (docs/peer-link.md).
+STREAM_SECONDS = 600
 MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
 RECEIPT_AGE = 7 * 86400
@@ -1481,9 +1484,16 @@ class MultiServerService:
             path = Path(temporary) / 'worker.bundle'
             if shutil.disk_usage(temporary).free < metadata['bytes'] * 2:
                 raise RuntimeError('Insufficient disk space for the remote Git bundle')
-            offset = 0
             digest = hashlib.sha256()
             with path.open('wb') as stream:
+                def write(data: bytes) -> None:
+                    stream.write(data)
+                    digest.update(data)
+                # The QUIC link sends the bundle as one stream (docs/peer-link.md); the chunk
+                # actions continue from the received offset.
+                offset = 0 if not metadata['bytes'] else receive_export(
+                    self.transport, args['server'], str(uuid.UUID(metadata['export'])) + '.bundle', 0,
+                    metadata['bytes'], write, STREAM_SECONDS)
                 while offset < metadata['bytes']:
                     chunk_key = identity(key, 'chunk', str(offset))
                     with self.runtime.db() as db:

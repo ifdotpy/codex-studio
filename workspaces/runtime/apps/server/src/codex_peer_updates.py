@@ -395,23 +395,13 @@ class Puller:
     def _stream(self, server: str, export: str, size: int, stream: BinaryIO, whole: Any) -> int:
         """Receive the archive as one stream over the QUIC link (docs/peer-link.md). Returns the
         bytes received; the chunk actions continue from there."""
-        sender = getattr(self.transport, 'stream', None)
-        received = 0
+        from codex_server_transport import receive_export
 
-        def sink(data: bytes) -> None:
-            nonlocal received
-            if received + len(data) > size:
-                raise UpdateError('The update archive stream is too long')
+        def write(data: bytes) -> None:
             stream.write(data)
             whole.update(data)
-            received += len(data)
 
-        if sender is not None:
-            try:
-                sender(server, f'/api/servers/exports/{export}{EXPORT_SUFFIX}', timeout=STREAM_SECONDS, sink=sink)
-            except Exception:
-                pass  # A lost or refused stream leaves its bytes; the chunks continue from there.
-        return received
+        return receive_export(self.transport, server, export + EXPORT_SUFFIX, 0, size, write, STREAM_SECONDS)
 
     def offers(self, local: Build) -> list[tuple[Build, str]]:
         found = []

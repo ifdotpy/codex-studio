@@ -102,7 +102,8 @@ class LinkTransport(Transport):
         from studio_api.multi_server.router import export_file
 
         self.streams.append(path)
-        opened = export_file(self.network.services[server].runtime.root, path.rsplit('/', 1)[1], '0')
+        name, _, query = path.rsplit('/', 1)[1].partition('?')
+        opened = export_file(self.network.services[server].runtime.root, name, query.removeprefix('offset='))
         assert opened is not None
         stream, _size, _start = opened
         sent = 0
@@ -215,7 +216,7 @@ class PeerUpdates(unittest.TestCase):
         export = self.actions('update.export')
         self.assertEqual(len(export), 1)
         self.assertEqual(len(transport.streams), 1)
-        self.assertRegex(transport.streams[0], r'^/api/servers/exports/[0-9a-f-]{36}\.zip$')
+        self.assertRegex(transport.streams[0], r'^/api/servers/exports/[0-9a-f-]{36}\.zip\?offset=0$')
         self.assertEqual(self.actions('update.chunk'), [])
         pending = updates.read_pending(self.state)
         assert pending is not None
