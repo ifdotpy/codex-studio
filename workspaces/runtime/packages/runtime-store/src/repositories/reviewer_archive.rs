@@ -8,22 +8,47 @@ pub struct ReviewerArchiveRepository;
 
 impl ReviewerArchiveRepository {
     pub(crate) fn prepare_indexes(transaction: &Transaction<'_>) -> StoreResult<()> {
+        for definition in Self::index_definitions() {
+            transaction.execute_batch(&definition.create_sql)?;
+        }
+        Ok(())
+    }
+
+    /// Canonical DDL for the reviewer archive worker's repository-owned indexes.
+    #[doc(hidden)]
+    pub fn index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
         let candidate_eligibility = candidate_eligibility("record");
         let retry_eligibility = retry_eligibility("record");
-        transaction.execute_batch(&format!(
-            "CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_pending \
-             ON runtime_agents(json_extract(record,'$.parentId'),id) \
-             WHERE {candidate_eligibility};\
-             CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_retry_due \
-             ON runtime_agents(CASE WHEN json_valid(record) THEN \
-                 COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END,id) \
-             WHERE {retry_eligibility};\
-             CREATE INDEX IF NOT EXISTS runtime_event_reviewer_archive_delivery \
-             ON runtime_events(agent, \
-                 CASE WHEN json_valid(text) THEN json_extract(text,'$.agent_id') END, id) \
-             WHERE kind='child_result' AND status='delivered';"
-        ))?;
-        Ok(())
+        vec![
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_agent_reviewer_archive_pending",
+                table: "runtime_agents",
+                create_sql: format!(
+                    "CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_pending \
+                     ON runtime_agents(json_extract(record,'$.parentId'),id) \
+                     WHERE {candidate_eligibility}"
+                ),
+            },
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_agent_reviewer_archive_retry_due",
+                table: "runtime_agents",
+                create_sql: format!(
+                    "CREATE INDEX IF NOT EXISTS runtime_agent_reviewer_archive_retry_due \
+                     ON runtime_agents(CASE WHEN json_valid(record) THEN \
+                         COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END,id) \
+                     WHERE {retry_eligibility}"
+                ),
+            },
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_event_reviewer_archive_delivery",
+                table: "runtime_events",
+                create_sql: "CREATE INDEX IF NOT EXISTS runtime_event_reviewer_archive_delivery \
+                    ON runtime_events(agent, \
+                        CASE WHEN json_valid(text) THEN json_extract(text,'$.agent_id') END,id) \
+                    WHERE kind='child_result' AND status='delivered'"
+                    .to_owned(),
+            },
+        ]
     }
 
     /// Completed reviewers that can be newly scheduled. The partial index

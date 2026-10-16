@@ -111,6 +111,16 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+/// A Rust repository-owned index whose SQL is shared by bootstrap and the
+/// fresh-state cross-language schema parity check.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedRuntimeIndexDefinition {
+    pub name: &'static str,
+    pub table: &'static str,
+    pub create_sql: String,
+}
+
 /// Maximum interval between maintenance checkpoints; the unit is elapsed seconds.
 pub const WAL_CHECKPOINT_CADENCE: Duration = Duration::from_secs(60);
 /// WAL size that permits an early maintenance checkpoint; the unit is bytes.

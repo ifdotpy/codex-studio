@@ -345,13 +345,23 @@ impl SchedulerRepository {
     /// deliberately contains only agent-record predicates; pending-event and
     /// invalid-agent-hold receipt checks remain in the consuming queries.
     pub(crate) fn prepare_account_wake_index(transaction: &Transaction<'_>) -> StoreResult<()> {
-        let eligibility = account_wake_index_eligibility("record");
-        transaction.execute_batch(&format!(
-            "CREATE INDEX IF NOT EXISTS {ACCOUNT_WAKE_INDEX} \
-             ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default'),id) \
-             WHERE {eligibility}"
-        ))?;
+        transaction.execute_batch(&Self::account_wake_index_definition().create_sql)?;
         Ok(())
+    }
+
+    /// Canonical DDL for the repository-owned account wake candidate index.
+    #[doc(hidden)]
+    pub fn account_wake_index_definition() -> crate::OwnedRuntimeIndexDefinition {
+        let eligibility = account_wake_index_eligibility("record");
+        crate::OwnedRuntimeIndexDefinition {
+            name: ACCOUNT_WAKE_INDEX,
+            table: "runtime_agents",
+            create_sql: format!(
+                "CREATE INDEX IF NOT EXISTS {ACCOUNT_WAKE_INDEX} \
+                 ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default'),id) \
+                 WHERE {eligibility}"
+            ),
+        }
     }
 
     /// Return one bounded account/agent page for worker startup and recovery.

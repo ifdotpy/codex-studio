@@ -635,13 +635,16 @@ fn capture_rejects_stale_durable_identity() {
     let (case, records) = fixture();
     for source in [CaptureSource::Live, CaptureSource::History] {
         for initialized in [false, true] {
-            for (field, value) in [
+            let mut fields = vec![
                 ("rootId", json!("other-root")),
                 ("accountKey", json!("other-account")),
                 ("threadId", json!("other-thread")),
-                ("turnId", json!("other-turn")),
                 ("epoch", json!(1)),
-            ] {
+            ];
+            if source == CaptureSource::Live {
+                fields.push(("turnId", json!("other-turn")));
+            }
+            for (field, value) in fields {
                 let mut connection = db(&records, &case);
                 sync_fixture(&connection);
                 let mut supplied = records["agents"]["a"].clone();
@@ -686,6 +689,114 @@ fn capture_rejects_stale_durable_identity() {
             }
         }
     }
+}
+
+fn history_capture_uses_event_turn_and_keeps_durable_turn() {
+    let (case, mut records) = fixture();
+    records["agents"]["a"]["turnId"] = json!("durable-turn");
+    let mut connection = db(&records, &case);
+    let mut supplied = records["agents"]["a"].clone();
+    supplied["turnId"] = json!("newer-rollout-context-turn");
+    let first_notice = json!({
+        "turnId":"historical-event-turn-a",
+        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+    });
+
+    for (turn_id, expected_receipts) in [
+        ("historical-event-turn-a", 1),
+        ("historical-event-turn-b", 2),
+    ] {
+        let params = if turn_id == "historical-event-turn-a" {
+            first_notice.clone()
+        } else {
+            json!({
+                "turnId":turn_id,
+                "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+            })
+        };
+        let tx = connection.transaction().expect("transaction");
+        budget_service::capture(
+            &tx,
+            &mut supplied,
+            &params,
+            101.,
+            CaptureSource::History,
+            100.,
+        )
+        .expect("validated historical event turn is accepted");
+        tx.commit().expect("commit historical receipt");
+        let state = stored(&connection);
+        assert_eq!(
+            state["usage"].as_array().expect("usage").len(),
+            expected_receipts
+        );
+        assert!(
+            state["usage"]
+                .as_array()
+                .expect("usage")
+                .iter()
+                .all(|row| row["kind"] == "notice")
+        );
+        assert_eq!(state["agents"]["a"]["turnId"], "durable-turn");
+        assert_eq!(supplied["turnId"], "newer-rollout-context-turn");
+    }
+    let before_notice_replay = stored(&connection);
+    let tx = connection
+        .transaction()
+        .expect("historical notice replay transaction");
+    budget_service::capture(
+        &tx,
+        &mut supplied,
+        &first_notice,
+        101.,
+        CaptureSource::History,
+        100.,
+    )
+    .expect("historical notice replay is accepted");
+    tx.commit().expect("commit notice replay");
+    assert_eq!(stored(&connection), before_notice_replay);
+
+    let exact_params = json!({
+        "turnId":"historical-response-turn",
+        "responseId":"response-1",
+        "rawTokenUsageRecord":{"response_id":"response-1"},
+        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+    });
+    let tx = connection.transaction().expect("response transaction");
+    budget_service::capture(
+        &tx,
+        &mut supplied,
+        &exact_params,
+        101.,
+        CaptureSource::History,
+        100.,
+    )
+    .expect("historical response is accepted");
+    tx.commit().expect("commit response receipt");
+    let spent_after_first_response = stored(&connection)["agents"]["a"]["tokensUsed"].clone();
+    let tx = connection
+        .transaction()
+        .expect("response replay transaction");
+    budget_service::capture(
+        &tx,
+        &mut supplied,
+        &exact_params,
+        101.,
+        CaptureSource::History,
+        100.,
+    )
+    .expect("historical response replay is idempotent");
+    tx.commit().expect("commit response replay");
+    let final_state = stored(&connection);
+    assert_eq!(final_state["usage"].as_array().expect("usage").len(), 3);
+    assert_eq!(
+        final_state["agents"]["a"]["tokensUsed"],
+        spent_after_first_response
+    );
+    assert_eq!(final_state["agents"]["a"]["turnId"], "durable-turn");
+    assert_eq!(supplied["turnId"], "newer-rollout-context-turn");
+    let usages = final_state["usage"].as_array().expect("usage").clone();
+    assert_ne!(usages[0]["id"], usages[1]["id"]);
 }
 
 fn capture_partial_copy_uses_durable_identity() {
@@ -1074,6 +1185,10 @@ fn budget_corpus_suite() {
         (
             "capture_rejects_stale_durable_identity",
             capture_rejects_stale_durable_identity,
+        ),
+        (
+            "history_capture_uses_event_turn_and_keeps_durable_turn",
+            history_capture_uses_event_turn_and_keeps_durable_turn,
         ),
         (
             "capture_partial_copy_uses_durable_identity",

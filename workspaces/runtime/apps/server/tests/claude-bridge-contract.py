@@ -210,6 +210,11 @@ export function query({prompt,options}){
 '''
 
 
+def node_executable():
+    """Use the harness-selected Node before searching a possibly protected PATH."""
+    return os.environ.get('CODEX_NODE') or shutil.which('node')
+
+
 class Bridge(unittest.TestCase):
     preparation_timeout_ms = 20_000
     def setUp(self):
@@ -244,7 +249,7 @@ class Bridge(unittest.TestCase):
             zod.mkdir(parents=True)
             (zod / 'package.json').write_text('{"name":"zod","type":"module","exports":"./index.js"}')
             (zod / 'index.js').write_text('export const z={fromJSONSchema:schema=>schema};')
-        self.proc = subprocess.Popen([shutil.which('node'), str(root / 'bridge.mjs'), str(root / 'state')],
+        self.proc = subprocess.Popen([node_executable(), str(root / 'bridge.mjs'), str(root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test',
                  'STUDIO_CLAUDE_IDLE_SECONDS':'1', 'CLAUDE_CONFIG_DIR': str(root / 'native-config')})
@@ -288,7 +293,7 @@ class Bridge(unittest.TestCase):
             "serverInfo:{name:'fixture',version:'1'}}:{tools:[{name:'read',description:changed?'Changed':'Read',"
             "inputSchema:{type:'object',properties:{cwd:{type:'string'}}}}]};"
             "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');}")
-        config = {'type': 'stdio', 'command': shutil.which('node'), 'args': [str(server)],
+        config = {'type': 'stdio', 'command': node_executable(), 'args': [str(server)],
                   'env': {'PRIVATE_TOKEN': 'source-private-token'}}
         (self.root / '.mcp.json').write_text(json.dumps({'mcpServers': {'anarlog': config}}))
         (self.root / '.mcp-status.json').write_text(json.dumps([{'name': 'anarlog', 'source': 'project',
@@ -1155,7 +1160,7 @@ class Bridge(unittest.TestCase):
         self.proc.stdin.close()
         self.proc.stdout.close()
         self.proc.stderr.close()
-        self.proc = subprocess.Popen([shutil.which('node'), str(self.root / 'bridge.mjs'), str(self.root / 'state')],
+        self.proc = subprocess.Popen([node_executable(), str(self.root / 'bridge.mjs'), str(self.root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT': 'test@example.test'})
         self.rows = queue.Queue()
