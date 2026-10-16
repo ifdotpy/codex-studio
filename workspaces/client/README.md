@@ -1,8 +1,8 @@
 # Client workspace
 
 Owns Studio's renderer and desktop shell. The renderer presents application
-state through the server HTTP API. Electron owns native privileges and embeds
-the web build.
+state through the server HTTP API. The native host owns operating-system
+privileges and embeds the web build.
 
 ## Apps and navigation
 
@@ -16,8 +16,9 @@ the web build.
 
 The target is Tauri + Rust on desktop and PWA + WebAssembly on mobile.
 Mobile Tauri builds are experimental and are not a release target for now.
-The Electron app remains the installed shell until the desktop migration is
-verified and released.
+The native desktop client now replaces the installed Electron shell. Electron
+remains available for profile export and owns the shared packaging helpers.
+See the [native guide](apps/native/README.md) for migration and verification.
 
 - `apps/native`: Tauri desktop host and its hidden WebView integration checks.
 - `packages/client-domain`: shared Rust rules, Markdown trees and protocol types.

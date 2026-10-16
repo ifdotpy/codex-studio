@@ -1,9 +1,15 @@
 # Native desktop client
 
-This Tauri host is under migration. It is not yet the installed Electron app's
-replacement. The current mobile target is the web PWA with the shared Rust
+This Tauri host is the native desktop client. The installed macOS client was
+migrated from Electron with its profile preserved on 2026-10-16. See the
+[desktop parity report](../../../../docs/desktop/native-parity-20261016.md) for
+verified behavior and remaining limitations. The current mobile target is the web PWA with the shared Rust
 WebAssembly module. Generated iOS files and mobile CLI commands are retained as
 experiments, not release targets.
+
+Desktop artwork is owned by `../desktop/assets/codex-studio.icns`. Run
+`pnpm --filter studio-native-client run icons` on macOS to regenerate the
+native icon variants after changing that source.
 
 Build the renderer from the repository root, then run the hidden desktop checks:
 

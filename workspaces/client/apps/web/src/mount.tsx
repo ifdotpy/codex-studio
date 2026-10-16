@@ -1,3 +1,4 @@
+import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
 import { hasNativeClient } from "./native/client";
 import { isNativeFrame } from "./native/frame";
