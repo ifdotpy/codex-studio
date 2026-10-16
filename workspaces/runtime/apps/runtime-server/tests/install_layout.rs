@@ -49,11 +49,8 @@ async fn startup_stderr(child: &mut tokio::process::Child) -> String {
 
 #[tokio::test]
 async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
-    assert!(include_str!("../src/main.rs").contains(concat!(
-        "const STARTUP_TRACE_ENV: &str = \"",
-        STARTUP_TRACE_ENV,
-        "\";"
-    )));
+    let startup_trace_owner = format!("const STARTUP_TRACE_ENV: &str = \"{STARTUP_TRACE_ENV}\";");
+    assert!(include_str!("../src/main.rs").contains(&startup_trace_owner));
     let prefix = tempdir().unwrap();
     let workspace = prefix.path().join("workspace");
     let binary_dir = workspace.join("bin");
