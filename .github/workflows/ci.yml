@@ -153,7 +153,8 @@ jobs:
   fast-rust:
     name: "Fast tier: Rust workspace (${{ matrix.partition }}/4)"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cold workspace compilation takes 6–8 minutes; leave a separate budget for tests.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
