@@ -79,7 +79,7 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
     }
     let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if process_gone_error(&e) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let stat = ProcStat::parse(&stat)?;
@@ -87,6 +87,13 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
         return Ok(None);
     }
     Ok(Some(stat.start_identity(&boot_id()?)))
+}
+
+pub(super) fn process_gone_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
+        || error.raw_os_error().is_some_and(|code| {
+            rustix::io::Errno::from_raw_os_error(code) == rustix::io::Errno::SRCH
+        })
 }
 
 /// Signal a process group only while a captured member still has its exact
@@ -214,13 +221,23 @@ pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'sta
         }
         match kill_process_group(process, signal) {
             Ok(()) => {}
-            Err(rustix::io::Errno::SRCH) => return Ok("already-exited"),
+            Err(rustix::io::Errno::SRCH) => {
+                return match start_time(pid, false)? {
+                    None => Ok("already-exited"),
+                    Some(actual) if actual == expected => Err(Error::Refused(
+                        "Verified child process group disappeared before child exit",
+                    )),
+                    Some(_) => Err(Error::Refused("Child identity changed before close")),
+                };
+            }
             Err(e) => return Err(std::io::Error::from(e).into()),
         }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if start_time(pid, false)?.as_deref() != Some(expected) {
-                return Ok(outcome);
+            match start_time(pid, false)? {
+                None => return Ok(outcome),
+                Some(actual) if actual == expected => {}
+                Some(_) => return Err(Error::Refused("Child identity changed during close")),
             }
             thread::sleep(RETRY);
         }
@@ -313,5 +330,18 @@ mod tests {
             stop_verified(pid, pid, &identity),
             Ok("already-exited")
         ));
+    }
+
+    #[test]
+    fn vanished_process_lookup_errors_are_limited_to_not_found_and_esrch() {
+        assert!(process_gone_error(&std::io::Error::from(
+            rustix::io::Errno::SRCH,
+        )));
+        assert!(process_gone_error(&std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )));
+        assert!(!process_gone_error(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
     }
 }

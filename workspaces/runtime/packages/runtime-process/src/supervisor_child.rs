@@ -1,6 +1,6 @@
 //! Owned pipes and process group. Socket disconnects never stop a child.
 use super::supervisor_daemon::{Error, Result, lock, now};
-use super::supervisor_identity::{RETRY, free_space, start_time};
+use super::supervisor_identity::{RETRY, free_space, process_gone_error, start_time};
 use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
 use serde_json::{Value, json};
 use std::{
@@ -242,12 +242,24 @@ impl OwnedChild {
     }
     pub fn reap(&self) -> Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while self.code()?.is_none() {
+        loop {
+            match self.code() {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) => {}
+                Err(Error::Io(error))
+                    if process_gone_error(&error) && start_time(self.pid, false)?.is_none() =>
+                {
+                    // A concurrent reader may already have reaped this exact
+                    // child. Absence is success only while no process identity
+                    // now occupies the saved PID.
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Refused("Child did not reap before deadline"));
             }
             thread::sleep(RETRY);
         }
-        Ok(())
     }
 }

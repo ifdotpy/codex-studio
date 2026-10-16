@@ -1,7 +1,8 @@
 //! Standalone protocol-v1 supervisor. One lease, bounded connections and owned children.
 use super::supervisor_child::OwnedChild;
 use super::supervisor_identity::{
-    RETRY, free_space, inspect_start, start_time, stop_verified, valid_start, verify_group,
+    RETRY, free_space, inspect_start, process_gone_error, start_time, stop_verified, valid_start,
+    verify_group,
 };
 use serde_json::{Value, json};
 use std::{
@@ -306,13 +307,14 @@ impl Supervisor {
                         match inspect_start(row.pid, expected)?.0 {
                             StartMatch::Gone => {}
                             StartMatch::Exact | StartMatch::Legacy => {
-                                let verified = self.verified_start(&row)?;
-                                stop_verified(
-                                    row.pid,
-                                    row.pgid
-                                        .ok_or(Error::Refused("Missing child process group"))?,
-                                    &verified,
-                                )?;
+                                if let Some(verified) = self.verified_start(&row)? {
+                                    stop_verified(
+                                        row.pid,
+                                        row.pgid
+                                            .ok_or(Error::Refused("Missing child process group"))?,
+                                        &verified,
+                                    )?;
+                                }
                             }
                             StartMatch::Different => {
                                 return Err(Error::Refused(
@@ -347,11 +349,14 @@ impl Supervisor {
                 }
                 let child = active_child.ok_or(Error::Refused("Unknown supervisor handle"))?;
                 let _write = lock(&child.write_lock)?;
+                let actual_start = start_time(expected_pid, false)?;
                 if row.closed_at.is_some()
                     || row.pid != expected_pid
                     || row.signature != expected_signature
                     || row.start_time.as_deref() != Some(&expected_start_time)
-                    || start_time(expected_pid, false)?.as_deref() != Some(&expected_start_time)
+                    || actual_start
+                        .as_deref()
+                        .is_some_and(|actual| actual != expected_start_time)
                     || child.pid != expected_pid
                     || child.start != expected_start_time
                 {
@@ -472,7 +477,7 @@ impl Supervisor {
             _ => Err(Error::Refused("Unknown supervisor action")),
         }
     }
-    fn verified_start(&self, row: &StoredHandle) -> Result<String> {
+    fn verified_start(&self, row: &StoredHandle) -> Result<Option<String>> {
         let expected = row
             .start_time
             .as_deref()
@@ -480,39 +485,61 @@ impl Supervisor {
         let pgid = row
             .pgid
             .ok_or(Error::Refused("Missing child process group"))?;
-        verify_group(row.pid, pgid)?;
         let (kind, actual) = inspect_start(row.pid, expected)?;
-        let actual = actual.ok_or(Error::Refused("Child exited before identity verification"))?;
+        let Some(actual) = actual else {
+            return Ok(None);
+        };
         match kind {
             StartMatch::Exact => {}
-            StartMatch::Legacy => self.journal.upgrade_identity(row, &actual)?,
+            StartMatch::Legacy => {}
+            StartMatch::Gone => return Ok(None),
             _ => return Err(Error::Refused("Child identity changed before signal")),
         }
-        Ok(actual)
+        match verify_group(row.pid, pgid) {
+            Ok(_) => {}
+            Err(Error::Io(error))
+                if process_gone_error(&error) && start_time(row.pid, false)?.is_none() =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        }
+        match start_time(row.pid, false)? {
+            None => return Ok(None),
+            Some(current) if current == actual => {}
+            Some(_) => return Err(Error::Refused("Child identity changed before signal")),
+        }
+        if kind == StartMatch::Legacy {
+            self.journal.upgrade_identity(row, &actual)?;
+        }
+        Ok(Some(actual))
     }
     fn recover(&self) -> Result<()> {
         let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
         for row in self.journal.handles(true)? {
-            let (outcome, detail) =
-                if let (Some(expected), Some(pgid)) = (&row.start_time, row.pgid) {
-                    match inspect_start(row.pid, expected)?.0 {
-                        StartMatch::Gone => (
-                            "already-exited",
-                            "Native child was no longer running when the supervisor recovered",
-                        ),
-                        StartMatch::Different => (
-                            "identity-mismatch",
-                            "PID belongs to a different process start time",
-                        ),
-                        StartMatch::Exact | StartMatch::Legacy => {
-                            recovery["degraded"] = json!(true);
-                            recovery["notice"] = json!(
-                                "The process supervisor restarted; native work is using recovery."
-                            );
-                            match self
-                                .verified_start(&row)
-                                .and_then(|verified| stop_verified(row.pid, pgid, &verified))
-                            {
+            let (outcome, detail) = if let (Some(expected), Some(pgid)) =
+                (&row.start_time, row.pgid)
+            {
+                match inspect_start(row.pid, expected)?.0 {
+                    StartMatch::Gone => (
+                        "already-exited",
+                        "Native child was no longer running when the supervisor recovered",
+                    ),
+                    StartMatch::Different => (
+                        "identity-mismatch",
+                        "PID belongs to a different process start time",
+                    ),
+                    StartMatch::Exact | StartMatch::Legacy => {
+                        recovery["degraded"] = json!(true);
+                        recovery["notice"] = json!(
+                            "The process supervisor restarted; native work is using recovery."
+                        );
+                        match self.verified_start(&row) {
+                            Ok(None) => (
+                                "already-exited",
+                                "Native child exited while its identity was being verified",
+                            ),
+                            Ok(Some(verified)) => match stop_verified(row.pid, pgid, &verified) {
                                 Ok(outcome) => (outcome, "verified process group terminated"),
                                 Err(_) => {
                                     recovery["blocked"] =
@@ -522,17 +549,26 @@ impl Supervisor {
                                         "Could not terminate verified child process group",
                                     )
                                 }
+                            },
+                            Err(_) => {
+                                recovery["blocked"] =
+                                    json!("Could not terminate verified child process group");
+                                (
+                                    "termination-failed",
+                                    "Could not terminate verified child process group",
+                                )
                             }
                         }
                     }
-                } else {
-                    recovery["blocked"] =
-                        json!("A native child is missing its recorded PID and start time");
-                    (
-                        "missing-identity",
-                        "Native child PID and start time were not recorded",
-                    )
-                };
+                }
+            } else {
+                recovery["blocked"] =
+                    json!("A native child is missing its recorded PID and start time");
+                (
+                    "missing-identity",
+                    "Native child PID and start time were not recorded",
+                )
+            };
             self.journal
                 .recovered(&self.saved(&row.id)?, outcome, detail, now()?)?;
         }
