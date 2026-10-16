@@ -188,7 +188,7 @@ class SharedValuesContract(unittest.TestCase):
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-process/src/transport.rs"
         ).read_text(encoding="utf-8")
         self.assertEqual(MAX_FRAME_BYTES, MAX_SUPERVISOR_FRAME_BYTES)
-        self.assertEqual(MAX_SUPERVISOR_FRAME_BYTES, 1_048_576)
+        self.assertEqual(MAX_SUPERVISOR_FRAME_BYTES, 32 * 1024 * 1024)
         self.assertIn("MAX_FRAME_BYTES = MAX_SUPERVISOR_FRAME_BYTES", python_source)
         self.assertIn("reader.readline(MAX_SUPERVISOR_FRAME_BYTES + 1", windows_source)
         self.assertIn("MAX_SUPERVISOR_FRAME_BYTES", rust_source)
