@@ -1793,7 +1793,7 @@ mod title_http_tests {
         }))
         .expect("valid persisted agent");
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 AgentRepository::put(tx, &agent)?;
                 tx.execute(
                     "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4)",

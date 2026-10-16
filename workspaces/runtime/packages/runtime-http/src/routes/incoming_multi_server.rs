@@ -327,6 +327,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            let notification_sink = Arc::clone(&notifications);
             credentials
                 .rename_with_notification(
                     Arc::clone(&store),
@@ -334,8 +335,8 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
                     &label,
                     &request_id,
                     &principal,
-                    |request_id| {
-                        super::multi_server::publish_resource_change(&notifications, request_id)
+                    move |request_id| {
+                        super::multi_server::publish_resource_change(&notification_sink, request_id)
                     },
                 )
                 .await

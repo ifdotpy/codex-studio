@@ -1,7 +1,8 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
-use std::{path::Path, process::Output, time::Duration};
+use std::{path::Path, process::Output, sync::Arc, time::Duration};
 use studio_runtime_services::task_recovery::{TaskRecoveryDecision, TaskRecoverySnapshot};
 
 fn run_oracle(script: &str) -> Output {
@@ -78,8 +79,8 @@ fn malformed_persisted_recovery_inputs_are_located() {
     }
 }
 
-#[test]
-fn task_consumer_resolves_local_receipt_without_native_read() {
+#[tokio::test]
+async fn task_consumer_resolves_local_receipt_without_native_read() {
     use std::time::Instant;
     use studio_runtime_services::{recovery::RecoveryError, recovery_history::*, task_recovery::*};
     struct Reader;
@@ -104,17 +105,21 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
             )
         }
 
-        fn read(
-            &mut self,
+        fn read<'a>(
+            &'a mut self,
             _: &ConnectionScope,
             _: HistoryMethod,
             _: Value,
             _: Instant,
-        ) -> Result<HistoryReceipt, HistoryError> {
-            panic!("local receipt must win")
+        ) -> BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+            Box::pin(async { panic!("local receipt must win") })
         }
-        fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-            panic!("no native read")
+        fn barrier<'a>(
+            &'a mut self,
+            _: &ConnectionScope,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<(), HistoryError>> {
+            Box::pin(async { panic!("no native read") })
         }
     }
     #[derive(Default)]
@@ -122,30 +127,37 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
         completed: Vec<Value>,
     }
     impl TaskRecoveryEffects for Effects {
-        fn apply_absence(
-            &mut self,
-            _: &TaskRecoverySnapshot,
-            _: &ConnectionScope,
-            _: &studio_runtime_services::recovery_absence::RecoveryObservation,
+        fn apply_absence<'a>(
+            &'a mut self,
+            _: &'a TaskRecoverySnapshot,
+            _: &'a ConnectionScope,
+            _: &'a studio_runtime_services::recovery_absence::RecoveryObservation,
             _: studio_runtime_services::recovery_absence::TaskAbsenceDecision,
-        ) -> Result<bool, RecoveryError> {
-            Ok(false)
+        ) -> BoxFuture<'a, Result<bool, RecoveryError>> {
+            Box::pin(async { Ok(false) })
         }
 
-        fn resolve_receipt(&mut self, receipt: &Value) -> Result<Value, RecoveryError> {
-            Ok(receipt.clone())
-        }
-        fn complete(
+        fn resolve_receipt(
             &mut self,
-            _: &TaskRecoverySnapshot,
-            _: &ConnectionScope,
+            receipt: Arc<Value>,
+        ) -> BoxFuture<'_, Result<Value, RecoveryError>> {
+            Box::pin(async move { Ok(receipt.as_ref().clone()) })
+        }
+        fn complete<'a>(
+            &'a mut self,
+            _: &'a TaskRecoverySnapshot,
+            _: &'a ConnectionScope,
             item: Value,
-        ) -> Result<bool, RecoveryError> {
-            self.completed.push(item);
-            Ok(true)
+        ) -> BoxFuture<'a, Result<bool, RecoveryError>> {
+            Box::pin(async move {
+                self.completed.push(item);
+                Ok(true)
+            })
         }
     }
-    let output = run_oracle("task_oracle.py");
+    let output = tokio::task::spawn_blocking(|| run_oracle("task_oracle.py"))
+        .await
+        .expect("oracle task");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("valid recovery fixture");
     for name in ["exact", "running-unknown-True"] {
@@ -168,6 +180,7 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
         };
         assert_eq!(
             recover_task(&snapshot, scope, &mut Reader, &mut effects)
+                .await
                 .expect("valid recovery fixture"),
             name == "exact"
         );
@@ -178,8 +191,8 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
     }
 }
 
-#[test]
-fn native_task_consumer_preserves_duplicate_ambiguity() {
+#[tokio::test]
+async fn native_task_consumer_preserves_duplicate_ambiguity() {
     use std::time::Instant;
     use studio_runtime_services::{recovery::RecoveryError, recovery_history::*, task_recovery::*};
     struct Reader {
@@ -207,57 +220,73 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
             )
         }
 
-        fn read(
-            &mut self,
+        fn read<'a>(
+            &'a mut self,
             scope: &ConnectionScope,
             method: HistoryMethod,
             params: Value,
             _: Instant,
-        ) -> Result<HistoryReceipt, HistoryError> {
-            assert_eq!(method, HistoryMethod::Items);
-            assert_eq!(
-                params,
-                json!({"threadId":"thread","turnId":"turn","limit":1000,"sortDirection":"asc"})
-            );
-            Ok(HistoryReceipt {
-                scope: scope.clone(),
-                body: json!({"data":self.entries}),
+        ) -> BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+            let scope = scope.clone();
+            Box::pin(async move {
+                assert_eq!(method, HistoryMethod::Items);
+                assert_eq!(
+                    params,
+                    json!({"threadId":"thread","turnId":"turn","limit":1000,"sortDirection":"asc"})
+                );
+                Ok(HistoryReceipt {
+                    scope,
+                    body: json!({"data":self.entries.clone()}),
+                })
             })
         }
-        fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-            self.barrier = true;
-            Ok(())
+        fn barrier<'a>(
+            &'a mut self,
+            _: &ConnectionScope,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<(), HistoryError>> {
+            Box::pin(async move {
+                self.barrier = true;
+                Ok(())
+            })
         }
     }
     struct Effects {
         completed: bool,
     }
     impl TaskRecoveryEffects for Effects {
-        fn apply_absence(
-            &mut self,
-            _: &TaskRecoverySnapshot,
-            _: &ConnectionScope,
-            _: &studio_runtime_services::recovery_absence::RecoveryObservation,
+        fn apply_absence<'a>(
+            &'a mut self,
+            _: &'a TaskRecoverySnapshot,
+            _: &'a ConnectionScope,
+            _: &'a studio_runtime_services::recovery_absence::RecoveryObservation,
             _: studio_runtime_services::recovery_absence::TaskAbsenceDecision,
-        ) -> Result<bool, RecoveryError> {
-            Ok(false)
+        ) -> BoxFuture<'a, Result<bool, RecoveryError>> {
+            Box::pin(async { Ok(false) })
         }
 
-        fn resolve_receipt(&mut self, _: &Value) -> Result<Value, RecoveryError> {
-            panic!("no local receipt")
-        }
-        fn complete(
+        fn resolve_receipt(
             &mut self,
-            _: &TaskRecoverySnapshot,
-            _: &ConnectionScope,
+            _: Arc<Value>,
+        ) -> BoxFuture<'_, Result<Value, RecoveryError>> {
+            Box::pin(async { panic!("no local receipt") })
+        }
+        fn complete<'a>(
+            &'a mut self,
+            _: &'a TaskRecoverySnapshot,
+            _: &'a ConnectionScope,
             item: Value,
-        ) -> Result<bool, RecoveryError> {
-            assert_eq!(item["contentItems"][0]["text"], "exact native text");
-            self.completed = true;
-            Ok(true)
+        ) -> BoxFuture<'a, Result<bool, RecoveryError>> {
+            Box::pin(async move {
+                assert_eq!(item["contentItems"][0]["text"], "exact native text");
+                self.completed = true;
+                Ok(true)
+            })
         }
     }
-    let output = run_oracle("task_oracle.py");
+    let output = tokio::task::spawn_blocking(|| run_oracle("task_oracle.py"))
+        .await
+        .expect("oracle task");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
     let case = &cases[0];
@@ -286,6 +315,7 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
                 &mut reader,
                 &mut effects
             )
+            .await
             .expect("recovery"),
             count == 1
         );

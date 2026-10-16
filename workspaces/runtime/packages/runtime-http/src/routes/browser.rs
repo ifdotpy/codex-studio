@@ -259,6 +259,7 @@ mod tests {
         let state_dir = tempfile::tempdir().expect("isolated state directory");
         let store = Arc::new(
             studio_runtime_store::RuntimeStore::open(Some(state_dir.path()))
+                .await
                 .expect("isolated runtime store"),
         );
         let state = crate::router::HttpState::new(

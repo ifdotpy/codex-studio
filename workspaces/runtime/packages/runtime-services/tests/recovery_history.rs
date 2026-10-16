@@ -1,5 +1,6 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, time::Instant};
 use studio_runtime_services::{
@@ -42,29 +43,37 @@ impl RecoveryReader for Reader {
         )
     }
 
-    fn read(
-        &mut self,
+    fn read<'a>(
+        &'a mut self,
         s: &ConnectionScope,
         m: HistoryMethod,
         params: Value,
         _: Instant,
-    ) -> Result<HistoryReceipt, HistoryError> {
-        assert!(!self.barrier);
-        self.methods.push(m);
-        self.calls
-            .push(json!({"method":m.as_str(),"params":params}));
-        let mut s = s.clone();
-        if self.foreign {
-            s.generation += 1;
-        }
-        Ok(HistoryReceipt {
-            scope: s,
-            body: self.replies.pop_front().expect("no extra native read")?,
+    ) -> BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+        let mut scope = s.clone();
+        Box::pin(async move {
+            assert!(!self.barrier);
+            self.methods.push(m);
+            self.calls
+                .push(json!({"method":m.as_str(),"params":params}));
+            if self.foreign {
+                scope.generation += 1;
+            }
+            Ok(HistoryReceipt {
+                scope,
+                body: self.replies.pop_front().expect("no extra native read")?,
+            })
         })
     }
-    fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-        self.barrier = true;
-        Ok(())
+    fn barrier<'a>(
+        &'a mut self,
+        _: &ConnectionScope,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<(), HistoryError>> {
+        Box::pin(async move {
+            self.barrier = true;
+            Ok(())
+        })
     }
 }
 fn turn() -> Value {
@@ -73,16 +82,31 @@ fn turn() -> Value {
 fn page(turn: Value) -> Value {
     json!({"data":[turn],"nextCursor":null})
 }
-fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>, HistoryError> {
+async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>, HistoryError> {
     let mut reader = Reader {
         replies: replies.into(),
         ..Default::default()
     };
     HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
         .exact_turn("thread", "turn")
+        .await
 }
-#[test]
-fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
+async fn oracle(script: &'static str) -> std::process::Output {
+    tokio::task::spawn_blocking(move || {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/recovery")
+            .join(script);
+        std::process::Command::new(python_test_support::prepared_python(&source))
+            .arg(path)
+            .output()
+    })
+    .await
+    .expect("oracle process task")
+    .expect("oracle process")
+}
+#[tokio::test]
+async fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
     let mut t = turn();
     let duplicate = t["items"][0].clone();
     t["items"]
@@ -90,34 +114,37 @@ fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
         .expect("valid recovery fixture")
         .push(duplicate);
     assert_eq!(
-        read(vec![Ok(page(t))]).expect("valid recovery fixture"),
+        read(vec![Ok(page(t))])
+            .await
+            .expect("valid recovery fixture"),
         Some(turn())
     );
 }
-#[test]
-fn conflicting_duplicate_items_are_not_a_receipt() {
+#[tokio::test]
+async fn conflicting_duplicate_items_are_not_a_receipt() {
     let mut t = turn();
     t["items"]
         .as_array_mut()
         .expect("valid recovery fixture")
         .push(json!({"id":"item","type":"agentMessage","text":"changed"}));
-    assert_eq!(read(vec![Ok(page(t))]), Err(HistoryError::Identity));
+    assert_eq!(read(vec![Ok(page(t))]).await, Err(HistoryError::Identity));
 }
-#[test]
-fn summary_items_are_paginated_and_terminal_metadata_is_rechecked() {
+#[tokio::test]
+async fn summary_items_are_paginated_and_terminal_metadata_is_rechecked() {
     let summary = json!({"id":"turn","status":"completed","items":[],"itemsView":"notLoaded"});
     let result = read(vec![
         Ok(page(summary.clone())),
         Ok(json!({"data":[turn()["items"][0]],"nextCursor":null})),
         Ok(page(summary)),
     ])
+    .await
     .expect("valid recovery fixture")
     .expect("valid recovery fixture");
     assert_eq!(result["items"], turn()["items"]);
     assert_eq!(result["itemsView"], "full");
 }
-#[test]
-fn changed_terminal_metadata_is_refused() {
+#[tokio::test]
+async fn changed_terminal_metadata_is_refused() {
     let summary = json!({"id":"turn","status":"completed","items":[],"itemsView":"notLoaded"});
     let mut changed = summary.clone();
     changed["status"] = json!("failed");
@@ -126,12 +153,13 @@ fn changed_terminal_metadata_is_refused() {
             Ok(page(summary)),
             Ok(json!({"data":[]})),
             Ok(page(changed))
-        ]),
+        ])
+        .await,
         Err(HistoryError::Identity)
     );
 }
-#[test]
-fn unsupported_items_allows_only_full_target_fallback() {
+#[tokio::test]
+async fn unsupported_items_allows_only_full_target_fallback() {
     let summary = json!({"id":"turn","status":"completed","items":[],"itemsView":"summary"});
     assert_eq!(
         read(vec![
@@ -139,20 +167,21 @@ fn unsupported_items_allows_only_full_target_fallback() {
             Err(HistoryError::Unsupported),
             Ok(page(turn()))
         ])
+        .await
         .expect("valid recovery fixture"),
         Some(turn())
     );
 }
-#[test]
-fn repeated_cursor_and_foreign_item_are_refused() {
+#[tokio::test]
+async fn repeated_cursor_and_foreign_item_are_refused() {
     let empty = json!({"data":[],"nextCursor":"same"});
-    assert!(read(vec![Ok(empty.clone()), Ok(empty)]).is_err());
+    assert!(read(vec![Ok(empty.clone()), Ok(empty)]).await.is_err());
     let mut t = turn();
     t["items"][0]["threadId"] = json!("foreign");
-    assert_eq!(read(vec![Ok(page(t))]), Err(HistoryError::Identity));
+    assert_eq!(read(vec![Ok(page(t))]).await, Err(HistoryError::Identity));
 }
-#[test]
-fn foreign_transport_receipt_is_refused_before_use() {
+#[tokio::test]
+async fn foreign_transport_receipt_is_refused_before_use() {
     let mut reader = Reader {
         replies: vec![Ok(page(turn()))].into(),
         foreign: true,
@@ -160,15 +189,18 @@ fn foreign_transport_receipt_is_refused_before_use() {
     };
     assert_eq!(
         HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
-            .exact_turn("thread", "turn"),
+            .exact_turn("thread", "turn")
+            .await,
         Err(HistoryError::Identity)
     );
 }
-#[test]
-fn expired_read_does_not_call_provider() {
+#[tokio::test]
+async fn expired_read_does_not_call_provider() {
     let mut reader = Reader::default();
     assert_eq!(
-        HistoryRead::new(&mut reader, scope(), Instant::now()).exact_turn("thread", "turn"),
+        HistoryRead::new(&mut reader, scope(), Instant::now())
+            .exact_turn("thread", "turn")
+            .await,
         Err(HistoryError::Deadline)
     );
     assert!(reader.methods.is_empty());
@@ -177,21 +209,28 @@ struct Effects {
     actions: Vec<RecoveryAction>,
 }
 impl RecoveryEffects for Effects {
-    fn apply(
-        &mut self,
-        _: &RecoverySnapshot,
-        _: &ConnectionScope,
+    fn apply<'a>(
+        &'a mut self,
+        _: &'a RecoverySnapshot,
+        _: &'a ConnectionScope,
         action: RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError> {
-        self.actions.push(action);
-        Ok(RecoveryOutcome::Applied(json!({"status":"reconciled"})))
+    ) -> BoxFuture<'a, Result<studio_runtime_services::recovery::RecoveryEffectResult, RecoveryError>>
+    {
+        Box::pin(async move {
+            self.actions.push(action);
+            Ok(
+                studio_runtime_services::recovery::RecoveryEffectResult::plain(
+                    RecoveryOutcome::Applied(json!({"status":"reconciled"})),
+                ),
+            )
+        })
     }
 }
 fn agent() -> RecoverySnapshot {
     RecoverySnapshot::from_record(json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true})).expect("valid recovery fixture")
 }
-#[test]
-fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
+#[tokio::test]
+async fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
     let idle = json!({"thread":{"id":"thread","status":{"type":"idle"}}});
     let mut reader = Reader {
         replies: vec![Ok(idle.clone()), Ok(page(turn())), Ok(idle)].into(),
@@ -200,8 +239,12 @@ fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
     let mut effects = Effects { actions: vec![] };
     assert!(matches!(
         recovery::recover_turn(&agent(), scope(), &mut reader, &mut effects)
+            .await
             .expect("valid recovery fixture"),
-        RecoveryOutcome::Applied(_)
+        studio_runtime_services::recovery::RecoveryEffectResult {
+            outcome: RecoveryOutcome::Applied(_),
+            ..
+        }
     ));
     assert!(reader.barrier);
     assert_eq!(effects.actions.len(), 1);
@@ -214,8 +257,8 @@ fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
         ]
     );
 }
-#[test]
-fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion() {
+#[tokio::test]
+async fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion() {
     for result in [
         Err(HistoryError::Unavailable),
         Ok(json!({"thread":{"id":"thread","status":{"type":"active"}}})),
@@ -225,11 +268,11 @@ fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion() {
             ..Default::default()
         };
         let mut effects = Effects { actions: vec![] };
-        let outcome = recovery::recover_turn(&agent(), scope(), &mut reader, &mut effects);
+        let outcome = recovery::recover_turn(&agent(), scope(), &mut reader, &mut effects).await;
         assert!(
             outcome.is_err()
                 || matches!(
-                    outcome.expect("valid recovery fixture"),
+                    outcome.expect("valid recovery fixture").outcome,
                     RecoveryOutcome::Unconfirmed
                 )
         );
@@ -237,14 +280,9 @@ fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion() {
     }
 }
 
-#[test]
-fn complete_history_outputs_and_calls_match_python() {
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/history_oracle.py"))
-    .output()
-    .expect("valid recovery fixture");
+#[tokio::test]
+async fn complete_history_outputs_and_calls_match_python() {
+    let output = oracle("history_oracle.py").await;
     assert!(
         output.status.success(),
         "{}",
@@ -269,7 +307,8 @@ fn complete_history_outputs_and_calls_match_python() {
             ..Default::default()
         };
         let result = HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
-            .exact_turn("thread", "turn");
+            .exact_turn("thread", "turn")
+            .await;
         assert_eq!(
             result.is_err(),
             case["failed"].as_bool().expect("valid recovery fixture"),
@@ -287,8 +326,8 @@ fn complete_history_outputs_and_calls_match_python() {
         assert_eq!(json!(reader.calls), case["calls"], "{}", case["name"]);
     }
 }
-#[test]
-fn exact_start_requires_unique_complete_client_receipt() {
+#[tokio::test]
+async fn exact_start_requires_unique_complete_client_receipt() {
     for (rows, accepted) in [
         (
             vec![
@@ -316,6 +355,7 @@ fn exact_start_requires_unique_complete_client_receipt() {
         assert_eq!(
             HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
                 .exact_start("thread", "event")
+                .await
                 .expect("valid recovery fixture")
                 .is_some(),
             accepted
@@ -330,13 +370,14 @@ fn exact_start_requires_unique_complete_client_receipt() {
     };
     assert_eq!(
         HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
-            .exact_start("thread", "event"),
+            .exact_start("thread", "event")
+            .await,
         Err(HistoryError::Identity)
     );
 }
 
-#[test]
-fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
+#[tokio::test]
+async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
     let mut reader = Reader {
         replies: vec![Ok(json!({"data":[{
             "id":"rejected",
@@ -352,6 +393,7 @@ fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
     assert_eq!(
         HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
             .exact_start_outcome("thread", "event")
+            .await
             .expect("explicit negative receipt"),
         studio_runtime_services::recovery_history::ExactStart::NotApplied
     );
@@ -361,19 +403,15 @@ fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
     };
     assert_eq!(
         HistoryRead::new(&mut unavailable, scope(), Instant::now() + READ_DEADLINE)
-            .exact_start_outcome("thread", "event"),
+            .exact_start_outcome("thread", "event")
+            .await,
         Err(HistoryError::Unavailable)
     );
 }
 
-#[test]
-fn legacy_start_matches_python_complete_history() {
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/start_oracle.py"))
-    .output()
-    .expect("oracle");
+#[tokio::test]
+async fn legacy_start_matches_python_complete_history() {
+    let output = oracle("start_oracle.py").await;
     assert!(
         output.status.success(),
         "{}",
@@ -392,7 +430,8 @@ fn legacy_start_matches_python_complete_history() {
             ..Default::default()
         };
         let actual = HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
-            .exact_start("thread", "event");
+            .exact_start("thread", "event")
+            .await;
         assert_eq!(
             actual.is_err(),
             case["failed"].as_bool().expect("failed"),

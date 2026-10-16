@@ -2728,7 +2728,9 @@ mod tests {
         assert_eq!(python_actions.len(), 7);
 
         let store = Arc::new(
-            RuntimeStore::open(Some(rust_directory.path())).expect("open Python-written pre-state"),
+            RuntimeStore::open(Some(rust_directory.path()))
+                .await
+                .expect("open Python-written pre-state"),
         );
         let driver = TerminalDriver::with_sources(
             store.clone(),

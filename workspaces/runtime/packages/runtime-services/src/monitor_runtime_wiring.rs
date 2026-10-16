@@ -1443,9 +1443,13 @@ mod tests {
             .expect("monitor task stops cleanly");
     }
 
-    fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<EventPort>) {
+    async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<EventPort>) {
         let root = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("store opens"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store opens"),
+        );
         let port = Arc::new(EventPort::default());
         (root, store, port)
     }
@@ -1494,7 +1498,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn monitor_waits_idle_and_a_pre_wait_wake_is_not_lost() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         // Exclude receipt-directory creation from the monitor's native startup watch.
         std::fs::create_dir_all(store.root().join("monitor-results"))
             .expect("prepare receipt watch directory before monitor startup");
@@ -1523,7 +1527,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn queued_output_and_exit_results_wake_a_sleeping_consumer() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         let runtime = Arc::new(MonitorRuntime::new(
             store,
             port.clone(),
@@ -1542,7 +1546,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn watcher_failure_does_not_gate_committed_dispatch_wakes() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         let runtime = Arc::new(MonitorRuntime::new(
             store,
             port.clone(),
@@ -1570,20 +1574,26 @@ mod tests {
         let state_directory = root.path().join("state");
         std::fs::create_dir(&state_directory).expect("create isolated state directory");
         let store = Arc::new(
-            RuntimeStore::open(Some(&state_directory)).expect("open isolated state store"),
+            RuntimeStore::open(Some(&state_directory))
+                .await
+                .expect("open isolated state store"),
         );
         let port = Arc::new(EventPort::default());
         insert_active_owner(&store).await;
         let missing_parent = root.path().join("new-directory/deeper");
+        let watched_file = missing_parent
+            .join("watched.txt")
+            .to_string_lossy()
+            .into_owned();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('file-rule',?1)",
                     [serde_json::json!({
                         "id":"file-rule","agent":"owner","epoch":0,"name":"watch",
                         "kind":"file","status":"active","intervalSeconds":30,
                         "nextAt":9_000_000_000_000_000.0,"created":1.0,"command":"true",
-                        "text":"","path":missing_parent.join("watched.txt").to_string_lossy(),
+                        "text":"","path":watched_file,
                         "inFlight":false
                     })
                     .to_string()],
@@ -1619,7 +1629,7 @@ mod tests {
 
     #[tokio::test]
     async fn stall_monitor_scan_pages_past_the_first_sixty_four_ids() {
-        let (_root, store, _port) = fixture();
+        let (_root, store, _port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -1661,7 +1671,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn monitor_loop_reaches_a_due_sixty_fifth_monitor_then_sleeps() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH + 1;
         let page_count = monitor_count.div_ceil(crate::monitor_runtime::MONITOR_TICK_BATCH);
@@ -1670,7 +1680,7 @@ mod tests {
         let expected_ticks = page_count * 2;
         let active_at = crate::event_write::unix_time().expect("read fixture time");
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 for index in 0..monitor_count {
                     let id = format!("monitor-{index:03}");
                     let activity_at = if index == 64 {
@@ -1730,7 +1740,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn transient_port_error_retries_after_backoff_and_restarts_from_durable_state() {
-        let (root, store, port) = fixture();
+        let (root, store, port) = fixture().await;
         port.fail_next.store(1, Ordering::SeqCst);
         let runtime = Arc::new(MonitorRuntime::new(
             store,
@@ -1761,7 +1771,11 @@ mod tests {
             },
         )
         .expect("persist an unresolved receipt before restart");
-        let reopened = Arc::new(RuntimeStore::open(Some(root.path())).expect("store reopens"));
+        let reopened = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store reopens"),
+        );
         let restarted_port = Arc::new(EventPort::default());
         let restarted = Arc::new(MonitorRuntime::new(
             reopened,
@@ -1792,7 +1806,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_stall_and_rule_deadlines_choose_the_earliest_timestamp() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         let runtime = MonitorRuntime::new(store.clone(), port, Arc::new(Notify::new()));
         store
             .transaction_with(|tx| {
@@ -1829,7 +1843,7 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_pending_rule_does_not_leave_a_past_deadline_hot() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1865,7 +1879,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_native_failure_hold_matches_store_truthiness() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1901,7 +1915,7 @@ mod tests {
 
     #[tokio::test]
     async fn omitted_monitor_stall_timeout_uses_the_policy_default_deadline() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -1927,7 +1941,7 @@ mod tests {
 
     #[tokio::test]
     async fn unstarted_stall_probe_state_does_not_leave_a_past_deadline_hot() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -1956,7 +1970,7 @@ mod tests {
 
     #[tokio::test]
     async fn omitted_file_rule_stall_timeout_uses_the_policy_default_deadline() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -1983,7 +1997,7 @@ mod tests {
 
     #[tokio::test]
     async fn low_worker_deadline_uses_low_since_and_strict_duration_boundary() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -2014,7 +2028,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn low_worker_commit_wakes_monitor_without_stealing_registry_wake() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
@@ -2118,11 +2132,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn due_low_worker_alert_settles_then_monitor_waits_without_past_next_at_spin() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         let now = crate::event_write::unix_time().expect("read fixture time");
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('low-rule',?1)",
                     [serde_json::json!({
@@ -2175,7 +2189,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_cancel_retry_deadline_is_immediately_due() {
-        let (_root, store, port) = fixture();
+        let (_root, store, port) = fixture().await;
         store
             .transaction_with(|tx| {
                 tx.execute(

@@ -210,21 +210,24 @@ mod context_tool_receipt_snapshot_tests {
         (decision.record, decision.writes)
     }
 
-    #[test]
-    fn changed_blob_reference_after_resolution_is_detected_before_repair_commit() {
+    #[tokio::test]
+    async fn changed_blob_reference_after_resolution_is_detected_before_repair_commit() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
         let (before, before_blobs) = externalized_request('a');
+        let before_record = before.to_string();
         write_blobs(store.root(), &before_blobs).expect("write first payload blob");
         store
-            .transaction_with::<_, crate::provider_callbacks::CallbackError>(|tx| {
-                let raw = before.to_string();
+            .transaction_with::<_, crate::provider_callbacks::CallbackError>(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                    ["tool-request", raw.as_str()],
+                    ["tool-request", before_record.as_str()],
                 )?;
                 Ok(())
             })
+            .await
             .expect("insert first blob-backed tool request");
 
         let connection = store.read().expect("open read connection");
@@ -248,21 +251,24 @@ mod context_tool_receipt_snapshot_tests {
 
         let (after, after_blobs) = externalized_request('b');
         assert_ne!(before["_payloadBlobs"], after["_payloadBlobs"]);
+        let after_record = after.to_string();
         write_blobs(store.root(), &after_blobs).expect("write replacement payload blob");
         store
-            .transaction_with::<_, crate::provider_callbacks::CallbackError>(|tx| {
-                let raw = after.to_string();
+            .transaction_with::<_, crate::provider_callbacks::CallbackError>(move |tx| {
                 tx.execute(
                     "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
-                    [raw.as_str(), "tool-request"],
+                    [after_record.as_str(), "tool-request"],
                 )?;
                 Ok(())
             })
+            .await
             .expect("replace blob reference after preflight read");
 
-        let validation = store.transaction_with(|tx| {
-            revalidate_unresolved_context_tool_receipts(tx, "agent", &prepared)
-        });
+        let validation = store
+            .transaction_with(move |tx| {
+                revalidate_unresolved_context_tool_receipts(tx, "agent", &prepared)
+            })
+            .await;
         assert!(matches!(
             validation,
             Err(crate::provider_callbacks::CallbackError::Stale)

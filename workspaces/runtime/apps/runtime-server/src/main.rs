@@ -340,14 +340,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
     #[cfg(unix)]
-    let mut peer_link_runtime = public_origin.as_ref().map(|origin| {
-        peer_link::PeerLinkRuntime::start(
-            Arc::clone(&store),
-            address.port(),
-            origin.clone(),
-            state_root.clone(),
-        )
-    });
+    let peer_link_advert = Arc::new(std::sync::RwLock::new(None));
     let cache_root = env::var_os("XDG_CACHE_HOME")
         .or_else(|| env::var_os("CODEX_AGENTS_CACHE_DIR"))
         .or_else(|| {
@@ -385,7 +378,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let base_home = env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
-    let account_session_broker = account_registry::AccountSessionBroker::new();
+    let account_change_signal = account_driver.change_signal();
+    let account_session_broker =
+        account_registry::AccountSessionBroker::new_with_change_signal(account_change_signal);
     let continuation_wake = Arc::new(Notify::new());
     let retained_session: Arc<
         dyn studio_runtime_services::account_session_runtime::RetainedAccountSession,
@@ -413,6 +408,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         accounts: account_driver.clone(),
         session: Arc::clone(&account_session),
         session_binaries: Arc::clone(&session_binaries),
+        changes: account_session_broker.subscribe_changes(),
     });
     startup_trace("provider-version-monitor-started");
     let provider_versions =
@@ -438,8 +434,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         )?;
         let credentials = Arc::clone(&credentials);
         let origin = origin.to_owned();
-        Some(boundary.with_identity_source(move |store| {
+        let identity_store = Arc::clone(&store);
+        Some(boundary.with_identity_source(move |_| {
             let credentials = Arc::clone(&credentials);
+            let store = Arc::clone(&identity_store);
             let origin = origin.clone();
             Box::pin(async move {
                 credentials
@@ -463,7 +461,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         native_path.clone(),
         state_dir.clone(),
         address.port(),
-        public_origin,
+        public_origin.clone(),
         Some(store.clone()),
         Some(account_policy.clone()),
     )
@@ -528,6 +526,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             )
             .await
             .ok()
+            .flatten()
         })
     }));
     {
@@ -540,11 +539,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     #[cfg(unix)]
     {
-        let advert = peer_link_runtime
-            .as_ref()
-            .map(peer_link::PeerLinkRuntime::advert_handle)
-            .unwrap_or_else(|| Arc::new(std::sync::RwLock::new(None)));
-        state = state.with_peer_link_advert(advert);
+        state = state.with_peer_link_advert(Arc::clone(&peer_link_advert));
     }
     #[cfg(unix)]
     {
@@ -751,6 +746,22 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     };
     let app = app.merge(web_assets::router(web_assets::WebAssets::discover()));
     startup_trace("http-router-completed");
+    // Start the peer child only after listener bind and all fallible router
+    // construction have succeeded. The pre-created advert is already shared
+    // with HttpState, so routes observe the child's later published address.
+    #[cfg(unix)]
+    let mut peer_link_runtime = public_origin
+        .as_ref()
+        .map(|origin| {
+            peer_link::PeerLinkRuntime::start(
+                Arc::clone(&store),
+                address.port(),
+                origin.clone(),
+                state_root.clone(),
+                Arc::clone(&peer_link_advert),
+            )
+        })
+        .transpose()?;
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,
     );
@@ -787,33 +798,16 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                     continue;
                 }
                 let now = epoch_seconds() as i64;
-                let pump = Arc::clone(&driver);
-                match studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/main",
-                    move || pump.pump_due(now),
-                )
-                .await
-                {
-                    Ok(Ok(_)) => failure_retry_at = None,
-                    Ok(Err(error)) => {
+                match driver.pump_due(now).await {
+                    Ok(_) => failure_retry_at = None,
+                    Err(error) => {
                         eprintln!("orchestration delivery pass failed: {error}");
                         failure_retry_at =
                             Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
                     }
-                    Err(error) => {
-                        eprintln!("orchestration delivery worker failed: {error}");
-                        failure_retry_at =
-                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                    }
                 }
-                let query = Arc::clone(&driver);
-                let next = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/main",
-                    move || query.next_due_at(),
-                )
-                .await;
-                let (due, deadline_read_failed) = match next {
-                    Ok(Ok(Some(at))) => (
+                let (due, deadline_read_failed) = match driver.next_due_at().await {
+                    Ok(Some(at)) => (
                         Some(
                             tokio::time::Instant::now()
                                 + Duration::from_secs(scheduler_delay_seconds(
@@ -823,16 +817,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                         ),
                         false,
                     ),
-                    Ok(Ok(None)) => (None, false),
-                    Ok(Err(error)) => {
-                        eprintln!("orchestration deadline read failed: {error}");
-                        (
-                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY),
-                            true,
-                        )
-                    }
+                    Ok(None) => (None, false),
                     Err(error) => {
-                        eprintln!("orchestration deadline worker failed: {error}");
+                        eprintln!("orchestration deadline read failed: {error}");
                         (
                             Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY),
                             true,
@@ -1086,7 +1073,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     stop_runtime.cancel();
     #[cfg(unix)]
     if let Some(peer_link) = peer_link_runtime.as_mut() {
-        peer_link.shutdown();
+        peer_link.shutdown().await;
     }
     federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
     let vault_jobs_cleanup = shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
@@ -1237,24 +1224,37 @@ async fn run_continuation_tick(
     store: Arc<RuntimeStore>,
     now: f64,
 ) -> studio_runtime_store::StoreResult<bool> {
-    let db = store.read()?;
-    let agents = continuation_tick_agents(&db, now)?;
-    drop(db);
-    let limits_reader = store.read()?;
-    let limits = account_state::limits_snapshots(&limits_reader)?
-        .snapshots
-        .into_iter()
-        .filter_map(|(account_key, value)| {
-            let mut value = value;
-            if value.get("accountKey").is_none() {
-                value["accountKey"] = serde_json::json!(account_key);
-            }
-            studio_runtime_services::usage_resume::LimitsObservation::from_record(value, None)
-                .ok()
-                .map(|limits| (account_key, limits))
-        })
-        .collect::<BTreeMap<_, _>>();
-    drop(limits_reader);
+    let read_store = Arc::clone(&store);
+    let (agents, limits) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/continuation-inputs",
+        move || {
+            let db = read_store.read()?;
+            let agents = continuation_tick_agents(&db, now)?;
+            let limits_reader = read_store.read()?;
+            let limits = account_state::limits_snapshots(&limits_reader)?
+                .snapshots
+                .into_iter()
+                .filter_map(|(account_key, value)| {
+                    let mut value = value;
+                    if value.get("accountKey").is_none() {
+                        value["accountKey"] = serde_json::json!(account_key);
+                    }
+                    studio_runtime_services::usage_resume::LimitsObservation::from_record(
+                        value, None,
+                    )
+                    .ok()
+                    .map(|limits| (account_key, limits))
+                })
+                .collect::<BTreeMap<_, _>>();
+            Ok::<_, studio_runtime_store::StoreError>((agents, limits))
+        },
+    )
+    .await
+    .map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract(
+            "Continuation input preparation worker failed",
+        )
+    })??;
     let mut changed = false;
     for agent_id in agents {
         let observations = limits.clone();
@@ -1437,7 +1437,7 @@ impl studio_runtime_http::NativeContextRepairPort for NativeContextRepairAdapter
     > {
         Box::pin(async move {
             studio_runtime_services::context_repair::repair_idle_with_broker(
-                store.as_ref(),
+                store,
                 &agent_id,
                 provider_home.as_path(),
                 broker.as_ref(),

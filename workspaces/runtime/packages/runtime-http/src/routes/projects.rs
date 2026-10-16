@@ -1238,29 +1238,31 @@ mod local_registration_tests {
     }
 
     impl PairedTransport for ProjectPeer {
-        fn exchange(
-            &self,
-            server: &str,
-            envelope: &serde_json::Value,
+        fn exchange<'a>(
+            &'a self,
+            server: &'a str,
+            envelope: &'a serde_json::Value,
             _timeout: std::time::Duration,
-        ) -> Result<serde_json::Value, AccessError> {
-            assert_eq!(server, "peer");
-            self.0.fetch_add(1, Ordering::SeqCst);
-            let payload = &envelope["payload"];
-            let path = payload["path"].as_str().expect("remote path");
-            Ok(json!({
-                "requestId": envelope["requestId"],
-                "outcome": "applied",
-                "value": {
-                    "serverId": "peer",
-                    "path": path,
-                    "canonicalPath": path,
-                    "projectId": path,
-                    "gitOrigin": null,
-                    "homeProjectId": payload["project"],
-                    "requestId": envelope["requestId"]
-                }
-            }))
+        ) -> futures_util::future::BoxFuture<'a, Result<serde_json::Value, AccessError>> {
+            Box::pin(async move {
+                assert_eq!(server, "peer");
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let payload = &envelope["payload"];
+                let path = payload["path"].as_str().expect("remote path");
+                Ok(json!({
+                    "requestId": envelope["requestId"],
+                    "outcome": "applied",
+                    "value": {
+                        "serverId": "peer",
+                        "path": path,
+                        "canonicalPath": path,
+                        "projectId": path,
+                        "gitOrigin": null,
+                        "homeProjectId": payload["project"],
+                        "requestId": envelope["requestId"]
+                    }
+                }))
+            })
         }
     }
 
@@ -1271,19 +1273,25 @@ mod local_registration_tests {
             false
         }
 
-        fn execute(
-            &self,
-            _principal: &str,
-            _envelope: &serde_json::Value,
-        ) -> Result<ExchangeOutcome, AccessError> {
-            unreachable!("outbound project registration does not execute local effects")
+        fn execute<'a>(
+            &'a self,
+            _principal: &'a str,
+            _envelope: &'a serde_json::Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async {
+                unreachable!("outbound project registration does not execute local effects")
+            })
         }
     }
 
     #[tokio::test]
     async fn local_registration_http_saves_logical_location_and_replays_receipt() {
         let root = tempfile::tempdir().expect("state directory");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
         let project_path = root.path().join("project");
         std::fs::create_dir_all(&project_path).expect("project directory");
         let policy = AccountPolicyState::from_startup(
@@ -1335,7 +1343,11 @@ mod local_registration_tests {
     #[tokio::test]
     async fn remote_project_registration_http_replays_saved_receipt_without_second_send() {
         let root = tempfile::tempdir().expect("state directory");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
         studio_runtime_services::federation_credentials::Credentials::default()
             .identity(store.clone(), Some("https://local.fixture.ts.net"))
             .await
@@ -1351,6 +1363,7 @@ mod local_registration_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("paired fake server");
         let calls = Arc::new(AtomicUsize::new(0));
         let driver = Arc::new(OrchestrationDriver::new(

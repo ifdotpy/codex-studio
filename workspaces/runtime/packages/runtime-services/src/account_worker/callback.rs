@@ -393,10 +393,12 @@ mod tests {
     use serde_json::json;
     use studio_runtime_store::RuntimeStore;
 
-    #[test]
-    fn callback_lookup_uses_its_composite_index_and_rejects_ambiguous_rows() {
+    #[tokio::test]
+    async fn callback_lookup_uses_its_composite_index_and_rejects_ambiguous_rows() {
         let directory = tempfile::tempdir().expect("temporary store");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
         let connection = store.read().expect("read connection");
         let details = {
             let mut plan = connection
@@ -432,7 +434,7 @@ mod tests {
             })
         };
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 for id in ["agent-a", "agent-b"] {
                     transaction.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
@@ -441,6 +443,7 @@ mod tests {
                 }
                 Ok(())
             })
+            .await
             .expect("callback agents write");
         assert!(
             callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
@@ -453,6 +456,7 @@ mod tests {
                 transaction.execute("DELETE FROM runtime_agents WHERE id='agent-b'", [])?;
                 Ok(())
             })
+            .await
             .expect("remove ambiguous agent");
         let context = callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
             .expect("callback lookup")

@@ -178,7 +178,7 @@ pub struct Interrupt {
 /// Injected bridge to the retained native account worker. The scheduler tick owner
 /// first commits `claim_interrupt`, dispatches through this port after commit, then
 /// settles the returned receipt in a new transaction.
-pub trait InterruptTransport {
+pub trait InterruptTransport: Send {
     fn dispatch(&mut self, interrupt: &Interrupt) -> Result<InterruptReceipt, ProjectsError>;
 }
 

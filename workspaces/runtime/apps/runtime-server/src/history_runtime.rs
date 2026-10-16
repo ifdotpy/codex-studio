@@ -473,7 +473,7 @@ async fn run_event_driven_with_wake(
     let (next_runtime, roster) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/history_roster_startup",
         move || {
-            let roster = runtime.read_roster();
+            let roster = HistoryRuntime::read_roster(&runtime.store);
             (runtime, roster)
         },
     )
@@ -604,7 +604,7 @@ async fn run_event_driven_with_wake(
                 studio_runtime_process::blocking_pool::spawn_blocking(
                     "runtime-server/history_roster_refresh",
                     move || {
-                        let roster = runtime.read_roster();
+                        let roster = HistoryRuntime::read_roster(&runtime.store);
                         (runtime, roster)
                     },
                 )
@@ -669,7 +669,7 @@ async fn restore_history_watcher(
         if *shutdown.borrow() {
             return Ok(None);
         }
-        let attempt = (|| {
+        let attempt = async {
             let mut watcher = HistoryWatcher::new(runtime.store.root(), Arc::clone(wake))?;
             runtime.refresh_accounts(&mut watcher).await?;
             for home in watcher.accounts.values() {
@@ -677,7 +677,8 @@ async fn restore_history_watcher(
             }
             notify_all_agents(runtime, roster)?;
             Ok::<_, HistoryError>(watcher)
-        })();
+        }
+        .await;
         match attempt {
             Ok(watcher) => {
                 *failures = 0;
@@ -990,7 +991,7 @@ mod tests {
         });
         let stored_agent = AgentRecord::from_value(agent.clone()).expect("typed fixture agent");
         store
-            .transaction(|tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
             .await
             .expect("persist fixture agent");
 
@@ -1034,7 +1035,7 @@ mod tests {
         .expect("typed recovery fixture agent");
         let second_agent_id = second_agent.id().as_ref().to_owned();
         store
-            .transaction(|tx| Table::<AgentRecord>::new(tx).put(&second_agent))
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&second_agent))
             .await
             .expect("persist recovery fixture agent");
         let second_thread = "history-thread-after-recovery";
@@ -1147,7 +1148,7 @@ mod tests {
         });
         let stored_agent = AgentRecord::from_value(agent.clone()).expect("typed fixture agent");
         store
-            .transaction(|tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
             .await
             .expect("persist fixture agent");
 

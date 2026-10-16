@@ -7,6 +7,7 @@ pub(crate) mod prepared_python_support;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::sync::{Arc, atomic::Ordering};
 use studio_runtime_http::{HttpState, router};
@@ -19,13 +20,13 @@ use tower::ServiceExt;
 
 struct FixtureOwner;
 impl OwnerLookup for FixtureOwner {
-    fn observe(
-        &self,
-        _: &str,
-        _: &[String],
-        _: Option<&str>,
-    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
-        Ok((common::owner(), None))
+    fn observe<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(OwnerObservation, Option<Value>), AccessError>> {
+        Box::pin(async { Ok((common::owner(), None)) })
     }
 }
 
@@ -88,20 +89,23 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
         .identity(Arc::clone(&receiver_store), Some(origin))
         .await
         .expect("receiver identity exists");
+    let caller_identity_for_trust = caller_identity.clone();
     receiver_store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
                 rusqlite::params![
-                    caller_identity["serverId"].as_str().expect("caller ID"),
+                    caller_identity_for_trust["serverId"]
+                        .as_str()
+                        .expect("caller ID"),
                     serde_json::json!({
-                        "id":caller_identity["serverId"],
-                        "clientId":caller_identity["serverId"],
+                        "id":caller_identity_for_trust["serverId"],
+                        "clientId":caller_identity_for_trust["serverId"],
                         "kind":"server",
                         "status":"paired",
-                        "label":caller_identity["label"],
+                        "label":caller_identity_for_trust["label"],
                         "created":1,
-                        "publicKey":caller_identity["publicKey"],
+                        "publicKey":caller_identity_for_trust["publicKey"],
                         "origin":"https://caller.fixture.ts.net",
                         "tailscaleUser":"owner@example.test"
                     })
@@ -600,7 +604,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         .insert("moveImportPending".into(), serde_json::json!(true));
     let link = serde_json::json!({"id":"fixture-link","side":"home","server":"peer-server","home":"local-server","parent":"event-parent","parentEpoch":3,"workers":[]});
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_server_links(id,record) VALUES('fixture-link',?1)",
                 [link.to_string()],
@@ -608,6 +612,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
             AgentRepository::put(tx, &parent)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .expect("link and owner rows");
     let data = &common::fixture().data["eventRequest"];
     let raw = data["raw"].as_str().unwrap();
@@ -655,14 +660,14 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     .expect("receipt JSON");
     assert_eq!(receipt["outcome"], "applied");
     assert_eq!(receipt["value"]["eventId"], "python-event-http");
-    let db = store.read().unwrap();
+    let db = store.read().expect("test store reader");
     let count: i64 = db
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id='python-event-http' AND agent='event-parent' AND text='signed owner event'",
             [],
             |row| row.get(0),
         )
-        .unwrap();
+        .expect("applied event is durable");
     assert_eq!(count, 1);
 }
 
@@ -678,8 +683,10 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
             Ok(())
         }
 
-        fn committed(&self) -> Result<(), ManagementError> {
-            Ok(())
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -714,20 +721,23 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
         .identity(Arc::clone(&receiver_store), Some(origin))
         .await
         .expect("receiver identity exists");
+    let caller_identity_for_trust = caller_identity.clone();
     receiver_store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
                 rusqlite::params![
-                    caller_identity["serverId"].as_str().expect("caller ID"),
+                    caller_identity_for_trust["serverId"]
+                        .as_str()
+                        .expect("caller ID"),
                     serde_json::json!({
-                        "id":caller_identity["serverId"],
-                        "clientId":caller_identity["serverId"],
+                        "id":caller_identity_for_trust["serverId"],
+                        "clientId":caller_identity_for_trust["serverId"],
                         "kind":"server",
                         "status":"paired",
-                        "label":caller_identity["label"],
+                        "label":caller_identity_for_trust["label"],
                         "created":1,
-                        "publicKey":caller_identity["publicKey"],
+                        "publicKey":caller_identity_for_trust["publicKey"],
                         "origin":"https://caller.fixture.ts.net",
                         "tailscaleUser":"owner@example.test"
                     })

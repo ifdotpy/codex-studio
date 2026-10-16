@@ -5,7 +5,8 @@ mod prepared_python_support;
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::Mutex};
 use studio_runtime_services::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, LimitsSnapshot, LoginRequest, limits,
+    AccountSessionError, AccountSessionFuture, AccountSessionPort, LimitsSnapshot, LoginRequest,
+    limits,
 };
 
 struct Session {
@@ -17,24 +18,28 @@ impl AccountSessionPort for Session {
     fn limits_snapshot(&self, _: &str) -> Result<Value, AccountSessionError> {
         Ok(self.record.clone())
     }
-    fn refresh_limits(&self, account: &str) -> Result<(), AccountSessionError> {
-        self.calls
-            .lock()
-            .expect("calls")
-            .push(json!(["refresh", account]));
-        Ok(())
+    fn refresh_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push(json!(["refresh", account]));
+            Ok(())
+        })
     }
-    fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-        self.calls
-            .lock()
-            .expect("calls")
-            .push(json!(["read", account]));
-        Ok(self.fresh.clone())
+    fn read_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push(json!(["read", account]));
+            Ok(self.fresh.clone())
+        })
     }
 }
 
-#[test]
-fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
+#[tokio::test]
+async fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let python = prepared_python_support::prepared_python(&root.join("../../apps/server/src"));
     let output = Command::new(python)
@@ -59,6 +64,7 @@ fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
             "fixture",
             case["cached"].as_bool().expect("cached"),
         )
+        .await
         .expect("valid limits response");
         assert_eq!(response, case["result"], "case {index}");
         assert_eq!(
@@ -69,8 +75,8 @@ fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
     }
 }
 
-#[test]
-fn malformed_and_foreign_snapshots_refuse_before_effects() {
+#[tokio::test]
+async fn malformed_and_foreign_snapshots_refuse_before_effects() {
     for record in [
         json!(null),
         json!({"accountKey":"other"}),
@@ -82,14 +88,14 @@ fn malformed_and_foreign_snapshots_refuse_before_effects() {
             fresh: json!({}),
             calls: Mutex::default(),
         };
-        assert!(limits(&session, "fixture", false).is_err());
+        assert!(limits(&session, "fixture", false).await.is_err());
         assert!(session.calls.lock().expect("calls").is_empty());
     }
     assert!(LimitsSnapshot::read("fixture", json!({"accountKey":"fixture","data":null})).is_ok());
 }
 
-#[test]
-fn absent_consumers_are_named_refusals() {
+#[tokio::test]
+async fn absent_consumers_are_named_refusals() {
     struct Absent;
     impl AccountSessionPort for Absent {}
     let request = LoginRequest {
@@ -99,13 +105,13 @@ fn absent_consumers_are_named_refusals() {
         label: None,
     };
     assert!(matches!(
-        Absent.login(request),
+        Absent.login(request).await,
         Err(AccountSessionError::Requires(
             "provider-session/codex-login"
         ))
     ));
     assert!(matches!(
-        Absent.cancel_login("fixture-request"),
+        Absent.cancel_login("fixture-request").await,
         Err(AccountSessionError::Requires(
             "provider-session/codex-login"
         ))
@@ -117,7 +123,7 @@ fn absent_consumers_are_named_refusals() {
         ))
     ));
     assert!(matches!(
-        limits(&Absent, "fixture", false),
+        limits(&Absent, "fixture", false).await,
         Err(AccountSessionError::Requires(
             "provider-session/account-rate-limits"
         ))

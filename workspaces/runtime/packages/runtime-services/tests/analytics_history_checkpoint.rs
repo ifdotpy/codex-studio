@@ -86,7 +86,7 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records(), b"");
     let cancel = AtomicBool::new(false);
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let first = history::prepare(
         HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
         root.path(),
@@ -119,7 +119,9 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         Err(HistoryError::StaleCheckpoint)
     ));
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
     let batch = history::prepare(
         HistorySnapshot::from_records(agent, checkpoint(&store)).expect("snapshot"),
         root.path(),
@@ -150,11 +152,11 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     use std::sync::mpsc;
     use std::time::Duration;
     let (root, _) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let (writer_started, started) = mpsc::channel();
     let (release_writer, release) = mpsc::channel();
     let (reader_done, read_done) = mpsc::channel();
-    let writer_store = store.clone();
+    let writer_store = Arc::clone(&store);
     let writer = tokio::spawn(async move {
         writer_store
             .transaction(move |tx| {
@@ -169,7 +171,7 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     started
         .recv_timeout(Duration::from_secs(5))
         .expect("writer holds transaction");
-    let reader_store = store.clone();
+    let reader_store = Arc::clone(&store);
     tokio::spawn(async move {
         reader_done
             .send(reader_store.read_transaction(|tx| {
@@ -195,7 +197,7 @@ async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
 #[tokio::test]
 async fn unchanged_transcript_projection_performs_no_sql_writes() {
     let (root, _) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let payload = json!({
         "agent":{"id":"a"},
         "items":[{"id":"item-1","role":"assistant","text":"stable"}]
@@ -241,7 +243,7 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records(), b"");
     let cancel = AtomicBool::new(false);
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let first = history::prepare(
         HistorySnapshot::from_records(agent.clone(), checkpoint(&store)).expect("snapshot"),
         root.path(),
@@ -255,7 +257,7 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
     let (schedule_write, write_scheduled) = tokio::sync::oneshot::channel();
     let (write_committed, committed) = tokio::sync::oneshot::channel();
     let agent_id = agent["id"].as_str().expect("agent id").to_owned();
-    let writer_store = store.clone();
+    let writer_store = Arc::clone(&store);
     let task = tokio::spawn(async move {
         write_scheduled.await.expect("queued write is scheduled");
         writer_store
@@ -354,7 +356,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             lines.push(json!({"type":"response_item","timestamp":4,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic"}]}}));
             lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
             let path = file(root.path(), &lines, b"");
-            let store = RuntimeStore::open(Some(root.path())).expect("store");
+            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
             let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
             db.execute("DELETE FROM analytics_agents", [])
                 .expect("exercise insert");
@@ -385,7 +387,9 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
                 .expect("clear failure");
             drop(db);
             drop(store);
-            let store = RuntimeStore::open(Some(root.path())).expect("restart");
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart");
             let batch = history::prepare(
                 HistorySnapshot::from_records(agent, None).expect("snapshot"),
                 root.path(),
@@ -409,7 +413,7 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     let mut lines = records();
     lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
     let path = file(root.path(), &lines, b"");
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let batch = history::prepare(
         HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
         root.path(),
@@ -496,7 +500,7 @@ async fn history_usage_is_admitted_once_per_bounded_page() {
         }}));
     }
     let path = file(root.path(), &lines, b"");
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let batch = history::prepare(
         HistorySnapshot::from_records(agent, None).expect("snapshot"),
         root.path(),
@@ -521,7 +525,7 @@ async fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_services::analytics_history::StoreHistoryBudgetSink;
     let (root, agent) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let commits = Arc::new(AtomicUsize::new(0));
     let observed = commits.clone();
     store.set_commit_notifier(move || {
@@ -593,7 +597,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
         bytes.push(b'\n');
     }
     fs::write(&path, bytes).expect("fixture rollout");
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let cancel = Arc::new(AtomicBool::new(false));
     let mut collector = HistoryCollector::default();
     let budget = StoreHistoryBudgetSink::new(&store);
@@ -682,7 +686,7 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
     use studio_runtime_services::budget_service;
 
     let (root, mut agent) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     agent["turnId"] = json!("current-turn");
     let agent_id = agent["id"].as_str().expect("agent id").to_owned();
     store
@@ -789,12 +793,13 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
     });
     let mut wrong_live_agent = agent.clone();
     wrong_live_agent["turnId"] = json!("earlier-turn");
+    let live_params = params.clone();
     let result = store
-        .transaction_with::<_, BudgetError>(|tx| {
+        .transaction_with::<_, BudgetError>(move |tx| {
             budget_service::capture(
                 tx,
                 &mut wrong_live_agent,
-                &params,
+                &live_params,
                 202.0,
                 CaptureSource::Live,
                 202.0,
@@ -816,12 +821,13 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
         let mut wrong_history_agent = agent.clone();
         wrong_history_agent["turnId"] = json!("earlier-turn");
         wrong_history_agent[field] = value;
+        let history_params = params.clone();
         let result = store
-            .transaction_with::<_, BudgetError>(|tx| {
+            .transaction_with::<_, BudgetError>(move |tx| {
                 budget_service::capture(
                     tx,
                     &mut wrong_history_agent,
-                    &params,
+                    &history_params,
                     203.0,
                     CaptureSource::History,
                     203.0,
@@ -894,7 +900,7 @@ async fn background_consumer_imports_selected_roster_actor() {
     let session = root.path().join("sessions");
     fs::create_dir(&session).expect("sessions");
     file(&session, &records(), b"");
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let mut collector = history::HistoryCollector::default();
     assert!(
         collector
@@ -940,7 +946,7 @@ async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
     use studio_runtime_services::analytics_history_repair::repair_terminal_errors;
     for thread in [Some("thread"), None, Some("foreign")] {
         let (root, agent) = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         capture(
             &store,
             PreparedCapture::event(
@@ -999,7 +1005,9 @@ async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
             String::from_utf8_lossy(&out.stderr)
         );
         let expected: Value = serde_json::from_slice(&out.stdout).expect("oracle result");
-        let store = RuntimeStore::open(Some(root.path())).expect("restart");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
         repair_terminal_errors(&store).await.expect("Rust repair");
         let db = AnalyticsRepository::new(store.root())
             .open_read_only()
@@ -1055,7 +1063,7 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
         }
     }
     let (root, agent) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let params = json!({"responseId":"r0","tokenUsage":{"total":{"totalTokens":2},"last":{"totalTokens":2}},"rawTokenUsageRecord":{"response_id":"r0"}});
     capture(
         &store,
@@ -1088,7 +1096,9 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
         .await
         .expect("remove failpoint");
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
     assert!(
         migrate_budget(&store, agent.clone(), &receipts, 200.)
             .await
@@ -1148,7 +1158,7 @@ async fn full_tail_import_matches_real_python_rows_and_checkpoint() {
             String::from_utf8_lossy(&output.stderr)
         );
         let expected: Value = serde_json::from_slice(&output.stdout).expect("oracle rows");
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         history::prepare(
             HistorySnapshot::from_records(agent, None).expect("snapshot"),
             root.path(),
@@ -1174,7 +1184,7 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
         CaptureSource, PreparedCapture, capture_batch, capture_limit,
     };
     let (root, agent) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let prepared = PreparedCapture::event(
         &agent,
         "turn/started",
@@ -1243,10 +1253,10 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
     );
 }
 
-#[test]
-fn checked_history_identity_and_state_check_refuse_malformed_rows() {
+#[tokio::test]
+async fn checked_history_identity_and_state_check_refuse_malformed_rows() {
     let (root, agent) = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let base = json!({"id":"a:default:thread","agent":"a","accountKey":"default","threadId":"thread","offset":0,"importedRecords":0,"malformedLines":0,"context":{"threadId":"thread"}});
     for (field, value) in [
         ("offset", json!(-1)),
@@ -1328,7 +1338,7 @@ async fn changed_consumed_range_is_refused_before_any_effect() {
         lines.push(json!({"type":"ignored","padding":"x".repeat(512)}));
         let path = file(root.path(), &lines, b"");
         let original = fs::read(&path).expect("original");
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let batch = history::prepare(
             HistorySnapshot::from_records(agent, None).expect("snapshot"),
             root.path(),
@@ -1444,7 +1454,7 @@ async fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     second["id"] = json!("b");
     second["parentId"] = json!("a");
     let second_record = second.to_string();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store
         .transaction(move |tx| {
             tx.execute(

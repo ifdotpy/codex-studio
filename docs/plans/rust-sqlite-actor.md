@@ -21,33 +21,29 @@ journals and other SQLite files also retain their owners.
 ## Current owner and call path
 
 [`RuntimeStore`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
-acquires the process lock in `open`, opens `canvas.sqlite3`, and currently owns
-`Mutex<Connection>` for writes, a read-only pool, and a separate
-`version_reader`. `transaction*` begins `IMMEDIATE`, runs a synchronous
-`rusqlite::Transaction` closure, commits once, then emits generation/notifier
-updates. A failed commit is already represented as `CommitOutcomeUnknown`.
-`read` leases a raw connection; `read_transaction*` opens and commits one read
-snapshot. The read pool rejects nested checkouts on the same thread before
-waiting. Keep the dedicated `version_reader` to avoid generation-read
-deadlocks. One named source constant owns the total Canvas reader limit; derive
-the ordinary pool size by subtracting the version-reader reservation. The
-existing [`READ_CONNECTION_POOL_CAPACITY`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
-constant must reference that owner rather than duplicate the total as a second
-literal.
+acquires the process lock in `open` and owns the `canvas.sqlite3` writer
+through `sqlite_actor_store`. `transaction*` runs one synchronous
+`rusqlite::Transaction` closure per actor job, commits once, then emits
+generation and notifier updates. A failed or lost commit confirmation remains
+`CommitOutcomeUnknown`. Writer admission is bounded by the source-owned
+[`MAX_PENDING_WRITES`](../../workspaces/runtime/packages/runtime-store/src/sqlite_actor.rs)
+constant; its permit remains held while a submitted callback is queued or
+running, even if its waiter is cancelled. Reads still use the raw read pool
+and a dedicated `version_reader`. The named
+[`CANVAS_READER_CONNECTION_CAPACITY`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
+owns the total of four Canvas readers, including the version-reader
+reservation; the ordinary pool derives its capacity from that owner. The later
+raw-read migration remains separate.
 
 The runtime server opens one `Arc<RuntimeStore>` in
 [`runtime-server/src/main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs)
-and passes it to runtime services and HTTP routes. Service functions are
-mostly synchronous and route handlers call them; writes and reads are not
-confined to one endpoint or repository. A prior broad source-text census found
-86 candidate files, including inline test code and similarly named local stores.
-A follow-up production-source scan matched writer calls in 75 files: 56
-runtime-service modules, 15 HTTP route modules, and 4 runtime-server modules.
-This is a bounded text scan, not an AST count: it excludes test-only paths and
-text after the first `#[cfg(test)]` marker, and it may miss aliases or indirect
-calls. Treat the inventory below as a worker partition seed; validate each
-file's receiver and call chain before assigning edits. The separate raw-read
-migration is not in this first slice.
+and passes it to runtime services and HTTP routes. The writer API is async;
+service traits and their real HTTP or background callers must propagate that
+boundary. Synchronous SQL helpers that receive a borrowed transaction remain
+inside the actor closure. Filesystem, provider, VM, and network work stays
+outside that closure. The production caller inventory below is a historical
+pre-cutover scan, not a current ownership or completion checklist. The separate
+raw-read migration is not in this first slice.
 
 Examples of the real fan-out are
 [`terminal_driver.rs`](../../workspaces/runtime/packages/runtime-services/src/terminal_driver.rs),
@@ -72,8 +68,8 @@ read APIs remain an explicit later removal phase.
 The actor store exposes true async methods with the existing operation names:
 `open`, all `transaction*`, `checkpoint_wal*`, and writer-diagnostics
 registration. Transaction callbacks remain synchronous `FnOnce` closures with
-`Send + 'static` bounds, and return owned `Send + 'static` results. No raw connection,
-transaction, read lease, or borrowed row crosses an await boundary. Repository
+`Send + 'static` bounds, and return owned `Send + 'static` results. No raw
+connection, transaction, read lease, or borrowed row crosses an await boundary. Repository
 DTOs remain typed; `serde_json::Value` stays only in existing opaque JSON
 fields. A transaction closure cannot await or perform provider, filesystem,
 or network effects.
@@ -84,11 +80,14 @@ boundary accept an API `POST`, `PUT`, `PATCH`, or `DELETE`, `runtime-http`
 admits the request once into its `TaskTracker` before mutation-sync and the
 handler. If the client disconnects, dropping the response waiter must not cancel
 the admitted operation. The owner must not replay the request, create a new
-identity, buffer another body copy, or bypass validation. `GET`, `HEAD`, and
-`OPTIONS` stay on the request future. Admission and shutdown close share a short
-gate so no task can be registered after drain begins. Shutdown closes admission,
-drains tracked operations while account workers and providers remain live,
-drains durable account-session operations, and then stops those dependencies.
+identity, buffer another body copy, or bypass validation. Cold entity-pull
+maintenance is a narrow GET exception: its projection commit and cache mark
+remain owned together after the response waiter is dropped. Ordinary read-only
+GET, HEAD, and OPTIONS work stays on the request future. Admission and shutdown
+close share a short gate so no task can be registered after drain begins.
+Shutdown closes admission and drains tracked requests plus durable account
+login/cancellation work while account workers and providers remain live, then
+stops those dependencies.
 This graceful drain is bounded by the existing 20-second
 `SERVER_SHUTDOWN_GRACE` watchdog; it is not an unconditional completion
 guarantee. If the watchdog forces process exit, submitted operations retain
@@ -100,6 +99,31 @@ failures are surfaced with context.
 The tracker is not a durable queue and does not promise completion after process
 termination. Existing receipt-backed retry and unknown-outcome rules remain
 authoritative.
+
+### Credential identity file and journal lifetime
+
+[`Credentials`](../../workspaces/runtime/packages/runtime-services/src/federation_credentials.rs)
+owns initial native identity creation and journaled local-name renames in its
+own `TaskTracker`. Cancellation of a route or response waiter does not cancel
+the credential operation: it retains the identity-cache lock through secure
+file creation or replacement, notification, and journal settlement/recovery.
+The request-ID journal remains authoritative for a rename retry and rejects a
+different label under the same ID.
+
+Shutdown closes HTTP mutation admission first. After admitted HTTP requests
+drain, `HttpState::shutdown_mutations` closes credential admission; retained
+service shutdown then drains the credential `TaskTracker` before stopping its
+remaining service dependencies. The existing `SERVER_SHUTDOWN_GRACE` watchdog
+bounds this sequence. A forced exit may leave a pending rename journal, which
+the existing credential recovery path must finish from the same request ID;
+it must not repeat a different rename or discard an uncertain file write.
+
+The source-level cancellation coverage is
+[`canceled_initial_identity_creation_finishes_before_later_rename`](../../workspaces/runtime/packages/runtime-services/src/federation_credentials.rs)
+and
+[`canceled_rename_retains_serialization_until_file_write_and_commit_finish`](../../workspaces/runtime/packages/runtime-services/src/federation_credentials.rs).
+The HTTP drain ordering is covered by
+[`accepted_mutation_can_start_credentials_after_http_close_and_drains_first`](../../workspaces/runtime/packages/runtime-http/src/router.rs).
 
 Account turn preparation uses a typed immutable prepared view keyed by the exact
 agent, epoch, attempt, provider, workspace, catalog, and path identities. Filesystem,
@@ -114,12 +138,12 @@ successful commit and stale identity.
 
 The owner-defined
 [`MAX_PENDING_WRITES`](../../workspaces/runtime/packages/runtime-store/src/sqlite_actor.rs)
-bounds admitted writer jobs (queued plus running). Acquire its owned semaphore permit before
-calling `tokio-rusqlite`, then move that permit into the actor callback so
-cancellation of the response future cannot release capacity while SQL is
-still queued or running. Admission waits cancellably before enqueue; a caller
-cancelled while waiting has submitted no SQL. Once enqueued, cancellation
-cannot retract the actor job; the outcome is unknown and receipt-backed retry
+owns the bound of 16 admitted writer jobs (queued plus running). Acquire its
+owned semaphore permit before calling `tokio-rusqlite`, then move that permit
+into the actor callback so cancellation of the response future cannot release
+capacity while SQL is still queued or running. Admission waits cancellably
+before enqueue; a caller cancelled while waiting has submitted no SQL. Once
+enqueued, cancellation cannot retract the actor job; the outcome is unknown and receipt-backed retry
 must resolve through the original identity and content. Never retry
 automatically. The first slice preserves separate `analytics.sqlite3` writer
 ownership and the dedicated `version_reader`; the ordinary Canvas reader pool
@@ -133,6 +157,34 @@ tail: no application SQL or callback may run after the lock and identity
 leases end. This preserves the previous release boundary, where `RuntimeLock`
 was declared before the synchronous connection fields and therefore released
 before connection drop; the actor makes that final native close asynchronous.
+
+## Event-driven background ownership
+
+Background services wait on their owning change signal or the next durable
+deadline, with bounded retry backoff after failed reads or external work; they
+do not use periodic polling as a substitute for invalidation. A table observer
+is only an invalidation hint: it fires after a known successful commit or an
+ambiguous commit that may have landed. Consumers reread authoritative rows; the
+hint is neither a receipt nor permission to replay a mutation.
+
+- The peer-link owner observes `runtime_access_clients`, refreshes its peer
+  snapshot on that targeted hint, and also watches child exit. Failed peer
+  snapshot reads and failed starts use bounded backoff; a failed peer update
+  triggers child restart, and an exited child restarts with bounded backoff.
+  Shutdown awaits the child owner, within the existing server shutdown watchdog.
+- Provider-version checks wake when the active account/session profile set or
+  the `checkProviderUpdates` preference changes. The upstream release cache
+  expires after the source-owned 24-hour TTL in
+  [`provider_versions.rs`](../../workspaces/runtime/packages/runtime-services/src/provider_versions.rs);
+  this TTL is unrelated to credential refresh.
+- Claude auth-probe work reads the earliest durable `dueAt` for the account,
+  then waits on that deadline or a usage-resume change. Active VM Claude
+  credential refresh is separate security maintenance, with its cadence owned
+  by [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../workspaces/runtime/packages/runtime-services/src/claude_auth_runtime.rs).
+- Continuation and federation schedulers combine commit/change wakes with the
+  earliest durable work deadline and per-item retry times. They retain
+  backoff after failure rather than treating an unrelated wake as proof that
+  the failed read or delivery succeeded.
 
 ## Contracts and failure cases
 
@@ -168,13 +220,13 @@ before connection drop; the actor makes that final native close asynchronous.
 
 ## Migration and rollback
 
-1. Add the approved dependency at the workspace owner and make
-   `sqlite_actor_store` the only Canvas writer owner. Start it from
-   `RuntimeStore::open`; keep bootstrap, recoveries, normal writes, generation
+1. Keep the approved workspace dependency and make `sqlite_actor_store` the
+   only Canvas writer owner. Start it from `RuntimeStore::open`; keep bootstrap,
+   recoveries, normal writes, generation
    updates, commit callbacks, checkpoint requests, and diagnostics on that
    owner. Keep analytics separately owned.
-2. Convert every production Canvas writer caller in the inventory below and
-   propagate async results to each real route, worker, or CLI entry point. Do
+2. Complete conversion of every production Canvas writer caller and propagate
+   async results to each real route, worker, or CLI entry point. Do
    not retain a second synchronous writer API as a compatibility path. Keep
    the dedicated version reader and enforce the existing total reader budget
    by deriving ordinary pool capacity from the total-reader owner and its reserved
@@ -214,19 +266,16 @@ before connection drop; the actor makes that final native close asynchronous.
   queued. The old implementation reopens the post-slice state after the new
   owner is fully stopped.
 
-No Cargo command, test, build, provider call, or runtime-state access was run
-for this preflight. Source inspection and the bounded text census are the only
-evidence here.
+The current async cutover has not passed an integration validation gate. The
+acceptance list is a required gate, not evidence that it has passed. No
+provider call or runtime-state access is claimed here.
 
-## Production writer caller inventory and work lanes
+## Historical production writer caller inventory
 
-The inventory is grouped into disjoint editing lanes. The store module,
-manifests, crate registration, and shared cross-lane API design remain with the
-store/integration owner. Each listed file has a textual writer-call match in
-production source; the scan rules and alias caveat above apply. Async
-propagation crosses these lanes through shared service APIs, so land the store
-signature first, then assign call chains in dependency order and keep the
-integration owner responsible for cross-lane compile fixes.
+This bounded text census and its file groupings were prepared before the async
+cutover. They are retained as migration history, not a current task assignment,
+source of completion claims, or AST-exact caller count. Current call chains and
+lane ownership must be read from source and the active integration review.
 
 ## Cross-crate async propagation owners
 
@@ -234,35 +283,35 @@ The writer cutover changes store calls from synchronous results to awaited
 results. Propagate that async boundary through the owning public traits and
 their implementations; do not hide it behind `block_on` or a synchronous
 proxy. This map names contract owners and the main cross-crate edge, not a
-second caller inventory. The production writer-file inventory below remains
-the source for lane assignments.
+second caller inventory. The historical production writer-file list below is
+not a lane assignment.
 
-| Stable contract owner | Cross-crate propagation edge |
-| --- | --- |
-| `runtime-services::account_session_runtime::AccountSessionPort` | Runtime-service implementations and `runtime-server` adapters; HTTP session routes await the port. |
-| `runtime-services::monitor_driver::MonitorNative`, `rules_tick::RuleMonitor`, and `monitor_runtime_wiring::MonitorPort` | Account-worker and runtime-server monitor adapters, through monitor service tasks. |
-| `runtime-services::callback_runtime::CallbackReplyPort` | Runtime-server callback broker and the callback runtime that persists replies. |
-| `runtime-services::multi_server_discovery::ServerDiscoveryPort` | Runtime-server discovery implementation and the `runtime-http` multi-server route. |
-| `runtime-http::agent_management::NativeContextRepairPort` | Runtime-server repair adapter through `runtime-services::context_repair`. |
-| `runtime-services::account_transfer_driver::{TransferTransport, TransferExecutor}` | `AccountTransferExecutor` and the `account_worker` before-start boundary. |
-| `runtime-services::recovery_history::RecoveryReader` and `recovery_runtime::RetainedHistory` | Account-worker recovery adapters and their service callers. |
+| Stable contract owner                                                                                                   | Cross-crate propagation edge                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `runtime-services::account_session_runtime::AccountSessionPort`                                                         | Runtime-service implementations and `runtime-server` adapters; HTTP session routes await the port. |
+| `runtime-services::monitor_driver::MonitorNative`, `rules_tick::RuleMonitor`, and `monitor_runtime_wiring::MonitorPort` | Account-worker and runtime-server monitor adapters, through monitor service tasks.                 |
+| `runtime-services::callback_runtime::CallbackReplyPort`                                                                 | Runtime-server callback broker and the callback runtime that persists replies.                     |
+| `runtime-services::multi_server_discovery::ServerDiscoveryPort`                                                         | Runtime-server discovery implementation and the `runtime-http` multi-server route.                 |
+| `runtime-http::agent_management::NativeContextRepairPort`                                                               | Runtime-server repair adapter through `runtime-services::context_repair`.                          |
+| `runtime-services::account_transfer_driver::{TransferTransport, TransferExecutor}`                                      | `AccountTransferExecutor` and the `account_worker` before-start boundary.                          |
+| `runtime-services::recovery_history::RecoveryReader` and `recovery_runtime::RetainedHistory`                            | Account-worker recovery adapters and their service callers.                                        |
 
-These interfaces are being migrated in separate caller lanes. Their listing
-does not mean all implementations or callers already satisfy the async
-contract, nor that an individual lane can be built or shipped before its
-connected callers are migrated. Synchronous callbacks that receive a borrowed
+These interfaces have separate caller lanes. Their listing does not mean all
+implementations or callers have passed the integration gate, nor that an
+individual lane can be built or shipped before its connected callers are
+migrated. Synchronous callbacks that receive a borrowed
 `rusqlite::Transaction` remain inside the actor operation and must not await.
 
-| Lane | Domain | Production files |
-| --- | --- | --- |
-| 1 | Account and agent ownership | `packages/runtime-services/src/account_selection.rs`, `packages/runtime-services/src/account_transfer_driver.rs`, `packages/runtime-services/src/account_worker/store.rs`, `packages/runtime-services/src/agent_management_store.rs`, `packages/runtime-services/src/agent_move.rs`, `packages/runtime-services/src/agents_create/operations.rs`, `packages/runtime-services/src/limit_reset.rs`, `packages/runtime-services/src/claude_auth_runtime.rs`, `packages/runtime-services/src/claude_controls/store.rs` |
-| 2 | Provider callbacks and lifecycle | `packages/runtime-services/src/browser_answer.rs`, `packages/runtime-services/src/callback_runtime.rs`, `packages/runtime-services/src/lifecycle_effects.rs`, `packages/runtime-services/src/managed_child_create.rs`, `packages/runtime-services/src/native_actions.rs`, `packages/runtime-services/src/provider_callbacks/cards.rs`, `packages/runtime-services/src/provider_callbacks/recovery.rs`, `packages/runtime-services/src/provider_callbacks/storage.rs`, `packages/runtime-services/src/thread_fork_runtime.rs`, `packages/runtime-services/src/title_generation.rs` |
-| 3 | Work, scheduling, and voice | `packages/runtime-services/src/questions_write.rs`, `packages/runtime-services/src/radio_runtime.rs`, `packages/runtime-services/src/safety_buffering/executor.rs`, `packages/runtime-services/src/scheduler.rs`, `packages/runtime-services/src/rules_tick.rs`, `packages/runtime-services/src/work_write.rs`, `packages/runtime-services/src/voice.rs`, `packages/runtime-services/src/voice/provider.rs` |
-| 4 | Workspace and history | `packages/runtime-services/src/checkpoints.rs`, `packages/runtime-services/src/context_repair.rs`, `packages/runtime-services/src/continuation_driver.rs`, `packages/runtime-services/src/payload_store.rs`, `packages/runtime-services/src/project_locations.rs`, `packages/runtime-services/src/projects/operations.rs`, `packages/runtime-services/src/sync_documents.rs`, `packages/runtime-services/src/sync_policy.rs`, `packages/runtime-services/src/transcript.rs`, `packages/runtime-services/src/workspace_cleanup_runtime.rs`, `packages/runtime-services/src/workspace_operations_effects.rs`, `packages/runtime-services/src/workspace_ready_git.rs` |
-| 5 | Federation and multi-server | `packages/runtime-services/src/federation.rs`, `packages/runtime-services/src/federation_credentials.rs`, `packages/runtime-services/src/federation_delivery.rs`, `packages/runtime-services/src/multi_server.rs`, `packages/runtime-services/src/multi_server_discovery.rs`, `packages/runtime-services/src/multi_server_orchestration.rs`, `packages/runtime-services/src/multi_server_pairing.rs`, `packages/runtime-services/src/peer_conversion.rs`, `packages/runtime-services/src/remote_transport.rs` |
-| 6 | Monitor runtime | `packages/runtime-services/src/maintenance.rs`, `packages/runtime-services/src/monitor_driver.rs`, `packages/runtime-services/src/monitor_event_queue.rs`, `packages/runtime-services/src/monitor_output.rs`, `packages/runtime-services/src/monitor_receipts.rs`, `packages/runtime-services/src/monitor_runtime.rs` |
-| 7 | HTTP route boundaries | `packages/runtime-http/src/routes/branches.rs`, `packages/runtime-http/src/routes/catalog_agent.rs`, `packages/runtime-http/src/routes/checkpoints.rs`, `packages/runtime-http/src/routes/mac_sync.rs`, `packages/runtime-http/src/routes/messages.rs`, `packages/runtime-http/src/routes/multi_server.rs`, `packages/runtime-http/src/routes/panels.rs`, `packages/runtime-http/src/routes/projects.rs`, `packages/runtime-http/src/routes/rules.rs`, `packages/runtime-http/src/routes/sync_delta.rs`, `packages/runtime-http/src/routes/sync_documents.rs`, `packages/runtime-http/src/routes/tool_requests.rs`, `packages/runtime-http/src/routes/usage.rs`, `packages/runtime-http/src/routes/work_items.rs`, `packages/runtime-http/src/routes/work_write.rs` |
-| 8 | Runtime host and VM | `apps/runtime-server/src/account_registry.rs`, `apps/runtime-server/src/main.rs`, `apps/runtime-server/src/monitor_port.rs`, `apps/runtime-server/src/multi_server_discovery.rs`, `packages/runtime-services/src/linux_vm_provider.rs`, `packages/runtime-services/src/vm_preparation.rs` |
+| Lane | Domain                           | Production files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Account and agent ownership      | `packages/runtime-services/src/account_selection.rs`, `packages/runtime-services/src/account_transfer_driver.rs`, `packages/runtime-services/src/account_worker/store.rs`, `packages/runtime-services/src/agent_management_store.rs`, `packages/runtime-services/src/agent_move.rs`, `packages/runtime-services/src/agents_create/operations.rs`, `packages/runtime-services/src/limit_reset.rs`, `packages/runtime-services/src/claude_auth_runtime.rs`, `packages/runtime-services/src/claude_controls/store.rs`                                                                                                                                                                                                                                                  |
+| 2    | Provider callbacks and lifecycle | `packages/runtime-services/src/browser_answer.rs`, `packages/runtime-services/src/callback_runtime.rs`, `packages/runtime-services/src/lifecycle_effects.rs`, `packages/runtime-services/src/managed_child_create.rs`, `packages/runtime-services/src/native_actions.rs`, `packages/runtime-services/src/provider_callbacks/cards.rs`, `packages/runtime-services/src/provider_callbacks/recovery.rs`, `packages/runtime-services/src/provider_callbacks/storage.rs`, `packages/runtime-services/src/thread_fork_runtime.rs`, `packages/runtime-services/src/title_generation.rs`                                                                                                                                                                                   |
+| 3    | Work, scheduling, and voice      | `packages/runtime-services/src/questions_write.rs`, `packages/runtime-services/src/radio_runtime.rs`, `packages/runtime-services/src/safety_buffering/executor.rs`, `packages/runtime-services/src/scheduler.rs`, `packages/runtime-services/src/rules_tick.rs`, `packages/runtime-services/src/work_write.rs`, `packages/runtime-services/src/voice.rs`, `packages/runtime-services/src/voice/provider.rs`                                                                                                                                                                                                                                                                                                                                                         |
+| 4    | Workspace and history            | `packages/runtime-services/src/checkpoints.rs`, `packages/runtime-services/src/context_repair.rs`, `packages/runtime-services/src/continuation_driver.rs`, `packages/runtime-services/src/payload_store.rs`, `packages/runtime-services/src/project_locations.rs`, `packages/runtime-services/src/projects/operations.rs`, `packages/runtime-services/src/sync_documents.rs`, `packages/runtime-services/src/sync_policy.rs`, `packages/runtime-services/src/transcript.rs`, `packages/runtime-services/src/workspace_cleanup_runtime.rs`, `packages/runtime-services/src/workspace_operations_effects.rs`, `packages/runtime-services/src/workspace_ready_git.rs`                                                                                                  |
+| 5    | Federation and multi-server      | `packages/runtime-services/src/federation.rs`, `packages/runtime-services/src/federation_credentials.rs`, `packages/runtime-services/src/federation_delivery.rs`, `packages/runtime-services/src/multi_server.rs`, `packages/runtime-services/src/multi_server_discovery.rs`, `packages/runtime-services/src/multi_server_orchestration.rs`, `packages/runtime-services/src/multi_server_pairing.rs`, `packages/runtime-services/src/peer_conversion.rs`, `packages/runtime-services/src/remote_transport.rs`                                                                                                                                                                                                                                                       |
+| 6    | Monitor runtime                  | `packages/runtime-services/src/maintenance.rs`, `packages/runtime-services/src/monitor_driver.rs`, `packages/runtime-services/src/monitor_event_queue.rs`, `packages/runtime-services/src/monitor_output.rs`, `packages/runtime-services/src/monitor_receipts.rs`, `packages/runtime-services/src/monitor_runtime.rs`                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 7    | HTTP route boundaries            | `packages/runtime-http/src/routes/branches.rs`, `packages/runtime-http/src/routes/catalog_agent.rs`, `packages/runtime-http/src/routes/checkpoints.rs`, `packages/runtime-http/src/routes/mac_sync.rs`, `packages/runtime-http/src/routes/messages.rs`, `packages/runtime-http/src/routes/multi_server.rs`, `packages/runtime-http/src/routes/panels.rs`, `packages/runtime-http/src/routes/projects.rs`, `packages/runtime-http/src/routes/rules.rs`, `packages/runtime-http/src/routes/sync_delta.rs`, `packages/runtime-http/src/routes/sync_documents.rs`, `packages/runtime-http/src/routes/tool_requests.rs`, `packages/runtime-http/src/routes/usage.rs`, `packages/runtime-http/src/routes/work_items.rs`, `packages/runtime-http/src/routes/work_write.rs` |
+| 8    | Runtime host and VM              | `apps/runtime-server/src/account_registry.rs`, `apps/runtime-server/src/main.rs`, `apps/runtime-server/src/monitor_port.rs`, `apps/runtime-server/src/multi_server_discovery.rs`, `packages/runtime-services/src/linux_vm_provider.rs`, `packages/runtime-services/src/vm_preparation.rs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Review each lane's callers before claiming it is independently compilable:
 service methods often feed both HTTP routes and background tasks, while a

@@ -204,14 +204,19 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 .as_array()
                 .expect("items")
                 .iter()
-                .map(|v| ("INSERT", format!("item:{}", v["id"].as_str().expect("id"))))
+                .map(|v| {
+                    (
+                        "INSERT".to_owned(),
+                        format!("item:{}", v["id"].as_str().expect("id")),
+                    )
+                })
                 .collect::<Vec<_>>();
             boundaries.extend(
                 ["@order", "@meta", "@revision", "@floor"]
                     .into_iter()
-                    .map(|id| ("INSERT", id.to_owned())),
+                    .map(|id| ("INSERT".to_owned(), id.to_owned())),
             );
-            boundaries.push(("UPDATE", "@revision".to_owned())); // cached observation result
+            boundaries.push(("UPDATE".to_owned(), "@revision".to_owned())); // cached observation result
             if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none() {
                 boundaries.retain(|(_, id)| id == "item:agent:old-0" || id.starts_with('@'));
             }
@@ -220,7 +225,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                     .iter()
                     .map(|v| {
                         (
-                            v[0].as_str().expect("operation"),
+                            v[0].as_str().expect("operation").to_owned(),
                             v[1].as_str().expect("identity").to_owned(),
                         )
                     })
@@ -230,10 +235,20 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             for (operation, identity) in boundaries {
                 for timing in ["BEFORE", "AFTER"] {
                     fault_count += 1;
-                    store.transaction(|tx| {
+                    let operation_for_trigger = operation.clone();
+                    let identity_for_trigger = identity.clone();
+                    let timing_for_trigger = timing.to_owned();
+                    store.transaction(move |tx| {
+                        let operation = operation_for_trigger;
+                        let identity = identity_for_trigger;
+                        let timing = timing_for_trigger;
                         let literal = identity.replace('\'', "''");
                         let row = if operation == "DELETE" { "OLD" } else { "NEW" };
-                        let sql_operation = if operation == "CACHE" { "UPDATE" } else { operation };
+                        let sql_operation = if operation == "CACHE" {
+                            "UPDATE"
+                        } else {
+                            operation.as_str()
+                        };
                         let condition = if operation == "CACHE" { " AND NEW.payload IS NOT NULL" } else { "" };
                         tx.execute_batch(&format!("CREATE TEMP TRIGGER p13_fail {timing} {sql_operation} ON sync_entities WHEN {row}.collection='transcript:agent' AND {row}.id='{literal}'{condition} BEGIN SELECT RAISE(ABORT,'p13 failpoint'); END;"))?;
                         Ok(())

@@ -182,6 +182,7 @@ mod tests {
 
     struct LiveSessions {
         claude_binary: String,
+        changes: tokio::sync::watch::Sender<u64>,
     }
     impl ActiveProviderConnections for LiveSessions {
         fn snapshot(&self) -> Vec<ProviderProfile> {
@@ -204,6 +205,10 @@ mod tests {
                     connection_id: Some("connection-11".into()),
                 },
             ]
+        }
+
+        fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.changes.subscribe()
         }
     }
 
@@ -257,8 +262,11 @@ mod tests {
 
     struct FixtureStore;
     impl ProviderVersionStore for FixtureStore {
-        fn upstream_enabled(&self) -> bool {
-            true
+        fn upstream_enabled(
+            &self,
+        ) -> Result<bool, studio_runtime_services::provider_versions::ProviderVersionsError>
+        {
+            Ok(true)
         }
         fn persist_warnings<'a>(
             &'a self,
@@ -339,10 +347,12 @@ mod tests {
             std::fs::set_permissions(&claude_binary, std::fs::Permissions::from_mode(0o700))
                 .expect("Claude CLI test double made executable");
         }
+        let (changes, _) = tokio::sync::watch::channel(0);
         let monitor = ProviderVersionMonitor::start(
             Arc::new(FixtureStore),
             Some(Arc::new(LiveSessions {
                 claude_binary: claude_binary.to_string_lossy().into_owned(),
+                changes,
             })),
             temporary.path().join("cache.json"),
             Arc::new(Probe {

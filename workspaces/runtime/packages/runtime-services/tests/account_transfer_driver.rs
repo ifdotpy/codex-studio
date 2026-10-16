@@ -211,12 +211,14 @@ async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
         for timing in ["BEFORE", "AFTER"] {
             let table = table.to_owned();
             let timing = timing.to_owned();
+            let trigger_table = table.clone();
+            let trigger_timing = timing.clone();
             let before = operation(&store);
             let agent = AccountTransferRepository::agent(&store.read().expect("read"), "lead")
                 .expect("agent");
             store.transaction(move |tx| {
                 for (index,event) in ["INSERT","UPDATE"].iter().enumerate() {
-                    tx.execute_batch(&format!("CREATE TEMP TRIGGER transfer_fail_{index} {timing} {event} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
+                    tx.execute_batch(&format!("CREATE TEMP TRIGGER transfer_fail_{index} {trigger_timing} {event} ON {trigger_table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
                 }
                 Ok(())
             }).await.expect("failpoint");

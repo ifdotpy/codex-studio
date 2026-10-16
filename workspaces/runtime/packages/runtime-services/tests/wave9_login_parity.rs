@@ -123,10 +123,10 @@ fn normalize_paths(value: &mut Value, roots: &[(&str, &str)], normalize_account:
     }
 }
 
-#[test]
-fn codex_login_and_cancel_match_python_registry_and_replays() {
+#[tokio::test]
+async fn codex_login_and_cancel_match_python_registry_and_replays() {
     let oracle = python_corpus();
-    compare_codex(&oracle["codex"]);
+    compare_codex(&oracle["codex"]).await;
 }
 
 #[tokio::test]
@@ -136,7 +136,7 @@ async fn claude_login_service_matches_python_add_profile_code_and_cancel_replays
     compare_claude(&oracle["claudeStart"], false).await;
 }
 
-fn compare_codex(expected: &Value) {
+async fn compare_codex(expected: &Value) {
     let root = tempfile::tempdir().expect("isolated Rust account root");
     let accounts_root = root.path().join("codex-runtime/accounts");
     let base_home = root.path().join("codex-home");
@@ -174,11 +174,15 @@ fn compare_codex(expected: &Value) {
         email: None,
         label: None,
     };
-    let started = service.login(request()).expect("Codex login");
-    let replay = service.login(request()).expect("Codex login replay");
-    let cancelled = service.cancel_login(CODEX_ID).expect("Codex cancellation");
+    let started = service.login(request()).await.expect("Codex login");
+    let replay = service.login(request()).await.expect("Codex login replay");
+    let cancelled = service
+        .cancel_login(CODEX_ID)
+        .await
+        .expect("Codex cancellation");
     let cancel_replay = service
         .cancel_login(CODEX_ID)
+        .await
         .expect("Codex cancellation replay");
     let mut actual_responses = json!([started, replay, cancelled, cancel_replay]);
     let mut expected_responses = expected["responses"].clone();

@@ -167,7 +167,7 @@ fn mock_message(
     Ok(None)
 }
 async fn apply(
-    store: &RuntimeStore,
+    store: &Arc<RuntimeStore>,
     before: &Value,
     action: RecoveryAction,
     fail: bool,
@@ -178,7 +178,7 @@ async fn apply(
         write_message: Box::new(mock_message),
     };
     RecoveryStore {
-        store: Arc::new(store.clone()),
+        store: Arc::clone(store),
         connection_current: Arc::new(|s| *s == scope()),
         completion: Arc::new(Mutex::new(Box::new(completion))),
         at: 1000.,
@@ -230,7 +230,7 @@ async fn connection_completion_matches_python_full_records_and_results() {
     assert_eq!(cases.len(), 27);
     for case in cases {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         seed(&store, &case["before"]).await;
         let result = apply(&store, &case["before"], terminal(case), false)
             .await
@@ -279,7 +279,7 @@ async fn unresolved_operations_match_python_including_legacy_scope() {
     assert_eq!(cases.len(), 36);
     for case in cases {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = corpus()["connection"][0]["before"].clone();
         seed(&store, &before).await;
         let table = case["table"].as_str().expect("table").to_owned();
@@ -317,7 +317,7 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     ] {
         for timing in ["BEFORE", "AFTER"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             seed(&store, &case["before"]).await;
             let before = agent(&store);
             let sql = format!(
@@ -335,9 +335,11 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
                 "{timing} {table}"
             );
             drop(store);
-            let store = RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart");
+            let store = Arc::new(
+                RuntimeStore::open(Some(root.path()))
+                    .await
+                    .expect("restart"),
+            );
             assert_eq!(agent(&store), before);
             assert!(records(&store, "runtime_items").is_empty());
             assert_eq!(
@@ -363,7 +365,7 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
         }
     }
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     seed(&store, &case["before"]).await;
     assert!(
         apply(&store, &case["before"], terminal(case), true)
@@ -376,7 +378,7 @@ async fn stop_or_notification_before_response_supersedes_completion() {
     for change in ["epoch", "turnId", "inFlight", "error"] {
         let case = &corpus()["connection"][0];
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut newer = case["before"].clone();
         newer[change] = match change {
             "epoch" => json!(1),
@@ -456,8 +458,9 @@ async fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         } else {
             Instant::now() + Duration::from_secs(20)
         };
-        let mut reader = RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe)
-            .expect("reader");
+        let mut reader =
+            RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, observe.as_ref())
+                .expect("reader");
         let result = HistoryRead::new(&mut reader, scope(), deadline)
             .call(
                 HistoryMethod::Turns,
@@ -491,7 +494,8 @@ async fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
     };
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut reader =
-        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
+        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, observe.as_ref())
+            .expect("reader");
     assert_eq!(
         reader.barrier(&scope(), deadline).await,
         Err(HistoryError::Unavailable)
@@ -499,7 +503,8 @@ async fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
     drop(reader);
     port.drained = Some(&drained);
     let mut reader =
-        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
+        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, observe.as_ref())
+            .expect("reader");
     reader.barrier(&scope(), deadline).await.expect("drained");
 }
 async fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
@@ -512,8 +517,12 @@ async fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     let now = Instant::now();
     assert!(scan.take([job.clone()], now, 1000.).is_some());
     assert!(scan.take([job.clone()], now, 1000.).is_none());
-    scan.finish(&job, now, &Ok(RecoveryOutcome::Unconfirmed))
-        .expect("finish");
+    scan.finish(
+        &job,
+        now,
+        &Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed)),
+    )
+    .expect("finish");
     assert_eq!(scan.next_at(now), Some(now + Duration::from_secs(15)));
     assert!(scan.take([job.clone()], now, 1000.).is_none());
     assert!(
@@ -541,7 +550,7 @@ async fn blob_preview_is_never_mistaken_for_complete_receipt() {
 
 async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     seed(&store, &before).await;
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).await.expect("unknown input");
@@ -602,7 +611,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         "writer-failure",
     ] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
@@ -655,7 +664,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
             Ok(())
         };
         let writer = RuntimeTaskCompletionWriter {
-            store: Arc::new(store.clone()),
+            store: Arc::clone(&store),
             observation_current: observe,
             write_task: Arc::new(write),
             resolve_payload: Arc::new(resolve_inline_receipt),
@@ -740,7 +749,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
     for race in [false, true] {
         let case = &corpus()["connection"][0];
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         seed(&store, &case["before"]).await;
         let mut history = History {
             store: &store,
@@ -750,7 +759,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
         };
         let observe: Arc<ObservationSource> = Arc::new(|_: &ConnectionScope| Some(observation()));
         let mut reader =
-            RetainedRecoveryReader::new(scope(), "thread".into(), &mut history, &observe)
+            RetainedRecoveryReader::new(scope(), "thread".into(), &mut history, observe.as_ref())
                 .expect("reader");
         let completion = LifecycleCompletionWriter {
             at: 1000.,
@@ -761,7 +770,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         };
         let task_completion = RuntimeTaskCompletionWriter {
-            store: Arc::new(store.clone()),
+            store: Arc::clone(&store),
             observation_current: Arc::clone(&observe),
             write_task: Arc::new(task_write),
             resolve_payload: Arc::new(resolve_inline_receipt),
@@ -771,7 +780,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
             automatic: false,
         };
         let outcome = RecoveryRuntime {
-            store: Arc::new(store.clone()),
+            store: Arc::clone(&store),
             observation: Arc::clone(&observe),
             completion: Arc::new(Mutex::new(Box::new(completion))),
             task_completion: Arc::new(task_completion),
@@ -786,7 +795,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
 
 async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let template = corpus()["connection"][0]["before"].clone();
     store
         .transaction(move |tx| {
@@ -854,8 +863,12 @@ async fn diagnostic_updates_do_not_reset_connection_backoff() {
     let now = Instant::now();
     let mut scan = RecoveryScan::default();
     assert!(scan.take([job.clone()], now, 1000.).is_some());
-    scan.finish(&job, now, &Ok(RecoveryOutcome::Unconfirmed))
-        .expect("finish");
+    scan.finish(
+        &job,
+        now,
+        &Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed)),
+    )
+    .expect("finish");
     before["connectionCheck"] = json!({"at":1001.,"nativeState":"active"});
     let checked = RecoveryJob::Connection {
         snapshot: RecoverySnapshot::from_record(before).expect("snapshot"),
@@ -875,7 +888,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
     ] {
         for timing in ["BEFORE", "AFTER"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             seed(&store, &before).await;
             let sql = format!(
                 "CREATE TRIGGER p07_accept_fail {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'p07 crash'); END;"
@@ -897,9 +910,11 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
                 "{timing} {table}"
             );
             drop(store);
-            let store = RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart");
+            let store = Arc::new(
+                RuntimeStore::open(Some(root.path()))
+                    .await
+                    .expect("restart"),
+            );
             assert_eq!(agent(&store), before);
             assert_eq!(
                 store
@@ -936,7 +951,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
 async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
@@ -972,8 +987,8 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
             studio_runtime_services::notification_dispatch::NotificationDispatchError,
         > { panic!("changed receipt must not reach writer") };
         let observe = Arc::new(|_: &ConnectionScope| Some(observation()));
-        let mut writer = RuntimeTaskCompletionWriter {
-            store: Arc::new(store.clone()),
+        let writer = RuntimeTaskCompletionWriter {
+            store: Arc::clone(&store),
             observation_current: observe,
             write_task: Arc::new(write),
             resolve_payload: Arc::new(resolve_inline_receipt),
@@ -985,7 +1000,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
 
 async fn held_scan_survives_257_full_pages_and_check_eviction() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let template = corpus()["connection"][0]["before"].clone();
     const ROWS: usize = 257 * MAX_SCAN_JOBS;
     store
@@ -1017,8 +1032,12 @@ async fn held_scan_survives_257_full_pages_and_check_eviction() {
             panic!("connection");
         };
         assert_eq!(snapshot.record()["id"], format!("agent-{n:05}"));
-        scan.finish(&job, now, &Ok(RecoveryOutcome::Unconfirmed))
-            .expect("hold");
+        scan.finish(
+            &job,
+            now,
+            &Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed)),
+        )
+        .expect("hold");
         assert!(
             load_recovery_jobs(&store, "default", &mut cursor)
                 .expect("tasks")
@@ -1030,7 +1049,7 @@ async fn held_scan_survives_257_full_pages_and_check_eviction() {
 async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
     for bad in ["agent", "task", "receipt"] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut owner = corpus()["connection"][0]["before"].clone();
         owner["events"] = if bad == "agent" { json!(-1) } else { json!(0) };
         seed(&store, &owner).await;
@@ -1158,7 +1177,8 @@ async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
     };
     let observe: Arc<ObservationSource> = Arc::new(|_: &ConnectionScope| Some(observation()));
     let mut reader =
-        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
+        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, observe.as_ref())
+            .expect("reader");
     let mut waiter = Box::pin(reader.barrier(&scope(), deadline));
     assert!(futures_util::poll!(&mut waiter).is_pending());
     assert_eq!(entered.await.expect("waiting"), deadline);
@@ -1171,7 +1191,7 @@ async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
 async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     let case = &corpus()["accepted_start"];
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     seed(&store, &case["before"]).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
@@ -1232,7 +1252,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
     for native_status in ["completed", "failed", "interrupted"] {
         for failure in ["none", "first-message", "terminal-delivery"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             let before = &corpus()["accepted_start"]["before"];
             seed(&store, before).await;
             store.transaction(|tx| {
@@ -1280,7 +1300,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             })
                 as Box<dyn studio_runtime_services::recovery_store::CompletionWriter>));
             let outcome = RecoveryStore {
-                store: Arc::new(store.clone()),
+                store: Arc::clone(&store),
                 connection_current: Arc::new(|_| true),
                 completion: Arc::clone(&completion),
                 at: 1000.,
@@ -1322,7 +1342,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
                 assert_eq!(agent(&store)["events"], 3);
                 let committed_rows = durable_rows(&store);
                 let replay = RecoveryStore {
-                    store: Arc::new(store.clone()),
+                    store: Arc::clone(&store),
                     connection_current: Arc::new(|_| true),
                     completion: Arc::clone(&completion),
                     at: 1000.,
@@ -1361,7 +1381,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
 
 #[tokio::test]
 async fn wave7_p07_runtime_corpus() {
-    let cases: &[(&str, Pin<Box<dyn Future<Output = ()>>>)] = &[
+    let mut cases: [(&str, Pin<Box<dyn Future<Output = ()>>>); 20] = [
         (
             "python_terminal_notification_count_decodes_without_changing_attempt_events",
             Box::pin(python_terminal_notification_count_decodes_without_changing_attempt_events()),
@@ -1446,7 +1466,7 @@ async fn wave7_p07_runtime_corpus() {
         ),
     ];
     let mut failures = Vec::new();
-    for (name, case) in cases {
+    for (name, case) in &mut cases {
         if let Err(payload) = std::panic::AssertUnwindSafe(case.as_mut())
             .catch_unwind()
             .await

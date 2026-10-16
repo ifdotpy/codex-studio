@@ -8,21 +8,21 @@ use std::sync::Arc;
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::RuntimeStore;
 
-#[test]
-fn complete_python_answer_and_delete_corpus() {
-    let (_root, store, context) = fixture();
+#[tokio::test]
+async fn complete_python_answer_and_delete_corpus() {
+    let (_root, store, context) = fixture().await;
     let port = Arc::new(Port::default());
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
     for case in template()["fullAnswers"].as_array().unwrap() {
-        seed_case(&store, case);
+        seed_case(&store, case).await;
         let before_rows = logical_snapshot(&store);
         let id = case["before"]["id"].as_str().unwrap();
         assert_eq!(
-            runtime.answer(id, &case["data"], 20.0).unwrap(),
+            runtime.answer(id, &case["data"], 20.0).await.unwrap(),
             case["response"]
         );
         assert_eq!(
-            runtime.answer(id, &case["data"], 21.0).unwrap(),
+            runtime.answer(id, &case["data"], 21.0).await.unwrap(),
             case["replay"]
         );
         assert_eq!(stored(&store, id), case["after"]);
@@ -35,11 +35,11 @@ fn complete_python_answer_and_delete_corpus() {
     }
     assert_eq!(port.calls.lock().unwrap().len(), 30);
     for case in template()["deletes"].as_array().unwrap() {
-        seed_case(&store, case);
+        seed_case(&store, case).await;
         let before_rows = logical_snapshot(&store);
         let id = case["before"]["id"].as_str().unwrap();
         let before = port.calls.lock().unwrap().len();
-        let result = runtime.delete_question(id, 20.0);
+        let result = runtime.delete_question(id, 20.0).await;
         if let Some(error) = case["expected"].get("error") {
             assert_eq!(result.unwrap_err().to_string(), error.as_str().unwrap());
         } else {
@@ -56,63 +56,68 @@ fn complete_python_answer_and_delete_corpus() {
     }
 }
 
-#[test]
-fn retirement_requires_checkpoint_and_preserves_http_replay_and_unknown_proof() {
-    let (_root, store, context) = fixture();
-    let (id, frame) = pending(&store, &context);
+#[tokio::test]
+async fn retirement_requires_checkpoint_and_preserves_http_replay_and_unknown_proof() {
+    let (_root, store, context) = fixture().await;
+    let (id, frame) = pending(&store, &context).await;
     let data = json!({"answers":{"secret":{"answers":["secret-payload"]}}});
     let port = Arc::new(Port::default());
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
-    runtime.answer(&id, &data, 20.0).unwrap();
-    assert_eq!(checkpoint(&store, &context, 0), 0);
-    assert_eq!(checkpoint(&store, &context, 1), 1);
-    assert_eq!(checkpoint(&store, &context, 1), 0);
+    runtime.answer(&id, &data, 20.0).await.unwrap();
+    assert_eq!(checkpoint(&store, &context, 0).await, 0);
+    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    assert_eq!(checkpoint(&store, &context, 1).await, 0);
     let raw:String=store.read().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
     assert!(!raw.contains("secret-payload"));
     assert!(matches!(
-        dispatch(&store, &context, &frame, 21.0).unwrap(),
+        dispatch(Arc::clone(&store), &context, &frame, 21.0)
+            .await
+            .unwrap(),
         CallbackDecision::Settled(_)
     ));
-    assert_eq!(runtime.answer(&id, &data, 21.0).unwrap()["replayed"], true);
+    assert_eq!(
+        runtime.answer(&id, &data, 21.0).await.unwrap()["replayed"],
+        true
+    );
     assert!(matches!(
-        runtime.answer(&id, &json!({"answers":{}}), 21.0),
+        runtime.answer(&id, &json!({"answers":{}}), 21.0).await,
         Err(CallbackError::Conflict)
     ));
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
 
-#[test]
-fn not_sent_creates_new_attempt_and_foreign_receipt_is_unknown() {
-    let (_root, store, context) = fixture();
-    let (id, _) = pending(&store, &context);
+#[tokio::test]
+async fn not_sent_creates_new_attempt_and_foreign_receipt_is_unknown() {
+    let (_root, store, context) = fixture().await;
+    let (id, _) = pending(&store, &context).await;
     let port = Arc::new(Port::default());
     *port.next.lock().unwrap() = Some(ReplyOutcome::NotSent);
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
     let data = json!({"answers":{}});
-    assert!(runtime.answer(&id, &data, 20.0).is_err());
+    assert!(runtime.answer(&id, &data, 20.0).await.is_err());
     assert_eq!(stored(&store, &id)["status"], "pending");
     let old = port.calls.lock().unwrap()[0].identity.clone();
     *port.foreign.lock().unwrap() = true;
     assert!(matches!(
-        runtime.answer(&id, &data, 21.0),
+        runtime.answer(&id, &data, 21.0).await,
         Err(CallbackError::Unknown)
     ));
     let new = port.calls.lock().unwrap()[1].identity.clone();
     assert_ne!(old.attempt, new.attempt);
     assert!(matches!(
-        delivery(&store, &old, DeliveryOutcome::Written),
+        delivery(&store, &old, DeliveryOutcome::Written).await,
         Err(CallbackError::Stale)
     ));
     assert_eq!(stored(&store, &id)["status"], "uncertain");
-    assert_eq!(checkpoint(&store, &context, 1), 0);
-    assert!(prepared_replies(&store, &context).unwrap().is_empty());
+    assert_eq!(checkpoint(&store, &context, 1).await, 0);
+    assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
 }
 
-#[test]
-fn python_resolution_rows_match_after_completed_or_cleared_turn() {
-    let (_root, store, context) = fixture();
+#[tokio::test]
+async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
+    let (_root, store, context) = fixture().await;
     for case in template()["resolved"].as_array().unwrap() {
-        seed_case(&store, case);
+        seed_case(&store, case).await;
         let before = logical_snapshot(&store);
         resolve(
             &store,
@@ -120,6 +125,7 @@ fn python_resolution_rows_match_after_completed_or_cleared_turn() {
             &studio_runtime_providers::RequestId::String("resolve-rpc".into()),
             20.0,
         )
+        .await
         .unwrap();
         assert_eq!(stored(&store, "resolve-card"), case["expected"]);
         let raw: String = store
@@ -143,79 +149,96 @@ fn frame_value(frame: &studio_runtime_providers::Frame) -> serde_json::Value {
     serde_json::from_slice(&studio_runtime_providers::encode_line(frame).unwrap()).unwrap()
 }
 
-#[test]
-fn mailbox_timeout_is_unknown_and_closed_queue_proves_not_sent() {
-    let (_root, store, context) = fixture();
-    let (id, _) = pending(&store, &context);
+#[tokio::test]
+async fn mailbox_timeout_is_unknown_and_closed_queue_proves_not_sent() {
+    let (_root, store, context) = fixture().await;
+    let (id, _) = pending(&store, &context).await;
     let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
+        .await
         .unwrap()
         .unwrap();
     let (mailbox, receiver) = CallbackMailbox::new(Arc::new(|| {}));
     assert!(matches!(
-        mailbox.deliver(&reply, std::time::Duration::ZERO),
+        mailbox.deliver(&reply, std::time::Duration::ZERO).await,
         Err(CallbackError::Unknown)
     ));
     assert_eq!(receiver.try_recv().unwrap().reply, reply);
     drop(receiver);
     assert_eq!(
-        mailbox.deliver(&reply, REPLY_DEADLINE).unwrap().outcome,
+        mailbox
+            .deliver(&reply, REPLY_DEADLINE)
+            .await
+            .unwrap()
+            .outcome,
         ReplyOutcome::NotSent
     );
 }
 
-#[test]
-fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
-    let (_root, store, context) = fixture();
-    let (id, _) = pending(&store, &context);
+#[tokio::test]
+async fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
+    let (_root, store, context) = fixture().await;
+    let (id, _) = pending(&store, &context).await;
     let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
+        .await
         .unwrap()
         .unwrap();
+    let id_for_update = id.clone();
     store
-        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
-                [&id],
+                [&id_for_update],
             )?;
             Ok(())
         })
+        .await
         .unwrap();
     assert_eq!(stored(&store, &id)["status"], "answered");
 
     let port = Arc::new(Port::default());
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
-    assert!(!runtime.deliver(&reply).unwrap());
+    assert!(!runtime.deliver(&reply).await.unwrap());
     assert!(port.calls.lock().unwrap().is_empty());
     assert_eq!(stored(&store, &id)["status"], "answered");
 }
 
-#[test]
-fn binding_after_http_commit_still_retires_payload_and_preserves_attempt() {
+#[tokio::test]
+async fn binding_after_http_commit_still_retires_payload_and_preserves_attempt() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let (_root, store, context) = fixture();
+    let (_root, store, context) = fixture().await;
     let frame = Frame::Request(RequestFrame {
         id: RequestId::Number(12),
         method: Method::ItemToolRequestUserInput,
         params: Some(json!({"threadId":context.thread,"turnId":context.turn,"questions":[]})),
         fields: Default::default(),
     });
-    let decision = dispatch(&store, &context, &frame, 10.0).unwrap();
+    let decision = dispatch(Arc::clone(&store), &context, &frame, 10.0)
+        .await
+        .unwrap();
     let CallbackDecision::Pending(id) = &decision else {
         panic!("pending")
     };
     let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
-    runtime.answer(id, &json!({"answers":{}}), 20.0).unwrap();
-    bind_journal(&store, &decision, &context, &RequestId::Number(12), 1).unwrap();
-    assert_eq!(checkpoint(&store, &context, 1), 1);
+    runtime
+        .answer(id, &json!({"answers":{}}), 20.0)
+        .await
+        .unwrap();
+    bind_journal(&store, &decision, &context, &RequestId::Number(12), 1)
+        .await
+        .unwrap();
+    assert_eq!(checkpoint(&store, &context, 1).await, 1);
     assert!(matches!(
-        dispatch(&store, &context, &frame, 21.0).unwrap(),
+        dispatch(Arc::clone(&store), &context, &frame, 21.0)
+            .await
+            .unwrap(),
         CallbackDecision::Settled(_)
     ));
 }
 
-#[test]
-fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
+#[tokio::test]
+async fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let (_root, store, context) = fixture();
+    let (_root, store, context) = fixture().await;
     let frame = Frame::Request(RequestFrame {
         id: RequestId::Number(25),
         method: Method::ItemToolCall,
@@ -224,18 +247,28 @@ fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
         ),
         fields: Default::default(),
     });
-    let CallbackDecision::Answer(first) = dispatch(&store, &context, &frame, 10.0).unwrap() else {
+    let CallbackDecision::Answer(first) = dispatch(Arc::clone(&store), &context, &frame, 10.0)
+        .await
+        .unwrap()
+    else {
         panic!("answer")
     };
-    delivery(&store, &first.identity, DeliveryOutcome::Submitted).unwrap();
-    delivery(&store, &first.identity, DeliveryOutcome::NotSent).unwrap();
-    let CallbackDecision::Answer(second) = dispatch(&store, &context, &frame, 11.0).unwrap() else {
+    delivery(&store, &first.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    delivery(&store, &first.identity, DeliveryOutcome::NotSent)
+        .await
+        .unwrap();
+    let CallbackDecision::Answer(second) = dispatch(Arc::clone(&store), &context, &frame, 11.0)
+        .await
+        .unwrap()
+    else {
         panic!("answer")
     };
     assert_eq!(first.body, second.body);
     assert_ne!(first.identity.attempt, second.identity.attempt);
     assert!(matches!(
-        delivery(&store, &first.identity, DeliveryOutcome::Written),
+        delivery(&store, &first.identity, DeliveryOutcome::Written).await,
         Err(CallbackError::Stale)
     ));
     let count: i64 = store
@@ -250,8 +283,8 @@ fn tools_rotate_attempt_after_proven_not_sent_without_reexecuting_effect() {
     assert_eq!(count, 1);
 }
 
-#[test]
-fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
+#[tokio::test]
+async fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
     for (table, event, phase) in [
         ("runtime_requests", "INSERT", "admit"),
         ("runtime_agents", "UPDATE", "admit"),
@@ -261,21 +294,24 @@ fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
         ("runtime_operation_receipts", "INSERT", "answer"),
         ("runtime_operation_receipts", "UPDATE", "answer"),
     ] {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         let id = if phase == "answer" {
-            Some(pending(&store, &context).0)
+            Some(pending(&store, &context).await.0)
         } else {
             None
         };
-        store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
-            tx.execute_batch(&format!("CREATE TRIGGER callback_failpoint BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'callback failpoint'); END"))?; Ok(())
-        }).unwrap();
+        let trigger_table = table.to_owned();
+        let trigger_event = event.to_owned();
+        store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
+            tx.execute_batch(&format!("CREATE TRIGGER callback_failpoint BEFORE {trigger_event} ON {trigger_table} BEGIN SELECT RAISE(ABORT,'callback failpoint'); END"))?; Ok(())
+        }).await.unwrap();
         let before = snapshot(&store);
         let port = Arc::new(Port::default());
         let runtime = CallbackRuntime::new(store.clone(), port.clone());
         let result = if let Some(id) = id {
             runtime
                 .answer(&id, &json!({"answers":{}}), 20.0)
+                .await
                 .map(|_| ())
         } else {
             use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
@@ -287,7 +323,9 @@ fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
                 ),
                 fields: Default::default(),
             });
-            dispatch(&store, &context, &frame, 10.0).map(|_| ())
+            dispatch(Arc::clone(&store), &context, &frame, 10.0)
+                .await
+                .map(|_| ())
         };
         assert!(result.is_err(), "{phase} {table} {event}");
         assert_eq!(snapshot(&store), before, "{phase} {table} {event}");
@@ -321,11 +359,11 @@ fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value
         .collect()
 }
 
-#[test]
-fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approval() {
+#[tokio::test]
+async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approval() {
     for answered in [false, true] {
-        let (_root, store, context) = fixture();
-        let (id, frame) = pending(&store, &context);
+        let (_root, store, context) = fixture().await;
+        let (id, frame) = pending(&store, &context).await;
         if answered {
             prepare_user_answer(
                 &store,
@@ -334,6 +372,7 @@ fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approval() {
                 20.0,
                 false,
             )
+            .await
             .unwrap();
         }
         resolve(
@@ -342,8 +381,11 @@ fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approval() {
             &studio_runtime_providers::RequestId::Number(42),
             21.0,
         )
+        .await
         .unwrap();
-        let decision = dispatch(&store, &context, &frame, 22.0).unwrap();
+        let decision = dispatch(Arc::clone(&store), &context, &frame, 22.0)
+            .await
+            .unwrap();
         assert!(matches!(decision, CallbackDecision::Settled(_)));
         bind_journal(
             &store,
@@ -352,10 +394,11 @@ fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approval() {
             &studio_runtime_providers::RequestId::Number(42),
             2,
         )
+        .await
         .unwrap();
         let raw:String=store.read().unwrap().query_row("SELECT group_concat(result) FROM runtime_operation_receipts WHERE signature='provider-callback'",[],|r|r.get(0)).unwrap();
         assert!(!raw.contains("resolved-secret"));
         assert_eq!(stored(&store, &id)["status"], "resolved");
-        assert!(prepared_replies(&store, &context).unwrap().is_empty());
+        assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
     }
 }

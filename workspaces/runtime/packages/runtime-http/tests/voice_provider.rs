@@ -107,7 +107,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
         "status":"idle", "isLead":true, "autoWake":true,
         "threadId":"voice-http-thread", "accountKey":"voice-http-account"
     });
-    store.transaction(|tx| {
+    store.transaction(move |tx| {
         tx.execute(
             "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
             rusqlite::params!["voice-http-agent", actor.to_string()],
@@ -320,16 +320,22 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .expect("server startup recovery");
     monitor_fixtures::seed(&store, &case).await;
     let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
-    let monitor_id = case["before"]["id"].as_str().expect("monitor id");
+    let monitor_id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
     let request_id = format!("monitor-approval:{monitor_id}");
+    let seed_request_id = request_id.clone();
+    let seed_agent = agent.clone();
+    let seed_monitor = case["before"].clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let request = json!({
-                "id":request_id,
+                "id":seed_request_id,
                 "method":"monitor/approve",
-                "agent":agent,
-                "epoch":case["before"]["epoch"],
-                "params":{"monitorId":monitor_id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+                "agent":seed_agent,
+                "epoch":seed_monitor["epoch"],
+                "params":{"monitorId":monitor_id,"command":seed_monitor["command"],"cwd":seed_monitor["cwd"]},
                 "status":"pending",
                 "createdAt":1000.0
             });
@@ -338,23 +344,23 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
             );
             tx.execute(
                 "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params![request_id, request.to_string()],
+                rusqlite::params![request["id"].as_str().expect("request ID"), request.to_string()],
             )?;
             tx.execute(
                 "INSERT INTO voice_sessions(id,agent,created,state) VALUES('voice-monitor-session',?1,1,'ready')",
-                [&agent],
+                [request["agent"].as_str().expect("agent ID")],
             )?;
             tx.execute(
                 "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-speech',?1,'','orchestrator','approval','','',?2,1)",
-                rusqlite::params![agent, json!({"request_id":request_id,"fingerprint":fingerprint}).to_string()],
+                rusqlite::params![request["agent"].as_str().expect("agent ID"), json!({"request_id":request["id"],"fingerprint":fingerprint}).to_string()],
             )?;
             tx.execute(
                 "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-playback',?1,'voice-monitor-session','playback','played','','',?2,2)",
-                rusqlite::params![agent, json!({"record_id":"voice-monitor-speech"}).to_string()],
+                rusqlite::params![request["agent"].as_str().expect("agent ID"), json!({"record_id":"voice-monitor-speech"}).to_string()],
             )?;
             tx.execute(
                 "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-transcript',?1,'voice-monitor-session','user','разрешаю','','','{}',3)",
-                [&agent],
+                [request["agent"].as_str().expect("agent ID")],
             )?;
             Ok(())
         })
@@ -437,11 +443,12 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
 
     // Simulate a crash after the monitor transaction committed but before the
     // accepted response was copied into the voice receipt.
+    let request_id_for_update = request_id.clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE voice_approvals SET status='uncertain',result=NULL WHERE id=?1",
-                [&request_id],
+                [&request_id_for_update],
             )?;
             Ok(())
         })

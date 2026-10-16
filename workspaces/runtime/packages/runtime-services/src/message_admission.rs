@@ -357,7 +357,7 @@ mod tests {
         }))
         .expect("valid lead record");
         store
-            .transaction_with_error(|tx| {
+            .transaction_with_error(move |tx| {
                 AgentRepository::put(tx, &agent)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })

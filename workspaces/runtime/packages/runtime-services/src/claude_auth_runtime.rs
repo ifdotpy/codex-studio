@@ -20,9 +20,8 @@ use studio_runtime_store::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Shared account-level Claude auth maintenance cadence, in seconds. It drives
-/// retained auth probes and the active VM credential profile sweep.
-pub const PROBE_INTERVAL: Duration = Duration::from_secs(crate::continuation::POLL_SECONDS as u64);
+/// Active VM Claude credential refresh cadence; unit is seconds.
+pub(crate) const VM_CREDENTIAL_REFRESH_INTERVAL: Duration = Duration::from_secs(180);
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(180);
 const TABLE: ContinuationTable = ContinuationTable::Usage;
 static PROBE_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -62,7 +61,7 @@ fn snapshot(tx: &Transaction<'_>, agent: &str, record: Option<&str>) -> Result<S
 }
 
 /// Bounded due waits for one retained Claude account. The worker calls this on
-/// startup and on its shared 180-second auth-probe schedule.
+/// startup, when a usage-resume row changes, and at the earliest durable deadline.
 pub async fn due_waits(
     store: &RuntimeStore,
     account: &str,
@@ -73,15 +72,26 @@ pub async fn due_waits(
         .transaction_with(move |tx| {
             let mut statement = tx
                 .prepare_cached(
-                    "SELECT agent FROM runtime_usage_resumes \
-             WHERE json_extract(record,'$.status')='auth_probe_wait' \
-               AND json_extract(record,'$.accountKey')=?1 \
-               AND CAST(json_extract(record,'$.dueAt') AS REAL)<=?2 \
-             ORDER BY CAST(json_extract(record,'$.dueAt') AS REAL),rowid LIMIT 16",
+                    "SELECT resume.agent FROM runtime_usage_resumes AS resume \
+             JOIN runtime_agents AS owner ON owner.id=resume.agent \
+             WHERE json_extract(resume.record,'$.status')='auth_probe_wait' \
+               AND json_extract(resume.record,'$.accountKey')=?1 \
+               AND json_type(resume.record,'$.dueAt') IN ('integer','real') \
+               AND CAST(json_extract(resume.record,'$.dueAt') AS REAL)<=?2 \
+               AND json_extract(owner.record,'$.provider')='claude' \
+               AND json_extract(owner.record,'$.accountKey')=?1 \
+               AND json_type(owner.record,'$.epoch')='integer' \
+               AND json_type(owner.record,'$.startAttempt.id')='text' \
+               AND json_extract(owner.record,'$.startAttempt.id')<>'' \
+               AND resume.id=(?3 || json_extract(owner.record,'$.startAttempt.id')) \
+             ORDER BY CAST(json_extract(resume.record,'$.dueAt') AS REAL),resume.rowid LIMIT 16",
                 )
                 .map_err(StoreError::from)?;
             let agents = statement
-                .query_map(params![account, now], |row| row.get::<_, String>(0))
+                .query_map(
+                    params![account, now, claude_auth_wait::PROBE_RECEIPT_ID_PREFIX],
+                    |row| row.get::<_, String>(0),
+                )
                 .map_err(StoreError::from)?
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(StoreError::from)?;
@@ -102,6 +112,51 @@ pub async fn due_waits(
             Ok::<_, ContinuationError>(result)
         })
         .await
+}
+
+/// Return the earliest valid auth-probe deadline for an account. The deadline
+/// stays in wall-clock time because that is the persisted `dueAt` unit; callers
+/// convert it to a monotonic sleep only after reading the durable row.
+pub(crate) async fn earliest_wait_deadline(
+    store: &RuntimeStore,
+    account: &str,
+) -> Result<Option<SystemTime>> {
+    let account = account.to_owned();
+    let deadline = store
+        .transaction_with(move |tx| {
+            tx.query_row(
+                "SELECT MIN(CAST(json_extract(resume.record,'$.dueAt') AS REAL)) \
+                 FROM runtime_usage_resumes AS resume \
+                 JOIN runtime_agents AS owner ON owner.id=resume.agent \
+                 WHERE json_extract(resume.record,'$.status')='auth_probe_wait' \
+                   AND json_extract(resume.record,'$.accountKey')=?1 \
+                   AND json_type(resume.record,'$.dueAt') IN ('integer','real') \
+                   AND json_extract(owner.record,'$.provider')='claude' \
+                   AND json_extract(owner.record,'$.accountKey')=?1 \
+                   AND json_type(owner.record,'$.epoch')='integer' \
+                   AND json_type(owner.record,'$.startAttempt.id')='text' \
+                   AND json_extract(owner.record,'$.startAttempt.id')<>'' \
+                   AND resume.id=(?2 || json_extract(owner.record,'$.startAttempt.id'))",
+                params![account, claude_auth_wait::PROBE_RECEIPT_ID_PREFIX],
+                |row| row.get::<_, Option<f64>>(0),
+            )
+            .map_err(StoreError::from)
+        })
+        .await?;
+    deadline
+        .map(|seconds| {
+            if !seconds.is_finite() || seconds < 0.0 {
+                return Err(ContinuationError::Invalid(
+                    "/runtime_usage_resumes/dueAt".into(),
+                ));
+            }
+            let duration = Duration::try_from_secs_f64(seconds)
+                .map_err(|_| ContinuationError::Invalid("/runtime_usage_resumes/dueAt".into()))?;
+            UNIX_EPOCH
+                .checked_add(duration)
+                .ok_or_else(|| ContinuationError::Invalid("/runtime_usage_resumes/dueAt".into()))
+        })
+        .transpose()
 }
 
 fn persist(
@@ -380,7 +435,7 @@ where
     if attempt_id.is_empty() {
         return Ok(false);
     }
-    let receipt_id = format!("claude-auth-probe:{attempt_id}");
+    let receipt_id = format!("{}{attempt_id}", claude_auth_wait::PROBE_RECEIPT_ID_PREFIX);
     let store_copy = store.clone();
     let agent_id = agent.to_owned();
     let receipt = receipt_id.clone();

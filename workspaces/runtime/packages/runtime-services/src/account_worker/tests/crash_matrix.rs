@@ -104,9 +104,9 @@ async fn restart(context: &Context, label: &str) {
     bridge
         .run(|store| async move {
             store
-                .transaction_with(|tx| {
+                .transaction_with(move |tx| {
                     tx.execute_batch("DROP TRIGGER IF EXISTS no_flush; DROP TRIGGER IF EXISTS journal_error; DROP TRIGGER IF EXISTS retain_effect;")?;
-                    Ok(())
+                    Ok::<(), WorkerError>(())
                 })
                 .await
                 .map_err(WorkerError::from)
@@ -448,7 +448,7 @@ async fn prove_ready_for_new_turn(
             store
                 .transaction_with(move |tx| {
                     AgentRepository::put(tx, &seed)?;
-                    Ok(())
+                    Ok::<(), WorkerError>(())
                 })
                 .await
                 .map_err(WorkerError::from)

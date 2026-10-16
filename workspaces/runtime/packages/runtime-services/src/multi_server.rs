@@ -614,7 +614,7 @@ mod tests {
         let request =
             json!({"action":"create_invite","requestId":"invite-test","label":"Test server"});
         let first = create_invite(
-            &store,
+            Arc::clone(&store),
             &identity,
             &request,
             "local",
@@ -623,7 +623,7 @@ mod tests {
         .await
         .expect("fixture owner can create invitation");
         let retry = create_invite(
-            &store,
+            Arc::clone(&store),
             &identity,
             &request,
             "local",
@@ -663,7 +663,7 @@ mod tests {
         let conflict = json!({"action":"create_invite","requestId":"invite-test","label":"Other"});
         assert!(
             create_invite(
-                &store,
+                Arc::clone(&store),
                 &identity,
                 &conflict,
                 "local",
@@ -682,7 +682,7 @@ mod tests {
             .expect("invite count reads");
         assert_eq!(count, 1);
         let default_label = create_invite(
-            &store,
+            Arc::clone(&store),
             &identity,
             &json!({"action":"create_invite","requestId":"invite-default-label"}),
             "local",
@@ -692,7 +692,7 @@ mod tests {
         .expect("Python default label is used when label is omitted");
         assert_eq!(default_label["invitation"]["label"], identity["label"]);
         let null_label = create_invite(
-            &store,
+            Arc::clone(&store),
             &identity,
             &json!({"action":"create_invite","requestId":"invite-null-label","label":null}),
             "local",

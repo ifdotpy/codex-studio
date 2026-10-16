@@ -47,7 +47,7 @@ async fn claude_turn_freezes_exact_input_before_native_write() {
     state
         .bridge
         .run(move |s| async move {
-            scheduler::lifecycle_transaction_with(s, |tx| {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
                 let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
                 row.extra.insert("provider".into(), json!("claude"));
                 row.extra.insert("nativeEffort".into(), json!("medium"));

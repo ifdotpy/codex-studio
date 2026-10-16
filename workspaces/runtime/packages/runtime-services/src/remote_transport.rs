@@ -1651,6 +1651,8 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::Arc;
+
     use super::{
         HttpResponse, MultiServerExchangeInput, MultiServerRequest, MultiServerSigningInput,
         PeerLinkClient, RemoteIdentity, RemoteTransportError, canonical_json, ed25519_public_key,
@@ -2115,7 +2117,7 @@ pub(crate) mod tests {
         let (root, store) = runtime_store_fixture().await;
         let now = 1_700_000_000_i64;
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 transaction.execute(
                     "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a','stale',?1)",
                     [now - 1_000],
@@ -2153,7 +2155,7 @@ pub(crate) mod tests {
         drop(connection);
 
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 transaction.execute(
                     "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale',?1)",
                     [now - 1_000],
@@ -2291,7 +2293,7 @@ pub(crate) mod tests {
             super::multi_server_request_fingerprint("POST", input.url, br#"{"other":"body"}"#)
                 .expect("unknown fixture fingerprint computes");
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 RemoteTransportRepository::reserve_multi_server_request(
                     transaction,
                     "server-peer",

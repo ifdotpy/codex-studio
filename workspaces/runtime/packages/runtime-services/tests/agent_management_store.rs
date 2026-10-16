@@ -119,7 +119,7 @@ async fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
         .expect("Python retry-stop case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -152,8 +152,11 @@ async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restar
             .expect("witness");
         let base = tempfile::tempdir().expect("base");
         template(base.path());
-        let store =
-            std::sync::Arc::new(RuntimeStore::open(Some(base.path())).expect("template opens"));
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(base.path()))
+                .await
+                .expect("template opens"),
+        );
         seed(
             &store,
             serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -177,8 +180,11 @@ async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restar
                     fs::copy(base.path().join(database), root.path().join(database))
                         .expect("clone prepared template");
                 }
-                let store =
-                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open clone"));
+                let store = std::sync::Arc::new(
+                    RuntimeStore::open(Some(root.path()))
+                        .await
+                        .expect("open clone"),
+                );
                 let before = state(&store);
                 let event = if table == "sync_entities" {
                     "INSERT"
@@ -209,8 +215,11 @@ async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restar
                     "rollback {case_name} {timing} {table}"
                 );
                 drop(store);
-                let store =
-                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("restart"));
+                let store = std::sync::Arc::new(
+                    RuntimeStore::open(Some(root.path()))
+                        .await
+                        .expect("restart"),
+                );
                 assert_eq!(
                     state(&store),
                     before,
@@ -253,7 +262,7 @@ async fn committed_archive_response_loss_replays_after_restart_without_duplicate
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
@@ -266,7 +275,11 @@ async fn committed_archive_response_loss_replays_after_restart_without_duplicate
     assert_eq!(first, case["expected"]["result"]);
     let committed = state(&store);
     drop(store);
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("restart"));
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart"),
+    );
     let result = execute(std::sync::Arc::clone(&store), &action, 1234568.0)
         .await
         .expect("replay");
@@ -289,7 +302,7 @@ async fn deleted_team_broadcast_projection_survives_repeated_delete() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
@@ -360,7 +373,11 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
         .expect("Python seed");
     let base = tempfile::tempdir().expect("base");
     template(base.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(base.path())).expect("template"));
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(base.path()))
+            .await
+            .expect("template"),
+    );
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
@@ -380,10 +397,12 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
             for database in ["canvas.sqlite3", "analytics.sqlite3"] {
                 fs::copy(base.path().join(database), root.path().join(database)).expect("clone");
             }
-            let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+            let store =
+                std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
             let dependency = if let Some(status) = effect.strip_prefix("monitor-") {
+                let status = status.to_owned();
                 store
-                    .transaction(|tx| {
+                    .transaction(move |tx| {
                         tx.execute(
                             "INSERT INTO runtime_monitors(id,record) VALUES('live-monitor',?1)",
                             [
@@ -397,7 +416,8 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                     .expect("monitor");
                 "monitor-driver/agent-stop"
             } else if let Some(status) = effect.strip_prefix("voice-") {
-                store.transaction(|tx| {
+                let status = status.to_owned();
+                store.transaction(move |tx| {
                     tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('live-voice','worker',1,?1)", [status])?;
                     Ok(())
                 }).await.expect("voice");
@@ -445,7 +465,11 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 assert_eq!(state(&store), before, "{effect} delete={delete}");
                 drop(store);
                 assert_eq!(
-                    state(&RuntimeStore::open(Some(root.path())).expect("restart")),
+                    state(
+                        &RuntimeStore::open(Some(root.path()))
+                            .await
+                            .expect("restart")
+                    ),
                     before
                 );
             }
@@ -461,7 +485,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
         .expect("Python ended session");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("store"));
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     records.tables.remove("voice_sessions");
     seed(&store, records).await;
@@ -471,7 +495,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
         Ok(())
     }).await.expect("saved voice");
     let result = execute(
-        &store,
+        std::sync::Arc::clone(&store),
         &Action::Stop {
             target: "lead".into(),
             descendants: true,
@@ -492,7 +516,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
         assert_eq!(&saved["tables"][table], rows, "{table}");
     }
     let result = execute(
-        &store,
+        std::sync::Arc::clone(&store),
         &Action::Delete {
             target: "lead".into(),
         },

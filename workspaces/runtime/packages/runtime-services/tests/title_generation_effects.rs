@@ -65,7 +65,7 @@ fn template(root: &Path) {
     }
 }
 
-fn fixture() -> (tempfile::TempDir, RuntimeStore) {
+async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
     let root = tempfile::tempdir().expect("tmpfs state directory");
     template(root.path());
     let canvas = root.path().join("canvas.sqlite3");
@@ -82,7 +82,9 @@ fn fixture() -> (tempfile::TempDir, RuntimeStore) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let store = RuntimeStore::open(Some(root.path())).expect("Python-written state opens");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Python-written state opens");
     (root, store)
 }
 
@@ -238,7 +240,7 @@ fn persisted_snapshot(store: &RuntimeStore) -> Value {
 
 #[tokio::test]
 async fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let before = persisted_snapshot(&store);
     let (pending, start) = admit_python_request(&store, "title-agent", "catalog-unavailable")
         .await
@@ -276,7 +278,7 @@ async fn admitted_title_catalog_failure_settles_python_receipt_without_renaming(
 
 #[tokio::test]
 async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recovery() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     store
         .transaction(|tx| {
             tx.execute_batch(
@@ -285,6 +287,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
             )?;
             Ok(())
         })
+        .await
         .expect("install deterministic final-apply failure");
     let provider = FixedPort::new(vec![TitleReceipt {
         request_id: "written-before-catalog-failure".into(),
@@ -355,6 +358,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
             tx.execute_batch("DROP TRIGGER title_apply_fail")?;
             Ok(())
         })
+        .await
         .expect("remove deterministic failure");
     let (retry_receipt, should_finish) =
         admit_python_request(&store, "title-agent", "written-before-catalog-failure")
@@ -386,7 +390,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
 
 #[tokio::test]
 async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_call() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let port = FixedPort::new(vec![TitleReceipt {
         request_id: "admitted-replay".into(),
         agent_id: "title-agent".into(),
@@ -428,12 +432,12 @@ async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_
 
 #[tokio::test]
 async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_resent() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let python_signature = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
         br#"{"chat": "title-agent", "name": null, "operation": "rename"}"#,
     ));
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
                 rusqlite::params![
@@ -445,6 +449,7 @@ async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_res
             )?;
             Ok(())
         })
+        .await
         .expect("Python-shaped pending receipt");
     let port = FixedPort::new(Vec::new());
     assert_eq!(
@@ -491,9 +496,10 @@ fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
     serde_json::from_slice(&output.stdout).expect("Python persisted snapshot JSON")
 }
 
-fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
+async fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
+    let name = name.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id='title-agent'",
                 [],
@@ -512,10 +518,11 @@ fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
             studio_runtime_services::agents_create::publish_agent(tx, &record)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .expect("concurrent writer commits");
 }
 
-fn write_deleted(store: &RuntimeStore) {
+async fn write_deleted(store: &RuntimeStore) {
     store
         .transaction_with(|tx| {
             let raw: String = tx.query_row(
@@ -532,6 +539,7 @@ fn write_deleted(store: &RuntimeStore) {
             studio_runtime_services::agents_create::publish_agent(tx, &record)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .expect("deletion commits");
 }
 
@@ -543,7 +551,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
         ("tool", Some(("Tool title", false))),
         ("refusal", None),
     ] {
-        let (_root, store) = fixture();
+        let (_root, store) = fixture().await;
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let (reply_tx, reply_rx) = oneshot::channel();
         let port = Arc::new(GatedPort {
@@ -566,8 +574,8 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
         });
         let request = started_rx.recv().await.expect("provider request pending");
         match concurrent {
-            Some((name, manual)) => write_concurrent_title(&task_store, name, manual),
-            None if scenario == "refusal" => write_deleted(&task_store),
+            Some((name, manual)) => write_concurrent_title(&task_store, name, manual).await,
+            None if scenario == "refusal" => write_deleted(&task_store).await,
             None => {}
         }
         reply_tx
@@ -582,7 +590,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             .expect("title service result");
         let rust = persisted_snapshot(&task_store);
         drop(task_store);
-        let (python_root, python_store) = fixture();
+        let (python_root, python_store) = fixture().await;
         drop(python_store);
         let python = python_persisted_snapshot(python_root.path(), scenario);
         assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(2));
@@ -625,7 +633,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
 
 #[tokio::test]
 async fn applied_request_replays_after_restart_and_rejects_changed_content_without_writes() {
-    let (root, store) = fixture();
+    let (root, store) = fixture().await;
     let port = FixedPort::new(vec![TitleReceipt {
         request_id: "restart-applied".into(),
         agent_id: "title-agent".into(),
@@ -651,7 +659,9 @@ async fn applied_request_replays_after_restart_and_rejects_changed_content_witho
     );
     drop(store);
 
-    let reopened = RuntimeStore::open(Some(root.path())).expect("restart after applied title");
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart after applied title");
     let before_replay = persisted_snapshot(&reopened);
     let no_provider = FixedPort::new(Vec::new());
     assert_eq!(
@@ -680,7 +690,7 @@ async fn applied_request_replays_after_restart_and_rejects_changed_content_witho
             )?;
             Ok(())
         })
-        .expect("changed request content persists");
+        .await.expect("changed request content persists");
     let before_conflict = persisted_snapshot(&reopened);
     assert!(matches!(
         generate(
@@ -700,10 +710,12 @@ async fn applied_request_replays_after_restart_and_rejects_changed_content_witho
 
 #[tokio::test]
 async fn completed_python_receipt_replays_without_request_or_persisted_writes() {
-    let (root, store) = fixture();
+    let (root, store) = fixture().await;
     drop(store);
     let python = python_persisted_snapshot(root.path(), "apply");
-    let reopened = RuntimeStore::open(Some(root.path())).expect("open Python-completed receipt");
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("open Python-completed receipt");
     let before = persisted_snapshot(&reopened);
     assert_eq!(before, python, "Python persisted rows including receipt");
 
@@ -733,7 +745,7 @@ async fn completed_python_receipt_replays_without_request_or_persisted_writes() 
 
 #[tokio::test]
 async fn unknown_provider_outcome_is_never_resent_after_replay() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let port = FixedPort::new(vec![TitleReceipt {
         request_id: "title-request".into(),
         agent_id: "title-agent".into(),
@@ -770,7 +782,7 @@ async fn unknown_provider_outcome_is_never_resent_after_replay() {
 #[tokio::test]
 async fn late_result_after_manual_or_tool_title_writes_no_agent_or_projection_rows() {
     for (name, manual) in [("manual title", true), ("tool title", false)] {
-        let (_root, store) = fixture();
+        let (_root, store) = fixture().await;
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let (reply_tx, reply_rx) = oneshot::channel();
         let port = Arc::new(GatedPort {
@@ -792,7 +804,7 @@ async fn late_result_after_manual_or_tool_title_writes_no_agent_or_projection_ro
             .await
         });
         let request = started_rx.recv().await.expect("request is pending");
-        write_concurrent_title(&task_store, name, manual);
+        write_concurrent_title(&task_store, name, manual).await;
         let before_late_result = agent_and_projection(&task_store);
         reply_tx
             .send(receipt(
@@ -813,7 +825,7 @@ async fn late_result_after_manual_or_tool_title_writes_no_agent_or_projection_ro
 
 #[tokio::test]
 async fn proven_not_sent_can_retry_same_identity_once_written() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let port = FixedPort::new(vec![
         TitleReceipt {
             request_id: "title-request".into(),
@@ -871,7 +883,7 @@ async fn proven_not_sent_can_retry_same_identity_once_written() {
 
 #[tokio::test]
 async fn changed_prompt_under_a_retry_identity_conflicts_without_resending() {
-    let (_root, store) = fixture();
+    let (_root, store) = fixture().await;
     let port = FixedPort::new(vec![TitleReceipt {
         request_id: "same-id".into(),
         agent_id: "title-agent".into(),
@@ -896,7 +908,7 @@ async fn changed_prompt_under_a_retry_identity_conflicts_without_resending() {
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','changed prompt') WHERE id='title-item-1'", [])?;
         Ok(())
-    }).expect("Python-written item changes");
+    }).await.expect("Python-written item changes");
     assert!(
         generate(
             &store,
@@ -914,7 +926,7 @@ async fn changed_prompt_under_a_retry_identity_conflicts_without_resending() {
 
 #[tokio::test]
 async fn committed_intent_is_held_after_restart_before_provider_call() {
-    let (root, store) = fixture();
+    let (root, store) = fixture().await;
     store.set_commit_notifier(|| panic!("crash after durable intent commit"));
     let port = FixedPort::new(Vec::new());
     let interrupted = std::panic::AssertUnwindSafe(generate(
@@ -930,7 +942,9 @@ async fn committed_intent_is_held_after_restart_before_provider_call() {
     assert!(interrupted.is_err());
     assert_eq!(port.calls.load(Ordering::SeqCst), 0);
     drop(store);
-    let reopened = RuntimeStore::open(Some(root.path())).expect("restart after intent");
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart after intent");
     let replay_port = FixedPort::new(Vec::new());
     assert_eq!(
         generate(
@@ -951,11 +965,11 @@ async fn committed_intent_is_held_after_restart_before_provider_call() {
 #[tokio::test]
 async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_back() {
     for timing in ["BEFORE", "AFTER"] {
-        let (_root, store) = fixture();
-        store.transaction(|tx| {
+        let (_root, store) = fixture().await;
+        store.transaction(move |tx| {
             tx.execute_batch(&format!("CREATE TRIGGER title_intent_fail {timing} INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'title intent failpoint'); END"))?;
             Ok(())
-        }).expect("intent failpoint");
+        }).await.expect("intent failpoint");
         let port = FixedPort::new(Vec::new());
         assert!(
             generate(
@@ -986,11 +1000,11 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
         ("runtime_operation_receipts", "UPDATE"),
     ] {
         for timing in ["BEFORE", "AFTER"] {
-            let (_root, store) = fixture();
-            store.transaction(|tx| {
+            let (_root, store) = fixture().await;
+            store.transaction(move |tx| {
                 tx.execute_batch(&format!("CREATE TRIGGER title_write_fail {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'title write failpoint'); END"))?;
                 Ok(())
-            }).expect("title write failpoint");
+            }).await.expect("title write failpoint");
             let port = FixedPort::new(vec![TitleReceipt {
                 request_id: "title-write-fail".into(),
                 agent_id: "title-agent".into(),
@@ -1040,13 +1054,13 @@ async fn durable_written_title_replays_after_failed_final_commit_without_provide
         ),
     ] {
         for timing in ["BEFORE", "AFTER"] {
-            let (root, store) = fixture();
+            let (root, store) = fixture().await;
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute_batch(&format!("CREATE TRIGGER title_final_fail {timing} {operation} ON {table}{condition} BEGIN SELECT RAISE(ABORT,'title final failpoint'); END"))?;
                     Ok(())
                 })
-                .expect("final-write failpoint");
+                .await.expect("final-write failpoint");
             let port = FixedPort::new(vec![TitleReceipt {
                 request_id: "title-replay".into(),
                 agent_id: "title-agent".into(),
@@ -1080,10 +1094,12 @@ async fn durable_written_title_replays_after_failed_final_commit_without_provide
                     tx.execute_batch("DROP TRIGGER title_final_fail")?;
                     Ok(())
                 })
+                .await
                 .expect("remove failure trigger");
             drop(store);
-            let reopened =
-                RuntimeStore::open(Some(root.path())).expect("restart with written title");
+            let reopened = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart with written title");
             let no_provider = FixedPort::new(Vec::new());
             assert_eq!(
                 generate(
@@ -1112,9 +1128,9 @@ async fn durable_written_title_replays_after_failed_final_commit_without_provide
     }
 }
 
-#[test]
-fn python_writer_can_open_new_title_state_before_rust_service() {
-    let (_root, store) = fixture();
+#[tokio::test]
+async fn python_writer_can_open_new_title_state_before_rust_service() {
+    let (_root, store) = fixture().await;
     let (record, projection) = agent_and_projection(&store);
     assert_eq!(
         serde_json::from_str::<Value>(&record).expect("record")["name"],

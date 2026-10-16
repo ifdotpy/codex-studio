@@ -350,6 +350,7 @@ async fn manage(
                 .await
                 .map_err(map_credential_error)?;
             if local_target {
+                let notification_sink = Arc::clone(&notifications);
                 credentials
                     .rename_with_notification(
                         Arc::clone(&store),
@@ -357,7 +358,7 @@ async fn manage(
                         body["label"].as_str().unwrap_or_default(),
                         body["requestId"].as_str().unwrap_or_default(),
                         "local",
-                        |request_id| publish_resource_change(&notifications, request_id),
+                        move |request_id| publish_resource_change(&notification_sink, request_id),
                     )
                     .await
                     .map_err(map_credential_error)?;
@@ -1048,7 +1049,7 @@ mod tests {
     impl studio_runtime_services::multi_server_discovery::ServerDiscoveryPort for FakeDiscovery {
         fn discover<'a>(
             &'a self,
-            _store: &'a studio_runtime_store::RuntimeStore,
+            _store: Arc<studio_runtime_store::RuntimeStore>,
             identity: &'a Value,
             public_origin: &'a str,
         ) -> futures_util::future::BoxFuture<

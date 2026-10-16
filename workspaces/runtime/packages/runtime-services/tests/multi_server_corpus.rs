@@ -6,6 +6,7 @@ mod common;
 pub(crate) mod prepared_python_support;
 use common::*;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
@@ -53,8 +54,12 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
         fn supports(&self, _: &str) -> bool {
             false
         }
-        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
-            Ok(ExchangeOutcome::Unknown)
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async { Ok(ExchangeOutcome::Unknown) })
         }
     }
     #[derive(Default)]
@@ -68,7 +73,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
             &'a self,
             server: &'a str,
             envelope: &'a Value,
-            timeout: Duration,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
@@ -173,9 +178,9 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
@@ -267,9 +272,9 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "peer transport not expected")) })
         }
@@ -280,7 +285,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             &'a self,
             server: &'a str,
             envelope: &'a Value,
-            timeout: Duration,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
@@ -389,9 +394,9 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
@@ -567,8 +572,10 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
         fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
             Ok(())
         }
-        fn committed(&self) -> Result<(), ManagementError> {
-            Ok(())
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -700,7 +707,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
             &'a self,
             server: &'a str,
             envelope: &'a Value,
-            timeout: Duration,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
@@ -739,7 +746,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         json!({"server":"peer-server","link":"remote-stop-link"}),
     );
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             AgentRepository::put(tx, &proxy)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -750,14 +757,16 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         calls: Mutex::new(Vec::new()),
         attempts: AtomicUsize::new(0),
     });
-    let ports = ProductionLifecyclePorts::new(
-        Arc::clone(&store),
-        Arc::new(Notify::new()),
-        Arc::new(Notify::new()),
-        Arc::new(NoBroker),
-        None,
-    )
-    .with_remote_transport(Arc::clone(&peer) as _);
+    let ports = Arc::new(
+        ProductionLifecyclePorts::new(
+            Arc::clone(&store),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            Arc::new(NoBroker),
+            None,
+        )
+        .with_remote_transport(Arc::clone(&peer) as _),
+    );
     assert_eq!(
         ports
             .execute(
@@ -891,9 +900,9 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
@@ -933,11 +942,12 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         .collect::<String>();
     record["params"]["forward"]["tokenHash"] = json!(digest);
     let record_for_store = record.clone();
+    let request_id_for_store = request_id.clone();
     store
         .transaction(move |tx| {
         tx.execute(
             "INSERT INTO runtime_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-                rusqlite::params![request_id, record_for_store.to_string()],
+                rusqlite::params![request_id_for_store, record_for_store.to_string()],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -1449,18 +1459,24 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
         fn supports(&self, action: &str) -> bool {
             action == "input"
         }
-        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(ExchangeOutcome::Unknown)
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ExchangeOutcome::Unknown)
+            })
         }
     }
     struct NoTransport;
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
@@ -1538,21 +1554,27 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
         fn supports(&self, action: &str) -> bool {
             action == "input"
         }
-        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
-            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                Ok(ExchangeOutcome::PreEffectWaiting)
-            } else {
-                Ok(ExchangeOutcome::Applied(json!({"applied":true})))
-            }
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async move {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(ExchangeOutcome::PreEffectWaiting)
+                } else {
+                    Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+                }
+            })
         }
     }
     struct NoTransport;
     impl PairedTransport for NoTransport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
-            envelope: &'a Value,
-            timeout: Duration,
+            _server: &'a str,
+            _envelope: &'a Value,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
@@ -1649,18 +1671,24 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         fn supports(&self, action: &str) -> bool {
             action == "fixture" || action == "input"
         }
-        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+        fn execute<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Value,
+        ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+            })
         }
     }
     struct Transport(Arc<AtomicUsize>, bool);
     impl PairedTransport for Transport {
         fn exchange<'a>(
             &'a self,
-            server: &'a str,
+            _server: &'a str,
             envelope: &'a Value,
-            timeout: Duration,
+            _timeout: Duration,
         ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
@@ -1925,7 +1953,7 @@ async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
         let (_root, store) = store().await;
         let result = boundary()
             .handle(
-                Arc::clone(&store),
+                &store,
                 &request(case).expect("request"),
                 &owner(),
                 None,
@@ -1998,7 +2026,7 @@ async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
             .expect("case");
         let error = boundary()
             .handle(
-                Arc::clone(&store),
+                &store,
                 &request(case).expect("request"),
                 &owner(),
                 None,

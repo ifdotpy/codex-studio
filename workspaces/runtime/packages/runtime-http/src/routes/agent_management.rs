@@ -951,8 +951,9 @@ mod native_review_preflight_tests {
             "startAttempt":{"submitted":true}
         }))
         .expect("valid agent record");
+        let original_for_write = original.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &original))
+            .transaction(move |tx| AgentRepository::put(tx, &original_for_write))
             .await
             .expect("save agent");
         let before_agent = {
@@ -1024,8 +1025,9 @@ mod native_review_preflight_tests {
         vm_value["executionMode"] = json!("vm");
         vm_value["layrHome"] = json!("/guest/provider-home");
         let vm_agent = AgentRecord::from_value(vm_value).expect("valid VM agent record");
+        let vm_agent_for_write = vm_agent.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &vm_agent))
+            .transaction(move |tx| AgentRepository::put(tx, &vm_agent_for_write))
             .await
             .expect("save VM agent");
         let vm_result = native_actions::Preparation::before_reserve(
@@ -1221,6 +1223,7 @@ mod native_review_preflight_tests {
                 params: json!({"threadId":"guest-thread"}),
                 deadline: Instant::now() + Duration::from_secs(3),
             })
+            .await
             .expect("guest request receipt");
         assert!(selected_guest.is_some());
         assert_eq!(receipt.scope, scope);
@@ -1306,13 +1309,13 @@ mod native_review_preflight_tests {
             .transaction_with(move |tx| AgentRepository::put(tx, &record))
             .await
             .expect("save VM agent");
-        let guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
-            Arc::new(GuestSpy::new(Value::Null));
+        let guest = Arc::new(GuestSpy::new(Value::Null));
+        let guest_port: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> = guest.clone();
 
         assert!(matches!(
             vm_preparation::prepare_lead(
                 &store,
-                guest,
+                guest_port,
                 "vm-local-archive-failure",
                 "attempt-local-archive-failure",
                 "vm-turn-preparation:attempt-local-archive-failure",
@@ -1365,8 +1368,9 @@ mod native_review_preflight_tests {
             "cwd":source, "hostProjectPath":source, "projectId":"logical-project-id", "threadId":"thread-vm",
             "accountKey":"default", "startAttempt":{"id":"native-attempt","actionRequestId":"vm-review"}
         })).expect("valid VM agent");
+        let record_for_write = record.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &record))
+            .transaction(move |tx| AgentRepository::put(tx, &record_for_write))
             .await
             .expect("save VM agent");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1496,7 +1500,7 @@ mod native_review_preflight_tests {
         }))
         .expect("valid reviewer");
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 AgentRepository::put(tx, &parent)?;
                 AgentRepository::put(tx, &reviewer)
             })
@@ -1590,8 +1594,9 @@ mod native_review_preflight_tests {
             "startAttempt":{"id":"attempt-unknown"}
         }))
         .expect("valid VM agent");
+        let record_for_write = record.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &record))
+            .transaction(move |tx| AgentRepository::put(tx, &record_for_write))
             .await
             .expect("save VM agent");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

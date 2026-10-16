@@ -4,6 +4,8 @@ use crate::continuation::{
 };
 use serde_json::{Value, json};
 pub const AUTH_TIMEOUT_ERROR: &str = "Cannot read Claude Code sign-in status";
+/// Stable receipt ID prefix used to bind auth waits to the current start attempt.
+pub(crate) const PROBE_RECEIPT_ID_PREFIX: &str = "claude-auth-probe:";
 const SOURCE_FIELDS: [&str; 17] = [
     "id",
     "epoch",
@@ -200,7 +202,7 @@ pub fn record_timeout(
     if s.agent.get("startAttempt") != Some(&expected) || account_pin(current_pin) != capture.pin {
         return Ok(Decision::default());
     }
-    let receipt = json!({"source":capture.source,"attempt":expected,"inputs":capture.inputs,"taskClaims":capture.claims,"accountPin":capture.pin,"id":format!("claude-auth-probe:{}",text(&capture.attempt,"id")),"agent":s.agent_id(),"error":AUTH_TIMEOUT_ERROR,"accountKey":account(&s.agent),"status":"auth_probe_wait","cause":"claude_auth_probe","createdAt":now,"dueAt":now+POLL_SECONDS});
+    let receipt = json!({"source":capture.source,"attempt":expected,"inputs":capture.inputs,"taskClaims":capture.claims,"accountPin":capture.pin,"id":format!("{PROBE_RECEIPT_ID_PREFIX}{}",text(&capture.attempt,"id")),"agent":s.agent_id(),"error":AUTH_TIMEOUT_ERROR,"accountKey":account(&s.agent),"status":"auth_probe_wait","cause":"claude_auth_probe","createdAt":now,"dueAt":now+POLL_SECONDS});
     if !eligible(s, &receipt, settings, false) {
         return Ok(Decision::default());
     }
@@ -224,7 +226,11 @@ pub fn retained(s: &Snapshot, settings: &Value, pin: &Value) -> bool {
         && r["createdAt"].as_f64().is_some_and(|created| {
             created > 0.0 && r["dueAt"].as_f64().is_some_and(|due| due >= created)
         })
-        && text(r, "id") == format!("claude-auth-probe:{}", text(&s.agent["startAttempt"], "id"))
+        && text(r, "id")
+            == format!(
+                "{PROBE_RECEIPT_ID_PREFIX}{}",
+                text(&s.agent["startAttempt"], "id")
+            )
         && eligible(s, r, settings, false)
         && account_pin(pin) == r["accountPin"]
 }

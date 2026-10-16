@@ -427,7 +427,7 @@ mod tests {
     use super::{BrowserAnswerContext, answer};
     use crate::linux_vm_guest::{GuestError, GuestRpc};
     use serde_json::{Value, json};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     struct FakeGuest {
@@ -470,6 +470,7 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().expect("temporary runtime state");
         let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
+            .await
             .expect("runtime store opens");
         let id = "browser-answer-test".to_owned();
         let request_id = id.clone();
@@ -486,7 +487,8 @@ mod tests {
                         "params":{"bridgeId":"0123456789abcdef0123456789abcdef","url":"https://login.example.test/"}
                     })),
                 )
-            }).await
+            })
+            .await
             .expect("browser request is seeded");
         (dir, store, id)
     }
@@ -505,7 +507,7 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: Arc::clone(&guest),
+                guest: guest.clone(),
                 local_forwarder: None,
                 now: 10.0,
                 validate: |_: &serde_json::Value| true,
@@ -522,7 +524,7 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: Arc::clone(&guest),
+                guest: guest.clone(),
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,
@@ -550,7 +552,7 @@ mod tests {
                 &answer_data,
                 BrowserAnswerContext {
                     local_window: true,
-                    guest: Arc::clone(&guest),
+                    guest: guest.clone(),
                     local_forwarder: None,
                     now: 10.0,
                     validate: |_: &serde_json::Value| true,
@@ -578,7 +580,7 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: Arc::clone(&guest),
+                guest: guest.clone(),
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,

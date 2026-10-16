@@ -25,13 +25,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use process_wrap::std::CommandWrap;
 use regex::Regex;
 use rusqlite::OptionalExtension;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use studio_runtime_process::child_priority::ChildPriority;
 use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository};
 use thiserror::Error;
 
-const CHECK_INTERVAL_SECONDS: u64 = 300;
+const FAILURE_RETRY_SECONDS: u64 = 300;
 const UPSTREAM_TTL_SECONDS: f64 = 24.0 * 60.0 * 60.0;
+pub const PROVIDER_UPDATE_PREFERENCE_KEY: &str =
+    r#"["codex-studio-preferences-v1","checkProviderUpdates"]"#;
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_RELEASE_BYTES: usize = 1024 * 1024;
 const REGISTRY_ACCEPT: &str = "application/vnd.npm.install-v1+json";
@@ -51,6 +53,15 @@ const BASELINES: [(&str, &str, &str); 2] = [
     ("codex", "0.153.4", "Codex CLI"),
     ("claude", "2.1.278", "Claude Code"),
 ];
+
+/// Reads the named preference from merged sync fields; missing values default to enabled.
+pub fn provider_updates_enabled_from_fields(fields: &Map<String, Value>) -> bool {
+    fields
+        .get(PROVIDER_UPDATE_PREFERENCE_KEY)
+        .and_then(|field| field.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct VersionKey {
@@ -157,6 +168,8 @@ pub struct ProviderProfile {
 /// Snapshot of live, non-offline sessions only. Implementations must omit registry-only accounts.
 pub trait ActiveProviderConnections: Send + Sync + 'static {
     fn snapshot(&self) -> Vec<ProviderProfile>;
+    /// Returns a receiver that changes only when the live provider profile set changes.
+    fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,7 +217,7 @@ pub trait Clock: Send + Sync + 'static {
 
 /// Durable preferences and native-notice writes used by the monitor.
 pub trait ProviderVersionStore: Send + Sync + 'static {
-    fn upstream_enabled(&self) -> bool;
+    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError>;
     fn persist_warnings<'a>(
         &'a self,
         observed_accounts: &'a [String],
@@ -220,26 +233,25 @@ pub fn runtime_provider_version_store(store: Arc<RuntimeStore>) -> Arc<dyn Provi
 }
 
 impl ProviderVersionStore for SyncProviderVersionStore {
-    fn upstream_enabled(&self) -> bool {
-        let Ok(connection) = self.0.read() else {
-            return false;
-        };
-        let payload = match SyncDocumentsRepository::preference_payload(&connection, "user") {
-            Ok(payload) => payload,
-            Err(_) => return false,
-        };
+    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
+        let connection = self.0.read()?;
+        let payload = SyncDocumentsRepository::preference_payload(&connection, "user")?;
         let Some(payload) = payload else {
-            return true;
+            return Ok(true);
         };
-        let Ok(value) = serde_json::from_str::<Value>(&payload) else {
-            return false;
-        };
-        value
-            .pointer(
-                "/value/fields/[\"codex-studio-preferences-v1\",\"checkProviderUpdates\"]/value",
-            )
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
+        let value = serde_json::from_str::<Value>(&payload)
+            .map_err(|_| ProviderVersionsError::PreferenceRead)?;
+        let fields = value
+            .pointer("/value/fields")
+            .and_then(Value::as_object)
+            .ok_or(ProviderVersionsError::PreferenceRead)?;
+        if fields
+            .get(PROVIDER_UPDATE_PREFERENCE_KEY)
+            .is_some_and(|field| field.get("value").and_then(Value::as_bool).is_none())
+        {
+            return Err(ProviderVersionsError::PreferenceRead);
+        }
+        Ok(provider_updates_enabled_from_fields(fields))
     }
 
     fn persist_warnings<'a>(
@@ -511,6 +523,8 @@ pub enum ProviderVersionsError {
     CacheRead,
     #[error("provider version notice storage failed")]
     Store(#[from] StoreError),
+    #[error("provider update preference could not be read")]
+    PreferenceRead,
     #[error("provider version notice projection is malformed")]
     InvalidProjection,
 }
@@ -535,7 +549,22 @@ impl Default for CacheEntry {
 }
 
 fn attempt_due(entry: &CacheEntry, now: f64) -> bool {
-    now - entry.last_attempt_at >= UPSTREAM_TTL_SECONDS
+    now >= next_attempt_at(entry)
+}
+
+fn next_attempt_at(entry: &CacheEntry) -> f64 {
+    let fetched_at = entry.fetched_at;
+    let has_cached_version = entry
+        .version
+        .as_deref()
+        .is_some_and(|version| parse_key(version).is_some());
+    if has_cached_version
+        && fetched_at.is_some_and(|fetched_at| fetched_at >= entry.last_attempt_at)
+    {
+        fetched_at.unwrap_or_default() + UPSTREAM_TTL_SECONDS
+    } else {
+        entry.last_attempt_at + FAILURE_RETRY_SECONDS as f64
+    }
 }
 
 fn cached_version(entry: &CacheEntry, now: f64) -> Option<&str> {
@@ -549,10 +578,8 @@ fn check_upstream(
     cache_path: &Path,
     mut cache: std::collections::BTreeMap<String, CacheEntry>,
     now: f64,
-) -> (
-    std::collections::BTreeMap<String, String>,
-    std::collections::BTreeMap<String, CacheEntry>,
-) {
+) -> UpstreamCheck {
+    let mut failed = false;
     for (_, package, url) in RELEASES {
         let entry = cache.entry(package.into()).or_default();
         if !attempt_due(entry, now) {
@@ -560,8 +587,9 @@ fn check_upstream(
         }
         entry.last_attempt_at = now;
         let deadline = Instant::now() + PROBE_DEADLINE;
-        if let Ok(reply) = upstream_fetch.fetch(url, entry.etag.as_deref(), deadline) {
-            match reply.status {
+        let fetched = upstream_fetch.fetch(url, entry.etag.as_deref(), deadline);
+        let valid_reply = match fetched {
+            Ok(reply) => match reply.status {
                 304 if entry
                     .version
                     .as_deref()
@@ -571,6 +599,7 @@ fn check_upstream(
                     if reply.etag.is_some() {
                         entry.etag = reply.etag;
                     }
+                    true
                 }
                 200 if reply
                     .latest
@@ -582,13 +611,33 @@ fn check_upstream(
                     if reply.etag.is_some() {
                         entry.etag = reply.etag;
                     }
+                    true
                 }
-                _ => {}
+                _ => false,
+            },
+            Err(_) => false,
+        };
+        failed |= !valid_reply;
+        if save_cache(cache_path, &cache).is_err() {
+            if let Some(entry) = cache.get_mut(package) {
+                entry.last_attempt_at = now + 1.0;
             }
+            failed = true;
         }
-        let _ignored = save_cache(cache_path, &cache);
     }
-    let versions = cache
+    let versions = cached_versions(&cache, now);
+    UpstreamCheck {
+        versions,
+        cache,
+        failed,
+    }
+}
+
+fn cached_versions(
+    cache: &std::collections::BTreeMap<String, CacheEntry>,
+    now: f64,
+) -> std::collections::BTreeMap<String, String> {
+    cache
         .iter()
         .filter_map(|(package, entry)| {
             let provider = RELEASES
@@ -597,14 +646,24 @@ fn check_upstream(
                 .0;
             cached_version(entry, now).map(|version| (provider.to_owned(), version.to_owned()))
         })
-        .collect();
-    (versions, cache)
+        .collect()
+}
+
+struct UpstreamCheck {
+    versions: std::collections::BTreeMap<String, String>,
+    cache: std::collections::BTreeMap<String, CacheEntry>,
+    failed: bool,
+}
+
+#[derive(Default)]
+struct CheckOutcome {
+    retry: bool,
 }
 
 #[derive(Default)]
 struct MonitorState {
     providers: Vec<Value>,
-    profile_identity: Vec<(String, String, Option<String>)>,
+    profile_snapshot: Vec<ProviderProfile>,
     checked_at: Option<f64>,
     upstream: std::collections::BTreeMap<String, CacheEntry>,
     upstream_enabled: bool,
@@ -621,7 +680,7 @@ pub struct ProviderVersionMonitor {
     clock: Arc<dyn Clock>,
     cache_path: PathBuf,
     state: Mutex<MonitorState>,
-    wake: tokio::sync::Notify,
+    wake: Arc<tokio::sync::Notify>,
     checked: tokio::sync::Notify,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -660,14 +719,14 @@ impl ProviderVersionMonitor {
             cache_path,
             state: Mutex::new(MonitorState {
                 providers: initial,
-                profile_identity: profiles.iter().map(owned_connection_identity).collect(),
+                profile_snapshot: profiles.clone(),
                 checked_at: None,
                 upstream: cache,
-                upstream_enabled: true,
+                upstream_enabled: false,
                 check_requested: false,
                 stop: false,
             }),
-            wake: tokio::sync::Notify::new(),
+            wake: Arc::new(tokio::sync::Notify::new()),
             checked: tokio::sync::Notify::new(),
             worker: Mutex::new(None),
         });
@@ -691,11 +750,7 @@ impl ProviderVersionMonitor {
         let Ok(mut state) = self.state.lock() else {
             return json!({"checkedAt":null,"providers":[],"warnings":[]});
         };
-        let active_identity = active
-            .iter()
-            .map(owned_connection_identity)
-            .collect::<Vec<_>>();
-        let current = active_identity == state.profile_identity;
+        let current = active == state.profile_snapshot;
         let providers = if current {
             state.providers.clone()
         } else {
@@ -751,20 +806,32 @@ impl ProviderVersionMonitor {
         }
     }
 
-    async fn check_once(&self) {
+    async fn check_once(&self) -> CheckOutcome {
+        let mut outcome = CheckOutcome::default();
         let profiles = self
             .connections
             .as_ref()
             .map_or_else(Vec::new, |port| port.snapshot());
         let now = self.clock.now();
+        let prior_upstream_enabled = self
+            .state
+            .lock()
+            .map(|state| state.upstream_enabled)
+            .unwrap_or(false);
         let store = Arc::clone(&self.store);
-        let upstream_enabled = studio_runtime_process::blocking_pool::spawn_blocking(
+        let preference_result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/provider_versions/preference-read",
             move || store.upstream_enabled(),
         )
-        .await
-        .unwrap_or(false);
-        let upstream_versions = if upstream_enabled {
+        .await;
+        let (upstream_enabled, preference_known) = match preference_result {
+            Ok(Ok(enabled)) => (enabled, true),
+            Ok(Err(_)) | Err(_) => {
+                outcome.retry = true;
+                (prior_upstream_enabled, false)
+            }
+        };
+        let upstream_versions = if preference_known && upstream_enabled {
             let upstream_fetch = Arc::clone(&self.upstream_fetch);
             let cache_path = self.cache_path.clone();
             let cache = self
@@ -778,21 +845,30 @@ impl ProviderVersionMonitor {
             )
             .await
             {
-                Ok((versions, cache)) => {
+                Ok(check) => {
+                    outcome.retry |= check.failed;
                     if let Ok(mut state) = self.state.lock() {
-                        state.upstream = cache;
+                        state.upstream = check.cache;
                     }
-                    versions
+                    check.versions
                 }
-                Err(_) => Default::default(),
+                Err(_) => {
+                    outcome.retry = true;
+                    Default::default()
+                }
             }
+        } else if !preference_known && prior_upstream_enabled {
+            self.state
+                .lock()
+                .map(|state| cached_versions(&state.upstream, now))
+                .unwrap_or_default()
         } else {
             Default::default()
         };
         let mut providers = Vec::with_capacity(profiles.len());
         for profile in &profiles {
             if !self.connection_is_current(&profiles) {
-                return;
+                return CheckOutcome { retry: false };
             }
             if !matches!(profile.provider.as_str(), "codex" | "claude") {
                 providers.push(unknown_row(profile, now));
@@ -800,16 +876,19 @@ impl ProviderVersionMonitor {
             }
             let probe = Arc::clone(&self.probe);
             let profile_for_probe = profile.clone();
-            let facts = studio_runtime_process::blocking_pool::spawn_blocking(
+            let result = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/provider_versions/version-probe",
                 move || probe.probe(&profile_for_probe, Instant::now() + PROBE_DEADLINE),
             )
             .await
             .ok()
-            .and_then(Result::ok)
-            .unwrap_or_else(|| VersionFacts {
-                error: Some("Could not check the provider CLI version.".into()),
-                ..VersionFacts::default()
+            .and_then(Result::ok);
+            let facts = result.unwrap_or_else(|| {
+                outcome.retry = true;
+                VersionFacts {
+                    error: Some("Could not check the provider CLI version.".into()),
+                    ..VersionFacts::default()
+                }
             });
             providers.push(diagnostic(
                 profile,
@@ -819,18 +898,20 @@ impl ProviderVersionMonitor {
             ));
         }
         if !self.connection_is_current(&profiles) {
-            return;
+            return CheckOutcome { retry: false };
         }
         let warnings = warnings_projection(&providers, upstream_enabled);
         if profiles.is_empty() && warnings.is_empty() {
             if let Ok(mut state) = self.state.lock() {
                 state.providers.clear();
-                state.profile_identity.clear();
+                state.profile_snapshot.clear();
                 state.checked_at = Some(now);
-                state.upstream_enabled = upstream_enabled;
+                if preference_known {
+                    state.upstream_enabled = upstream_enabled;
+                }
                 self.checked.notify_waiters();
             }
-            return;
+            return outcome;
         }
         let observed_accounts = profiles
             .iter()
@@ -843,21 +924,22 @@ impl ProviderVersionMonitor {
             && let Ok(mut state) = self.state.lock()
         {
             state.providers = providers;
-            state.profile_identity = profiles.iter().map(owned_connection_identity).collect();
+            state.profile_snapshot = profiles.clone();
             state.checked_at = Some(now);
-            state.upstream_enabled = upstream_enabled;
+            if preference_known {
+                state.upstream_enabled = upstream_enabled;
+            }
             self.checked.notify_waiters();
+        } else {
+            outcome.retry = true;
         }
+        outcome
     }
 
     fn connection_is_current(&self, expected: &[ProviderProfile]) -> bool {
         self.connections
             .as_ref()
-            .map_or(expected.is_empty(), |port| {
-                let current = port.snapshot();
-                current.iter().map(connection_identity).collect::<Vec<_>>()
-                    == expected.iter().map(connection_identity).collect::<Vec<_>>()
-            })
+            .map_or(expected.is_empty(), |port| port.snapshot() == expected)
     }
 
     async fn persist_warnings(
@@ -871,24 +953,8 @@ impl ProviderVersionMonitor {
     }
 }
 
-fn connection_identity(profile: &ProviderProfile) -> (&str, &str, Option<&str>) {
-    (
-        &profile.account_key,
-        &profile.server_identity,
-        profile.connection_id.as_deref(),
-    )
-}
-
 fn is_provider_warning_id(id: &str) -> bool {
     id.starts_with("provider-version:") || id.starts_with("provider-update:")
-}
-
-fn owned_connection_identity(profile: &ProviderProfile) -> (String, String, Option<String>) {
-    (
-        profile.account_key.clone(),
-        profile.server_identity.clone(),
-        profile.connection_id.clone(),
-    )
 }
 
 impl Drop for ProviderVersionMonitor {
@@ -906,29 +972,108 @@ impl Drop for ProviderVersionMonitor {
 }
 
 async fn monitor_loop(monitor: Weak<ProviderVersionMonitor>) {
+    let mut profile_changes = monitor.upgrade().and_then(|service| {
+        service
+            .connections
+            .as_ref()
+            .map(|port| port.subscribe_changes())
+    });
     loop {
         let Some(service) = monitor.upgrade() else {
             return;
         };
-        service.check_once().await;
-        let changed = service.wake.notified();
-        tokio::pin!(changed);
-        changed.as_mut().enable();
-        let requested = {
+        if service.state.lock().is_ok_and(|state| state.stop) {
+            return;
+        }
+        let outcome = service.check_once().await;
+        let (stop, requested) = {
             let Ok(mut state) = service.state.lock() else {
                 return;
             };
-            if state.stop {
-                return;
-            }
-            std::mem::take(&mut state.check_requested)
+            (state.stop, std::mem::take(&mut state.check_requested))
         };
-        if !requested {
-            tokio::select! {
-                () = changed => {},
-                () = tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECONDS)) => {},
-            }
+        if stop {
+            return;
         }
+        if requested {
+            drop(service);
+            continue;
+        }
+        let deadline = service.next_deadline(outcome.retry);
+        let wake = Arc::clone(&service.wake);
+        // Keep only the notifier, profile receiver, and computed deadline across idle wait.
+        // The worker owns a Weak monitor reference so the service can be dropped while idle.
+        drop(service);
+        let changed = wake.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        tokio::select! {
+            () = changed => {},
+            changed = wait_for_profile_change(&mut profile_changes) => {
+                if !changed {
+                    profile_changes = None;
+                }
+            },
+            () = wait_until(deadline) => {},
+        }
+    }
+}
+
+impl ProviderVersionMonitor {
+    fn next_deadline(&self, retry: bool) -> Option<tokio::time::Instant> {
+        let state = self.state.lock().ok()?;
+        next_check_deadline(
+            retry,
+            state.upstream_enabled,
+            &state.upstream,
+            self.clock.now(),
+            tokio::time::Instant::now(),
+        )
+    }
+}
+
+fn next_check_deadline(
+    retry: bool,
+    upstream_enabled: bool,
+    cache: &std::collections::BTreeMap<String, CacheEntry>,
+    now: f64,
+    monotonic_now: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    let delay = if retry {
+        Some(Duration::from_secs(FAILURE_RETRY_SECONDS))
+    } else if upstream_enabled {
+        next_upstream_attempt_at(cache)
+            .map(|deadline| Duration::from_secs_f64((deadline - now).max(0.0)))
+    } else {
+        None
+    }?;
+    Some(monotonic_now + delay)
+}
+
+fn next_upstream_attempt_at(cache: &std::collections::BTreeMap<String, CacheEntry>) -> Option<f64> {
+    RELEASES
+        .iter()
+        .map(|(_, package, _)| cache.get(*package).cloned().unwrap_or_default())
+        .map(|entry| next_attempt_at(&entry))
+        .min_by(f64::total_cmp)
+}
+
+async fn wait_for_profile_change(receiver: &mut Option<tokio::sync::watch::Receiver<u64>>) -> bool {
+    let Some(receiver) = receiver.as_mut() else {
+        return std::future::pending().await;
+    };
+    if receiver.changed().await.is_ok() {
+        receiver.borrow_and_update();
+        true
+    } else {
+        false
+    }
+}
+
+async fn wait_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 

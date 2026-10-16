@@ -698,13 +698,17 @@ mod diagnostics_http_tests {
     struct ProviderDouble(AtomicUsize);
 
     impl ProviderDiagnosticsPort for ProviderDouble {
-        fn snapshot(&self) -> ProviderDiagnosticsSnapshot {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            ProviderDiagnosticsSnapshot {
-                native_accounts: json!({}),
-                studio_loaded_threads: 0,
-                queues: serde_json::Map::new(),
-            }
+        fn snapshot<'a>(
+            &'a self,
+        ) -> futures_util::future::BoxFuture<'a, ProviderDiagnosticsSnapshot> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                ProviderDiagnosticsSnapshot {
+                    native_accounts: json!({}),
+                    studio_loaded_threads: 0,
+                    queues: serde_json::Map::new(),
+                }
+            })
         }
     }
 
@@ -747,7 +751,9 @@ mod diagnostics_http_tests {
         let directory = tempfile::tempdir().expect("tmpfs test state");
         create_python_schema_fixture(directory.path());
         let store = Arc::new(
-            RuntimeStore::open(Some(directory.path())).expect("open isolated runtime store"),
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open isolated runtime store"),
         );
         let provider = Arc::new(ProviderDouble::default());
         let supervisor = Arc::new(SupervisorDouble::default());
@@ -826,7 +832,9 @@ mod diagnostics_http_tests {
         let directory = tempfile::tempdir().expect("tmpfs test state");
         create_python_schema_fixture(directory.path());
         let store = Arc::new(
-            RuntimeStore::open(Some(directory.path())).expect("open isolated runtime store"),
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open isolated runtime store"),
         );
         let store_lifetime_guard = Arc::clone(&store);
         let proof_connection = store.read().expect("read-only write proof");

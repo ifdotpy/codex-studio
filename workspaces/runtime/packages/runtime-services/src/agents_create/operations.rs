@@ -3233,7 +3233,9 @@ mod tests {
     #[tokio::test]
     async fn managed_worker_settings_use_ordered_account_selection_and_keep_automatic_unpinned() {
         let root = tempfile::tempdir().expect("isolated settings state");
-        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("state opens");
         let environment = managed_fixture();
         let validate = |_: &str, _: &Value| true;
         let context = worker_defaults_context(
@@ -3317,7 +3319,9 @@ mod tests {
     #[tokio::test]
     async fn lead_worker_and_review_models_validate_on_the_explicit_codex_worker_account() {
         let root = tempfile::tempdir().expect("isolated create state");
-        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("state opens");
         let environment = managed_fixture();
         let validate = |_: &str, _: &Value| true;
         let context = worker_defaults_context(
@@ -3374,7 +3378,9 @@ mod tests {
     #[tokio::test]
     async fn image_provision_failure_persists_a_visible_paused_phase() {
         let root = tempfile::tempdir().expect("temporary state root creates");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("runtime store opens");
         let mut value = build_agent_record(
             "image-worker",
             "Worker",
@@ -3696,7 +3702,9 @@ mod tests {
                 }
             }
         }
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("runtime store");
         let record = json!({
             "id":"conversation",
             "accountKey":"conversation-account",
@@ -3760,7 +3768,9 @@ mod tests {
         let state = tempfile::tempdir().expect("temporary state");
         let project = tempfile::tempdir().expect("existing project directory");
         let project_path = project.path().to_string_lossy().into_owned();
-        let store = RuntimeStore::open(Some(state.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("runtime store");
         let project_path_for_write = project_path.clone();
         store
             .transaction(move |tx| {
@@ -3941,7 +3951,11 @@ mod tests {
                 }
             }
         }
-        let store = std::sync::Arc::new(RuntimeStore::open(Some(&root)).expect("runtime store"));
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(&root))
+                .await
+                .expect("runtime store"),
+        );
         let registry_path = root.join("accounts/registry.json");
         std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
             .expect("create registry directory");
@@ -3957,8 +3971,10 @@ mod tests {
             .to_string(),
         )
         .expect("write fixture account registry");
-        let driver = crate::account_driver::AccountDriver::open(&registry_path)
-            .expect("open fixture account driver");
+        let driver = std::sync::Arc::new(
+            crate::account_driver::AccountDriver::open(&registry_path)
+                .expect("open fixture account driver"),
+        );
         for scenario in ["agent", "lead", "previous"] {
             let intent = if scenario == "agent" {
                 json!({"cwd":root,"name":"Lead","prompt":"Task"})
@@ -4008,7 +4024,7 @@ mod tests {
             let context = Context {
                 store: std::sync::Arc::clone(&store),
                 accounts: None,
-                driver: Some(std::sync::Arc::new(driver)),
+                driver: Some(std::sync::Arc::clone(&driver)),
                 catalog: None,
                 managed_creation_environment: None,
                 validate,

@@ -15,7 +15,7 @@ async fn put_record(store: &RuntimeStore, table: &str, record: &Value) {
         .await
         .unwrap();
 }
-async fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
+fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
     let raw: String = store
         .read()
         .unwrap()
@@ -47,7 +47,7 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
         .iter()
         .enumerate()
     {
-        let (_dir, store, context) = fixture();
+        let (_dir, store, context) = fixture().await;
         put_record(&store, "runtime_work", &case["before"]).await;
         let frame = call(
             &context,
@@ -129,7 +129,7 @@ async fn malformed_work_never_poison_store_writer() {
         ("decisions", json!([5])),
         ("status", Value::Null),
     ] {
-        let (_dir, store, context) = fixture();
+        let (_dir, store, context) = fixture().await;
         let mut work = template().value["baseWork"].clone();
         work[field] = value;
         put_record(&store, "runtime_work", &work).await;
@@ -170,7 +170,7 @@ async fn malformed_work_never_poison_store_writer() {
 }
 
 async fn native_preview_matches_python_admission() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let case = &template().value["preview"];
     let frame = request(
         Method::ItemCommandExecutionRequestApproval,
@@ -192,7 +192,7 @@ async fn native_preview_matches_python_admission() {
 
 async fn resolved_answering_unknown_and_blocked_match_python() {
     for case in template().value["resolved"].as_array().unwrap() {
-        let (_dir, store, context) = fixture();
+        let (_dir, store, context) = fixture().await;
         store
             .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
                 tx.execute("DELETE FROM runtime_requests", [])?;
@@ -223,7 +223,7 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
         );
     }
     for submitted in [false, true] {
-        let (_dir, store, context) = fixture();
+        let (_dir, store, context) = fixture().await;
         let frame = request(
             Method::ItemCommandExecutionRequestApproval,
             RequestId::String("cancel-after-answer".into()),
@@ -278,7 +278,7 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
 }
 
 async fn stale_answer_attempt_cannot_submit_or_settle_replacement() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = request(
         Method::ItemCommandExecutionRequestApproval,
         RequestId::Number(500),
@@ -355,7 +355,7 @@ async fn model_projection_matches_python_and_keeps_full_result() {
             canonical_response(&case["expected"])
         );
     }
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let mut work = template().value["baseWork"].clone();
     work["description"] = json!("x".repeat(32000));
     put_record(&store, "runtime_work", &work).await;
@@ -399,7 +399,7 @@ async fn model_projection_matches_python_and_keeps_full_result() {
 
 async fn archived_private_member_blocks_saved_chat_like_python() {
     for case in template().value["chatVisibility"].as_array().unwrap() {
-        let (_dir, store, context) = fixture();
+        let (_dir, store, context) = fixture().await;
         let mut worker = template().value["agents"][1].clone();
         worker["deletedAt"] = if case["archived"] == true {
             json!(15.0)
@@ -412,7 +412,7 @@ async fn archived_private_member_blocks_saved_chat_like_python() {
             "runtime_rooms",
             &json!({"id":"private-review","kind":"private","members":[context.agent,worker["id"]],"updated":10.0}),
         ).await;
-        store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
+        store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
             tx.execute("INSERT INTO runtime_chat_messages(seq,id,room,sender,text,created,deliveries) VALUES(?2,'review-chat','private-review',?1,'Private text',10.0,'{}')",rusqlite::params![worker["id"].as_str().unwrap(),case["value"]["identity"]["seq"].as_i64().unwrap_or(1)])?; Ok(())
         }).await.unwrap();
         let frame = call(
@@ -439,12 +439,13 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
         "runtime_requests",
         "runtime_agents",
     ] {
-        let (dir, store, context) = fixture();
+        let (dir, store, context) = fixture().await;
         store
             .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
                 tx.execute("DELETE FROM runtime_requests", [])?;
                 Ok(())
             })
+            .await
             .unwrap();
         let frame = request(
             Method::ItemCommandExecutionRequestApproval,
@@ -472,7 +473,7 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
         actor["status"] = json!("approval");
         actor["inFlight"] = json!(true);
         put_record(&store, "runtime_agents", &actor).await;
-        store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
+        store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
             tx.execute_batch(&format!("CREATE TRIGGER resolve_failpoint AFTER UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'resolution failpoint'); END"))?; Ok(())
         }).await.unwrap();
         assert!(
@@ -497,7 +498,7 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
             .await
             .unwrap();
         drop(store);
-        let store = RuntimeStore::open(Some(dir.path())).unwrap();
+        let store = RuntimeStore::open(Some(dir.path())).await.unwrap();
         // A rolled-back retirement leaves the exact durable attempt available.
         delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
             .await

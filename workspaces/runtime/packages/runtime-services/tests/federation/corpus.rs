@@ -196,13 +196,7 @@ async fn federation_corpus() {
                 .expect("prior room state");
         }
         let before = counts(&store);
-        let result = effects::receive(
-            std::sync::Arc::clone(&store),
-            corpus.peer(),
-            &case["envelope"],
-            corpus.now(),
-        )
-        .await;
+        let result = effects::receive(&store, corpus.peer(), &case["envelope"], corpus.now()).await;
         if case["expected"].get("error").is_some() {
             assert!(result.is_err(), "{name} must refuse");
             assert_eq!(counts(&store), before, "{name} refusal writes nothing");
@@ -301,24 +295,14 @@ async fn replay_and_nonce(corpus: &Corpus) {
     let identity = transport::load_federation_identity(&signer).expect("fixture operation");
     let (path, store) = corpus.store("replay", false).await;
     let mut envelope = corpus.data["cases"][0]["envelope"].clone();
-    let first = effects::receive(
-        std::sync::Arc::clone(&store),
-        corpus.peer(),
-        &envelope,
-        corpus.now(),
-    )
-    .await
-    .expect("fixture operation");
+    let first = effects::receive(&store, corpus.peer(), &envelope, corpus.now())
+        .await
+        .expect("fixture operation");
     let before = counts(&store);
     assert!(
-        effects::receive(
-            std::sync::Arc::clone(&store),
-            corpus.peer(),
-            &envelope,
-            corpus.now()
-        )
-        .await
-        .is_err(),
+        effects::receive(&store, corpus.peer(), &envelope, corpus.now())
+            .await
+            .is_err(),
         "same nonce is refused"
     );
     assert_eq!(before, counts(&store));
@@ -330,14 +314,9 @@ async fn replay_and_nonce(corpus: &Corpus) {
     );
     resign(&mut envelope, &identity, "replay-transport-nonce-12345");
     assert_eq!(
-        effects::receive(
-            std::sync::Arc::clone(&store),
-            corpus.peer(),
-            &envelope,
-            corpus.now()
-        )
-        .await
-        .expect("fixture operation"),
+        effects::receive(&store, corpus.peer(), &envelope, corpus.now())
+            .await
+            .expect("fixture operation"),
         first
     );
     assert_eq!(
@@ -349,14 +328,9 @@ async fn replay_and_nonce(corpus: &Corpus) {
     resign(&mut envelope, &identity, "conflict-transport-nonce-12345");
     let before = counts(&store);
     assert!(
-        effects::receive(
-            std::sync::Arc::clone(&store),
-            corpus.peer(),
-            &envelope,
-            corpus.now()
-        )
-        .await
-        .is_err()
+        effects::receive(&store, corpus.peer(), &envelope, corpus.now())
+            .await
+            .is_err()
     );
     assert_eq!(counts(&store), before);
     let pull = effects::pull(
@@ -605,30 +579,33 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
     let raw = transport::canonical_json(&body)
         .expect("canonical pair body")
         .into_bytes();
-    let request = |nonce: &str| {
-        let signature = identity.sign(&transport::federation_signing_bytes(
-            "POST",
-            "/api/federation/v1/pair",
-            corpus.now() as i64,
-            nonce,
-            &raw,
-        ));
-        effects::handle(
-            std::sync::Arc::clone(&receiver),
-            effects::SignedRequest {
-                action: effects::FederationAction::Pair,
-                peer_id,
-                timestamp: corpus.now() as i64,
+    macro_rules! request {
+        ($nonce:expr) => {{
+            let nonce = $nonce;
+            let signature = identity.sign(&transport::federation_signing_bytes(
+                "POST",
+                "/api/federation/v1/pair",
+                corpus.now() as i64,
                 nonce,
-                signature: &signature,
-                raw: &raw,
-            },
-            effects::OriginObservation::observed(Some("peer@example.test".into())),
-            corpus.now(),
-        )
-        .await
-    };
-    let first = request("pair-nonce-initial-12345").expect("pair request");
+                &raw,
+            ));
+            effects::handle(
+                std::sync::Arc::clone(&receiver),
+                effects::SignedRequest {
+                    action: effects::FederationAction::Pair,
+                    peer_id,
+                    timestamp: corpus.now() as i64,
+                    nonce,
+                    signature: &signature,
+                    raw: &raw,
+                },
+                effects::OriginObservation::observed(Some("peer@example.test".into())),
+                corpus.now(),
+            )
+            .await
+        }};
+    }
+    let first = request!("pair-nonce-initial-12345").expect("pair request");
     let local = transport::load_federation_identity(&receiver).expect("local signing identity");
     let receipt = transport::verify_federation_response(
         &serde_json::to_vec(&first).expect("signed response"),
@@ -649,12 +626,12 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
     );
     let consumed_invite = rows(&receiver, "runtime_federation_invites")[0].clone();
     assert_eq!(consumed_invite["usedBy"], peer_id);
-    request("pair-nonce-retry-67890").expect("same invitation and peer are replay safe");
+    request!("pair-nonce-retry-67890").expect("same invitation and peer are replay safe");
     assert_eq!(
         rows(&receiver, "runtime_federation_invites")[0],
         consumed_invite
     );
-    assert!(request("pair-nonce-initial-12345").is_err());
+    assert!(request!("pair-nonce-initial-12345").is_err());
 
     let mut other_body = body.clone();
     let other_peer = "55555555-5555-4555-8555-555555555555";
@@ -822,7 +799,7 @@ async fn malformed_records(corpus: &Corpus) {
         let before = counts(&store);
         assert!(
             effects::receive(
-                std::sync::Arc::clone(&store),
+                &store,
                 corpus.peer(),
                 &corpus.data["cases"][0]["envelope"],
                 corpus.now()
@@ -849,7 +826,7 @@ async fn revoked_and_ordered(corpus: &Corpus) {
     let before = counts(&store);
     assert!(
         effects::receive(
-            std::sync::Arc::clone(&store),
+            &store,
             corpus.peer(),
             &corpus.data["cases"][0]["envelope"],
             corpus.now()
@@ -880,7 +857,7 @@ async fn revoked_and_ordered(corpus: &Corpus) {
         let before = counts(&store);
         assert!(
             effects::receive(
-                std::sync::Arc::clone(&store),
+                &store,
                 corpus.peer(),
                 &corpus.data["cases"][0]["envelope"],
                 corpus.now()
@@ -922,7 +899,7 @@ async fn rollback_matrix(corpus: &Corpus) {
             .await.expect("fixture operation");
             assert!(
                 effects::receive(
-                    std::sync::Arc::clone(&store),
+                    &store,
                     corpus.peer(),
                     &corpus.data["cases"][0]["envelope"],
                     corpus.now()
@@ -951,7 +928,7 @@ async fn rollback_matrix(corpus: &Corpus) {
             );
             assert_eq!(rows(&store, "runtime_federation_rooms"), prior);
             effects::receive(
-                std::sync::Arc::clone(&store),
+                &store,
                 corpus.peer(),
                 &corpus.data["cases"][0]["envelope"],
                 corpus.now(),
@@ -1181,7 +1158,7 @@ async fn lost_push_response(corpus: &Corpus) {
         wire.state.lock().unwrap().deadlines[2],
         "push and pull share one absolute deadline"
     );
-    let mut reverse = PeerTransport {
+    let reverse = PeerTransport {
         receiver: std::sync::Arc::clone(&sender),
         sender: corpus.peer().to_owned(),
         now: wire.now,
@@ -1241,7 +1218,7 @@ async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_rout
     let local = corpus.data["seed"]["local"]["stateId"]
         .as_str()
         .expect("local identity");
-    let mut fake = PeerTransport {
+    let fake = PeerTransport {
         receiver: std::sync::Arc::clone(&receiver),
         sender: local.to_owned(),
         now: corpus.now(),
@@ -1314,7 +1291,7 @@ async fn outbound_rollback(corpus: &Corpus) {
                 .store(&format!("send-fault-{table}-{phase}"), false)
                 .await;
             let prior = rows(&store, "runtime_federation_rooms");
-            store.transaction(|tx| {tx.execute_batch(&format!("CREATE TRIGGER fault {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture crash'); END"))?;Ok(())})
+            store.transaction(move |tx| {tx.execute_batch(&format!("CREATE TRIGGER fault {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture crash'); END"))?;Ok(())})
             .await.expect("sender failpoint");
             assert!(
                 delivery::send_message(
@@ -1426,7 +1403,7 @@ async fn delivery_failures(corpus: &Corpus) {
             .expect("queue");
         }
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut wire = PeerTransport {
+        let wire = PeerTransport {
             receiver: std::sync::Arc::clone(&receiver),
             sender: corpus.data["seed"]["local"]["stateId"]
                 .as_str()
@@ -1471,7 +1448,7 @@ async fn delivery_failures(corpus: &Corpus) {
                 corpus.peer(),
                 corpus.now(),
                 &wire,
-                &cancelled
+                std::sync::Arc::clone(&cancelled)
             )
             .await
             .is_err()
@@ -1501,7 +1478,6 @@ async fn oversized_batches(corpus: &Corpus) {
             .await;
         let raw=json!({"status":"queued","nextAt":0,"created":0,"ack":"pending","padding":"x".repeat(512*1024+1)}).to_string();
         let peer_id = corpus.peer().to_owned();
-        let now = corpus.now();
         store.transaction(move |tx| {
             match table {
                 Table::Outbox => tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES('large',?1,?2)",params![peer_id,raw])?,

@@ -1126,7 +1126,9 @@ mod invalid_record_tests {
     #[tokio::test]
     async fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {
         let root = tempfile::tempdir().expect("temporary runtime");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("runtime store");
         let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
             .expect("analytics database");
         let invalid_key = "bad:default:bad-thread";
@@ -1196,7 +1198,9 @@ mod invalid_record_tests {
     #[tokio::test]
     async fn non_object_history_checkpoints_reset_to_initial_values_without_panicking() {
         let root = tempfile::tempdir().expect("temporary runtime");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("runtime store");
         let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
             .expect("analytics database");
         let agent = json!({"id":"agent","accountKey":"default","threadId":"thread"});

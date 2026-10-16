@@ -2468,10 +2468,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn paired_identity_read_lease_is_released_before_transport() {
+    #[tokio::test]
+    async fn paired_identity_read_lease_is_released_before_transport() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
         let record = serde_json::json!({
             "id": "peer-a",
             "clientId": "client-a",
@@ -2483,13 +2487,14 @@ mod tests {
             "status": "paired"
         });
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_access_clients(id,record) VALUES (?1,?2)",
                     params!["peer-a", record.to_string()],
                 )?;
                 Ok(())
             })
+            .await
             .expect("insert paired peer");
 
         assert_eq!(

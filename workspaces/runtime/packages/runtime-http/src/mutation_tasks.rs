@@ -309,8 +309,7 @@ mod tests {
             .route(
                 "/api/write",
                 any(|| async {
-                    panic!("fixture panic");
-                    "unreachable"
+                    Result::<&str, &str>::Err("fixture panic").expect("fixture panic")
                 }),
             )
             .layer(from_fn_with_state(tasks, own_mutations));

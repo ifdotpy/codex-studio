@@ -1,7 +1,7 @@
 //! Tailscale host adapter for owner-only server discovery.
 use std::{
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -173,12 +173,13 @@ impl ServerDiscoveryPort for TailscaleServerDiscovery {
                         break;
                     };
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    let probe_origin = origin.clone();
                     probes.spawn(async move {
                         let result = studio_runtime_process::blocking_pool::spawn_blocking(
                             "runtime-server/discovery-probe",
                             move || {
                                 TailscaleServerDiscovery::probe(
-                                    &origin,
+                                    &probe_origin,
                                     PROBE_TIMEOUT.min(remaining),
                                 )
                             },
@@ -337,6 +338,7 @@ impl TailscaleServerDiscovery {
             return;
         }
         let label = status["label"].clone();
+        let saved_label = label.clone();
         let peer_public_key = text(peer, "publicKey").to_owned();
         let saved = store
             .transaction_with(move |tx| {
@@ -360,7 +362,7 @@ impl TailscaleServerDiscovery {
                 {
                     return Ok(false);
                 }
-                client["label"] = label.clone();
+                client["label"] = saved_label.clone();
                 tx.execute(
                     "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
                     params![client.to_string(), id],
@@ -458,7 +460,7 @@ async fn save_auto_pair(
         let saved_raw = tx
             .query_row(
                 "SELECT record FROM runtime_access_clients WHERE id=?1",
-                [id],
+                [id.as_str()],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -472,8 +474,8 @@ async fn save_auto_pair(
             })?;
         if let Some(saved) = &saved
             && (text(saved, "status") == "revoked"
-                || text(saved, "publicKey") != text(peer, "publicKey")
-                || text(saved, "origin") != text(peer, "origin"))
+                || text(saved, "publicKey") != text(&peer, "publicKey")
+                || text(saved, "origin") != text(&peer, "origin"))
         {
             return Err(studio_runtime_store::StoreError::SchemaMismatch(
                 "auto-paired server identity changed".into(),

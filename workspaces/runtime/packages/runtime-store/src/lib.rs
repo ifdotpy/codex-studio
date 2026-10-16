@@ -45,10 +45,11 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
@@ -135,6 +136,32 @@ const VERSION_READER_CONNECTION_RESERVATION: usize = 1;
 /// Maximum ordinary checked-out Canvas read connections after the version-reader reservation.
 const READ_CONNECTION_POOL_CAPACITY: usize =
     CANVAS_READER_CONNECTION_CAPACITY - VERSION_READER_CONNECTION_RESERVATION;
+
+/// Canvas tables with process-local observers for committed row changes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ObservedTable {
+    AccessClients,
+    UsageResumes,
+}
+
+impl ObservedTable {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AccessClients => "runtime_access_clients",
+            Self::UsageResumes => "runtime_usage_resumes",
+        }
+    }
+
+    fn change_bit(self) -> u8 {
+        match self {
+            Self::AccessClients => 1 << 0,
+            Self::UsageResumes => 1 << 1,
+        }
+    }
+}
+
+const OBSERVED_TABLES: [ObservedTable; 2] =
+    [ObservedTable::AccessClients, ObservedTable::UsageResumes];
 
 /// Value-free observations emitted by the optional diagnostics callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +251,80 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     for observer in observers {
         observer();
     }
+}
+
+fn fire_table_change_observers(
+    observers: &Mutex<HashMap<ObservedTable, Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    changed_tables: u8,
+) {
+    for table in OBSERVED_TABLES {
+        if changed_tables & table.change_bit() == 0 {
+            continue;
+        }
+        let callbacks = observers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&table)
+            .cloned()
+            .unwrap_or_default();
+        for callback in callbacks {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()));
+        }
+    }
+}
+
+fn install_table_change_hooks(
+    connection: &Connection,
+    table_change_flags: Arc<AtomicU8>,
+) -> rusqlite::Result<()> {
+    connection.update_hook(Some(
+        move |_action: rusqlite::hooks::Action,
+              database_name: &str,
+              table_name: &str,
+              _rowid: i64| {
+            if database_name != "main" {
+                return;
+            }
+            let Some(bit) = OBSERVED_TABLES
+                .iter()
+                .find(|observed| observed.name() == table_name)
+                .map(|observed| observed.change_bit())
+            else {
+                return;
+            };
+            table_change_flags.fetch_or(bit, Ordering::Relaxed);
+        },
+    ))?;
+    connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Delete { table_name }
+            if context.database_name == Some("main")
+                && OBSERVED_TABLES
+                    .iter()
+                    .any(|observed| observed.name() == table_name) =>
+        {
+            // SQLite documents IGNORE here as retaining DELETE semantics while
+            // disabling the truncate optimization, so update_hook sees rows.
+            Authorization::Ignore
+        }
+        _ => Authorization::Allow,
+    }))
+}
+
+fn verify_observed_tables_are_rowid(connection: &Connection) -> StoreResult<()> {
+    for table in OBSERVED_TABLES {
+        let without_rowid = connection.query_row(
+            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+            [table.name()],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if without_rowid != 0 {
+            return Err(StoreError::SchemaMismatch(format!(
+                "Canvas table {} must use rowid storage for change notifications",
+                table.name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn profile_statement(database: StoreDatabaseKind, event: TraceEvent<'_>) {
@@ -398,6 +499,10 @@ pub struct RuntimeStore {
     identity_registry_path: PathBuf,
     identity_registry_lease: Arc<IdentityRegistryLease>,
     commit_notifiers: Arc<Mutex<CommitNotifiers>>,
+    table_commit_observers: Arc<Mutex<HashMap<ObservedTable, Vec<Arc<dyn Fn() + Send + Sync>>>>>,
+    table_change_flags: Arc<AtomicU8>,
+    #[cfg(test)]
+    simulate_unknown_commit_after_success: Arc<AtomicBool>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
     committed_change_generation: Arc<AtomicU64>,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
@@ -613,6 +718,19 @@ struct CommitNotifiers {
     observers: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
 
+enum WriterTransactionOutcome<T, E> {
+    Known {
+        result: Result<T, E>,
+        generation: u64,
+        changed: bool,
+        changed_tables: u8,
+    },
+    CommitOutcomeUnknown {
+        error: StoreError,
+        possible_table_changes: u8,
+    },
+}
+
 struct WriterWaiterRegistration<'a> {
     waiting: &'a AtomicUsize,
     peak: &'a AtomicUsize,
@@ -683,9 +801,11 @@ impl RuntimeStore {
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
 
+        let table_change_flags = Arc::new(AtomicU8::new(0));
         let writer = SqliteActor::open(&canvas_path, Arc::clone(&runtime_lock)).await?;
+        let hook_table_change_flags = Arc::clone(&table_change_flags);
         writer
-            .call(|connection| {
+            .call(move |connection| {
                 connection
                     .busy_timeout(Duration::from_millis(u64::from(DATABASE_BUSY_TIMEOUT_MS)))
                     .map_err(StoreError::from)?;
@@ -694,6 +814,8 @@ impl RuntimeStore {
                     .pragma_update(None, "synchronous", "FULL")
                     .map_err(StoreError::from)?;
                 schema::register_python_trigger_functions(connection)?;
+                install_table_change_hooks(connection, hook_table_change_flags)
+                    .map_err(StoreError::from)?;
                 Ok::<(), StoreError>(())
             })
             .await
@@ -736,6 +858,10 @@ impl RuntimeStore {
                 path: canvas_path.clone(),
             }),
             commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
+            table_commit_observers: Arc::new(Mutex::new(HashMap::new())),
+            table_change_flags,
+            #[cfg(test)]
+            simulate_unknown_commit_after_success: Arc::new(AtomicBool::new(false)),
             committed_change_generation: Arc::new(AtomicU64::new(0)),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
@@ -747,7 +873,8 @@ impl RuntimeStore {
                 bootstrap::prepare_sync_schema(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 feature_schema::prepare(transaction)?;
-                schema::verify_bootstrap(transaction)
+                schema::verify_bootstrap(transaction)?;
+                verify_observed_tables_are_rowid(transaction)
             })
             .await?;
         let recovery_time = SystemTime::now()
@@ -816,6 +943,27 @@ impl RuntimeStore {
             .map_err(|_| StoreError::WriterPoisoned)?
             .get(Path::new(path))
             .and_then(|entry| entry.server_id.clone()))
+    }
+
+    /// Register a change invalidation hint for a Canvas table.
+    /// Register before taking the snapshot that the observer will maintain.
+    /// A hint fires after a known successful commit or an ambiguous commit that
+    /// may have landed; consumers must reread authoritative state. Callbacks run
+    /// outside the transaction and observer lock. After caller cancellation
+    /// they may run on the actor thread, so keep them short and free of database
+    /// or provider I/O.
+    pub fn add_table_change_observer(
+        &self,
+        table: ObservedTable,
+        observer: impl Fn() + Send + Sync + 'static,
+    ) -> StoreResult<()> {
+        self.table_commit_observers
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .entry(table)
+            .or_default()
+            .push(Arc::new(observer));
+        Ok(())
     }
 
     /// Install the process-local notification fired after each successful write commit.
@@ -1075,9 +1223,14 @@ impl RuntimeStore {
         let holding = diagnostics_enabled.then(Instant::now);
         let generation = Arc::clone(&self.committed_change_generation);
         let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
+        let table_change_flags = Arc::clone(&self.table_change_flags);
+        #[cfg(test)]
+        let simulate_unknown_commit_after_success =
+            Arc::clone(&self.simulate_unknown_commit_after_success);
         let operation =
-            move |writer: &mut Connection| -> Result<Result<(T, u64, bool), E>, StoreError> {
+            move |writer: &mut Connection| -> Result<WriterTransactionOutcome<T, E>, StoreError> {
                 let _identity_registry_lease = identity_registry_lease;
+                table_change_flags.store(0, Ordering::Release);
                 let transaction = writer
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
@@ -1086,9 +1239,23 @@ impl RuntimeStore {
                     Ok(value) => {
                         let changed = transaction.total_changes() != initial_changes;
                         let commit_started = diagnostics_enabled.then(Instant::now);
-                        transaction
-                            .commit()
-                            .map_err(StoreError::CommitOutcomeUnknown)?;
+                        if let Err(error) = transaction.commit() {
+                            return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
+                                error: StoreError::CommitOutcomeUnknown(error),
+                                possible_table_changes: table_change_flags
+                                    .swap(0, Ordering::AcqRel),
+                            });
+                        }
+                        #[cfg(test)]
+                        if simulate_unknown_commit_after_success.swap(false, Ordering::AcqRel) {
+                            return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
+                                error: StoreError::CommitOutcomeUnknown(
+                                    rusqlite::Error::InvalidQuery,
+                                ),
+                                possible_table_changes: table_change_flags
+                                    .swap(0, Ordering::AcqRel),
+                            });
+                        }
                         if let Some(started) = commit_started {
                             emit_diagnostic(StoreDiagnosticsEvent::CommitDuration {
                                 database: StoreDatabaseKind::Canvas,
@@ -1100,30 +1267,73 @@ impl RuntimeStore {
                         } else {
                             generation.load(Ordering::Acquire)
                         };
-                        Ok(Ok((value, commit_generation, changed)))
+                        let changed_tables = table_change_flags.swap(0, Ordering::AcqRel);
+                        Ok(WriterTransactionOutcome::Known {
+                            result: Ok(value),
+                            generation: commit_generation,
+                            changed,
+                            changed_tables,
+                        })
                     }
                     Err(error) => {
                         // Dropping rolls back best-effort; preserve the operation error.
                         drop(transaction);
-                        Ok(Err(error))
+                        table_change_flags.store(0, Ordering::Release);
+                        Ok(WriterTransactionOutcome::Known {
+                            result: Err(error),
+                            generation: generation.load(Ordering::Acquire),
+                            changed: false,
+                            changed_tables: 0,
+                        })
                     }
                 }
             };
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_checkpoint_requested);
+        let table_commit_observers = Arc::clone(&self.table_commit_observers);
         let actor_outcome = self
             .writer
             .call_admitted_with_completion(permit, operation, move |result, disposition| {
-                if let Ok(Ok((value, _, changed))) = result {
-                    if *changed && disposition == ActorResponseDisposition::Abandoned {
-                        abandoned_checkpoint.store(true, Ordering::Release);
-                        // Fire the synchronous wake directly; no Runtime handle or
-                        // detached task is required for this committed transaction.
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            fire_commit_observers(&abandoned_notifiers);
+                if let Ok(outcome) = result {
+                    let (changed_tables, value) = match outcome {
+                        WriterTransactionOutcome::Known {
+                            result: Ok(value),
+                            changed,
+                            changed_tables,
+                            ..
+                        } => {
+                            if *changed && disposition == ActorResponseDisposition::Abandoned {
+                                abandoned_checkpoint.store(true, Ordering::Release);
+                                // Fire the synchronous wake directly; no Runtime handle or
+                                // detached task is required for this committed transaction.
+                                let _ =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        fire_commit_observers(&abandoned_notifiers);
+                                    }));
+                            }
+                            (*changed_tables, Some(value))
+                        }
+                        WriterTransactionOutcome::CommitOutcomeUnknown {
+                            possible_table_changes,
+                            ..
+                        } => (*possible_table_changes, None),
+                        WriterTransactionOutcome::Known { result: Err(_), .. } => (0, None),
+                    };
+                    let table_observer_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fire_table_change_observers(&table_commit_observers, changed_tables);
                         }));
+                    let post_commit_result = value.map(|value| {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            post_commit(value)
+                        }))
+                    });
+                    if let Err(panic) = table_observer_result {
+                        std::panic::resume_unwind(panic);
                     }
-                    post_commit(value);
+                    if let Some(Err(panic)) = post_commit_result {
+                        std::panic::resume_unwind(panic);
+                    }
                 }
             })
             .await;
@@ -1136,15 +1346,20 @@ impl RuntimeStore {
             .map_err(E::from)?;
         let outcome = actor_response
             .resolve_with(|result| {
-                if result
-                    .as_ref()
-                    .is_ok_and(|result| result.as_ref().is_ok_and(|(_, _, changed)| *changed))
-                {
+                if matches!(
+                    result,
+                    Ok(WriterTransactionOutcome::Known { changed: true, .. })
+                ) {
                     self.notify_commit();
                 }
             })
             .map_err(E::from)?;
-        outcome.map(|(value, generation, _changed)| (value, generation))
+        match outcome {
+            WriterTransactionOutcome::Known {
+                result, generation, ..
+            } => result.map(|value| (value, generation)),
+            WriterTransactionOutcome::CommitOutcomeUnknown { error, .. } => Err(E::from(error)),
+        }
     }
 
     pub async fn transaction_with_error<T, E>(
@@ -1770,6 +1985,226 @@ mod commit_notification_tests {
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn tracked_observer_tables_must_keep_rowid_storage() {
+        let database = Connection::open_in_memory().expect("in-memory database");
+        database
+            .execute_batch(
+                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY);",
+            )
+            .expect("create test tables");
+        assert!(matches!(
+            verify_observed_tables_are_rowid(&database),
+            Err(StoreError::SchemaMismatch(_))
+        ));
+
+        database
+            .execute_batch("DROP TABLE runtime_access_clients;")
+            .expect("drop without-rowid table");
+        database
+            .execute_batch("CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY);")
+            .expect("create rowid table");
+        verify_observed_tables_are_rowid(&database).expect("both tables use rowid storage");
+    }
+
+    #[tokio::test]
+    async fn table_commit_observer_tracks_only_successful_target_changes() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let access_notifications = Arc::new(AtomicUsize::new(0));
+        let access_observed = Arc::clone(&access_notifications);
+        store
+            .add_table_change_observer(ObservedTable::AccessClients, move || {
+                access_observed.fetch_add(1, Ordering::AcqRel);
+            })
+            .expect("register access-client observer");
+        let usage_notifications = Arc::new(AtomicUsize::new(0));
+        let usage_observed = Arc::clone(&usage_notifications);
+        store
+            .add_table_change_observer(ObservedTable::UsageResumes, move || {
+                usage_observed.fetch_add(1, Ordering::AcqRel);
+            })
+            .expect("register usage-resume observer");
+
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE observer_unrelated(value INTEGER);")?;
+                transaction.execute("INSERT INTO observer_unrelated VALUES (1)", [])?;
+                Ok(())
+            })
+            .await
+            .expect("unrelated write succeeds");
+        assert_eq!(access_notifications.load(Ordering::Acquire), 0);
+        assert_eq!(usage_notifications.load(Ordering::Acquire), 0);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-a', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("targeted access-client write succeeds");
+        assert_eq!(access_notifications.load(Ordering::Acquire), 1);
+        assert_eq!(usage_notifications.load(Ordering::Acquire), 0);
+
+        let rolled_back = store
+            .transaction_with(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('client-rollback', '{}')",
+                    [],
+                )?;
+                Err::<(), StoreError>(StoreError::RecordContract("test rollback"))
+            })
+            .await;
+        assert!(rolled_back.is_err());
+        assert_eq!(access_notifications.load(Ordering::Acquire), 1);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_usage_resumes(id, agent, record) VALUES ('resume-a', 'agent-a', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed usage-resume row");
+        assert_eq!(usage_notifications.load(Ordering::Acquire), 1);
+        store
+            .transaction(|transaction| {
+                transaction.execute("DELETE FROM runtime_usage_resumes", [])?;
+                Ok(())
+            })
+            .await
+            .expect("bulk delete usage-resume rows");
+        assert_eq!(usage_notifications.load(Ordering::Acquire), 2);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT OR REPLACE INTO runtime_access_clients(id, record) VALUES ('client-a', '{\"updated\":true}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("replacement access-client write succeeds");
+        assert_eq!(access_notifications.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn table_observer_callbacks_run_without_holding_registration_lock() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let first_calls = Arc::new(AtomicUsize::new(0));
+        let second_calls = Arc::new(AtomicUsize::new(0));
+        let weak_store = Arc::downgrade(&store);
+        let registered_second = Arc::new(AtomicBool::new(false));
+        let registered_second_callback = Arc::clone(&registered_second);
+        let first_count = Arc::clone(&first_calls);
+        let second_count = Arc::clone(&second_calls);
+        store
+            .add_table_change_observer(ObservedTable::UsageResumes, move || {
+                first_count.fetch_add(1, Ordering::AcqRel);
+                if !registered_second_callback.swap(true, Ordering::AcqRel) {
+                    let second_count = Arc::clone(&second_count);
+                    weak_store
+                        .upgrade()
+                        .expect("store remains alive")
+                        .add_table_change_observer(ObservedTable::UsageResumes, move || {
+                            second_count.fetch_add(1, Ordering::AcqRel);
+                        })
+                        .expect("register callback from observer");
+                }
+            })
+            .expect("register initial usage observer");
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_usage_resumes(id, agent, record) VALUES ('resume-one', 'agent-a', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("first usage write succeeds");
+        assert_eq!(first_calls.load(Ordering::Acquire), 1);
+        assert_eq!(second_calls.load(Ordering::Acquire), 0);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_usage_resumes(id, agent, record) VALUES ('resume-two', 'agent-a', '{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("second usage write succeeds");
+        assert_eq!(first_calls.load(Ordering::Acquire), 2);
+        assert_eq!(second_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_commit_wakes_table_observer_and_returns_unknown() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notified = Arc::clone(&notifications);
+        store
+            .add_table_change_observer(ObservedTable::AccessClients, move || {
+                notified.fetch_add(1, Ordering::AcqRel);
+            })
+            .expect("register access-client observer");
+        store
+            .simulate_unknown_commit_after_success
+            .store(true, Ordering::Release);
+        let post_commit_calls = Arc::new(AtomicUsize::new(0));
+        let post_commit_called = Arc::clone(&post_commit_calls);
+
+        let result = store
+            .transaction_with_post_commit(
+                |transaction| {
+                    transaction.execute(
+                        "INSERT INTO runtime_access_clients(id, record) VALUES ('unknown-client', '{}')",
+                        [],
+                    )?;
+                    Ok::<(), StoreError>(())
+                },
+                move |_| {
+                    post_commit_called.fetch_add(1, Ordering::AcqRel);
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(StoreError::CommitOutcomeUnknown(_))));
+        assert_eq!(notifications.load(Ordering::Acquire), 1);
+        assert_eq!(post_commit_calls.load(Ordering::Acquire), 0);
+        let reader = store.read().expect("read committed access client");
+        let count = reader
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_access_clients WHERE id = 'unknown-client'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query committed access client");
+        assert_eq!(count, 1);
+        assert_eq!(store.committed_change_generation(), 0);
+    }
+
     #[tokio::test]
     async fn open_publishes_generation_baseline_before_runtime_writes() {
         let directory = tempfile::tempdir().expect("temporary state directory");
@@ -1996,6 +2431,13 @@ mod commit_notification_tests {
         store.add_commit_observer(move || {
             observed.fetch_add(1, Ordering::Release);
         });
+        let table_notifications = Arc::new(AtomicUsize::new(0));
+        let table_observed = Arc::clone(&table_notifications);
+        store
+            .add_table_change_observer(ObservedTable::AccessClients, move || {
+                table_observed.fetch_add(1, Ordering::Release);
+            })
+            .expect("register table observer");
         let post_commit_callbacks = Arc::new(AtomicUsize::new(0));
 
         let entered = Arc::new(std::sync::Barrier::new(2));
@@ -2020,6 +2462,10 @@ mod commit_notification_tests {
         let mut canceled = Box::pin(store.transaction_with_post_commit(
             |transaction| {
                 transaction.execute("INSERT INTO canceled_write VALUES (1)", [])?;
+                transaction.execute(
+                    "INSERT INTO runtime_access_clients(id, record) VALUES ('canceled-client', '{}')",
+                    [],
+                )?;
                 Ok::<(), StoreError>(())
             },
             move |_| {
@@ -2047,13 +2493,16 @@ mod commit_notification_tests {
             .expect("first writer task")
             .expect("first transaction");
         tokio::time::timeout(Duration::from_secs(2), async {
-            while notifications.load(Ordering::Acquire) != 1 {
+            while notifications.load(Ordering::Acquire) != 1
+                || table_notifications.load(Ordering::Acquire) != 1
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("abandoned committed write still notifies observers");
         assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 1);
+        assert_eq!(table_notifications.load(Ordering::Acquire), 1);
 
         let reader = store.read().expect("read committed row");
         let count = reader

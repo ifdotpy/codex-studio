@@ -24,7 +24,7 @@ use studio_runtime_process::{
 };
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_store::{
-    AgentId, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
+    AgentId, AgentRepository, ObservedTable, RuntimeStore, SchedulerRepository, StoreError,
 };
 use tokio::{
     sync::{Notify, Semaphore, mpsc, watch},
@@ -55,6 +55,31 @@ const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_s
 // requested. Keep shutdown bounded while allowing ordinary host contention to
 // clear before reporting an unconfirmed stop.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn monotonic_deadline(deadline: SystemTime) -> Result<tokio::time::Instant, WorkerError> {
+    let delay = deadline
+        .duration_since(SystemTime::now())
+        .unwrap_or_default();
+    tokio::time::Instant::now()
+        .checked_add(delay)
+        .ok_or(WorkerError::TaskFailed)
+}
+
+fn vm_refresh_deadline_after_session_change(
+    had_active_session: bool,
+    has_active_session: bool,
+    has_resolver: bool,
+    current_deadline: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    if !has_active_session || !has_resolver {
+        None
+    } else if !had_active_session {
+        Some(now)
+    } else {
+        current_deadline
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -134,6 +159,7 @@ pub struct StoreBridge {
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     continuation_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
+    auth_wait_generation: Arc<watch::Sender<u64>>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
@@ -143,6 +169,16 @@ pub struct StoreBridge {
 }
 impl StoreBridge {
     pub async fn new(store: Arc<RuntimeStore>) -> Result<Self, WorkerError> {
+        let (auth_wait_generation, _) = watch::channel(0_u64);
+        let auth_wait_generation = Arc::new(auth_wait_generation);
+        let observed_generation = Arc::downgrade(&auth_wait_generation);
+        // Workers share this generation channel; the weak callback remains
+        // harmless after the bridge owner is dropped.
+        store.add_table_change_observer(ObservedTable::UsageResumes, move || {
+            if let Some(generation) = observed_generation.upgrade() {
+                generation.send_modify(|value| *value = value.wrapping_add(1));
+            }
+        })?;
         let bridge = Self {
             store,
             operation_slot: Arc::new(Semaphore::new(1)),
@@ -151,6 +187,7 @@ impl StoreBridge {
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             continuation_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
+            auth_wait_generation,
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
@@ -214,6 +251,9 @@ impl StoreBridge {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+    fn auth_wait_changes(&self) -> watch::Receiver<u64> {
+        self.auth_wait_generation.subscribe()
     }
     async fn run<T, F, Fut>(&self, operation: F) -> Result<T, WorkerError>
     where
@@ -573,14 +613,20 @@ pub async fn start_account_worker_with_publication_sink(
         commands: commands.clone(),
         stop: stop.clone(),
     };
-    let auth_probe_at = (resources.claude_account_pin.get("provider") == Some(&json!("claude")))
-        .then(tokio::time::Instant::now);
+    let is_claude_account = resources.claude_account_pin.get("provider") == Some(&json!("claude"));
+    let auth_wait_at = is_claude_account.then(tokio::time::Instant::now);
+    let vm_credential_refresh_at = None;
+    // Subscribe before the worker's initial due/deadline snapshot. A commit
+    // before this point is visible in that snapshot; later commits advance it.
+    let auth_wait_changes = bridge.auth_wait_changes();
     let worker = Worker {
         resources,
         retained_port,
         bridge: bridge.clone(),
         account: account.clone(),
-        auth_probe_at,
+        auth_wait_at,
+        auth_wait_changes,
+        vm_credential_refresh_at,
         generation,
         connection_id,
         timeout_ms,
@@ -728,7 +774,9 @@ struct Worker {
     retained_port: retained::RetainedSessionPort,
     bridge: StoreBridge,
     account: String,
-    auth_probe_at: Option<tokio::time::Instant>,
+    auth_wait_at: Option<tokio::time::Instant>,
+    auth_wait_changes: watch::Receiver<u64>,
+    vm_credential_refresh_at: Option<tokio::time::Instant>,
     generation: Generation,
     connection_id: String,
     timeout_ms: u64,
@@ -783,6 +831,22 @@ enum VmForwardedMessage {
     Exit {
         source: VmActorIdentity,
     },
+}
+
+enum ServeSignal {
+    Shutdown,
+    Flush,
+    PublicationRetry,
+    PreparationRetry,
+    AuthWait,
+    VmCredentialRefresh,
+    AuthWaitChanged(Result<(), watch::error::RecvError>),
+    Command(Option<AccountCommand>),
+    Event(Option<SessionEvent>),
+    VmEvent(Option<VmForwardedMessage>),
+    ConnectionRecovery,
+    ManagedCallback(Option<Result<ManagedCallbackResult, tokio::task::JoinError>>),
+    SessionStatusChanged(bool),
 }
 
 struct ActorProviderSession {
@@ -1022,132 +1086,14 @@ impl Worker {
             if self.session.status.borrow().initialization == InitializationStatus::Ready
                 && let Some(effect) = self.effects.pop_front()
             {
-                let durable = store::effect_key(&self.account, &effect);
-                match effect {
-                    Effect::Callback(cursor, frame, actor, epoch) => {
-                        match self.answer_callback(cursor, frame, actor, epoch).await {
-                            Err(WorkerError::StaleVmActor) => continue,
-                            result => result?,
-                        }
-                    }
-                    Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
-                    Effect::Interrupt {
-                        agent,
-                        thread,
-                        turn,
-                    } => self.interrupt(agent, thread, turn).await?,
-                    Effect::Wake(agent_id, epoch) => self.wake(agent_id, epoch).await?,
-                }
-                if !self.closing
-                    && let Some(key) = durable
-                {
-                    self.db("complete_effect", move |store| async move {
-                        store::complete_effect(&store, &key).await
-                    })
-                    .await?;
-                }
+                self.run_effect(effect).await?;
                 continue;
             }
             #[cfg(test)]
             self.bridge.faults.cycle();
-            tokio::select! {
-                biased;
-                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; },
-                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
-                _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => self.drain_publications().await?,
-                _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
-                _ = tokio::time::sleep_until(self.auth_probe_at.unwrap_or_else(||tokio::time::Instant::now()+crate::claude_auth_runtime::PROBE_INTERVAL)), if self.auth_probe_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => self.probe_auth_waits().await?,
-                command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
-                    #[cfg(test)]
-                    Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
-                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
-                    Some(AccountCommand::CommittedFrame(command)) => self.committed_frame(*command).await?,
-                    Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await?,
-                    Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
-                    Some(AccountCommand::ConnectionRecovery { agent_id, reply }) => {
-                        if self.connection_recovery_active {
-                            let _sent = reply.send(Err(retained::PortError::Capacity));
-                        } else {
-                            self.connection_recovery_active = true;
-                            let request = connection_recovery::Command {
-                                bridge: self.bridge.clone(),
-                                account: self.account.clone(),
-                                scope: self.retained_session.scope().clone(),
-                                session: self.retained_session.clone(),
-                                agent_id,
-                            };
-                            let commands = self.commands.clone();
-                            self.connection_recovery.spawn(async move {
-                                let (response, streams) = match connection_recovery::run(request).await {
-                                    Ok(completed) => (Ok(completed.receipt), completed.streams),
-                                    Err(_) => (Err(retained::PortError::Unknown), None),
-                                };
-                                let (done, acknowledged) = tokio::sync::oneshot::channel();
-                                if commands.send(AccountCommand::ConnectionRecoveryComplete {
-                                    result: response,
-                                    streams,
-                                    reply: done,
-                                }).await.is_ok() {
-                                    let final_result = acknowledged.await.unwrap_or(Err(retained::PortError::Unknown));
-                                    let _sent = reply.send(final_result);
-                                } else {
-                                    let _sent = reply.send(Err(retained::PortError::Unknown));
-                                }
-                            });
-                        }
-                    },
-                    Some(AccountCommand::ConnectionRecoveryComplete { result, streams, reply }) => {
-                        if let Some(streams) = streams {
-                            self.streams = streams;
-                            self.schedule_publication_drain();
-                        }
-                        let _sent = reply.send(result);
-                    },
-                    Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
-                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
-                    Some(AccountCommand::RadioInterrupt { agent_id, thread_id, turn_id }) => {
-                        self.interrupt(agent_id, thread_id, turn_id).await?
-                    },
-                    Some(AccountCommand::RestartRecoveryDone) => {
-                        self.restart_recovery.take();
-                        self.schedule_publication_drain();
-                        #[cfg(test)]
-                        {
-                            self.bridge
-                                .faults
-                                .startup_recovery_done
-                                .store(true, std::sync::atomic::Ordering::SeqCst);
-                            self.bridge.faults.startup_recovery.notify_one();
-                        }
-                    },
-                    Some(AccountCommand::RestartStreams(streams)) => {
-                        self.streams = *streams;
-                        self.schedule_publication_drain();
-                    },
-                    None => return Ok(()),
-                },
-                event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
-                vm_event = self.vm_events.recv() => match vm_event {
-                    Some(event) => self.handle_vm_message(event).await?,
-                    None => return Ok(()),
-                },
-                _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
-                    self.connection_recovery_active = false;
-                },
-                callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => {
-                    let (cursor, actor, epoch, response) = callback
-                        .ok_or(WorkerError::TaskFailed)?
-                        .map_err(|_| WorkerError::TaskFailed)?;
-                    if let Some(response) = response {
-                        self.push(Effect::Callback(
-                            cursor,
-                            response,
-                            actor,
-                            epoch,
-                        ))?;
-                    }
-                },
-                changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
+            let signal = self.next_serve_signal().await;
+            if !self.dispatch_serve_signal(signal).await? {
+                return Ok(());
             }
             // A queued command bounds provider-lane work to the transaction in flight.
             if self.queued_commands.is_empty() {
@@ -1162,6 +1108,169 @@ impl Worker {
                 }
             }
         }
+    }
+    async fn run_effect(&mut self, effect: Effect) -> Result<(), WorkerError> {
+        let durable = store::effect_key(&self.account, &effect);
+        match effect {
+            Effect::Callback(cursor, frame, actor, epoch) => {
+                match self.answer_callback(cursor, frame, actor, epoch).await {
+                    Err(WorkerError::StaleVmActor) => return Ok(()),
+                    result => result?,
+                }
+            }
+            Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
+            Effect::Interrupt {
+                agent,
+                thread,
+                turn,
+            } => self.interrupt(agent, thread, turn).await?,
+            Effect::Wake(agent_id, epoch) => self.wake(agent_id, epoch).await?,
+        }
+        if !self.closing
+            && let Some(key) = durable
+        {
+            self.db("complete_effect", move |store| async move {
+                store::complete_effect(&store, &key).await
+            })
+            .await?;
+        }
+        Ok(())
+    }
+    async fn next_serve_signal(&mut self) -> ServeSignal {
+        tokio::select! {
+            biased;
+            _ = Shutdown::cancelled(&mut self.stop) => ServeSignal::Shutdown,
+            _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => ServeSignal::Flush,
+            _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => ServeSignal::PublicationRetry,
+            _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => ServeSignal::PreparationRetry,
+            _ = tokio::time::sleep_until(self.auth_wait_at.unwrap_or_else(tokio::time::Instant::now)), if self.auth_wait_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWait,
+            _ = tokio::time::sleep_until(self.vm_credential_refresh_at.unwrap_or_else(tokio::time::Instant::now)), if self.vm_credential_refresh_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::VmCredentialRefresh,
+            changed = self.auth_wait_changes.changed(), if self.resources.claude_account_pin.get("provider") == Some(&json!("claude")) && self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::AuthWaitChanged(changed),
+            command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => ServeSignal::Command(command),
+            event = self.events.recv() => ServeSignal::Event(event),
+            vm_event = self.vm_events.recv() => ServeSignal::VmEvent(vm_event),
+            _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
+            callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
+            changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
+        }
+    }
+    async fn dispatch_serve_signal(&mut self, signal: ServeSignal) -> Result<bool, WorkerError> {
+        match signal {
+            ServeSignal::Shutdown => self.closing = true,
+            ServeSignal::Flush => self.flush().await?,
+            ServeSignal::PublicationRetry => self.drain_publications().await?,
+            ServeSignal::PreparationRetry => self.retry_preparations().await?,
+            ServeSignal::AuthWait => self.probe_auth_waits().await?,
+            ServeSignal::VmCredentialRefresh => self.refresh_vm_claude_credentials().await?,
+            ServeSignal::AuthWaitChanged(changed) => {
+                changed.map_err(|_| WorkerError::TaskFailed)?;
+                self.probe_auth_waits().await?;
+            }
+            ServeSignal::Command(Some(command)) => match command {
+                #[cfg(test)]
+                AccountCommand::Barrier(reply) => {
+                    let _ignored = reply.send(
+                        self.bridge
+                            .faults
+                            .journal_count
+                            .load(std::sync::atomic::Ordering::SeqCst),
+                    );
+                }
+                AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
+                AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
+                AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
+                AccountCommand::JournalBarrier(command) => self.retained_barrier(command).await?,
+                AccountCommand::ConnectionRecovery { agent_id, reply } => {
+                    if self.connection_recovery_active {
+                        let _sent = reply.send(Err(retained::PortError::Capacity));
+                    } else {
+                        self.connection_recovery_active = true;
+                        let request = connection_recovery::Command {
+                            bridge: self.bridge.clone(),
+                            account: self.account.clone(),
+                            scope: self.retained_session.scope().clone(),
+                            session: self.retained_session.clone(),
+                            agent_id,
+                        };
+                        let commands = self.commands.clone();
+                        self.connection_recovery.spawn(async move {
+                            let (response, streams) = match connection_recovery::run(request).await
+                            {
+                                Ok(completed) => (Ok(completed.receipt), completed.streams),
+                                Err(_) => (Err(retained::PortError::Unknown), None),
+                            };
+                            let (done, acknowledged) = tokio::sync::oneshot::channel();
+                            if commands
+                                .send(AccountCommand::ConnectionRecoveryComplete {
+                                    result: response,
+                                    streams,
+                                    reply: done,
+                                })
+                                .await
+                                .is_ok()
+                            {
+                                let final_result = acknowledged
+                                    .await
+                                    .unwrap_or(Err(retained::PortError::Unknown));
+                                let _sent = reply.send(final_result);
+                            } else {
+                                let _sent = reply.send(Err(retained::PortError::Unknown));
+                            }
+                        });
+                    }
+                }
+                AccountCommand::ConnectionRecoveryComplete {
+                    result,
+                    streams,
+                    reply,
+                } => {
+                    if let Some(streams) = streams {
+                        self.streams = streams;
+                        self.schedule_publication_drain();
+                    }
+                    let _sent = reply.send(result);
+                }
+                AccountCommand::Wake { agent_id, epoch } => self.wake(agent_id, epoch).await?,
+                AccountCommand::Stop { agent_id } => self.stop_agent(agent_id).await?,
+                AccountCommand::RadioInterrupt {
+                    agent_id,
+                    thread_id,
+                    turn_id,
+                } => self.interrupt(agent_id, thread_id, turn_id).await?,
+                AccountCommand::RestartRecoveryDone => {
+                    self.restart_recovery.take();
+                    self.schedule_publication_drain();
+                    #[cfg(test)]
+                    {
+                        self.bridge
+                            .faults
+                            .startup_recovery_done
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.bridge.faults.startup_recovery.notify_one();
+                    }
+                }
+                AccountCommand::RestartStreams(streams) => {
+                    self.streams = *streams;
+                    self.schedule_publication_drain();
+                }
+            },
+            ServeSignal::Command(None) | ServeSignal::Event(None) => return Ok(false),
+            ServeSignal::Event(Some(event)) => self.event(event).await?,
+            ServeSignal::VmEvent(Some(event)) => self.handle_vm_message(event).await?,
+            ServeSignal::VmEvent(None) => return Ok(false),
+            ServeSignal::ConnectionRecovery => self.connection_recovery_active = false,
+            ServeSignal::ManagedCallback(callback) => {
+                let (cursor, actor, epoch, response) = callback
+                    .ok_or(WorkerError::TaskFailed)?
+                    .map_err(|_| WorkerError::TaskFailed)?;
+                if let Some(response) = response {
+                    self.push(Effect::Callback(cursor, response, actor, epoch))?;
+                }
+            }
+            ServeSignal::SessionStatusChanged(false) => return Ok(false),
+            ServeSignal::SessionStatusChanged(true) => {}
+        }
+        Ok(true)
     }
     async fn db<T, F, Fut>(&mut self, name: &'static str, operation: F) -> Result<T, WorkerError>
     where
@@ -1329,16 +1438,13 @@ impl Worker {
         Ok(())
     }
     async fn probe_auth_waits(&mut self) -> Result<(), WorkerError> {
+        self.auth_wait_at = None;
         let Some(driver) = self.resources.account_driver.clone() else {
-            self.auth_probe_at = None;
             return Ok(());
         };
         if self.resources.claude_account_pin.get("provider") != Some(&json!("claude")) {
-            self.auth_probe_at = None;
             return Ok(());
         }
-        self.auth_probe_at =
-            Some(tokio::time::Instant::now() + crate::claude_auth_runtime::PROBE_INTERVAL);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| WorkerError::TaskFailed)?
@@ -1406,31 +1512,53 @@ impl Worker {
                 self.wake(agent, epoch).await?;
             }
         }
+        let account = self.account.clone();
+        let next_deadline = self
+            .db(
+                "claude_auth_earliest_wait_deadline",
+                move |store| async move {
+                    crate::claude_auth_runtime::earliest_wait_deadline(&store, &account)
+                        .await
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+                },
+            )
+            .await?;
+        self.auth_wait_at = next_deadline.map(monotonic_deadline).transpose()?;
+        Ok(())
+    }
+    async fn refresh_vm_claude_credentials(&mut self) -> Result<(), WorkerError> {
         let actors = self
             .vm_sessions
             .values()
             .map(|session| session.launch_request.clone())
             .filter(|request| request.provider == "claude" && request.account_key == self.account)
             .collect::<Vec<_>>();
-        if !actors.is_empty()
-            && let Some(resolver) = self.resources.vm_provider_launch.clone()
+        let Some(resolver) = self.resources.vm_provider_launch.clone() else {
+            self.vm_credential_refresh_at = None;
+            return Ok(());
+        };
+        if actors.is_empty() {
+            self.vm_credential_refresh_at = None;
+            return Ok(());
+        }
+        self.vm_credential_refresh_at = Some(
+            tokio::time::Instant::now()
+                + crate::claude_auth_runtime::VM_CREDENTIAL_REFRESH_INTERVAL,
+        );
+        // The host resolver reads credentials once and fans the result out
+        // to the active actor profiles without restarting their sessions.
+        match self
+            .drive(resolver.refresh_claude_credentials(actors.clone()))
+            .await
         {
-            // This is one account-worker sweep, sharing the existing Claude
-            // auth probe cadence; the host resolver reads credentials once and
-            // fans the result out to the active actor profiles.
-            match self
-                .drive(resolver.refresh_claude_credentials(actors.clone()))
-                .await
-            {
-                Ok(()) => {}
-                Err(error) => match vm_credential_maintenance_error(&error) {
-                    Some(class) => eprintln!(
-                        "VM Claude credential maintenance deferred; class={class}; actors={}",
-                        actors.len()
-                    ),
-                    None => return Err(error),
-                },
-            }
+            Ok(()) => {}
+            Err(error) => match vm_credential_maintenance_error(&error) {
+                Some(class) => eprintln!(
+                    "VM Claude credential maintenance deferred; class={class}; actors={}",
+                    actors.len()
+                ),
+                None => return Err(error),
+            },
         }
         Ok(())
     }
@@ -1988,6 +2116,7 @@ impl Worker {
                 let _sent = sender.send(VmForwardedMessage::Exit { source }).await;
             });
             self.vm_event_forwarders.push(forwarder);
+            let had_active_claude_vm = self.has_active_claude_vm_sessions();
             self.vm_sessions.insert(
                 request.agent_id.clone(),
                 ActorProviderSession {
@@ -1998,6 +2127,13 @@ impl Worker {
                     launch_request: request.clone(),
                     bootstrap: resolved.bootstrap,
                 },
+            );
+            self.vm_credential_refresh_at = vm_refresh_deadline_after_session_change(
+                had_active_claude_vm,
+                self.has_active_claude_vm_sessions(),
+                self.resources.vm_provider_launch.is_some(),
+                self.vm_credential_refresh_at,
+                tokio::time::Instant::now(),
             );
         }
         let mut status = self
@@ -2512,11 +2648,19 @@ impl Worker {
         Ok(())
     }
     fn retire_vm_actor(&mut self, actor_id: &str) {
+        let had_active_claude_vm = self.has_active_claude_vm_sessions();
         if let Some(session) = self.vm_sessions.remove(actor_id) {
             session.control.cancel();
             let key = (actor_id.to_owned(), session.incarnation);
             self.retired_vm_sessions.insert(key, session);
         }
+        self.vm_credential_refresh_at = vm_refresh_deadline_after_session_change(
+            had_active_claude_vm,
+            self.has_active_claude_vm_sessions(),
+            self.resources.vm_provider_launch.is_some(),
+            self.vm_credential_refresh_at,
+            tokio::time::Instant::now(),
+        );
         let stale_waiters: Vec<_> = self
             .vm_notification_waiters
             .keys()
@@ -2533,6 +2677,13 @@ impl Worker {
                 .as_ref()
                 .is_none_or(|source| source.actor_id != actor_id)
         });
+    }
+
+    fn has_active_claude_vm_sessions(&self) -> bool {
+        self.vm_sessions.values().any(|session| {
+            session.launch_request.provider == "claude"
+                && session.launch_request.account_key == self.account
+        })
     }
 
     fn retire_vm_actor_if_current(&mut self, source: &VmActorIdentity) {

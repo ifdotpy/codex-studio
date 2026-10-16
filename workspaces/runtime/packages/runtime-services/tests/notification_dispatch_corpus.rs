@@ -336,7 +336,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             })
             .await?;
         }
-        let mut rolled = None;
+        let rolled = Arc::new(Mutex::new(None));
         let rollback_agent = agent_id.to_owned();
         let rollback_publication = publication.clone();
         let rollback_streams = streams.clone();
@@ -514,12 +514,14 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         }).await.map_err(|e|e.to_string())?;
     }
     if full_failpoints(case) {
-        write_failpoints(store, |tx| {
+        let fail_publication = publication.clone();
+        let fail_streams = streams.clone();
+        write_failpoints(store, move |tx| {
             studio_runtime_services::notification_dispatch::flush_notification_streams(
                 tx,
                 "agent",
-                &publication,
-                &streams,
+                &fail_publication,
+                &fail_streams,
                 1234.5,
             )
             .map(|_| ())
@@ -845,6 +847,7 @@ async fn write_failpoints(
         // repeated writes and writes performed by existing projection triggers.
         // Virtual-table shadow storage is verified by the complete raw snapshot.
         for ordinal in 0.. {
+            let writes_count = *writes.lock().expect("write count");
             let baseline_error = Arc::new(Mutex::new(None));
             let operation = Arc::clone(&operation);
             let writes_capture = Arc::clone(&writes);
@@ -864,8 +867,8 @@ async fn write_failpoints(
                     *baseline_error_capture.lock().expect("baseline error") = result.err().map(|error|error.to_string());
                     *writes_capture.lock().expect("write count") = tx.query_row("SELECT count(*) FROM notification_write_trace", [], |r|r.get::<_,i64>(0)).expect("write count");
                 } else {
-                    assert!(result.is_err(), "{phase} write {ordinal}/{writes} was not exercised");
-                    assert_eq!(before, raw_rows(tx), "{phase} write {ordinal}/{writes}: caught failure leaked rows");
+                    assert!(result.is_err(), "{phase} write {ordinal}/{writes_count} was not exercised");
+                    assert_eq!(before, raw_rows(tx), "{phase} write {ordinal}/{writes_count}: caught failure leaked rows");
                     WRITE_FAILURE_POINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(NotificationDispatchError::InvalidNotification)
@@ -1077,6 +1080,7 @@ async fn python_written_notification_corpus() {
         let fixture: Value =
             serde_json::from_slice(&fs::read(path).expect("replay fixture")).expect("replay JSON");
         let store = RuntimeStore::open(Some(Path::new(fixture["root"].as_str().expect("root"))))
+            .await
             .expect("reopen committed database");
         apply(&store, &fixture["case"], &fixture["prepared"])
             .await
@@ -1178,7 +1182,7 @@ async fn corpus(full: bool, runtime_effects: bool) {
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
         let seeded = started.elapsed().as_secs_f64();
-        let store = match RuntimeStore::open(Some(&rust)) {
+        let store = match RuntimeStore::open(Some(&rust)).await {
             Ok(store) => store,
             Err(error) => {
                 let location = case["expect_refusal"]

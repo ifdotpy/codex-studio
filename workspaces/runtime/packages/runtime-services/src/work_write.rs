@@ -3030,6 +3030,7 @@ mod actor_tests {
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
+    use std::sync::Arc;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, RuntimeStore, WorkItemsRepository,
     };
@@ -3167,9 +3168,11 @@ mod actor_tests {
     #[tokio::test]
     async fn empty_archive_maintenance_does_not_commit_or_self_wake() {
         let directory = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("runtime store");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
         let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         {
             let commits = std::sync::Arc::clone(&commits);
@@ -3278,8 +3281,9 @@ mod actor_tests {
                 .await
                 .expect("runtime store"),
         );
+        let role = role.to_owned();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 for agent in [
                     json!({"id":"lead","rootId":"lead","parentId":null,
                         "epoch":1,"status":"running","autoWake":true,"isLead":true}),
@@ -3375,12 +3379,13 @@ mod actor_tests {
             json!({"agentArchive":{"at":1.0,"epoch":2,"reason":"already archived"}}),
         ] {
             let (store, _root) = reviewer_archive_store("reviewer").await;
+            let marker_for_write = marker.clone();
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     let mut child =
                         AgentRepository::get(tx, &AgentId::from("child"))?.expect("reviewer loads");
                     let mut record = child.value();
-                    for (key, value) in marker.as_object().expect("marker object") {
+                    for (key, value) in marker_for_write.as_object().expect("marker object") {
                         record[key] = value.clone();
                     }
                     child = AgentRecord::from_value(record)?;

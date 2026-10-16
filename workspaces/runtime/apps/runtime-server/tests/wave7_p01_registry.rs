@@ -31,7 +31,7 @@ use studio_runtime_services::{
     provider_session_task::SessionTaskConfig,
 };
 use studio_runtime_store::{RuntimeStore, StoreError};
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{Notify, OnceCell, mpsc, watch};
 
 fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
@@ -81,86 +81,92 @@ fn snapshot_fixture(
     }
 }
 
-fn dispatch_template() -> &'static FixtureTemplate {
-    static TEMPLATE: std::sync::OnceLock<FixtureTemplate> = std::sync::OnceLock::new();
-    TEMPLATE.get_or_init(|| {
-        let root = tempfile::tempdir().unwrap();
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-        command
-            .args(["-B"])
-            .arg(&script)
-            .arg(root.path())
-            .arg("dispatch");
-        let result = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py dispatch: {error}"));
-        assert!(
-            result.status.success(),
-            "wave7_p01_fixture.py dispatch: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let agents = serde_json::from_slice(&result.stdout).unwrap();
-        // Run migrations once before snapshotting so each test only copies a
-        // ready-to-open SQLite image instead of starting Python and migrating.
-        drop(RuntimeStore::open(Some(root.path())).unwrap());
-        let mut entries = Vec::new();
-        snapshot_fixture(root.path(), root.path(), &mut entries);
-        FixtureTemplate {
-            _root: root,
-            entries,
-            agents,
-        }
-    })
+async fn dispatch_template() -> &'static FixtureTemplate {
+    static TEMPLATE: OnceCell<FixtureTemplate> = OnceCell::const_new();
+    TEMPLATE
+        .get_or_init(|| async {
+            let root = tempfile::tempdir().unwrap();
+            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+            let script =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+            let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+            command
+                .args(["-B"])
+                .arg(&script)
+                .arg(root.path())
+                .arg("dispatch");
+            let result = prepared_python::output_with_timeout(
+                &mut command,
+                &script,
+                prepared_python::PYTHON_ORACLE_TIMEOUT,
+            )
+            .unwrap_or_else(|error| panic!("wave7_p01_fixture.py dispatch: {error}"));
+            assert!(
+                result.status.success(),
+                "wave7_p01_fixture.py dispatch: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let agents = serde_json::from_slice(&result.stdout).unwrap();
+            // Run migrations once before snapshotting so each test only copies a
+            // ready-to-open SQLite image instead of starting Python and migrating.
+            drop(RuntimeStore::open(Some(root.path())).await.unwrap());
+            let mut entries = Vec::new();
+            snapshot_fixture(root.path(), root.path(), &mut entries);
+            FixtureTemplate {
+                _root: root,
+                entries,
+                agents,
+            }
+        })
+        .await
 }
 
-fn recovery_template() -> &'static FixtureTemplate {
-    static TEMPLATE: std::sync::OnceLock<FixtureTemplate> = std::sync::OnceLock::new();
-    TEMPLATE.get_or_init(|| {
-        let root = tempfile::tempdir().unwrap();
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-        command
-            .args(["-B"])
-            .arg(&script)
-            .arg(root.path())
-            .arg("recovery");
-        let result = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py recovery: {error}"));
-        assert!(
-            result.status.success(),
-            "wave7_p01_fixture.py recovery: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let agents = serde_json::from_slice(&result.stdout).unwrap();
-        let mut entries = Vec::new();
-        snapshot_fixture(root.path(), root.path(), &mut entries);
-        FixtureTemplate {
-            _root: root,
-            entries,
-            agents,
-        }
-    })
+async fn recovery_template() -> &'static FixtureTemplate {
+    static TEMPLATE: OnceCell<FixtureTemplate> = OnceCell::const_new();
+    TEMPLATE
+        .get_or_init(|| async {
+            let root = tempfile::tempdir().unwrap();
+            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+            let script =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+            let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+            command
+                .args(["-B"])
+                .arg(&script)
+                .arg(root.path())
+                .arg("recovery");
+            let result = prepared_python::output_with_timeout(
+                &mut command,
+                &script,
+                prepared_python::PYTHON_ORACLE_TIMEOUT,
+            )
+            .unwrap_or_else(|error| panic!("wave7_p01_fixture.py recovery: {error}"));
+            assert!(
+                result.status.success(),
+                "wave7_p01_fixture.py recovery: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let agents = serde_json::from_slice(&result.stdout).unwrap();
+            let mut entries = Vec::new();
+            snapshot_fixture(root.path(), root.path(), &mut entries);
+            FixtureTemplate {
+                _root: root,
+                entries,
+                agents,
+            }
+        })
+        .await
 }
 
 impl Fixture {
-    fn new() -> Self {
-        Self::build("dispatch")
+    async fn new() -> Self {
+        Self::build("dispatch").await
     }
-    fn build(mode: &str) -> Self {
+    async fn build(mode: &str) -> Self {
         if mode == "dispatch" {
             use std::os::unix::fs::PermissionsExt;
 
-            let template = dispatch_template();
+            let template = dispatch_template().await;
             let root = tempfile::tempdir().unwrap();
             for entry in &template.entries {
                 let path = root.path().join(&entry.path);
@@ -173,16 +179,17 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let (store, changes) = store_with_change_signal(root.path());
+            let (store, changes) = store_with_change_signal(root.path()).await;
             let cwd = root.path().to_string_lossy().into_owned();
             store
-                .transaction_with::<_, StoreError>(|tx| {
+                .transaction_with::<_, StoreError>(move |tx| {
                     tx.execute(
                         "UPDATE runtime_agents SET record=json_set(record,'$.cwd',?1)",
                         [&cwd],
                     )?;
                     Ok(())
                 })
+                .await
                 .unwrap();
             return Self {
                 _root: root,
@@ -194,7 +201,7 @@ impl Fixture {
         if mode == "recovery" {
             use std::os::unix::fs::PermissionsExt;
 
-            let template = recovery_template();
+            let template = recovery_template().await;
             let root = tempfile::tempdir().unwrap();
             for entry in &template.entries {
                 let path = root.path().join(&entry.path);
@@ -207,7 +214,7 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let (store, changes) = store_with_change_signal(root.path());
+            let (store, changes) = store_with_change_signal(root.path()).await;
             return Self {
                 _root: root,
                 store,
@@ -232,7 +239,7 @@ impl Fixture {
             String::from_utf8_lossy(&result.stderr)
         );
         let agents = serde_json::from_slice(&result.stdout).unwrap();
-        let (store, changes) = store_with_change_signal(root.path());
+        let (store, changes) = store_with_change_signal(root.path()).await;
         Self {
             _root: root,
             store,
@@ -240,23 +247,26 @@ impl Fixture {
             changes,
         }
     }
-    fn enqueue(&self, index: usize, id: &str) {
+    async fn enqueue(&self, index: usize, id: &str) {
+        let agent_id = self.agents[index]["id"].as_str().unwrap().to_owned();
+        let event_id = id.to_owned();
         self.store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 annotate(
                     tx,
                     AnnotationWrite {
-                        agent_id: self.agents[index]["id"].as_str().unwrap().into(),
-                        id: Some(id.into()),
+                        agent_id,
+                        id: Some(event_id.clone()),
                         path: "README.md".into(),
                         line: 1,
-                        text: id.into(),
+                        text: event_id.clone(),
                         turn_id: None,
-                        signature: id.into(),
+                        signature: event_id,
                     },
                 )
                 .map_err(|e| StoreError::SchemaMismatch(e.to_string()))
             })
+            .await
             .unwrap();
     }
 
@@ -273,8 +283,10 @@ impl Fixture {
     }
 }
 
-fn store_with_change_signal(root: &std::path::Path) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
-    let store = Arc::new(RuntimeStore::open(Some(root)).unwrap());
+async fn store_with_change_signal(
+    root: &std::path::Path,
+) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
+    let store = Arc::new(RuntimeStore::open(Some(root)).await.unwrap());
     let (sender, changes) = watch::channel(0_u64);
     store.add_commit_observer(move || {
         sender.send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -770,7 +782,7 @@ fn radio_queue_snapshot() -> Value {
     radio_snapshot("queue")
 }
 
-fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
+async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
     let project_root = fixture._root.path().join("radio-project");
     fs::create_dir_all(&project_root).unwrap();
     std::process::Command::new("git")
@@ -799,9 +811,11 @@ fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
         )
         .unwrap();
     }
+    let snapshot = snapshot.clone();
+    let stored_project_root = project_root.clone();
     fixture
         .store
-        .transaction(|db| {
+        .transaction(move |db| {
             for (table, rows) in snapshot.as_object().unwrap() {
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
@@ -815,29 +829,29 @@ fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         let record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
                         let mut record = record;
-                        record["id"] = json!(project_root.to_string_lossy());
-                        record["path"] = json!(project_root.to_string_lossy());
+                        record["id"] = json!(stored_project_root.to_string_lossy());
+                        record["path"] = json!(stored_project_root.to_string_lossy());
                         if let Some(locations) = record["locations"].as_array_mut() {
                             for location in locations {
-                                location["path"] = json!(project_root.to_string_lossy());
+                                location["path"] = json!(stored_project_root.to_string_lossy());
                             }
                         }
-                        row["id"] = json!(project_root.to_string_lossy());
+                        row["id"] = json!(stored_project_root.to_string_lossy());
                         row["record"] = json!(record.to_string());
                     }
                     if table == "agents" {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
-                        record["cwd"] = json!(project_root.to_string_lossy());
+                        record["cwd"] = json!(stored_project_root.to_string_lossy());
                         if record.get("projectId").is_some() {
-                            record["projectId"] = json!(project_root.to_string_lossy());
+                            record["projectId"] = json!(stored_project_root.to_string_lossy());
                         }
                         row["record"] = json!(record.to_string());
                     }
                     if table == "rooms" {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
-                        record["projectPath"] = json!(project_root.to_string_lossy());
+                        record["projectPath"] = json!(stored_project_root.to_string_lossy());
                         row["record"] = json!(record.to_string());
                     }
                     let fields = row.as_object().unwrap();
@@ -865,12 +879,13 @@ fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
             }
             Ok(())
         })
+        .await
         .unwrap();
 }
 
 #[tokio::test]
 async fn concurrent_ensure_session_starts_one_cold_account_worker() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let (launcher, _writes) = scripted();
     let broker = AccountSessionBroker::new();
     let registry = AccountRegistry::new_with_broker(
@@ -911,9 +926,9 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
 
 #[tokio::test]
 async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_clock() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let snapshot = radio_interrupt_snapshot();
-    seed_radio_interrupt(&fixture, &snapshot);
+    seed_radio_interrupt(&fixture, &snapshot).await;
     let (launcher, _writes) = scripted();
     let mut registry =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
@@ -944,9 +959,9 @@ async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_c
 
 #[tokio::test]
 async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let snapshot = radio_queue_snapshot();
-    seed_radio_interrupt(&fixture, &snapshot);
+    seed_radio_interrupt(&fixture, &snapshot).await;
     let (launcher, mut writes) = scripted_with_resume_recording(true, true);
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1063,9 +1078,9 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
 
 #[tokio::test]
 async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_resending() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let snapshot = radio_interrupt_snapshot();
-    seed_radio_interrupt(&fixture, &snapshot);
+    seed_radio_interrupt(&fixture, &snapshot).await;
     let (launcher, _writes) = scripted();
     let mut registry =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
@@ -1098,8 +1113,8 @@ async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_rese
 
 #[tokio::test]
 async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_not_resend() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    fixture.enqueue(0, "committed-before-start");
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "committed-before-start").await;
     let (launcher, mut writes) = scripted();
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1136,19 +1151,21 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
 
 #[tokio::test]
 async fn image_workspace_pending_event_is_refused_before_account_provider_launch() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let fixture = Fixture::new().await;
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    let transaction_agent_id = agent_id.clone();
     fixture
         .store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image') WHERE id=?1",
-                [agent_id],
+                [&transaction_agent_id],
             )?;
             Ok(())
         })
+        .await
         .unwrap();
-    fixture.enqueue(0, "image-workspace-refused");
+    fixture.enqueue(0, "image-workspace-refused").await;
     let (launcher, mut writes) = scripted();
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1165,7 +1182,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
         let db = fixture.store.read().unwrap();
         db.query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
-            [agent_id],
+            [agent_id.as_str()],
             |row| row.get::<_, String>(0),
         )
         .unwrap()
@@ -1213,9 +1230,9 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
 
 #[tokio::test]
 async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    fixture.enqueue(0, "first");
-    fixture.enqueue(1, "second");
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "first").await;
+    fixture.enqueue(1, "second").await;
     // This case exercises independent accounts and orderly attachment shutdown.
     // Lost write acceptance is covered by the adjacent restart test and can make
     // an already-failed provider task race the explicit shutdown.
@@ -1248,8 +1265,8 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
 
 #[tokio::test]
 async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    fixture.enqueue(0, "retry-start");
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "retry-start").await;
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
     launcher.failures.store(1, Ordering::SeqCst);
     let mut registry = AccountRegistry::new(
@@ -1296,7 +1313,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
         http::Request,
     };
     use tower::ServiceExt;
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let state = studio_runtime_http::HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
@@ -1373,8 +1390,8 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
 
 #[tokio::test]
 async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_recoverable() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    fixture.enqueue(0, "before-wake-handoff");
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "before-wake-handoff").await;
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1441,7 +1458,7 @@ mod runtime_shutdown;
 async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let socket = fixture._root.path().join("probe.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let executable = fixture._root.path().join("probe");
@@ -1488,9 +1505,9 @@ async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
     );
 }
 
-#[test]
-fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
-    let fixture = Fixture::build("recovery");
+#[tokio::test]
+async fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
+    let fixture = Fixture::build("recovery").await;
     let selected = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
     assert_eq!(
         json!(selected.keys().collect::<Vec<_>>()),
@@ -1514,12 +1531,13 @@ fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_re
 
 #[tokio::test]
 async fn connection_loss_replaces_worker_before_delivering_new_input() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    fixture.store.transaction(|tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey','default','$.executionSettingsAccountKey','default') WHERE id=?1", [fixture.agents[1]["id"].as_str().unwrap()])?;
+    let fixture = Fixture::new().await;
+    let worker_agent_id = fixture.agents[1]["id"].as_str().unwrap().to_owned();
+    fixture.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey','default','$.executionSettingsAccountKey','default') WHERE id=?1", [&worker_agent_id])?;
         Ok(())
-    }).unwrap();
-    fixture.enqueue(0, "unknown-before-disconnect");
+    }).await.unwrap();
+    fixture.enqueue(0, "unknown-before-disconnect").await;
     let (launcher, mut writes) = scripted_with_unknown_first_launch();
     let registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1547,7 +1565,7 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     })
     .await
     .expect("replacement worker hang guard");
-    fixture.enqueue(1, "new-input-after-disconnect");
+    fixture.enqueue(1, "new-input-after-disconnect").await;
     wake.notify_one();
     let second = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
@@ -1585,9 +1603,9 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     );
 }
 
-fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<String> {
-    let source = fixture.agents[0]["id"].as_str().unwrap();
-    fixture.store.transaction(|tx| {
+async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<String> {
+    let source = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    fixture.store.transaction(move |tx| {
         // One recursive insert per table keeps this 4,100-record paging fixture
         // from recompiling and executing two SQL statements for every row.
         let sequence = "WITH RECURSIVE seq(i) AS (
@@ -1605,7 +1623,7 @@ fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<Stri
                                 '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source, each_account),
+            (count as i64, source.as_str(), each_account),
         )?;
         tx.execute(
             &format!("{sequence}
@@ -1614,18 +1632,18 @@ fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<Stri
                        printf('00000000-0000-4000-8000-%012d', seq.i),
                        'annotation', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source),
+            (count as i64, source.as_str()),
         )?;
         Ok((0..count)
             .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
             .collect())
-    }).unwrap()
+    }).await.unwrap()
 }
 
-#[test]
-fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
-    let fixture = Fixture::new();
-    let expected = seed_backlog(&fixture, 4100, false);
+#[tokio::test]
+async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
+    let fixture = Fixture::new().await;
+    let expected = seed_backlog(&fixture, 4100, false).await;
     let mut after = BTreeMap::new();
     let mut actual = Vec::new();
     while actual.len() < expected.len() {
@@ -1649,8 +1667,8 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );
-    let fixture = Fixture::new();
-    seed_backlog(&fixture, 130, true);
+    let fixture = Fixture::new().await;
+    seed_backlog(&fixture, 130, true).await;
     let first = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
     assert_eq!(first.len(), 128);
     let second = account_registry::target_page(
@@ -1673,14 +1691,15 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
         first.first_key_value().unwrap().0
     );
 
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let source = fixture.agents[0]["id"].as_str().unwrap();
-    fixture.store.transaction(|tx| {
-        let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [source], |row| row.get(0))?;
+    let source = source.to_owned();
+    fixture.store.transaction(move |tx| {
+        let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('bad-account-key',json_set(?1,'$.id','bad-account-key','$.accountKey',7))", [raw])?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','annotation','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
         Ok(())
-    }).unwrap();
+    }).await.unwrap();
     assert!(matches!(
         account_registry::target_page(&fixture.store, "", &BTreeMap::new()),
         Err(WorkerError::Store(StoreError::InvalidStoredObject { table: "runtime_agents", id })) if id == "bad-account-key"
@@ -1689,10 +1708,10 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
 
 #[tokio::test]
 async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    seed_backlog(&fixture, 48, false);
-    fixture.enqueue(0, "eligible-after-blocked-prefix");
-    fixture.enqueue(1, "eligible-other-account");
+    let fixture = Fixture::new().await;
+    seed_backlog(&fixture, 48, false).await;
+    fixture.enqueue(0, "eligible-after-blocked-prefix").await;
+    fixture.enqueue(1, "eligible-other-account").await;
     let (launcher, mut writes) = scripted();
     let registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1737,18 +1756,19 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
 
 #[tokio::test]
 async fn registry_drains_strict_account_pages_after_one_global_wake() {
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    seed_backlog(&fixture, 130, true);
+    let fixture = Fixture::new().await;
+    seed_backlog(&fixture, 130, true).await;
     let final_agent = "00000000-0000-4000-8000-000000000129";
     fixture
         .store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_remove(record,'$.contextRepairWait') WHERE id=?1",
                 [final_agent],
             )?;
             Ok(())
         })
+        .await
         .unwrap();
 
     let (launcher, mut writes) = scripted();
@@ -2311,7 +2331,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         );
         return;
     }
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let (accounts, home) = account_driver(fixture._root.path());
     std::fs::write(
         home.join("auth.json"),
@@ -2704,17 +2724,19 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         return;
     }
 
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    let transaction_agent_id = agent_id.clone();
     fixture
         .store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.provider','claude','$.model','default','$.threadId',NULL,'$.accountKey','default','$.executionSettingsAccountKey','default','$.nativeEffort',NULL,'$.autoWake',json('true'),'$.isLead',json('false'),'$.status','queued') WHERE id=?1",
-                [&agent_id],
+                [&transaction_agent_id],
             )?;
             Ok::<_, StoreError>(())
         })
+        .await
         .unwrap();
     let root = PathBuf::from(std::env::var("STUDIO_W8_CLAUDE_TEST_ROOT").unwrap());
     let account_home = root.join("account-home");
@@ -3017,7 +3039,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         );
         return;
     }
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     let (accounts, home) = account_driver(fixture._root.path());
     std::fs::write(
         home.join("auth.json"),
@@ -3201,7 +3223,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         );
         return;
     }
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     fixture
         .store
         .transaction_with(|tx| {
@@ -3213,6 +3235,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
             )?;
             Ok::<(), StoreError>(())
         })
+        .await
         .unwrap();
     std::fs::write(
         fixture._root.path().join("emit-generation-notification"),
@@ -3286,7 +3309,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
     );
 
     let second_agent_id = fixture.agents[1]["id"].as_str().unwrap();
-    make_direct_agent_runnable(&fixture.store, second_agent_id, "default");
+    make_direct_agent_runnable(&fixture.store, second_agent_id, "default").await;
     let runtime = host_runtime::HostRuntime::start(
         &mut state,
         fixture.store.clone(),
@@ -3357,7 +3380,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         );
         return;
     }
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     std::fs::write(fixture._root.path().join("crash-first-turn"), "1").unwrap();
     let launch_observer =
         tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
@@ -3511,7 +3534,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
         );
         return;
     }
-    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let fixture = Fixture::new().await;
     std::fs::write(fixture._root.path().join("crash-first-initialize"), "1").unwrap();
     let launch_observer =
         tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
@@ -3662,12 +3685,14 @@ fn direct_generation(store: &RuntimeStore) -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, account: &str) {
+async fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, account: &str) {
+    let agent_id = agent_id.to_owned();
+    let account = account.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
-                [agent_id],
+                [&agent_id],
                 |row| row.get(0),
             )?;
             let mut record: Value = serde_json::from_str(&raw)
@@ -3677,10 +3702,11 @@ fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, account: &st
             record["autoWake"] = json!(true);
             tx.execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                [record.to_string(), agent_id.to_owned()],
+                [record.to_string(), agent_id],
             )?;
             Ok::<(), StoreError>(())
         })
+        .await
         .unwrap();
 }
 

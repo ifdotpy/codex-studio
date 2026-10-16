@@ -208,8 +208,57 @@ mod preparation_retry_tests {
     use crate::agent_lifecycle_runtime::LifecycleEffect;
     use crate::agent_management::ManagementError;
     use serde_json::json;
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use studio_runtime_store::{RuntimeStore, agent_management};
+
+    fn start_interleaving_writer(
+        store: std::sync::Arc<RuntimeStore>,
+    ) -> (
+        tokio::sync::mpsc::UnboundedSender<usize>,
+        std::sync::Arc<std::sync::Mutex<mpsc::Receiver<()>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (change_tx, mut change_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (committed_tx, committed_rx) = mpsc::channel();
+        let writer = tokio::spawn(async move {
+            while let Some(attempt) = change_rx.recv().await {
+                store
+                    .transaction(move |tx| {
+                        tx.execute(
+                            "UPDATE runtime_agents SET record=json_set(record,'$.name',?1) WHERE id='lead'",
+                            [format!("change-{attempt}")],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("concurrent update commits between prepared attempts");
+                committed_tx
+                    .send(())
+                    .expect("lifecycle test waits for each interleaved commit");
+            }
+        });
+        (
+            change_tx,
+            std::sync::Arc::new(std::sync::Mutex::new(committed_rx)),
+            writer,
+        )
+    }
+
+    fn interleave(
+        attempt: usize,
+        changes: &tokio::sync::mpsc::UnboundedSender<usize>,
+        committed: &std::sync::Mutex<mpsc::Receiver<()>>,
+    ) {
+        changes
+            .send(attempt)
+            .expect("concurrent writer task remains active");
+        committed
+            .lock()
+            .expect("commit receiver lock")
+            .recv()
+            .expect("concurrent writer commits before lifecycle retry");
+    }
 
     struct NoopPorts;
     impl LifecyclePorts for NoopPorts {
@@ -222,10 +271,14 @@ mod preparation_retry_tests {
         }
     }
 
-    #[test]
-    fn retries_when_agent_changes_during_filesystem_preparation() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retries_when_agent_changes_during_filesystem_preparation() {
         let root = tempfile::tempdir().expect("state dir");
-        let store = RuntimeStore::open(Some(root.path())).expect("store opens");
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store opens"),
+        );
         store
             .transaction(|tx| {
                 agent_management::write(
@@ -235,11 +288,14 @@ mod preparation_retry_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("agent seed");
 
-        let preparations = Cell::new(0);
+        let preparations = AtomicUsize::new(0);
+        let (changes, committed, writer) = start_interleaving_writer(store.clone());
+        let hook_changes = changes.clone();
         let result = execute_with_prepared_hook(
-            &store,
+            store.clone(),
             &Action::Stop {
                 target: "lead".to_owned(),
                 descendants: true,
@@ -248,31 +304,34 @@ mod preparation_retry_tests {
                 sender_epoch: None,
             },
             1_800_000_000.0,
-            &NoopPorts,
+            std::sync::Arc::new(NoopPorts),
             || {
-                if preparations.replace(preparations.get() + 1) == 0 {
-                    store
-                        .transaction(|tx| {
-                            tx.execute(
-                                "UPDATE runtime_agents SET record=json_set(record,'$.name','completed') WHERE id='lead'",
-                                [],
-                            )?;
-                            Ok(())
-                        })
-                        .expect("completion interleaves with preparation");
+                if preparations.fetch_add(1, Ordering::SeqCst) == 0 {
+                    interleave(0, &hook_changes, &committed);
                 }
             },
         )
+        .await
         .expect("stop retries with current lifecycle inputs");
+        drop(changes);
+        writer.await.expect("interleaving writer task exits");
 
-        assert_eq!(preparations.get(), 2, "one stale snapshot is retried once");
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            2,
+            "one stale snapshot is retried once"
+        );
         assert_eq!(result["stopped"], json!(["lead"]));
     }
 
-    #[test]
-    fn final_writer_admitted_attempt_succeeds_after_two_snapshot_conflicts() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn final_writer_admitted_attempt_succeeds_after_two_snapshot_conflicts() {
         let root = tempfile::tempdir().expect("state dir");
-        let store = RuntimeStore::open(Some(root.path())).expect("store opens");
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store opens"),
+        );
         store
             .transaction(|tx| {
                 agent_management::write(
@@ -282,11 +341,14 @@ mod preparation_retry_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("agent seed");
 
-        let preparations = Cell::new(0);
+        let preparations = AtomicUsize::new(0);
+        let (changes, committed, writer) = start_interleaving_writer(store.clone());
+        let hook_changes = changes.clone();
         let result = execute_with_prepared_hook(
-            &store,
+            store.clone(),
             &Action::Stop {
                 target: "lead".to_owned(),
                 descendants: true,
@@ -295,23 +357,22 @@ mod preparation_retry_tests {
                 sender_epoch: None,
             },
             1_800_000_000.0,
-            &NoopPorts,
+            std::sync::Arc::new(NoopPorts),
             || {
-                let attempt = preparations.replace(preparations.get() + 1);
-                store
-                    .transaction(|tx| {
-                        tx.execute(
-                            "UPDATE runtime_agents SET record=json_set(record,'$.name',?1) WHERE id='lead'",
-                            [format!("change-{attempt}")],
-                        )?;
-                        Ok(())
-                    })
-                    .expect("concurrent update interleaves with preparation");
+                let attempt = preparations.fetch_add(1, Ordering::SeqCst);
+                interleave(attempt, &hook_changes, &committed);
             },
         )
+        .await
         .expect("last attempt captures under writer admission and stops current state");
+        drop(changes);
+        writer.await.expect("interleaving writer task exits");
 
-        assert_eq!(preparations.get(), 3, "bound is three total attempts");
+        assert_eq!(
+            preparations.load(Ordering::SeqCst),
+            3,
+            "bound is three total attempts"
+        );
         assert_eq!(result["stopped"], json!(["lead"]));
         let reader = store.read().expect("reader");
         let agent = agent_management::read(&reader).expect("records")["runtime_agents"][0].clone();

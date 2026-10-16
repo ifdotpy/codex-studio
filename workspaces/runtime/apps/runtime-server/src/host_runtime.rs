@@ -2294,7 +2294,7 @@ mod voice_composition_tests {
             retained::{PortError, RequestResult, SessionRequest},
             start_account_worker_with_preparation,
         },
-        callback_runtime::{CallbackReplyPort, CallbackRuntime, ReplyReceipt},
+        callback_runtime::{CallbackReplyPort, CallbackRuntime},
         model_catalog::ModelCatalogService,
         provider_callbacks::{CallbackError, Reply},
         provider_session_task::SessionTaskConfig,
@@ -2606,7 +2606,7 @@ mod voice_composition_tests {
         })
         .to_string();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     ("voice-composed-agent", agent_record.as_str()),

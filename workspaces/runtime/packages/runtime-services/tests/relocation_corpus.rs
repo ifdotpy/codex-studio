@@ -41,14 +41,16 @@ impl Fixture {
             data,
         }
     }
-    fn store(&self, name: &str) -> (PathBuf, RuntimeStore) {
+    async fn store(&self, name: &str) -> (PathBuf, RuntimeStore) {
         let path = self.root.path().join(name);
         fs::create_dir(&path).expect("case directory");
         for filename in ["canvas.sqlite3", "analytics.sqlite3"] {
             fs::copy(self.template.join(filename), path.join(filename))
                 .expect("clone prepared template");
         }
-        let store = RuntimeStore::open(Some(&path)).expect("open Python-written schema");
+        let store = RuntimeStore::open(Some(&path))
+            .await
+            .expect("open Python-written schema");
         (path, store)
     }
     async fn seed(&self, store: &RuntimeStore, case: &Value) {
@@ -115,6 +117,70 @@ fn snapshot(store: &RuntimeStore) -> Value {
     Value::Object(result)
 }
 
+async fn apply_move_case(
+    store: &RuntimeStore,
+    name: &str,
+    case: &Value,
+    now: f64,
+) -> Result<bool, agent_move::MoveError> {
+    if name == "expire-importing" {
+        agent_move::expire(store, text(&case["operation"], "id"), now).await
+    } else {
+        let agent = text(&case["agent"], "id").to_owned();
+        let notification = case["notification"].clone();
+        store
+            .transaction_with(move |tx| agent_move::capture_cache(tx, &agent, &notification, now))
+            .await
+    }
+}
+
+async fn save_status_ticket(
+    store: &RuntimeStore,
+    move_id: &str,
+    ticket: &str,
+    generation: Value,
+    target_receipt: &Value,
+) {
+    let ticket = ticket.to_owned();
+    let move_id = move_id.to_owned();
+    let target_receipt = target_receipt.clone();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",
+                params![
+                    ticket,
+                    json!({"requestId":ticket,"action":"move_status","payload":{"move":move_id,"reconciliationGeneration":generation}}).to_string(),
+                    json!({"requestId":ticket,"outcome":"applied","value":target_receipt}).to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("save durable status ticket");
+}
+
+async fn complete_location(
+    store: &RuntimeStore,
+    key: &str,
+    server: &str,
+    envelope: &Value,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<Value, project_locations::LocationError> {
+    project_locations::complete(
+        store,
+        key.to_owned(),
+        server.to_owned(),
+        envelope.clone(),
+        receipt.clone(),
+        local_server.to_owned(),
+        now,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn python_location_and_move_corpus_through_consumers() {
     let fixture = Fixture::new();
@@ -142,7 +208,7 @@ async fn python_location_and_move_corpus_through_consumers() {
         {
             continue;
         }
-        let (path, store) = fixture.store(text(case, "name"));
+        let (path, store) = fixture.store(text(case, "name")).await;
         fixture.seed(&store, case).await;
         let family = text(case, "family");
         let before = snapshot(&store);
@@ -150,7 +216,7 @@ async fn python_location_and_move_corpus_through_consumers() {
             "location" => {
                 let outbox = &case["outbox"];
                 let key = text(outbox, "id");
-                let value = project_locations::complete(
+                let value = complete_location(
                     &store,
                     key,
                     "peer",
@@ -194,9 +260,9 @@ async fn python_location_and_move_corpus_through_consumers() {
                 drop(db);
                 let committed = snapshot(&store);
                 drop(store);
-                let reopened = RuntimeStore::open(Some(&path)).expect("restart");
+                let reopened = RuntimeStore::open(Some(&path)).await.expect("restart");
                 assert_eq!(
-                    project_locations::complete(
+                    complete_location(
                         &reopened,
                         key,
                         "peer",
@@ -251,7 +317,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                 drop(db);
                 let committed = snapshot(&store);
                 drop(store);
-                let store = RuntimeStore::open(Some(&path)).expect("restart");
+                let store = RuntimeStore::open(Some(&path)).await.expect("restart");
                 let replay = store
                     .transaction_with(move |tx| {
                         studio_runtime_services::tool_requests::execute(
@@ -340,7 +406,7 @@ async fn python_location_and_move_corpus_through_consumers() {
 async fn location_consumer_checks_shared_outbox_storage_before_decoding() {
     let fixture = Fixture::new();
     let case = &fixture.data["cases"][0];
-    let (_path, store) = fixture.store("invalid-delivery-metadata");
+    let (_path, store) = fixture.store("invalid-delivery-metadata").await;
     fixture.seed(&store, case).await;
     let key = text(&case["outbox"], "id");
     let key_for_write = key.to_owned();
@@ -357,7 +423,7 @@ async fn location_consumer_checks_shared_outbox_storage_before_decoding() {
     let before = snapshot(&store);
     assert!(ProjectLocationsRepository::outbox(&store.read().expect("read"), key).is_err());
     assert!(
-        project_locations::complete(
+        complete_location(
             &store,
             key,
             "peer",
@@ -396,7 +462,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
             continue;
         }
         for timing in ["BEFORE", "AFTER"] {
-            let (path, store) = fixture.store(&format!("fault-{index}-{timing}"));
+            let (path, store) = fixture.store(&format!("fault-{index}-{timing}")).await;
             fixture.seed(&store, case).await;
             let trigger = format!(
                 "CREATE TRIGGER relocation_fault {timing} {verb} ON {table} BEGIN SELECT RAISE(ABORT,'relocation failpoint'); END"
@@ -410,7 +476,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
                 .expect("arm failpoint");
             let before = snapshot(&store);
             assert!(
-                project_locations::complete(
+                complete_location(
                     &store,
                     key,
                     "peer",
@@ -425,7 +491,9 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
             );
             assert_eq!(snapshot(&store), before, "rollback {table} {verb} {timing}");
             drop(store);
-            let store = RuntimeStore::open(Some(&path)).expect("restart after failed transaction");
+            let store = RuntimeStore::open(Some(&path))
+                .await
+                .expect("restart after failed transaction");
             assert_eq!(snapshot(&store), before);
             store
                 .transaction(|tx| {
@@ -434,7 +502,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
                 })
                 .await
                 .expect("remove injected failure");
-            project_locations::complete(
+            complete_location(
                 &store,
                 key,
                 "peer",
@@ -447,9 +515,10 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
             .expect("retry completes");
             let committed = snapshot(&store);
             drop(store);
-            let store =
-                RuntimeStore::open(Some(&path)).expect("restart after committed transaction");
-            project_locations::complete(
+            let store = RuntimeStore::open(Some(&path))
+                .await
+                .expect("restart after committed transaction");
+            complete_location(
                 &store,
                 key,
                 "peer",
@@ -469,7 +538,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
 async fn malformed_and_foreign_receipts_refuse_without_writes() {
     let fixture = Fixture::new();
     let case = &fixture.data["cases"][0];
-    let (_, store) = fixture.store("refusals");
+    let (_, store) = fixture.store("refusals").await;
     fixture.seed(&store, case).await;
     let outbox = &case["outbox"];
     let now = fixture.data["now"].as_f64().expect("clock");
@@ -495,17 +564,9 @@ async fn malformed_and_foreign_receipts_refuse_without_writes() {
             let mut receipt = case["receipt"].clone();
             *receipt.pointer_mut(pointer).expect("receipt field") = wrong;
             assert!(
-                project_locations::complete(
-                    &store,
-                    key,
-                    "peer",
-                    &outbox["body"],
-                    &receipt,
-                    local,
-                    now
-                )
-                .await
-                .is_err(),
+                complete_location(&store, key, "peer", &outbox["body"], &receipt, local, now)
+                    .await
+                    .is_err(),
                 "{pointer}"
             );
             assert_eq!(snapshot(&store), before);
@@ -524,14 +585,14 @@ async fn malformed_and_foreign_receipts_refuse_without_writes() {
         receipt["value"]["canonicalPath"] = json!(invalid);
         receipt["value"]["projectId"] = json!(invalid);
         assert!(
-            project_locations::complete(&store, key, "peer", &outbox["body"], &receipt, local, now)
+            complete_location(&store, key, "peer", &outbox["body"], &receipt, local, now)
                 .await
                 .is_err()
         );
         assert_eq!(snapshot(&store), before);
     }
     assert!(
-        project_locations::complete(
+        complete_location(
             &store,
             key,
             "foreign",
@@ -545,7 +606,7 @@ async fn malformed_and_foreign_receipts_refuse_without_writes() {
     );
     let unknown = json!({"requestId":key,"outcome":"unknown"});
     assert_eq!(
-        project_locations::complete(&store, key, "peer", &outbox["body"], &unknown, local, now)
+        complete_location(&store, key, "peer", &outbox["body"], &unknown, local, now)
             .await
             .expect("unknown preserved"),
         unknown
@@ -617,7 +678,7 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
         .iter()
         .find(|case| case["name"] == "tool-applied")
         .expect("tool case");
-    let (path, store) = fixture.store("tool-binding");
+    let (path, store) = fixture.store("tool-binding").await;
     fixture.seed(&store, case).await;
     let now = fixture.data["now"].as_f64().expect("clock");
     let record = &case["record"];
@@ -681,7 +742,9 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
         }
     }
     drop(store);
-    let store = RuntimeStore::open(Some(&path)).expect("reopen failed repairs");
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("reopen failed repairs");
     assert_eq!(snapshot(&store), before);
     let mut repaired = record.clone();
     assert!(
@@ -724,7 +787,7 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
     let fixture = Fixture::new();
     let case = &fixture.data["cases"][0];
     for committed in [false, true] {
-        let (path, store) = fixture.store(&format!("process-loss-{committed}"));
+        let (path, store) = fixture.store(&format!("process-loss-{committed}")).await;
         fixture.seed(&store, case).await;
         let before = snapshot(&store);
         drop(store);
@@ -736,12 +799,14 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
             .status()
             .expect("crash fixture starts");
         assert!(status.success());
-        let store = RuntimeStore::open(Some(&path)).expect("recover process-owned journal");
+        let store = RuntimeStore::open(Some(&path))
+            .await
+            .expect("recover process-owned journal");
         if !committed {
             assert_eq!(snapshot(&store), before);
         }
         let outbox = &case["outbox"];
-        project_locations::complete(
+        complete_location(
             &store,
             text(outbox, "id"),
             "peer",
@@ -771,7 +836,9 @@ async fn relocation_process_stop_child() {
     let input: Value =
         serde_json::from_slice(&fs::read(path.join("command.json")).expect("command"))
             .expect("input");
-    let store = RuntimeStore::open(Some(&path)).expect("child owns state");
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("child owns state");
     let child_input = input.clone();
     store
         .transaction_with(move |tx| {
@@ -840,7 +907,7 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
                 if !full() && timing == "BEFORE" {
                     continue;
                 }
-                let (path, store) = fixture.store(&format!("{name}-{index}-{timing}"));
+                let (path, store) = fixture.store(&format!("{name}-{index}-{timing}")).await;
                 fixture.seed(&store, case).await;
                 let trigger = format!(
                     "CREATE TRIGGER move_fault {timing} {verb} ON {table} BEGIN SELECT RAISE(ABORT,'move failpoint'); END"
@@ -853,23 +920,15 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
                     .await
                     .expect("arm failpoint");
                 let before = snapshot(&store);
-                let apply = |store: &RuntimeStore| async {
-                    if name == "expire-importing" {
-                        agent_move::expire(store, text(&case["operation"], "id"), now).await
-                    } else {
-                        let agent = text(&case["agent"], "id").to_owned();
-                        let notification = case["notification"].clone();
-                        store
-                            .transaction_with(move |tx| {
-                                agent_move::capture_cache(tx, &agent, &notification, now)
-                            })
-                            .await
-                    }
-                };
-                assert!(apply(&store).await.is_err(), "{name} {table} {timing}");
+                assert!(
+                    apply_move_case(&store, name, case, now).await.is_err(),
+                    "{name} {table} {timing}"
+                );
                 assert_eq!(snapshot(&store), before);
                 drop(store);
-                let store = RuntimeStore::open(Some(&path)).expect("restart before retry");
+                let store = RuntimeStore::open(Some(&path))
+                    .await
+                    .expect("restart before retry");
                 assert_eq!(snapshot(&store), before);
                 store
                     .transaction(|tx| {
@@ -878,16 +937,26 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
                     })
                     .await
                     .expect("remove failpoint");
-                assert!(apply(&store).await.expect("retry"));
+                assert!(
+                    apply_move_case(&store, name, case, now)
+                        .await
+                        .expect("retry")
+                );
                 let committed = snapshot(&store);
                 drop(store);
-                let store = RuntimeStore::open(Some(&path)).expect("restart after commit");
-                assert!(!apply(&store).await.expect("replay"));
+                let store = RuntimeStore::open(Some(&path))
+                    .await
+                    .expect("restart after commit");
+                assert!(
+                    !apply_move_case(&store, name, case, now)
+                        .await
+                        .expect("replay")
+                );
                 assert_eq!(snapshot(&store), committed);
             }
         }
         if name == "expire-importing" {
-            let (_, store) = fixture.store("stale-move-epoch");
+            let (_, store) = fixture.store("stale-move-epoch").await;
             fixture.seed(&store, case).await;
             let mut changed_agent = case["agent"].clone();
             changed_agent["epoch"] = json!(2);
@@ -921,25 +990,21 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .iter()
         .find(|case| case["name"] == "release-waiting-not-started")
         .expect("release case");
-    let (path, store) = fixture.store("status-generation");
+    let (path, store) = fixture.store("status-generation").await;
     fixture.seed(&store, case).await;
     let now = fixture.data["now"].as_f64().expect("clock");
     let key = text(&case["operation"], "id");
     let old_generation = agent_move::MoveSnapshot::from_record(&case["operation"])
         .expect("Python-written source")
         .reconciliation_generation();
-    let save_ticket = |store: &RuntimeStore, ticket: &str, generation: Value| async move {
-        let ticket = ticket.to_owned();
-        let key = key.to_owned();
-        let target_receipt = case["targetReceipt"].clone();
-        store.transaction(move |tx| {
-            tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",
-                params![ticket, json!({"requestId":ticket,"action":"move_status","payload":{"move":key,"reconciliationGeneration":generation}}).to_string(),
-                    json!({"requestId":ticket,"outcome":"applied","value":target_receipt}).to_string()])?;
-            Ok(())
-        }).await.expect("save durable status ticket");
-    };
-    save_ticket(&store, "old-ticket", json!(old_generation)).await;
+    save_status_ticket(
+        &store,
+        key,
+        "old-ticket",
+        json!(old_generation),
+        &case["targetReceipt"],
+    )
+    .await;
     // A newer source status arrived after this target observation. Both states
     // could release on not_started, so only generation binding refuses the old proof.
     let mut current = case["operation"].clone();
@@ -957,7 +1022,9 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
     );
     assert_eq!(snapshot(&store), before);
     drop(store);
-    let store = RuntimeStore::open(Some(&path)).expect("restart preserves source generation");
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("restart preserves source generation");
     assert!(
         agent_move::release_untransferred(&store, key, "old-ticket", now)
             .await
@@ -973,7 +1040,7 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .enumerate()
     {
         let ticket = format!("malformed-{index}");
-        save_ticket(&store, &ticket, malformed).await;
+        save_status_ticket(&store, key, &ticket, malformed, &case["targetReceipt"]).await;
         let before = snapshot(&store);
         assert!(
             agent_move::release_untransferred(&store, key, &ticket, now)
@@ -982,7 +1049,14 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         );
         assert_eq!(snapshot(&store), before);
     }
-    save_ticket(&store, "current-ticket", json!(generation)).await;
+    save_status_ticket(
+        &store,
+        key,
+        "current-ticket",
+        json!(generation),
+        &case["targetReceipt"],
+    )
+    .await;
     assert!(
         agent_move::release_untransferred(&store, key, "current-ticket", now)
             .await
@@ -990,7 +1064,9 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
     );
     let committed = snapshot(&store);
     drop(store);
-    let store = RuntimeStore::open(Some(&path)).expect("restart after release");
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("restart after release");
     assert!(
         agent_move::release_untransferred(&store, key, "current-ticket", now + 1.0)
             .await

@@ -94,7 +94,7 @@ fn real_python_capture_rows_match_complete_rust_outputs() {
         }
         .expect("checked input");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let snapshot = CaptureSnapshot::load(&db, q).expect("Python rows validate");
+            let snapshot = CaptureSnapshot::load(&db, q.into()).expect("Python rows validate");
             let plan = decide(snapshot).expect("pure decision");
             let tx = db.transaction().expect("tx");
             plan.apply(&tx).expect("apply");
@@ -178,7 +178,7 @@ fn malformed_stored_rows_refuse_without_writes() {
         )
         .expect("input");
         let tx = db.transaction().expect("tx");
-        assert!(CaptureSnapshot::load(&tx, input).is_err());
+        assert!(CaptureSnapshot::load(&tx, input.into()).is_err());
         drop(tx);
         assert_eq!(before, actual(&db, &case["before"]));
     }
@@ -214,7 +214,10 @@ fn capture_rows_bind_request_identity_without_writes() {
         )
         .expect("request");
         let tx = db.transaction().expect("transaction");
-        assert!(CaptureSnapshot::load(&tx, prepared).is_err(), "{field}");
+        assert!(
+            CaptureSnapshot::load(&tx, prepared.into()).is_err(),
+            "{field}"
+        );
         drop(tx);
         assert_eq!(actual(&db, &case["before"]), before);
     }
@@ -254,7 +257,7 @@ fn claude_python_and_canonical_rust_rows_replay_without_usage_writes() {
             .expect("request")
         };
         if !python_written {
-            let plan = decide(CaptureSnapshot::load(&db, prepare(10.)).expect("snapshot"))
+            let plan = decide(CaptureSnapshot::load(&db, prepare(10.).into()).expect("snapshot"))
                 .expect("decision");
             let tx = db.transaction().expect("tx");
             plan.apply(&tx).expect("apply");
@@ -271,8 +274,8 @@ fn claude_python_and_canonical_rust_rows_replay_without_usage_writes() {
         for table in ["analytics_usage", "analytics_meta", "analytics_usage_roots"] {
             db.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'duplicate usage write'); END;")).expect("write guard");
         }
-        let plan =
-            decide(CaptureSnapshot::load(&db, prepare(20.)).expect("snapshot")).expect("replay");
+        let plan = decide(CaptureSnapshot::load(&db, prepare(20.).into()).expect("snapshot"))
+            .expect("replay");
         assert!(
             !plan
                 .rows

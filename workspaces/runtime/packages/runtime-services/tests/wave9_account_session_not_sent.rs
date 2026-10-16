@@ -134,7 +134,6 @@ impl RetainedAccountSession for FakeSession {
 struct Fixture {
     _root: tempfile::TempDir,
     driver: Arc<AccountDriver>,
-    runtime: tokio::runtime::Runtime,
     accounts_root: std::path::PathBuf,
     base_home: std::path::PathBuf,
     home: std::path::PathBuf,
@@ -164,10 +163,6 @@ impl Fixture {
         Self {
             _root: root,
             driver: Arc::new(AccountDriver::open(registry).expect("validated registry")),
-            runtime: tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio runtime"),
             accounts_root,
             base_home,
             home,
@@ -178,14 +173,14 @@ impl Fixture {
         AccountSessionRuntime::new(
             Arc::clone(&self.driver),
             Some(session),
-            self.runtime.handle().clone(),
+            tokio::runtime::Handle::current(),
             self.accounts_root.clone(),
             self.base_home.clone(),
             self.home.clone(),
         )
     }
 
-    fn login(&self, certainty: RequestCertainty, result: Option<Value>) -> Value {
+    async fn login(&self, certainty: RequestCertainty, result: Option<Value>) -> Value {
         let session = Arc::new(FakeSession::new(certainty, result));
         self.service(session)
             .login(LoginRequest {
@@ -194,10 +189,11 @@ impl Fixture {
                 email: None,
                 label: None,
             })
+            .await
             .expect("login receipt")
     }
 
-    fn login_with_session(&self, session: Arc<FakeSession>) -> Value {
+    async fn login_with_session(&self, session: Arc<FakeSession>) -> Value {
         self.service(session)
             .login(LoginRequest {
                 login_id: "9b06d4c4-0b71-49b5-b984-927d6fdcde01".into(),
@@ -205,6 +201,7 @@ impl Fixture {
                 email: None,
                 label: None,
             })
+            .await
             .expect("login receipt")
     }
 }
@@ -218,16 +215,16 @@ fn login_response() -> Value {
     })
 }
 
-#[test]
-fn login_not_sent_returns_python_error_receipt() {
+#[tokio::test]
+async fn login_not_sent_returns_python_error_receipt() {
     let fixture = Fixture::new();
-    let receipt = fixture.login(RequestCertainty::NotSent, None);
+    let receipt = fixture.login(RequestCertainty::NotSent, None).await;
     assert_eq!(receipt["status"], "error");
     assert_eq!(receipt["error"], "Could not start sign-in. Try again.");
 }
 
-#[test]
-fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
+#[tokio::test]
+async fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::no_live_scope());
     let runtime = fixture.service(Arc::clone(&session));
@@ -239,18 +236,22 @@ fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
             email: None,
             label: None,
         })
+        .await
         .expect("not-sent login receipt");
     assert_eq!(login["status"], "error");
     assert_eq!(login["error"], "Could not start sign-in. Try again.");
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
 
     let cancel_fixture = Fixture::new();
-    let started = cancel_fixture.login(RequestCertainty::Written, Some(login_response()));
+    let started = cancel_fixture
+        .login(RequestCertainty::Written, Some(login_response()))
+        .await;
     assert_eq!(started["status"], "pending");
     let no_live_session = Arc::new(FakeSession::no_live_scope());
     let cancel_runtime = cancel_fixture.service(Arc::clone(&no_live_session));
     let cancel = cancel_runtime
         .cancel_login(login_id)
+        .await
         .expect("not-sent cancellation receipt");
     assert_eq!(cancel["status"], "pending");
     assert_eq!(
@@ -260,8 +261,8 @@ fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
     assert_eq!(no_live_session.calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn absent_recovery_scope_returns_superseded_without_provider_replay() {
+#[tokio::test]
+async fn absent_recovery_scope_returns_superseded_without_provider_replay() {
     // Python owner: codex_connection_recovery.recover returns superseded when
     // the agent's connection context is no longer current (lines 227-264).
     let fixture = Fixture::new();
@@ -269,17 +270,18 @@ fn absent_recovery_scope_returns_superseded_without_provider_replay() {
     let result = fixture
         .service(Arc::clone(&session))
         .recover_connection("default", "fixture-agent")
+        .await
         .expect("stale recovery is a completed superseded outcome");
     assert_eq!(result, json!({"status":"superseded"}));
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn unknown_login_remains_uncertain_and_is_never_replayed() {
+#[tokio::test]
+async fn unknown_login_remains_uncertain_and_is_never_replayed() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::new(RequestCertainty::Unknown, None));
     for _ in 0..2 {
-        let receipt = fixture.login_with_session(Arc::clone(&session));
+        let receipt = fixture.login_with_session(Arc::clone(&session)).await;
         assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
             receipt["error"],
@@ -289,12 +291,12 @@ fn unknown_login_remains_uncertain_and_is_never_replayed() {
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
+#[tokio::test]
+async fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::unknown_error());
     for _ in 0..2 {
-        let receipt = fixture.login_with_session(Arc::clone(&session));
+        let receipt = fixture.login_with_session(Arc::clone(&session)).await;
         assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
             receipt["error"],
@@ -311,7 +313,7 @@ fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
     let restarted = AccountSessionRuntime::new(
         restarted_driver,
         Some(session.clone()),
-        fixture.runtime.handle().clone(),
+        tokio::runtime::Handle::current(),
         fixture.accounts_root.clone(),
         fixture.base_home.clone(),
         fixture.home.clone(),
@@ -323,17 +325,18 @@ fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
             email: None,
             label: None,
         })
+        .await
         .expect("durable uncertain replay");
     assert_eq!(after_restart["status"], "uncertain");
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn foreign_login_receipt_scope_is_uncertain_and_never_replayed() {
+#[tokio::test]
+async fn foreign_login_receipt_scope_is_uncertain_and_never_replayed() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::foreign_receipt());
     for _ in 0..2 {
-        let receipt = fixture.login_with_session(Arc::clone(&session));
+        let receipt = fixture.login_with_session(Arc::clone(&session)).await;
         assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
             receipt["error"],
@@ -343,8 +346,8 @@ fn foreign_login_receipt_scope_is_uncertain_and_never_replayed() {
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
+#[tokio::test]
+async fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
     for session in [
         Arc::new(FakeSession::foreign_receipt()),
         Arc::new(FakeSession::unknown_error()),
@@ -354,29 +357,34 @@ fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
         let expected_scope = service
             .current_scope("default")
             .expect("live provider scope");
-        let result = service.provider_request(ProviderRequest {
-            account: "default".into(),
-            operation: "fixture:generic-request".into(),
-            actor: None,
-            expected_scope: Some(expected_scope),
-            deleted_actor_session: None,
-            method: Method::AccountLoginStart,
-            params: json!({"type":"chatgptDeviceCode"}),
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
-        });
+        let result = service
+            .provider_request(ProviderRequest {
+                account: "default".into(),
+                operation: "fixture:generic-request".into(),
+                actor: None,
+                expected_scope: Some(expected_scope),
+                deleted_actor_session: None,
+                method: Method::AccountLoginStart,
+                params: json!({"type":"chatgptDeviceCode"}),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+            })
+            .await;
         assert!(matches!(result, Err(AccountSessionError::Unknown)));
         assert_eq!(session.calls.load(Ordering::SeqCst), 1);
     }
 }
 
-#[test]
-fn cancel_not_sent_restores_python_pending_receipt_and_allows_safe_retry() {
+#[tokio::test]
+async fn cancel_not_sent_restores_python_pending_receipt_and_allows_safe_retry() {
     let fixture = Fixture::new();
-    fixture.login(RequestCertainty::Written, Some(login_response()));
+    fixture
+        .login(RequestCertainty::Written, Some(login_response()))
+        .await;
     let session = Arc::new(FakeSession::new(RequestCertainty::NotSent, None));
     let service = fixture.service(Arc::clone(&session));
     let first = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
+        .await
         .expect("not-sent cancellation receipt");
     assert_eq!(first["status"], "pending");
     assert_eq!(
@@ -385,30 +393,36 @@ fn cancel_not_sent_restores_python_pending_receipt_and_allows_safe_retry() {
     );
     let second = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
+        .await
         .expect("safe retry receipt");
     assert_eq!(second["status"], "pending");
     assert_eq!(session.calls.load(Ordering::SeqCst), 2);
 }
 
-#[test]
-fn unknown_cancel_remains_uncertain_and_is_never_replayed() {
+#[tokio::test]
+async fn unknown_cancel_remains_uncertain_and_is_never_replayed() {
     let fixture = Fixture::new();
-    fixture.login(RequestCertainty::Written, Some(login_response()));
+    fixture
+        .login(RequestCertainty::Written, Some(login_response()))
+        .await;
     let session = Arc::new(FakeSession::new(RequestCertainty::Unknown, None));
     let service = fixture.service(Arc::clone(&session));
     for _ in 0..2 {
         let receipt = service
             .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
+            .await
             .expect("uncertain cancellation receipt");
         assert_eq!(receipt["status"], "uncertain");
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn rejected_cancel_response_is_not_treated_as_canceled_or_replayed() {
+#[tokio::test]
+async fn rejected_cancel_response_is_not_treated_as_canceled_or_replayed() {
     let fixture = Fixture::new();
-    fixture.login(RequestCertainty::Written, Some(login_response()));
+    fixture
+        .login(RequestCertainty::Written, Some(login_response()))
+        .await;
     let session = Arc::new(FakeSession::with_response(
         RequestCertainty::Written,
         Some(ProviderResponse::Rejected(json!({"status":"canceled"}))),
@@ -416,10 +430,12 @@ fn rejected_cancel_response_is_not_treated_as_canceled_or_replayed() {
     let service = fixture.service(Arc::clone(&session));
     let first = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
+        .await
         .expect("rejected cancellation receipt");
     assert_eq!(first["status"], "uncertain");
     let second = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
+        .await
         .expect("replayed uncertain receipt");
     assert_eq!(second["status"], "uncertain");
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);

@@ -2323,6 +2323,7 @@ dependencies = [
  "notify",
  "process-wrap",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "studio-runtime-http",
@@ -2332,6 +2333,7 @@ dependencies = [
  "studio-runtime-store",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tower",
  "uuid",
 ]
@@ -2382,6 +2384,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "unicode-casefold",
  "ureq",
  "url",

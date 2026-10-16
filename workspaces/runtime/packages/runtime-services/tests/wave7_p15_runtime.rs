@@ -468,7 +468,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
     let wake = Arc::new(Notify::new());
     let lifecycle = MonitorLifecyclePorts::new(wake);
     store
-        .transaction_with_error(|tx| {
+        .transaction_with_error(move |tx| {
             agent_lifecycle_runtime::execute_in_transaction(
                 tx,
                 &Action::Stop {
@@ -484,6 +484,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
                 &studio_runtime_services::sync_policy::ProjectVaultSnapshot::default(),
             )
         })
+        .await
         .expect("stop commits monitor cancellation without invoking committed hook");
     assert_eq!(record(&store, &id)["cancelRequested"], true);
 
@@ -1000,8 +1001,8 @@ async fn cancellation_racing_exit_settles_without_native_terminate() {
         .await
         .expect("exit wins the race");
 
-    assert_eq!(record(&store, id)["status"], "cancelled");
-    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "done");
+    assert_eq!(record(&store, &id)["status"], "cancelled");
+    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "done");
     assert!(port.submitted.lock().expect("submitted").is_empty());
     assert!(port.deliveries.lock().expect("deliveries").is_empty());
 }

@@ -385,19 +385,13 @@ async fn context_repair_atomic_restart_and_lost_response_matrix() {
             } else {
                 "sync_entities"
             };
-            store.transaction(|tx| {tx.execute_batch(&format!("CREATE TRIGGER fixture_fail BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'fixture-cut'); END"))?;Ok(())}).await.expect("valid synthetic fixture");
+            store.transaction(move |tx| {tx.execute_batch(&format!("CREATE TRIGGER fixture_fail BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'fixture-cut'); END"))?;Ok(())}).await.expect("valid synthetic fixture");
         }
         let result = if cut == "after-event" {
-            context_repair::recover(
-                &store,
-                "agent",
-                &mut reader,
-                &ManifestWriterUnavailable,
-                5.0,
-            )
-            .await
+            context_repair::recover(&store, "agent", &mut reader, ManifestWriterUnavailable, 5.0)
+                .await
         } else {
-            context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 5.0).await
+            context_repair::recover(&store, "agent", &mut reader, FixtureWriter, 5.0).await
         };
         let success = matches!(cut, "success" | "requeue");
         assert_eq!(result.is_ok(), success, "{cut}: {result:?}");
@@ -422,7 +416,7 @@ async fn context_repair_atomic_restart_and_lost_response_matrix() {
             }
         );
         assert!(committed["agent"].get("contextRepairWait").is_none());
-        let retry = context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 6.0)
+        let retry = context_repair::recover(&store, "agent", &mut reader, FixtureWriter, 6.0)
             .await
             .expect("valid synthetic fixture");
         assert!(retry.is_empty());
@@ -486,7 +480,7 @@ async fn context_repair_changed_snapshot_never_acknowledges() {
             history: history(&data["recurring"][0]),
             change,
         };
-        let result = context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 5.0)
+        let result = context_repair::recover(&store, "agent", &mut reader, FixtureWriter, 5.0)
             .await
             .expect("valid synthetic fixture");
         assert!(

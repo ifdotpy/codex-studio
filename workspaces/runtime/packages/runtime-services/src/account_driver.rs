@@ -668,12 +668,47 @@ pub struct AccountDriver<R = SystemProviderAuthReader> {
     path: PathBuf,
     state: Mutex<RegistryState>,
     reader: R,
+    change_signal: AccountChangeSignal,
 }
 
 struct RegistryState {
     value: Value,
     order: RegistryOrder,
     revision: u64,
+    change_signal: AccountChangeSignal,
+}
+
+/// Coalescing signal for public profile and retained-session changes.
+/// Its generation is independent of the persisted account revision.
+#[derive(Clone)]
+pub struct AccountChangeSignal {
+    sender: tokio::sync::watch::Sender<u64>,
+}
+
+impl AccountChangeSignal {
+    pub fn new() -> Self {
+        let (sender, _) = tokio::sync::watch::channel(0);
+        Self { sender }
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.sender.subscribe()
+    }
+
+    /// Publishes a retained-session change after its registry guard is released.
+    pub fn publish_session_change(&self) {
+        self.sender
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+impl RegistryState {
+    fn publish_profile_change(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.change_signal
+            .sender
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1222,15 +1257,22 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let bytes = read_registry(&path)?;
         let (value, order) =
             decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        let change_signal = AccountChangeSignal::new();
         Ok(Self {
             path,
             state: Mutex::new(RegistryState {
                 value,
                 order,
                 revision: 0,
+                change_signal: change_signal.clone(),
             }),
             reader,
+            change_signal,
         })
+    }
+
+    pub fn change_signal(&self) -> AccountChangeSignal {
+        self.change_signal.clone()
     }
 
     /// Revision advances only after a registry replacement has taken effect.
@@ -1971,7 +2013,7 @@ fn persist_registry(
             state.value = checked;
             state.order = order;
             if accounts_changed {
-                state.revision = state.revision.wrapping_add(1);
+                state.publish_profile_change();
             }
             Ok(())
         }
@@ -1980,7 +2022,7 @@ fn persist_registry(
             state.value = checked;
             state.order = order;
             if accounts_changed {
-                state.revision = state.revision.wrapping_add(1);
+                state.publish_profile_change();
             }
             Err(AccountDriverError::DurabilityUnconfirmed)
         }
@@ -3096,11 +3138,17 @@ print(store.path)
             )),
         )
         .expect("open registry");
+        let mut changes = driver.change_signal().subscribe();
         assert_eq!(driver.revision().expect("read revision"), 0);
         driver
             .set_name("default", "Codex", "abc")
             .expect("same visible label is valid");
         assert_eq!(driver.revision().expect("read revision"), 0);
+        assert!(
+            !changes
+                .has_changed()
+                .expect("profile change signal remains open")
+        );
         let persisted: Value = serde_json::from_slice(&fs::read(&path).expect("read registry"))
             .expect("decode registry");
         assert_ne!(
@@ -3111,10 +3159,21 @@ print(store.path)
             .set_name("default", "Renamed", "def")
             .expect("change visible label");
         assert_eq!(driver.revision().expect("read revision"), 1);
+        assert!(
+            changes
+                .has_changed()
+                .expect("public profile change publishes")
+        );
+        let _observed_generation = *changes.borrow_and_update();
         driver
             .set_name("default", "Renamed", "def")
             .expect("replay name receipt");
         assert_eq!(driver.revision().expect("read revision"), 1);
+        assert!(
+            !changes
+                .has_changed()
+                .expect("receipt replay does not publish a profile change")
+        );
     }
 
     #[test]

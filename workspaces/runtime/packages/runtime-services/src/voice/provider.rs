@@ -2770,14 +2770,15 @@ mod tests {
             status: AgentStatus::Idle,
             extra,
         };
-        let old_offer = "v=0\r\nold-offer";
+        let old_offer = "v=0\r\nold-offer".to_owned();
+        let transaction_offer = old_offer.clone();
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 AgentRepository::put(transaction, &agent)?;
                 transaction.execute(
                     "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
                      VALUES('orphan-start','voice-agent',10,?1,'voice-thread','default',NULL,'connecting')",
-                    [old_offer],
+                    [transaction_offer],
                 )?;
                 Ok(())
                 })

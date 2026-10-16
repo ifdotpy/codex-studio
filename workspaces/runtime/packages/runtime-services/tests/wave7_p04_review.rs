@@ -11,7 +11,7 @@ use studio_runtime_store::RuntimeStore;
 
 #[tokio::test]
 async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
-    let (_root, store, context) = fixture();
+    let (_root, store, context) = fixture().await;
     store
         .transaction(|tx| {
             tx.execute_batch(
@@ -33,11 +33,12 @@ async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
             .expect("row count")
     };
     let before = (count("runtime_complaints"), count("runtime_events"));
+    let agent = context.agent.clone();
     let result = store
-        .transaction_with_error(|tx| {
+        .transaction_with_error(move |tx| {
             studio_runtime_services::questions_write::submit_complaint(
                 tx,
-                &context.agent,
+                &agent,
                 "rollback-event-failure",
                 "Injected event failure",
                 |_| true,
@@ -57,7 +58,7 @@ async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
 #[tokio::test]
 async fn resolved_before_admission_or_before_deletion_survives_restart() {
     for before_admission in [true, false] {
-        let (root, mut store, context) = fixture();
+        let (root, mut store, context) = fixture().await;
         let frame = request(&context);
         let id = if before_admission {
             None
@@ -71,7 +72,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
             prepare_delete(&store, id, 21.0).await.unwrap();
         }
         drop(store);
-        store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+        store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         let decision = dispatch(Arc::clone(&store), &context, &frame, 22.0)
             .await
             .unwrap();
@@ -98,7 +99,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
 
 #[tokio::test]
 async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires() {
-    let (_root, store, context) = fixture();
+    let (_root, store, context) = fixture().await;
     let frame = request(&context);
     let Frame::Request(request_frame) = &frame else {
         panic!("request")
@@ -147,7 +148,7 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
 
 #[tokio::test]
 async fn python_admission_retires_written_payload_without_a_rust_cursor() {
-    let (root, mut store, context) = fixture();
+    let (root, mut store, context) = fixture().await;
     let legacy = &template()["legacyCard"];
     card(&store, legacy).await;
     let data = json!({"decision":"accept"});
@@ -162,7 +163,7 @@ async fn python_admission_retires_written_payload_without_a_rust_cursor() {
         .await
         .unwrap();
     drop(store);
-    store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+    store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
     let raw:String=store.read().unwrap().query_row("SELECT result FROM runtime_operation_receipts WHERE json_extract(result,'$.legacyAdmission')=1",[],|r|r.get(0)).unwrap();
     let row: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -182,7 +183,7 @@ async fn python_admission_retires_written_payload_without_a_rust_cursor() {
 #[tokio::test]
 async fn queued_reply_is_checked_under_the_same_gate_as_resolution_and_stop() {
     for action in ["resolve", "stop", "delete", "complete"] {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         let (id, _) = pending(&store, &context).await;
         let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
             .await
@@ -239,7 +240,7 @@ async fn queued_reply_is_checked_under_the_same_gate_as_resolution_and_stop() {
 
 #[tokio::test]
 async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_transaction() {
-    let (_root, store, context) = fixture();
+    let (_root, store, context) = fixture().await;
     let (id, _) = pending(&store, &context).await;
     let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
         .await
@@ -275,7 +276,7 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
 #[tokio::test]
 async fn late_written_settles_card_without_reviving_completed_failed_or_replaced_turn() {
     for status in ["completed", "failed", "stopped", "deleted", "replaced"] {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         let (id, _) = pending(&store, &context).await;
         let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
             .await
@@ -316,31 +317,33 @@ async fn every_foreign_receipt_dimension_is_held_unknown() {
             true
         }
 
-        fn deliver(
-            &self,
-            reply: &Reply,
+        fn deliver<'a>(
+            &'a self,
+            reply: &'a Reply,
             _: std::time::Duration,
-        ) -> Result<ReplyReceipt, CallbackError> {
-            let mut identity = reply.identity.clone();
-            match self.0 {
-                0 => identity.context.agent.push_str("other"),
-                1 => identity.context.epoch += 1,
-                2 => identity.context.account.push_str("other"),
-                3 => identity.context.connection.push_str("other"),
-                4 => identity.context.generation += 1,
-                5 => identity.attempt.push_str("other"),
-                6 => identity.rpc_id = RequestId::Number(43),
-                7 => identity.context.thread.push_str("other"),
-                _ => identity.context.turn.push_str("other"),
-            }
-            Ok(ReplyReceipt {
-                identity,
-                outcome: ReplyOutcome::Written,
+        ) -> CallbackReplyFuture<'a> {
+            Box::pin(async move {
+                let mut identity = reply.identity.clone();
+                match self.0 {
+                    0 => identity.context.agent.push_str("other"),
+                    1 => identity.context.epoch += 1,
+                    2 => identity.context.account.push_str("other"),
+                    3 => identity.context.connection.push_str("other"),
+                    4 => identity.context.generation += 1,
+                    5 => identity.attempt.push_str("other"),
+                    6 => identity.rpc_id = RequestId::Number(43),
+                    7 => identity.context.thread.push_str("other"),
+                    _ => identity.context.turn.push_str("other"),
+                }
+                Ok(ReplyReceipt {
+                    identity,
+                    outcome: ReplyOutcome::Written,
+                })
             })
         }
     }
     for dimension in 0..9 {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         let (id, _) = pending(&store, &context).await;
         let runtime = CallbackRuntime::new(store.clone(), Arc::new(Foreign(dimension)));
         assert!(matches!(
@@ -359,7 +362,7 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
     // 8 Written persisted, 9 ACK persisted, 10 payload retirement persisted.
     for cancel in [false, true] {
         for boundary in 0..=10 {
-            let (root, mut store, context) = fixture();
+            let (root, mut store, context) = fixture().await;
             let frame = request(&context);
             let (native_tx, native_rx) = mpsc::channel();
             let mut decision = None;
@@ -428,15 +431,18 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                             .unwrap();
                     }
                     if boundary >= 7 {
-                        queued
-                            .receipt
-                            .send(ReplyReceipt {
-                                identity: reply.identity.clone(),
-                                outcome: ReplyOutcome::Written,
-                            })
-                            .unwrap();
+                        assert!(
+                            queued
+                                .receipt
+                                .send(ReplyReceipt {
+                                    identity: reply.identity.clone(),
+                                    outcome: ReplyOutcome::Written,
+                                })
+                                .is_ok()
+                        );
+                    } else {
+                        drop(queued.receipt);
                     }
-                    drop(queued);
                     let receipt = waiting.await.unwrap();
                     if boundary >= 7 {
                         assert_eq!(receipt.unwrap().outcome, ReplyOutcome::Written);
@@ -458,7 +464,7 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
             }
             // Every branch stops here before the next boundary; no hidden bind/ACK.
             drop(store);
-            store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
             let port = Arc::new(Port::default());
             let runtime = CallbackRuntime::new(store.clone(), port.clone());
             if boundary < 2 {
@@ -528,7 +534,7 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
 #[tokio::test]
 async fn python_failures_null_decisions_and_race_winners_are_preserved() {
     for case in template()["failures"].as_array().unwrap() {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         seed_case(&store, case).await;
         let before = logical_snapshot(&store);
         let port = Arc::new(Port::default());
@@ -550,7 +556,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["invalid"].as_array().unwrap() {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         seed_case(&store, case).await;
         let before = logical_snapshot(&store);
         let port = Arc::new(Port::default());
@@ -568,7 +574,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["races"].as_array().unwrap() {
-        let (_root, store, context) = fixture();
+        let (_root, store, context) = fixture().await;
         card(&store, &case["before"]).await;
         put_actor(&store, &case["beforeActor"]).await;
         let id = case["before"]["id"].as_str().unwrap();

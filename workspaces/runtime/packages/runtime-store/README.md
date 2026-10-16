@@ -12,9 +12,13 @@
   for JSON-record tables; repositories for agents, tasks, queue events, and
   chat messages.
 - **Boundaries:** Tokio and `tokio-rusqlite` own the Canvas writer boundary;
-  each actor job runs a synchronous `rusqlite` closure. Reads still use the
-  existing connection APIs. No Python, general schema migration, or state
-  directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
+  each actor job runs one synchronous `rusqlite` closure. `MAX_PENDING_WRITES`
+  in `src/sqlite_actor.rs` owns the queued-plus-running admission limit of 16.
+  Reads still use the existing connection APIs: `CANVAS_READER_CONNECTION_CAPACITY`
+  in `src/lib.rs` owns the total limit of four readers, including the reserved
+  version reader; the ordinary pool derives its capacity from that owner. No
+  Python, general schema migration, or state directory creation. Sync DDL is
+  sourced only from `src/sync_schema.sql`.
   Python persisted models and the OpenAPI document own the schemas.
 - **Invariants:** One exclusive runtime lock, one serialized Canvas writer
   using `BEGIN IMMEDIATE`, independent query-only read connections, WAL and
@@ -53,6 +57,13 @@ migration and removal of synchronous read leases are later work. See the
 [SQLite actor migration preflight](../../../../docs/plans/rust-sqlite-actor.md)
 for the full cutover and acceptance contracts. The production caller cutover
 is not claimed complete by this package description.
+
+`ObservedTable` callbacks are process-local invalidation hints. They fire after
+a known successful commit or an ambiguous commit that may have landed, run
+outside the transaction, and require the consumer to reread authoritative
+state. They carry no receipt and must never trigger a replay. A lost response
+after enqueue remains an unknown outcome; receipt-backed retry uses the
+original identity and content.
 
 ## JSON-record table scope
 

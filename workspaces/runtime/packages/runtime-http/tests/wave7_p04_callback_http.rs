@@ -36,8 +36,8 @@ async fn call(app: &axum::Router, path: &str, body: Value, token: &str) -> (u16,
 }
 #[tokio::test]
 async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
-    let (root, store, context) = fixture();
-    let (id, _) = pending(&store, &context);
+    let (root, store, context) = fixture().await;
+    let (id, _) = pending(&store, &context).await;
     let state = HttpState::new(
         "token".into(),
         "fixture".into(),
@@ -78,7 +78,7 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["status"], "answered");
     assert_eq!(port.calls.lock().unwrap().len(), 1);
-    assert_eq!(checkpoint(&store, &context, 1), 1);
+    assert_eq!(checkpoint(&store, &context, 1).await, 1);
     let (status, value) = call(&app, "/api/answer", body, "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["replayed"], true);
@@ -91,8 +91,8 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
 #[tokio::test]
 async fn pending_native_delete_sends_only_cancellation_and_unknown_is_held() {
     for outcome in [ReplyOutcome::Written, ReplyOutcome::Unknown] {
-        let (root, store, context) = fixture();
-        let (id, _) = pending(&store, &context);
+        let (root, store, context) = fixture().await;
+        let (id, _) = pending(&store, &context).await;
         let port = Arc::new(Port::default());
         *port.next.lock().unwrap() = Some(outcome);
         let state = HttpState::new(
@@ -141,7 +141,7 @@ async fn pending_native_delete_sends_only_cancellation_and_unknown_is_held() {
 #[tokio::test]
 async fn enabled_native_backend_serves_success_and_null_refusal_over_tcp() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (root, store, _) = fixture();
+    let (root, store, _) = fixture().await;
     let port = Arc::new(Port::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -184,7 +184,7 @@ async fn enabled_native_backend_serves_success_and_null_refusal_over_tcp() {
         value["id"] = json!(id);
         value["rpcId"] = json!(id);
         value["method"] = json!(method);
-        card(&store, &value);
+        card(&store, &value).await;
         let before = physical_snapshot(&store);
         for (decision, expected) in [(Value::Null, 400), (json!("accept"), 200)] {
             let body = if method == "item/tool/requestUserInput" {

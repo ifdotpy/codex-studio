@@ -15,6 +15,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Arc;
 use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
@@ -134,7 +135,7 @@ impl Drop for State {
         }
     }
 }
-async fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
+async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String> {
     let identity = TurnAttemptIdentity {
         agent_id: "agent".into(),
         epoch: 0,
@@ -211,7 +212,8 @@ async fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             // keeping this empty prevents even a generated live progress path
             // from entering the captured provider input.
             resources.progress_template.clear();
-            let prepared=prepare_turn_with_connection_id(store,&resources,&intent,1,"fixture-connection").await.map_err(|e|e.to_string())?;
+            let prepared=prepare_turn_with_connection_id(Arc::clone(store),&resources,&intent,1,"fixture-connection").await.map_err(|e|e.to_string())?;
+            let expected_provider_inputs = prepared.native_request()["params"]["input"].clone();
             if case["transition"] == "submission" {
                 let actual = prepared.native_request();
                 let expected = &case["nativeRequest"];
@@ -230,7 +232,7 @@ async fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 let receipt=studio_runtime_store::EventWriteRepository::receipt(&db,"account-worker:account:default:attempt:turn/start:submitted").map_err(|e|e.to_string())?.expect("production account-worker submission receipt");
                 let receipt:Value=serde_json::from_str(&receipt.result).expect("receipt JSON");
                 assert_eq!(receipt["request"],json!({"id":"ticket","generation":1,"method":"turn/start","operation":"account:default:attempt:turn/start","thread":"thread","lightweight":false,"deadline":60000,"unknown":false,"remoteId":null}));
-                assert_eq!(receipt["context"]["compiled"]["provider_inputs"],prepared.native_request()["params"]["input"]);
+                assert_eq!(receipt["context"]["compiled"]["provider_inputs"],expected_provider_inputs);
                 assert_eq!(receipt["context"]["intent"]["events"][0]["id"],"event");
                 assert_eq!(receipt["context"]["compiled"]["manifest"],receipt["context"]["compiled"]["metadata_patches"]["event"]["contextManifest"]);
             }
@@ -334,7 +336,7 @@ async fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                     "interrupt-ticket",
                     1,
                     transition.trim_start_matches("interrupt_"),
-                    match transition {
+                    match transition.as_str() {
                         "interrupt_rejected" => Some("rejected"),
                         "interrupt_unknown" => Some("interrupt response unknown"),
                         _ => None,
@@ -624,7 +626,7 @@ async fn python_written_turn_lifecycle_corpus() {
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
         let store = match RuntimeStore::open(Some(&rust)).await {
-            Ok(store) => store,
+            Ok(store) => Arc::new(store),
             Err(error) => {
                 let refusal = case
                     .get("expectRefusal")
@@ -723,6 +725,7 @@ async fn python_written_turn_lifecycle_corpus() {
                 _ => None,
             };
             let outcome = outcome.to_owned();
+            let replay_outcome = outcome.clone();
             let response_error = response_error.map(str::to_owned);
             let before = store
                 .transaction(|tx| Ok(tx.total_changes()))
@@ -733,7 +736,7 @@ async fn python_written_turn_lifecycle_corpus() {
                     tx,
                     "interrupt-ticket",
                     1,
-                    &outcome,
+                    &replay_outcome,
                     response_error.as_deref(),
                 )
                 .map(|value| json!(value))
@@ -745,7 +748,6 @@ async fn python_written_turn_lifecycle_corpus() {
                 first.as_ref().expect("first result")["settled"],
                 "{id}: saved interrupt result"
             );
-            let outcome = outcome.clone();
             let refusal = lifecycle_transaction(&store, move |tx| {
                 SchedulerRepository::settle_interrupt_result(
                     tx,

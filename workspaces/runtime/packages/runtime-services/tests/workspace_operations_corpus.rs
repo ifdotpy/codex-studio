@@ -387,7 +387,7 @@ async fn failed_capture_and_restart_release_only_the_owned_reservation() {
         .expect("snapshot")
         .expect("agent");
     f.store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert!(CheckpointsRepository::reserve_checkpoint(
                 tx,
                 &snapshot,
@@ -439,7 +439,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
             "CREATE TRIGGER failpoint BEFORE {event} ON {table} WHEN {when} BEGIN SELECT RAISE(ABORT,'injected'); END"
         );
         f.store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute_batch(&trigger)?;
                 Ok(())
             })
@@ -492,7 +492,7 @@ async fn stale_source_at_publication_cannot_attach_checkpoint() {
         .expect("snapshot")
         .expect("agent");
     f.store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert!(CheckpointsRepository::reserve_checkpoint(
                 tx,
                 &snapshot,
@@ -509,7 +509,7 @@ async fn stale_source_at_publication_cannot_attach_checkpoint() {
         .expect("snapshot")
         .expect("agent");
     f.store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert!(CheckpointsRepository::set_capture_running(
                 tx,
                 &reserved,
@@ -521,14 +521,15 @@ async fn stale_source_at_publication_cannot_attach_checkpoint() {
         .await
         .expect("start");
     f.patch("epoch", json!(2)).await;
+    let agent_id = f.id().to_owned();
     f.store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert!(!CheckpointsRepository::complete_capture(
                 tx,
-                f.id(),
+                &agent_id,
                 "checkpoint:stale",
                 None,
-                &json!({"id":"stale","agent":f.id(),"historyParent":null}),
+                &json!({"id":"stale","agent":agent_id,"historyParent":null}),
                 3.0
             )?);
             Ok(())
@@ -555,14 +556,17 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
         )
         .expect("snapshot")
         .expect("agent");
+        let reservation_snapshot = snapshot.clone();
+        let reservation_id = id.clone();
+        let reservation_turn_id = request.turn_id().map(str::to_owned);
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 assert!(CheckpointsRepository::reserve_checkpoint(
                     tx,
-                    &snapshot,
-                    &id,
+                    &reservation_snapshot,
+                    &reservation_id,
                     CaptureKind::Turn,
-                    request.turn_id(),
+                    reservation_turn_id.as_deref(),
                     1.0
                 )?);
                 Ok(())
@@ -576,10 +580,15 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
             )
             .expect("snapshot")
             .expect("agent");
+            let running_snapshot = reserved.clone();
+            let running_id = id.clone();
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     assert!(CheckpointsRepository::set_capture_running(
-                        tx, &reserved, &id, 2.0
+                        tx,
+                        &running_snapshot,
+                        &running_id,
+                        2.0
                     )?);
                     Ok(())
                 })
@@ -617,11 +626,13 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
     expected.agent = f.id().into();
     let operation = json!({"id":expected.operation,"kind":"branch","agent":f.id(),"phase":"provider_pending",
         "signature":"signature","source":{"accountKey":"default","threadId":"thread","cwd":f.repo},"providerTicket":expected});
+    let expected_operation = expected.operation.clone();
+    let operation_record = operation.to_string();
     f.store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
-                rusqlite::params![expected.operation, operation.to_string()],
+                rusqlite::params![expected_operation, operation_record],
             )?;
             Ok(())
         })
@@ -632,14 +643,20 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
         .expect("actor");
     assert!(
         f.store
-            .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .transaction({
+                let before = before.clone();
+                move |tx| CheckpointsRepository::workspace_unchanged(tx, &before)
+            })
             .await
             .expect("unchanged")
     );
     f.patch("epoch", json!(2)).await;
     assert!(
         !f.store
-            .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .transaction({
+                let before = before.clone();
+                move |tx| CheckpointsRepository::workspace_unchanged(tx, &before)
+            })
             .await
             .expect("changed")
     );

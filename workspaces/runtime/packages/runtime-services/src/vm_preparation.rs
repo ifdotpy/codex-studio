@@ -1745,8 +1745,9 @@ mod tests {
             "startAttempt":{"id":"attempt-1"}
         }))
         .unwrap();
+        let stored_agent = agent.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .transaction(move |tx| AgentRepository::put(tx, &stored_agent))
             .await
             .unwrap();
         let guest = Arc::new(UploadPreflightGuest::new("upload.begin"));
@@ -1754,7 +1755,7 @@ mod tests {
         assert!(matches!(
             prepare_lead(
                 &store,
-                Arc::clone(&guest),
+                guest.clone(),
                 "vm-lead",
                 "attempt-1",
                 "turn:attempt-1",
@@ -1776,7 +1777,7 @@ mod tests {
 
         prepare_lead(
             &store,
-            Arc::clone(&guest),
+            guest.clone(),
             "vm-lead",
             "attempt-1",
             "turn:attempt-1",
@@ -1828,8 +1829,9 @@ mod tests {
             "startAttempt":{"id":"attempt-1"}
         }))
         .expect("valid test agent");
+        let stored_agent = agent.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .transaction(move |tx| AgentRepository::put(tx, &stored_agent))
             .await
             .expect("insert test agent");
         let guest = Arc::new(UploadPreflightGuest::new("upload.commit"));
@@ -1837,7 +1839,7 @@ mod tests {
         assert!(matches!(
             prepare_lead(
                 &store,
-                Arc::clone(&guest),
+                guest.clone(),
                 "vm-lead",
                 "attempt-1",
                 "turn:attempt-1",
@@ -1882,7 +1884,7 @@ mod tests {
         assert!(matches!(
             prepare_lead(
                 &store,
-                Arc::clone(&guest),
+                guest.clone(),
                 "vm-lead",
                 "attempt-1",
                 "turn:attempt-1",

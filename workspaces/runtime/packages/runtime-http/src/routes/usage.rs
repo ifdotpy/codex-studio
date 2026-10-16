@@ -362,8 +362,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
     use studio_runtime_services::account_session_runtime::{
-        AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
+        AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
+        ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use tower::ServiceExt;
 
@@ -458,7 +458,11 @@ mod tests {
     #[tokio::test]
     async fn reset_http_route_retries_only_a_proven_not_sent_attempt() {
         let root = tempfile::tempdir().unwrap();
-        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(root.path())).unwrap());
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
         let session = Arc::new(FakeResetSession {
             calls: Mutex::new(Vec::new()),
             reads: Mutex::new(0),

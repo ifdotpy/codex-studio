@@ -355,7 +355,11 @@ mod tests {
             .prefix("terminal-http-gate-")
             .tempdir_in(tmpfs)
             .expect("isolated terminal HTTP state");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
         let before = TerminalsRepository::list(&store.read().expect("read before request"))
             .expect("read terminal rows before request");
         let state = crate::router::HttpState::new(

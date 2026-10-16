@@ -17,10 +17,17 @@ use spki::{
     AlgorithmIdentifierRef, ObjectIdentifier, SubjectPublicKeyInfoRef,
     der::{Encode, asn1::BitStringRef},
 };
-use std::{fs, io::Write, path::Path, sync::Arc};
+use std::{
+    fs,
+    io::Write,
+    path::Path,
+    sync::{Arc, Mutex as StdMutex},
+};
 use studio_runtime_store::{FederationCredentialsRepository as Journal, RuntimeStore, StoreError};
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tokio_util::task::TaskTracker;
 
 use crate::remote_transport::{
     self, RemoteIdentity, RemoteTransportError, StoredMultiServerIdentity,
@@ -45,12 +52,65 @@ pub enum CredentialError {
 }
 
 /// Loaded once on first use, like Python's `_keys`. Never formats stored secrets.
-#[derive(Default)]
 pub struct Credentials {
-    identity: Mutex<Option<StoredMultiServerIdentity>>,
+    identity: Arc<Mutex<Option<StoredMultiServerIdentity>>>,
+    admission_open: StdMutex<bool>,
+    operations: TaskTracker,
+    #[cfg(test)]
+    test_write_gate: Option<Arc<TestWriteGate>>,
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            identity: Arc::default(),
+            admission_open: StdMutex::new(true),
+            operations: TaskTracker::new(),
+            #[cfg(test)]
+            test_write_gate: None,
+        }
+    }
 }
 
 impl Credentials {
+    fn spawn_operation<F, T>(
+        &self,
+        operation: F,
+    ) -> Result<JoinHandle<Result<T, CredentialError>>, CredentialError>
+    where
+        F: std::future::Future<Output = Result<T, CredentialError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let admission = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*admission {
+            return Err(CredentialError::Storage);
+        }
+        let tracker_lifetime = self.operations.clone();
+        Ok(self.operations.spawn(async move {
+            let _tracker_lifetime = tracker_lifetime;
+            operation.await
+        }))
+    }
+
+    /// Stop admitting credential operations before server shutdown begins.
+    pub fn close_admission(&self) {
+        let mut admission = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *admission = false;
+        self.operations.close();
+    }
+
+    /// Drain admitted identity operations before their store and filesystem dependencies stop.
+    pub async fn shutdown(&self) {
+        self.close_admission();
+        self.operations.wait().await;
+    }
+
     /// Create Python-compatible federation signing keys in the existing identity row.
     /// Key material is generated before the transaction; an insert race keeps the
     /// first committed identity and never replaces it.
@@ -116,10 +176,24 @@ impl Credentials {
         store: Arc<RuntimeStore>,
         origin: Option<&str>,
     ) -> Result<Value, CredentialError> {
-        supported_platform()?;
-        let mut saved = self.identity.lock().await;
-        let identity = self.load(store, &mut saved).await?;
-        Ok(public_identity(identity, origin))
+        let identity_cache = Arc::clone(&self.identity);
+        #[cfg(test)]
+        let write_gate = self.test_write_gate.clone();
+        let origin = origin.map(str::to_owned);
+        self.spawn_operation(async move {
+            supported_platform()?;
+            let mut saved = identity_cache.lock().await;
+            let identity = Self::load(
+                store,
+                &mut saved,
+                #[cfg(test)]
+                write_gate,
+            )
+            .await?;
+            Ok(public_identity(identity, origin.as_deref()))
+        })?
+        .await
+        .map_err(|_| CredentialError::Storage)?
     }
 
     pub async fn rename(
@@ -144,33 +218,60 @@ impl Credentials {
         label: &str,
         request_id: &str,
         actor: &str,
-        mut after_identity_write: impl FnMut(&str),
+        mut after_identity_write: impl FnMut(&str) + Send + 'static,
     ) -> Result<(), CredentialError> {
-        supported_platform()?;
-        if !self.is_local_target(Arc::clone(&store), target).await? {
-            return Err(CredentialError::RemoteRequired);
-        }
-        let mut saved = self.identity.lock().await;
-        // Check both journal identities before writing either. The target table
-        // prevents a local request from reusing an earlier remote command ID.
+        let identity_cache = Arc::clone(&self.identity);
+        #[cfg(test)]
+        let write_gate = self.test_write_gate.clone();
+        let target = target.to_owned();
         let request_id = request_id.to_owned();
         let label = label.to_owned();
         let actor = actor.to_owned();
-        store
-            .transaction_with(move |tx| -> Result<(), CredentialError> {
-                if !Journal::reserve_name(tx, &request_id, &label, &actor)? {
-                    return Err(CredentialError::Conflict);
-                }
-                Ok(())
-            })
+        self.spawn_operation(async move {
+            supported_platform()?;
+            let mut saved = identity_cache.lock().await;
+            if !Self::is_local_target_with_saved(Arc::clone(&store), &target, &saved).await? {
+                return Err(CredentialError::RemoteRequired);
+            }
+            // Check both journal identities before writing either. The target table
+            // prevents a local request from reusing an earlier remote command ID.
+            let request_id_for_reservation = request_id.clone();
+            let label_for_reservation = label.clone();
+            let actor_for_reservation = actor.clone();
+            store
+                .transaction_with(move |tx| -> Result<(), CredentialError> {
+                    if !Journal::reserve_name(
+                        tx,
+                        &request_id_for_reservation,
+                        &label_for_reservation,
+                        &actor_for_reservation,
+                    )? {
+                        return Err(CredentialError::Conflict);
+                    }
+                    Ok(())
+                })
+                .await?;
+            // Credential creation and pending recovery follow a committed reservation:
+            // a conflicting request must not create a file or apply older journal rows.
+            let identity = Self::load_with_notification(
+                Arc::clone(&store),
+                &mut saved,
+                &mut after_identity_write,
+                #[cfg(test)]
+                write_gate.clone(),
+            )
             .await?;
-        // Credential creation and pending recovery follow a committed reservation:
-        // a conflicting request must not create a file or apply older journal rows.
-        let identity = self
-            .load_with_notification(Arc::clone(&store), &mut saved, &mut after_identity_write)
-            .await?;
-        self.recover_with_notification(Arc::clone(&store), identity, &mut after_identity_write)
+            Self::recover_with_notification(
+                Arc::clone(&store),
+                identity,
+                &mut after_identity_write,
+                #[cfg(test)]
+                write_gate,
+            )
             .await
+        })?
+        .await
+        .map_err(|_| CredentialError::Storage)?
     }
 
     /// Resolve a target without creating credentials or recovering pending writes.
@@ -203,22 +304,57 @@ impl Credentials {
         .map_err(|_| CredentialError::Storage)?
     }
 
+    async fn is_local_target_with_saved(
+        store: Arc<RuntimeStore>,
+        target: &str,
+        saved: &Option<StoredMultiServerIdentity>,
+    ) -> Result<bool, CredentialError> {
+        if target == "local" {
+            return Ok(true);
+        }
+        if let Some(identity) = saved.as_ref() {
+            return Ok(target == identity.server_id);
+        }
+        let root = store.root().to_path_buf();
+        let target = target.to_owned();
+        tokio::task::spawn_blocking(move || {
+            match fs::symlink_metadata(root.join("multi-server/identity.json")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(_) => Err(CredentialError::Storage),
+                Ok(_) => {
+                    Ok(target == remote_transport::read_multi_server_identity(&root)?.server_id)
+                }
+            }
+        })
+        .await
+        .map_err(|_| CredentialError::Storage)?
+    }
+
     async fn load<'a>(
-        &self,
         store: Arc<RuntimeStore>,
         saved: &'a mut Option<StoredMultiServerIdentity>,
+        #[cfg(test)] write_gate: Option<Arc<TestWriteGate>>,
     ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
-        self.load_with_notification(store, saved, &mut |_| {}).await
+        Self::load_with_notification(
+            store,
+            saved,
+            &mut |_| {},
+            #[cfg(test)]
+            write_gate,
+        )
+        .await
     }
 
     async fn load_with_notification<'a>(
-        &self,
         store: Arc<RuntimeStore>,
         saved: &'a mut Option<StoredMultiServerIdentity>,
         after_identity_write: &mut impl FnMut(&str),
+        #[cfg(test)] write_gate: Option<Arc<TestWriteGate>>,
     ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
         if saved.is_none() {
             let root = store.root().to_path_buf();
+            #[cfg(test)]
+            let gate = write_gate.clone();
             let mut identity = tokio::task::spawn_blocking(move || {
                 let path = root.join("multi-server/identity.json");
                 match fs::symlink_metadata(&path) {
@@ -226,6 +362,10 @@ impl Credentials {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         private_directory(&root)?;
                         let identity = generate()?;
+                        #[cfg(test)]
+                        if let Some(gate) = gate {
+                            gate.pause_first_write();
+                        }
                         write_identity(&root, &identity, true)?;
                     }
                     Err(_) => return Err(CredentialError::Storage),
@@ -234,8 +374,14 @@ impl Credentials {
             })
             .await
             .map_err(|_| CredentialError::Storage)??;
-            self.recover_with_notification(Arc::clone(&store), &mut identity, after_identity_write)
-                .await?;
+            Self::recover_with_notification(
+                Arc::clone(&store),
+                &mut identity,
+                after_identity_write,
+                #[cfg(test)]
+                write_gate,
+            )
+            .await?;
             store.set_local_server_id(Some(identity.server_id.clone()))?;
             *saved = Some(identity);
         }
@@ -243,10 +389,10 @@ impl Credentials {
     }
 
     async fn recover_with_notification(
-        &self,
         store: Arc<RuntimeStore>,
         identity: &mut StoredMultiServerIdentity,
         after_identity_write: &mut impl FnMut(&str),
+        #[cfg(test)] write_gate: Option<Arc<TestWriteGate>>,
     ) -> Result<(), CredentialError> {
         // File access stays outside store transactions; the writer rechecks
         // the journal before marking each recovery complete.
@@ -268,9 +414,17 @@ impl Credentials {
             updated.label = label;
             let root = store.root().to_path_buf();
             let updated_for_write = updated.clone();
-            tokio::task::spawn_blocking(move || write_identity(&root, &updated_for_write, false))
-                .await
-                .map_err(|_| CredentialError::Storage)??;
+            #[cfg(test)]
+            let gate = write_gate.clone();
+            tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                if let Some(gate) = gate {
+                    gate.pause_first_write();
+                }
+                write_identity(&root, &updated_for_write, false)
+            })
+            .await
+            .map_err(|_| CredentialError::Storage)??;
             after_identity_write(&id);
             updates.push((id, actor, updated.label.clone()));
         }
@@ -299,6 +453,73 @@ impl Credentials {
             .await?;
         *identity = updated;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+struct TestWriteGate {
+    state: std::sync::Mutex<(bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl TestWriteGate {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new((false, false)),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn pause_first_write(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.0 {
+            return;
+        }
+        state.0 = true;
+        self.changed.notify_all();
+        while !state.1 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn wait_until_reached(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.0 && !state.1 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.0
+    }
+
+    fn release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = true;
+        self.changed.notify_all();
+    }
+}
+
+#[cfg(test)]
+struct TestWriteGateRelease(Arc<TestWriteGate>);
+
+#[cfg(test)]
+impl Drop for TestWriteGateRelease {
+    fn drop(&mut self) {
+        self.0.release();
     }
 }
 
@@ -449,7 +670,7 @@ mod tests {
             for foreign_target in [false, true] {
                 let (root, store) = remote_transport::tests::runtime_store_fixture().await;
                 store
-                    .transaction(|tx| {
+                    .transaction(move |tx| {
                         assert!(Journal::reserve_name(tx, "reserved", "Original", "local")?);
                         if foreign_target {
                             tx.execute(
@@ -507,7 +728,8 @@ mod tests {
     async fn rename_notifies_after_identity_file_write_with_stable_request_id() {
         let (root, store) = remote_transport::tests::runtime_store_fixture().await;
         let credentials = Credentials::default();
-        let mut notified = Vec::new();
+        let notified = Arc::new(StdMutex::new(Vec::new()));
+        let notified_by_callback = Arc::clone(&notified);
 
         credentials
             .rename_with_notification(
@@ -516,14 +738,149 @@ mod tests {
                 "Renamed server",
                 "rename-notify",
                 "local",
-                |request_id| notified.push(request_id.to_owned()),
+                move |request_id| {
+                    notified_by_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(request_id.to_owned())
+                },
             )
             .await
             .expect("rename completes");
 
-        assert_eq!(notified, vec!["rename-notify"]);
+        assert_eq!(
+            *notified
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec!["rename-notify"]
+        );
         let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
         assert_eq!(identity.label, "Renamed server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canceled_rename_retains_serialization_until_file_write_and_commit_finish() {
+        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let mut credentials = Credentials::default();
+        credentials
+            .identity(Arc::clone(&store), None)
+            .await
+            .expect("initial identity");
+        let gate = Arc::new(TestWriteGate::new());
+        let _release_gate = TestWriteGateRelease(Arc::clone(&gate));
+        credentials.test_write_gate = Some(Arc::clone(&gate));
+        let credentials = Arc::new(credentials);
+
+        let first_credentials = Arc::clone(&credentials);
+        let first_store = Arc::clone(&store);
+        let first = tokio::spawn(async move {
+            first_credentials
+                .rename(first_store, "local", "First", "cancel-first", "local")
+                .await
+        });
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::task::spawn_blocking({
+                    let gate = Arc::clone(&gate);
+                    move || gate.wait_until_reached()
+                }),
+            )
+            .await
+            .expect("first native write gate timeout")
+            .expect("first native write gate task"),
+            "first native write reached"
+        );
+        first.abort();
+        assert!(first.await.expect_err("waiter canceled").is_cancelled());
+
+        let second_credentials = Arc::clone(&credentials);
+        let second_store = Arc::clone(&store);
+        let second = tokio::spawn(async move {
+            second_credentials
+                .rename(second_store, "local", "Second", "cancel-second", "local")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !second.is_finished(),
+            "second rename waits for the first owner"
+        );
+        gate.release();
+        second
+            .await
+            .expect("second operation joins")
+            .expect("second rename");
+
+        let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
+        assert_eq!(identity.label, "Second");
+        store
+            .transaction(|tx| {
+                assert!(Journal::pending_names(tx)?.is_empty());
+                Ok(())
+            })
+            .await
+            .expect("journal settled");
+        drop(store);
+        fs::remove_dir_all(root).expect("remove disposable state");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canceled_initial_identity_creation_finishes_before_later_rename() {
+        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let mut credentials = Credentials::default();
+        let gate = Arc::new(TestWriteGate::new());
+        let _release_gate = TestWriteGateRelease(Arc::clone(&gate));
+        credentials.test_write_gate = Some(Arc::clone(&gate));
+        let credentials = Arc::new(credentials);
+
+        let first_credentials = Arc::clone(&credentials);
+        let first_store = Arc::clone(&store);
+        let first =
+            tokio::spawn(async move { first_credentials.identity(first_store, None).await });
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::task::spawn_blocking({
+                    let gate = Arc::clone(&gate);
+                    move || gate.wait_until_reached()
+                }),
+            )
+            .await
+            .expect("initial native write gate timeout")
+            .expect("initial native write gate task"),
+            "initial native write reached"
+        );
+        first.abort();
+        assert!(first.await.expect_err("waiter canceled").is_cancelled());
+
+        let second_credentials = Arc::clone(&credentials);
+        let second_store = Arc::clone(&store);
+        let second = tokio::spawn(async move {
+            second_credentials
+                .rename(
+                    second_store,
+                    "local",
+                    "After create",
+                    "after-create",
+                    "local",
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished(), "rename waits for identity creation");
+        gate.release();
+        second
+            .await
+            .expect("rename joins")
+            .expect("rename completes");
+
+        let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
+        assert_eq!(identity.label, "After create");
+        drop(store);
+        fs::remove_dir_all(root).expect("remove disposable state");
     }
 
     #[cfg(unix)]

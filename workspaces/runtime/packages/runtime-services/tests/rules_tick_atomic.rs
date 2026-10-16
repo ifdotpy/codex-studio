@@ -161,7 +161,9 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
     for table in tables {
         for timing in timings {
             let state = template.clone_state();
-            let store = RuntimeStore::open(Some(state.path())).expect("Python database opens");
+            let store = RuntimeStore::open(Some(state.path()))
+                .await
+                .expect("Python database opens");
             let initial = rule(&store);
             store.transaction(move |tx| {
                 tx.execute_batch(&format!("CREATE TRIGGER rules_fail_insert {timing} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END; CREATE TRIGGER rules_fail_update {timing} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END;"))?;
@@ -187,7 +189,9 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
                 .await
                 .expect("remove failpoint");
             drop(store);
-            let store = RuntimeStore::open(Some(state.path())).expect("reopen after rollback");
+            let store = RuntimeStore::open(Some(state.path()))
+                .await
+                .expect("reopen after rollback");
             recover_batch(&store, 0, NOW, &UnavailableMonitor)
                 .await
                 .expect("recover");
@@ -207,7 +211,7 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
     // Crash after reservation / native submission but before an acknowledgement.
     for unknown in if full { vec![false, true] } else { vec![true] } {
         let state = template.clone_state();
-        let store = RuntimeStore::open(Some(state.path())).expect("open");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("open");
         change(&store, json!({"command":"printf fixture"})).await;
         let monitor = CapturingMonitor {
             store: &store,
@@ -224,7 +228,9 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
         let check = monitor.calls.lock().expect("monitor calls")[0].clone();
         drop(monitor);
         drop(store);
-        let store = RuntimeStore::open(Some(state.path())).expect("restart");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("restart");
         recover_batch(&store, 0, NOW + 120.0, &UnavailableMonitor)
             .await
             .expect("recovery holds unknown check");
@@ -277,7 +283,9 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
 async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
     let template = Template::new();
     let state = template.clone_state();
-    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    let store = RuntimeStore::open(Some(state.path()))
+        .await
+        .expect("open Python state");
     change(
         &store,
         json!({"kind":"file","path":"/disposable/watch","fingerprint":[100,2,3]}),
@@ -443,7 +451,9 @@ async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
 async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
     let template = Template::new();
     let state = template.clone_state();
-    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    let store = RuntimeStore::open(Some(state.path()))
+        .await
+        .expect("open Python state");
     change(
         &store,
         json!({
@@ -499,7 +509,9 @@ async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
 async fn cancelled_paused_check_settles_its_durable_launch_intent() {
     let template = Template::new();
     let state = template.clone_state();
-    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    let store = RuntimeStore::open(Some(state.path()))
+        .await
+        .expect("open Python state");
     change(
         &store,
         json!({
@@ -673,8 +685,9 @@ impl RuleMonitor for DurableMonitor<'_> {
 async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
     const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
     if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {
-        let store =
-            RuntimeStore::open(Some(std::path::Path::new(&path))).expect("child opens state");
+        let store = RuntimeStore::open(Some(std::path::Path::new(&path)))
+            .await
+            .expect("child opens state");
         if rule(&store)["kind"] == "event" {
             let (_, checks) = store
                 .transaction_with::<_, RulesTickError>(move |tx| {
@@ -712,7 +725,7 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
         ] {
             let state = template.clone_state();
             {
-                let store = RuntimeStore::open(Some(state.path())).expect("seed");
+                let store = RuntimeStore::open(Some(state.path())).await.expect("seed");
                 change(
                     &store,
                     json!({"kind":kind,"event":"worker_completed","command":"printf fixture"}),
@@ -730,7 +743,9 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 "{}",
                 String::from_utf8_lossy(&child.stderr)
             );
-            let store = RuntimeStore::open(Some(state.path())).expect("reopen committed WAL");
+            let store = RuntimeStore::open(Some(state.path()))
+                .await
+                .expect("reopen committed WAL");
             assert_eq!(rule(&store)["inFlight"], true);
             let check: RuleCheck = serde_json::from_value(rule(&store)["launchIntent"].clone())
                 .expect("exact intent committed before launch");
@@ -741,7 +756,7 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 deliveries: Mutex::new(0),
             };
             if state_kind == CheckReconciliation::Submitted {
-                monitor.launch(&check);
+                monitor.launch(&check).await;
             }
             let report = recover_batch(&store, 0, NOW + 1.0, &monitor)
                 .await

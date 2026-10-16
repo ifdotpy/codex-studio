@@ -570,8 +570,9 @@ mod replay_identity_tests {
     async fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent()
      {
         let state = tempfile::tempdir().expect("retained receipt test state directory");
-        let store =
-            RuntimeStore::open(Some(state.path())).expect("open retained receipt test store");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("open retained receipt test store");
         let first = Call {
             scope: ConnectionScope {
                 account: "default".into(),

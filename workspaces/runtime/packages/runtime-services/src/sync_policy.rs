@@ -1599,44 +1599,57 @@ pub async fn push_preferences(
     scope: PreferenceScope,
     incoming: Map<String, Value>,
     validate_field: impl Fn(&Value) -> bool + Send + Sync + 'static,
+    on_provider_update_change: impl FnOnce() + Send + 'static,
 ) -> Result<Map<String, Value>, SyncPolicyError> {
     let scope_name = match scope {
         PreferenceScope::User => "user",
         PreferenceScope::Server => "server",
     };
-    store
-        .transaction(move |transaction| {
-            let current_payload =
-                SyncDocumentsRepository::preference_payload(transaction, scope_name)?;
-            let current = stored_preference_fields(current_payload, scope_name, &validate_field)
-                .map_err(|error| match error {
-                    SyncPolicyError::InvalidStoredObject { scope, id } => {
-                        StoreError::InvalidSyncObject { scope, id }
-                    }
-                    other => StoreError::SchemaMismatch(other.to_string()),
-                })?;
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| {
-                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
-                });
-            let merged = merge_preferences(&current, &incoming, now_ms)
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-            let payload = canonical_json(&json!({
-                "collection": "uiPreferences",
-                "id": scope_name,
-                "value": {"fields": merged},
-            }));
-            SyncDocumentsRepository::put_preferences(transaction, scope_name, &payload)?;
-            Ok(merged)
-        })
+    let ((merged, _provider_updates_changed), _) = store
+        .transaction_with_post_commit(
+            move |transaction| {
+                let current_payload =
+                    SyncDocumentsRepository::preference_payload(transaction, scope_name)?;
+                let current =
+                    stored_preference_fields(current_payload, scope_name, &validate_field)
+                        .map_err(|error| match error {
+                            SyncPolicyError::InvalidStoredObject { scope, id } => {
+                                StoreError::InvalidSyncObject { scope, id }
+                            }
+                            other => StoreError::SchemaMismatch(other.to_string()),
+                        })?;
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |duration| {
+                        i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                    });
+                let merged = merge_preferences(&current, &incoming, now_ms)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                let provider_updates_changed = scope == PreferenceScope::User
+                    && crate::provider_versions::provider_updates_enabled_from_fields(&current)
+                        != crate::provider_versions::provider_updates_enabled_from_fields(&merged);
+                let payload = canonical_json(&json!({
+                    "collection": "uiPreferences",
+                    "id": scope_name,
+                    "value": {"fields": merged},
+                }));
+                SyncDocumentsRepository::put_preferences(transaction, scope_name, &payload)?;
+                Ok((merged, provider_updates_changed))
+            },
+            move |(_, provider_updates_changed)| {
+                if *provider_updates_changed {
+                    on_provider_update_change();
+                }
+            },
+        )
         .await
         .map_err(|error| match error {
             StoreError::InvalidSyncObject { scope, id } => {
                 SyncPolicyError::InvalidStoredObject { scope, id }
             }
             other => SyncPolicyError::Store(other),
-        })
+        })?;
+    Ok(merged)
 }
 
 #[cfg(test)]
@@ -2018,11 +2031,11 @@ mod tests {
             .await
             .expect("seed task-window fixture");
 
-        TRACED_SQL.with_borrow_mut(Vec::clear);
         let state_dir = root.path().to_string_lossy().into_owned();
         let snapshot_for_first_maintenance = snapshot.clone();
-        store
+        let statements = store
             .transaction(move |transaction| {
+                TRACED_SQL.with_borrow_mut(Vec::clear);
                 transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
@@ -2040,21 +2053,20 @@ mod tests {
                 )?;
                 let payload: Value = serde_json::from_str(&payload)?;
                 assert_eq!(payload["value"]["status"], "running");
-                Ok(())
+                transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+                Ok(TRACED_SQL.with_borrow_mut(std::mem::take))
             })
             .await
             .expect("maintain canonical task projection");
 
-        TRACED_SQL.with_borrow(|statements| {
-            assert!(statements.iter().any(|sql| {
-                sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents")
-            }));
-            assert!(
-                !statements
-                    .iter()
-                    .any(|sql| { sql == "SELECT id,record FROM runtime_tasks ORDER BY rowid" })
-            );
-        });
+        assert!(statements.iter().any(|sql| {
+            sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents")
+        }));
+        assert!(
+            !statements
+                .iter()
+                .any(|sql| { sql == "SELECT id,record FROM runtime_tasks ORDER BY rowid" })
+        );
 
         let state_dir = root.path().to_string_lossy().into_owned();
         let snapshot_for_second_maintenance = snapshot.clone();
@@ -2408,6 +2420,145 @@ mod tests {
         }), PreferenceScope::User).is_err());
     }
 
+    fn preference_field(name: &str, value: Value, timestamp: i64) -> Map<String, Value> {
+        Map::from_iter([(
+            name.to_owned(),
+            json!({"value":value,"timestamp":timestamp,"writer":"sync-policy-test"}),
+        )])
+    }
+
+    #[tokio::test]
+    async fn provider_update_preference_notifies_only_after_effective_user_value_change() {
+        let root = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open isolated runtime store");
+        let notifications = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notification = |notifications: &std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+            let notifications = std::sync::Arc::clone(notifications);
+            move || {
+                notifications.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        };
+        let key = crate::provider_versions::PROVIDER_UPDATE_PREFERENCE_KEY;
+
+        let merged = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(key, json!(false), 1),
+            |_| true,
+            notification(&notifications),
+        )
+        .await
+        .expect("provider preference writes");
+        assert_eq!(
+            merged[key]["value"], false,
+            "the existing preference field map is returned"
+        );
+        assert_eq!(
+            notifications.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "absent/default-enabled to disabled commits and wakes once"
+        );
+
+        let _ = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(key, json!(false), 2),
+            |_| true,
+            notification(&notifications),
+        )
+        .await
+        .expect("same effective value with newer metadata writes");
+        let _ = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(key, json!(false), 2),
+            |_| true,
+            notification(&notifications),
+        )
+        .await
+        .expect("identical preference update is a no-op");
+        let _ = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(
+                r#"["codex-studio-preferences-v1","theme"]"#,
+                json!("dark"),
+                3,
+            ),
+            |_| true,
+            notification(&notifications),
+        )
+        .await
+        .expect("unrelated appearance preference writes");
+        assert_eq!(
+            notifications.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "metadata-only and unrelated changes do not wake the provider monitor"
+        );
+        let _ = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(key, json!(true), 4),
+            |_| true,
+            notification(&notifications),
+        )
+        .await
+        .expect("provider preference can be re-enabled");
+        assert_eq!(
+            notifications.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "enabled transition also wakes after commit"
+        );
+
+        let malformed_fields = Map::from_iter([(
+            key.to_owned(),
+            json!({"value":"invalid","timestamp":4,"writer":"legacy"}),
+        )]);
+        let malformed = canonical_json(&json!({
+            "collection":"uiPreferences",
+            "id":"user",
+            "value":{"fields":malformed_fields}
+        }));
+        let malformed_for_write = malformed.clone();
+        store
+            .transaction(move |transaction| {
+                SyncDocumentsRepository::put_preferences(
+                    transaction,
+                    "user",
+                    &malformed_for_write,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("malformed persisted fixture seeds");
+        let result = push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(key, json!(true), 5),
+            |_| true,
+            notification(&notifications),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SyncPolicyError::InvalidStoredObject { .. })),
+            "malformed existing preference remains refused"
+        );
+        assert_eq!(
+            notifications.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a rolled-back malformed stored preference does not wake"
+        );
+        let payload = store.read().expect("preference reader");
+        assert_eq!(
+            SyncDocumentsRepository::preference_payload(&payload, "user")
+                .expect("stored payload query"),
+            Some(malformed),
+            "the refused update leaves malformed stored data untouched"
+        );
+    }
+
     #[test]
     fn cursor_limits_match_scope_contract() {
         assert_eq!(effective_limit(SYNC_ENTITY_SCOPE, 900), 500);
@@ -2471,7 +2622,10 @@ mod tests {
             let state_dir = store.root().to_string_lossy().into_owned();
             let expected = case["expected"].clone();
             let expected_error = case.get("expectedError").is_some();
-            let transaction_project_id = project_id.clone();
+            let transaction_project_id = project["id"]
+                .as_str()
+                .expect("fixture project record ID")
+                .to_owned();
             let result = store.transaction(move |transaction| {
                 ProjectsRepository::put_project(transaction, &project)?;
                 let mut prior = prior;

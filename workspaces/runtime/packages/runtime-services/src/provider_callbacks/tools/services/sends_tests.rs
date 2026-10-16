@@ -46,7 +46,7 @@ async fn send(
         )
         .unwrap();
     }
-    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let actor = oracle["agents"][sender_index].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -104,7 +104,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         )
         .unwrap();
     }
-    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -173,7 +173,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         )
         .unwrap();
     }
-    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -223,7 +223,7 @@ async fn complaint_submit_read_and_respond_share_the_notification_service() {
         )
         .unwrap();
     }
-    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0].clone();
     let worker_for_submit = worker.clone();

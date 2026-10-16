@@ -2017,9 +2017,11 @@ mod tests {
         );
     }
 
-    fn submitted_chat_runtime() -> (tempfile::TempDir, RuntimeStore) {
+    async fn submitted_chat_runtime() -> (tempfile::TempDir, RuntimeStore) {
         let directory = tempfile::tempdir().expect("temporary runtime");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
         let event_id = "chat:message-1:agent";
         let message_text = "answer this prompt";
         let event_text = json!({
@@ -2031,7 +2033,7 @@ mod tests {
         })
         .to_string();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let agent = AgentRecord::from_value(json!({
                     "id":"agent",
                     "rootId":"agent",
@@ -2097,13 +2099,14 @@ mod tests {
                 )?);
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("submitted attempt is durable");
         (directory, store)
     }
 
-    #[test]
-    fn user_message_receipt_binds_exact_submitted_turn_and_chat_delivery_once() {
-        let (directory, store) = submitted_chat_runtime();
+    #[tokio::test]
+    async fn user_message_receipt_binds_exact_submitted_turn_and_chat_delivery_once() {
+        let (directory, store) = submitted_chat_runtime().await;
         let event_id = "chat:message-1:agent";
         let notification = frame(&json!({
             "method":"item/started",
@@ -2113,15 +2116,15 @@ mod tests {
                 "item":{"id":"input-1","type":"userMessage","clientId":event_id}
             }
         }));
-        let identity = identity(1);
+        let first_identity = identity(1);
         let first = store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 super::dispatch_notification_with_effects(
                     tx,
                     "agent",
                     &PublicationContext::default(),
                     &NotificationStreamBuffer::default(),
-                    &identity,
+                    &first_identity,
                     &notification,
                     2.0,
                     &crate::notification_runtime_effects::RuntimeNotificationEffects,
@@ -2131,13 +2134,16 @@ mod tests {
                     studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
                 })
             })
+            .await
             .expect("positive native receipt commits");
         assert_eq!(first, DispatchOutcome::Written);
         drop(store);
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime reopens");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime reopens");
 
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let event = QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
                     .expect("submitted event remains");
                 assert_eq!(event.status, "delivered");
@@ -2162,17 +2168,27 @@ mod tests {
                 );
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("settled receipt state reads");
 
+        let replay_identity = identity(1);
+        let replay_notification = frame(&json!({
+            "method":"item/started",
+            "params":{
+                "threadId":"thread",
+                "turnId":"turn-1",
+                "item":{"id":"input-1","type":"userMessage","clientId":event_id}
+            }
+        }));
         let replay = store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 super::dispatch_notification_with_effects(
                     tx,
                     "agent",
                     &PublicationContext::default(),
                     &NotificationStreamBuffer::default(),
-                    &identity,
-                    &notification,
+                    &replay_identity,
+                    &replay_notification,
                     3.0,
                     &crate::notification_runtime_effects::RuntimeNotificationEffects,
                 )
@@ -2181,23 +2197,25 @@ mod tests {
                     studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
                 })
             })
+            .await
             .expect("lost acknowledgement replays its saved receipt");
         assert_eq!(replay, DispatchOutcome::Written);
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let agent =
                     AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
                 assert_eq!(agent.extra["events"], 1);
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("receipt replay does not count the notification twice");
     }
 
-    #[test]
-    fn turn_start_acceptance_projects_chat_delivery_in_its_transaction() {
-        let (_directory, store) = submitted_chat_runtime();
+    #[tokio::test]
+    async fn turn_start_acceptance_projects_chat_delivery_in_its_transaction() {
+        let (_directory, store) = submitted_chat_runtime().await;
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let accepted = SchedulerRepository::settle_started_provider(
                     tx,
                     "agent",
@@ -2219,6 +2237,7 @@ mod tests {
                 assert_eq!(message.deliveries["agent"], "delivered");
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("turn/start acceptance commits chat delivery");
     }
 

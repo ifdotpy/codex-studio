@@ -311,7 +311,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
             "{table}"
         );
         assert_eq!(
-            MonitorsRepository::get(&store.read().expect("read rollback"), id)
+            MonitorsRepository::get(&store.read().expect("read rollback"), &id)
                 .expect("read monitor")
                 .expect("monitor")
                 .value()["status"],
@@ -331,7 +331,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
         monitor_runtime::recover_on_startup(&store, 3000.0)
             .await
             .expect("idempotent restart");
-        assert_eq!(complete_rows(&store, id)["monitor"]["status"], "lost");
+        assert_eq!(complete_rows(&store, &id)["monitor"]["status"], "lost");
     }
 }
 

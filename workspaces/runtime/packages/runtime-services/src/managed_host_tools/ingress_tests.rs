@@ -64,7 +64,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         )
         .unwrap();
     }
-    let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute_batch(
@@ -91,7 +91,7 @@ async fn fixture_arc() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
     fixture().await
 }
 
-fn shared_ports<P>(ports: P) -> Arc<P>
+fn shared_ports<P>(ports: P) -> Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>
 where
     P: crate::managed_host_tools::Ports<Prepared = ()> + 'static,
 {
@@ -346,15 +346,9 @@ async fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dis
         json!({}),
     );
     assert!(
-        dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports)
-        )
-        .await
-        .is_err()
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+            .await
+            .is_err()
     );
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
     let connection = store.read().unwrap();
@@ -366,15 +360,10 @@ async fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dis
     assert_eq!(receipt["deliveryCertainty"], "written");
 
     ports.fail_release.store(false, Ordering::SeqCst);
-    let replay = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        21.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    let replay =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
 }
@@ -389,7 +378,7 @@ struct ScriptedMonitorPort {
 impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
     fn input<'a>(
         &'a self,
-        request: crate::provider_callbacks::MonitorInputRequest<'_>,
+        request: crate::provider_callbacks::MonitorInputRequest<'a>,
     ) -> futures_util::future::BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -402,21 +391,22 @@ impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
                     Err(Error::Unavailable("test/input-not-sent"))
                 }
                 crate::managed_host_tools::DeliveryCertainty::Unknown => {
+                    let monitor_id = request.monitor_id.to_owned();
+                    let ticket = request.ticket.to_owned();
                     self.store
                         .as_ref()
                         .expect("unknown delivery fixture stores its receipt")
-                        .transaction_with(|tx| {
+                        .transaction_with(move |tx| {
                             let mut record = studio_runtime_store::system_reads::get(
                                 tx,
                                 "runtime_monitors",
-                                request.monitor_id,
+                                &monitor_id,
                             )?
                             .ok_or(Error::Invalid("Unknown test monitor"))?;
-                            record["inputAttempt"] =
-                                json!({"id":request.ticket,"status":"pending"});
+                            record["inputAttempt"] = json!({"id":ticket,"status":"pending"});
                             tx.execute(
                                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
-                                rusqlite::params![record.to_string(), request.monitor_id],
+                                rusqlite::params![record.to_string(), monitor_id],
                             )?;
                             Ok::<_, Error>(())
                         })
@@ -519,20 +509,22 @@ impl crate::monitor_runtime_wiring::MonitorPort for ScriptedRetainedMonitorPort 
     > {
         Box::pin(async { Ok(None) })
     }
-    fn probe(
-        &self,
-        _id: &str,
+    fn probe<'a>(
+        &'a self,
+        _id: &'a str,
         _generation: i64,
-        _command: &str,
-    ) -> Result<(), crate::monitor_policy::MonitorError> {
-        Ok(())
+        _command: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), crate::monitor_policy::MonitorError>> {
+        Box::pin(async { Ok(()) })
     }
-    fn input_reply(
-        &self,
-        _operation: &crate::monitor_policy::Operation,
-        ticket: &str,
-    ) -> crate::monitor_runtime_wiring::InputReply {
-        crate::monitor_runtime_wiring::InputReply::Acknowledged(json!({"ticket":ticket}))
+    fn input_reply<'a>(
+        &'a self,
+        _operation: &'a crate::monitor_policy::Operation,
+        ticket: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, crate::monitor_runtime_wiring::InputReply> {
+        Box::pin(async move {
+            crate::monitor_runtime_wiring::InputReply::Acknowledged(json!({"ticket":ticket}))
+        })
     }
 }
 
@@ -570,7 +562,7 @@ fn production_managed_ports(
     context: &CallbackContext,
     frame: &Frame,
     monitor: Arc<ScriptedRetainedMonitorPort>,
-) -> Arc<impl crate::managed_host_tools::Ports<Prepared = ()> + 'static> {
+) -> Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>> {
     shared_ports(
         crate::provider_callbacks::managed_tool_ports_with_runtime(
             store.as_ref(),
@@ -607,24 +599,13 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         );
         activate_fixture_monitor(&store, &context, &managed_monitor_id()).await;
         let ports = production_managed_ports(&store, &context, &frame, fake.clone());
-        let first = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
-        dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            21.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        let first =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
         assert_eq!(
             fake.calls.load(Ordering::SeqCst),
             1,
@@ -679,7 +660,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &worker_context,
         &frame,
         20.0,
-        Arc::clone(&ports),
+        ports.clone(),
     )
     .await;
     assert!(decision.is_err(), "non-owner monitor input must be refused");
@@ -707,7 +688,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &stale_context,
         &frame,
         20.0,
-        Arc::clone(&ports),
+        ports.clone(),
     )
     .await;
     assert!(decision.is_err(), "stale monitor input must be refused");
@@ -836,9 +817,11 @@ fn managed_monitor_id() -> String {
 }
 
 async fn activate_fixture_monitor(store: &RuntimeStore, context: &CallbackContext, id: &str) {
+    let context = context.clone();
+    let id = id.to_owned();
     store
-        .transaction_with::<_, StoreError>(|tx| {
-            let mut record = studio_runtime_store::system_reads::get(tx, "runtime_monitors", id)?
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut record = studio_runtime_store::system_reads::get(tx, "runtime_monitors", &id)?
                 .ok_or(StoreError::RecordContract("missing fixture monitor"))?;
             record["status"] = json!("running");
             record["epoch"] = json!(context.epoch);
@@ -888,24 +871,12 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             )
             .unwrap(),
         );
-        dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
-        dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            21.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+            .await
+            .unwrap();
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             *fake.tickets.lock().unwrap(),
@@ -966,7 +937,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             &worker_context,
             &frame,
             20.0,
-            Arc::clone(&ports)
+            ports.clone()
         )
         .await
         .is_err()
@@ -1038,15 +1009,10 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
             )
             .unwrap(),
         );
-        let decision = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        let decision =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
         assert!(
             format!("{decision:?}").contains(refusal),
             "{tool}: {decision:?}"
@@ -1327,15 +1293,10 @@ async fn named_refusals_leave_all_application_tables_unchanged() {
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap(),
         );
-        let decision = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        let decision =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
         assert!(
             format!("{decision:?}").contains(dependency),
             "{tool} did not name {dependency}: {decision:?}"
@@ -1395,15 +1356,10 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
             row.get(0)
         })
         .unwrap();
-    let first = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        20.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    let first =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+            .await
+            .unwrap();
     assert!(matches!(first, CallbackDecision::Answer(_)));
     let count: i64 = store
         .read()
@@ -1464,19 +1420,15 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
         saved["requestId"].as_str().unwrap(),
         21.0,
     )
+    .await
     .unwrap();
     FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(false));
     assert_eq!(adapter_replay, saved);
 
-    let replay = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        21.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    let replay =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
     let replayed_count: i64 = store
         .read()
@@ -1546,11 +1498,13 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
             context.thread = worker["threadId"].as_str().unwrap().to_owned();
             context.turn = worker["turnId"].as_str().unwrap().to_owned();
         }
+        let actor_id = context.agent.clone();
+        let flags = flags.clone();
         store
-            .transaction_with::<_, StoreError>(|tx| {
+            .transaction_with::<_, StoreError>(move |tx| {
                 let raw: String = tx.query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
-                    [&context.agent],
+                    [&actor_id],
                     |row| row.get(0),
                 )?;
                 let mut actor: Value = serde_json::from_str(&raw).unwrap();
@@ -1559,7 +1513,7 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
                 }
                 tx.execute(
                     "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-                    params![context.agent, actor.to_string()],
+                    params![actor_id, actor.to_string()],
                 )?;
                 Ok(())
             })
@@ -1581,15 +1535,10 @@ async fn send_remote_routing_refusals_match_python_and_write_nothing() {
             )
             .unwrap(),
         );
-        let decision = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        let decision =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
         assert!(
             format!("{decision:?}").contains(dependency),
             "{label} did not name {dependency}: {decision:?}"
@@ -1623,11 +1572,12 @@ async fn managed_tools_match_python_rows_events_and_sync_projection() {
             turn: actor["turnId"].as_str().unwrap().to_owned(),
         };
         if expected["remoteOrigin"] == true {
+            let agent_id = context.agent.clone();
             store
-                .transaction_with::<_, StoreError>(|tx| {
+                .transaction_with::<_, StoreError>(move |tx| {
                     tx.execute(
                         "UPDATE runtime_agents SET record=json_set(record,'$.remoteOrigin','source-server') WHERE id=?1",
-                        [context.agent.as_str()],
+                        [agent_id],
                     )?;
                     Ok(())
                 }).await
@@ -1639,18 +1589,14 @@ async fn managed_tools_match_python_rows_events_and_sync_projection() {
             expected["tool"].as_str().unwrap(),
             expected["arguments"].clone(),
         );
-        let ports =
+        let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake.clone())
+                .unwrap(),
+        );
+        let decision =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
                 .unwrap();
-        let decision = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
         let CallbackDecision::Answer(reply) = decision else {
             panic!("managed callback must answer: {}", expected["tool"])
         };
@@ -1743,9 +1689,9 @@ async fn deleted_team_root_refuses_complaint_without_writes() {
         .iter()
         .find(|agent| agent["id"] == expected["actor"])
         .unwrap();
-    let root_id = worker["rootId"].as_str().unwrap();
+    let root_id = worker["rootId"].as_str().unwrap().to_owned();
     store
-        .transaction_with::<_, StoreError>(|tx| {
+        .transaction_with::<_, StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',20.0) WHERE id=?1",
                 [root_id],
@@ -1761,6 +1707,7 @@ async fn deleted_team_root_refuses_complaint_without_writes() {
         expected,
         Some(expected["arguments"].clone()),
     )
+    .await
     .unwrap();
     let CallbackDecision::Answer(reply) = decision else {
         panic!("deleted-root refusal must return a callback answer")
@@ -1798,14 +1745,19 @@ async fn managed_reads_preserve_corrupt_record_identity() {
     );
     // Prepare the search directory first; the corrupt row is deliberately
     // outside sync so the read reaches its stored-object validation path.
+    let agent_id = context.agent.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
+        .transaction_with::<_, StoreError>(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_work(id,record) VALUES('p05-corrupt-work',?1)",
-                [json!({"id":"p05-corrupt-work","rootId":context.agent,"title":17,"status":"ready"}).to_string()],
+                [
+                    json!({"id":"p05-corrupt-work","rootId":agent_id,"title":17,"status":"ready"})
+                        .to_string(),
+                ],
             )?;
             Ok(())
-        }).await
+        })
+        .await
         .unwrap();
     let search_result = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -1824,14 +1776,17 @@ async fn managed_reads_preserve_corrupt_record_identity() {
         "corrupt work result: {search_result:?}"
     );
 
+    let agent_id = context.agent.clone();
+    let monitor_id_for_tx = monitor_id.clone();
+    let monitor_id_for_json = monitor_id_for_tx.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
+        .transaction_with::<_, StoreError>(move |tx| {
             tx.execute("DELETE FROM runtime_work WHERE id='p05-corrupt-work'", [])?;
             tx.execute(
                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
                 [
-                    json!({"id":monitor_id,"agent":context.agent,"command":17}).to_string(),
-                    monitor_id.clone(),
+                    json!({"id":monitor_id_for_json,"agent":agent_id,"command":17}).to_string(),
+                    monitor_id_for_tx,
                 ],
             )?;
             Ok(())
@@ -1892,22 +1847,26 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
             let (_root, store, _) = fixture().await;
             for previous in &cases[..case_index] {
                 assert!(matches!(
-                    dispatch_python_case(&store, oracle, previous, None).unwrap(),
+                    dispatch_python_case(&store, oracle, previous, None)
+                        .await
+                        .unwrap(),
                     CallbackDecision::Answer(_)
                 ));
             }
             let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
+            let create_sql = format!(
+                "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
+            );
             store
-                .transaction_with::<_, StoreError>(|tx| {
-                    tx.execute_batch(&format!(
-                        "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
-                    ))?;
+                .transaction_with::<_, StoreError>(move |tx| {
+                    tx.execute_batch(&create_sql)?;
                     Ok(())
-                }).await
+                })
+                .await
                 .unwrap();
             let before = application_table_snapshot(&store);
             let expected = &cases[case_index];
-            let first_attempt = dispatch_python_case(&store, oracle, expected, None);
+            let first_attempt = dispatch_python_case(&store, oracle, expected, None).await;
             let saved_failure = match first_attempt {
                 Err(_) => None,
                 Ok(CallbackDecision::Answer(reply)) => {
@@ -1920,9 +1879,10 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 }
                 Ok(other) => panic!("unexpected failure decision: {other:?}"),
             };
+            let drop_sql = format!("DROP TRIGGER {trigger}");
             store
-                .transaction_with::<_, StoreError>(|tx| {
-                    tx.execute_batch(&format!("DROP TRIGGER {trigger}"))?;
+                .transaction_with::<_, StoreError>(move |tx| {
+                    tx.execute_batch(&drop_sql)?;
                     Ok(())
                 })
                 .await
@@ -1932,7 +1892,10 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 application_table_snapshot(&store),
                 "partial write: {table}"
             );
-            let first = match dispatch_python_case(&store, oracle, expected, None).unwrap() {
+            let first = match dispatch_python_case(&store, oracle, expected, None)
+                .await
+                .unwrap()
+            {
                 CallbackDecision::Answer(reply) => reply,
                 _ => panic!("retry must answer"),
             };
@@ -1945,7 +1908,9 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 );
             }
             let committed = application_table_snapshot(&store);
-            let replay = dispatch_python_case(&store, oracle, expected, None).unwrap();
+            let replay = dispatch_python_case(&store, oracle, expected, None)
+                .await
+                .unwrap();
             let CallbackDecision::Answer(replay) = replay else {
                 panic!("replay must return saved answer")
             };
@@ -1963,7 +1928,11 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
             } else {
                 changed["action"] = json!("changed");
             }
-            assert!(dispatch_python_case(&store, oracle, expected, Some(changed)).is_err());
+            assert!(
+                dispatch_python_case(&store, oracle, expected, Some(changed))
+                    .await
+                    .is_err()
+            );
             assert_eq!(
                 committed,
                 application_table_snapshot(&store),
@@ -1987,7 +1956,11 @@ async fn startup_reconciles_reserved_callback_once() {
         }).await
         .unwrap();
     let application_before = application_table_snapshot(&store);
-    assert!(dispatch_python_case(&store, oracle, expected, None).is_err());
+    assert!(
+        dispatch_python_case(&store, oracle, expected, None)
+            .await
+            .is_err()
+    );
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute_batch("DROP TRIGGER p05_crash_after_reservation")?;
@@ -2017,7 +1990,7 @@ async fn startup_reconciles_reserved_callback_once() {
     drop(store);
 
     // Reopen the real store and invoke the callback owner's startup recovery.
-    let restarted = RuntimeStore::open(Some(root.path())).unwrap();
+    let restarted = RuntimeStore::open(Some(root.path())).await.unwrap();
     assert_eq!(
         crate::provider_callbacks::recover_connection(&restarted, "default", "connection", 30.0)
             .await
@@ -2080,15 +2053,10 @@ async fn every_managed_tool_runs_through_provider_callback_dispatch() {
     for (index, (tool, args)) in cases.into_iter().enumerate() {
         let rpc = format!("managed-{index}");
         let frame = call(&context, &rpc, tool, args);
-        let decision = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap();
+        let decision =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
         assert!(matches!(decision, CallbackDecision::Answer(_)), "{tool}");
     }
     // The plan topic has a local transactional projection and Interrupt now
@@ -2109,30 +2077,19 @@ async fn post_commit_failure_replays_saved_result_before_callback_reply() {
         json!({}),
     );
     assert!(
-        dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports)
-        )
-        .await
-        .is_err()
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+            .await
+            .is_err()
     );
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
     assert_eq!(intent_count(&store, "status"), 1);
 
     ports.fail_release.store(false, Ordering::SeqCst);
-    let replay = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        21.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    let replay =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(intent_count(&store, "status"), 1);
@@ -2149,20 +2106,14 @@ async fn spawn_intent_is_reconciled_after_restart_when_no_signal_was_released() 
         "orchestration_spawn",
         json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
-    dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        20.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+        .await
+        .unwrap();
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
     assert_eq!(intent_count(&store, "spawn"), 1);
     drop(store);
 
-    let restarted = RuntimeStore::open(Some(root.path())).unwrap();
+    let restarted = RuntimeStore::open(Some(root.path())).await.unwrap();
     for _ in 0..2 {
         restarted
             .transaction_with::<_, StoreError>(|tx| {
@@ -2196,24 +2147,14 @@ async fn same_request_replays_saved_result_without_a_second_effect() {
         "orchestration_send",
         json!({"agent_id":"worker","text":"continue"}),
     );
-    let first = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        20.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
-    let replay = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame,
-        21.0,
-        Arc::clone(&ports),
-    )
-    .await
-    .unwrap();
+    let first =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+            .await
+            .unwrap();
+    let replay =
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
+            .await
+            .unwrap();
     let (CallbackDecision::Answer(first), CallbackDecision::Answer(replay)) = (first, replay)
     else {
         panic!("expected saved answers")
@@ -2235,22 +2176,26 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
         .as_str()
         .unwrap()
         .to_owned();
+    let monitor_id_for_tx = monitor_id.clone();
+    let monitor_id_for_json = monitor_id_for_tx.clone();
+    let agent_id = context.agent.clone();
+    let agent_id_for_json = agent_id.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
+        .transaction_with::<_, StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
-                [json!({"id":monitor_id,"agent":context.agent,"command":"printf fixture","created":20.0,"status":"running"}).to_string(), monitor_id.clone()],
+                [json!({"id":monitor_id_for_json,"agent":agent_id_for_json,"command":"printf fixture","created":20.0,"status":"running"}).to_string(), monitor_id_for_tx],
             )?;
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
-                [&context.agent],
+                [&agent_id],
                 |row| row.get(0),
             )?;
             let mut actor: Value = serde_json::from_str(&raw).unwrap();
             actor["remoteOrigin"] = json!(true);
             tx.execute(
                 "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-                params![context.agent, actor.to_string()],
+                params![agent_id, actor.to_string()],
             )?;
             Ok(())
         }).await
@@ -2277,15 +2222,11 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
             )
             .unwrap(),
         );
-        let CallbackDecision::Answer(reply) = dispatch_with_managed_tools(
-            Arc::clone(&store),
-            &context,
-            &frame,
-            20.0,
-            Arc::clone(&ports),
-        )
-        .await
-        .unwrap() else {
+        let CallbackDecision::Answer(reply) =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap()
+        else {
             panic!("remote-origin local read must answer: {tool}")
         };
         assert!(
@@ -2310,19 +2251,26 @@ async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     let request_id = "thread-0:spawn:p05-cancel";
     queued["id"] = json!(request_id);
     queued["request_id"] = json!("p05-cancel");
+    let queued_record = queued.to_string();
+    let request_id = request_id.to_owned();
+    let request_id_for_tx = request_id.clone();
+    let agent_id = context.agent.clone();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                params![request_id, queued.to_string()],
+                params![request_id_for_tx, queued_record],
             )?;
-            let stored =
-                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", request_id)?;
+            let stored = studio_runtime_store::system_reads::get(
+                tx,
+                "runtime_tool_requests",
+                &request_id_for_tx,
+            )?;
             assert_eq!(stored.as_ref(), Some(&queued));
             let result = crate::tool_requests::execute(
                 tx,
-                &context.agent,
-                crate::tool_requests::Action::Cancel(request_id),
+                &agent_id,
+                crate::tool_requests::Action::Cancel(&request_id_for_tx),
                 21.0,
             )?;
             Ok::<_, CallbackError>(result)
@@ -2331,7 +2279,7 @@ async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
         .unwrap();
     let connection = store.read().unwrap();
     let cancelled =
-        studio_runtime_store::system_reads::get(&connection, "runtime_tool_requests", request_id)
+        studio_runtime_store::system_reads::get(&connection, "runtime_tool_requests", &request_id)
             .unwrap()
             .unwrap();
     assert_eq!(cancelled["stage"], "cancelled");
@@ -2634,14 +2582,16 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     actor_value["workerDefaults"] = json!({});
     actor_value["accountKey"] = json!("default");
     actor_value["effort"] = json!("low");
+    let actor_value_for_tx = actor_value.clone();
+    let project_path_for_tx = project_path.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
-            let actor_record = studio_runtime_store::AgentRecord::from_value(actor_value.clone())
+        .transaction_with::<_, StoreError>(move |tx| {
+            let actor_record = studio_runtime_store::AgentRecord::from_value(actor_value_for_tx)
                 .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             studio_runtime_store::AgentRepository::put(tx, &actor_record)?;
             studio_runtime_store::ProjectsRepository::put_project(
                 tx,
-                &json!({"id":project_path,"path":project_path,"name":"corpus",
+                &json!({"id":project_path_for_tx.clone(),"path":project_path_for_tx,"name":"corpus",
                     "accountKey":"alternate","accountRevision":1,"workerBaseRef":"HEAD~1"}),
             )?;
             Ok(())
@@ -2655,10 +2605,17 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "epoch":context.epoch as i64,"threadId":actor_value.get("threadId").cloned().unwrap_or(Value::Null),
         "turnId":null,"created":10.0,"status":"pending","firstAttemptId":null,
         "rootAttemptId":null,"latestAttemptId":null});
-    store.transaction_with::<_, StoreError>(|tx| {
+    let actor_id_for_run = actor_value["id"].as_str().unwrap().to_owned();
+    let actor_thread_for_run = actor_value
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let run_record = run.to_string();
+    let epoch = context.epoch as i64;
+    store.transaction_with::<_, StoreError>(move |tx| {
         tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES(?1,?2,?3,?4,?5,NULL,10,?6)",
-            rusqlite::params![run_id, actor_value["id"].as_str().unwrap(), "default", context.epoch as i64,
-                actor_value.get("threadId").and_then(Value::as_str), run.to_string()])?;
+            rusqlite::params![run_id, actor_id_for_run, "default", epoch,
+                actor_thread_for_run, run_record])?;
         Ok(())
     }).await.unwrap();
 
@@ -2691,6 +2648,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         20.0,
         &CreationEnvironment,
     )
+    .await
     .unwrap();
     assert_eq!(spawned.value["agents"].as_array().unwrap().len(), 1);
     assert_eq!(spawned.value["requestId"], "dispatcher-spawn-api");
@@ -2734,6 +2692,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         20.5,
         &CreationEnvironment,
     )
+    .await
     .unwrap();
     let fallback_id = fallback.value["agents"][0]["id"].as_str().unwrap();
     let fallback_child = studio_runtime_store::AgentRepository::get(
@@ -2797,7 +2756,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "dispatcher-workspace-refusal",
         20.25,
         &CreationEnvironment,
-    )
+    ).await
     .is_err());
     let after_workspace_refusal: i64 = store
         .read()
@@ -2815,7 +2774,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "dispatcher-image-base-ref",
         20.5,
         &CreationEnvironment,
-    )
+    ).await
     .expect("image base refs resolve to a worker checkout instruction");
     assert_eq!(IMAGE_PROVISION_CALLS.get(), provision_calls_before + 1);
     let image_base_id = image_base.value["agents"][0]["id"].as_str().unwrap();
@@ -2867,6 +2826,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         21.0,
         &CreationEnvironment,
     )
+    .await
     .unwrap_or_else(|error| panic!("review API call: {error:?}"));
     assert_eq!(reviewed.value["requestId"], "dispatcher-review-api");
     assert_eq!(reviewed.value["status"], "queued");
@@ -2905,9 +2865,10 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     actor_value["layrLine"] = json!("main");
     actor_value["provider"] = json!("codex");
     actor_value["isLead"] = json!(true);
+    let actor_value_for_vm_tx = actor_value.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
-            let record = studio_runtime_store::AgentRecord::from_value(actor_value.clone())
+        .transaction_with::<_, StoreError>(move |tx| {
+            let record = studio_runtime_store::AgentRecord::from_value(actor_value_for_vm_tx)
                 .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             studio_runtime_store::AgentRepository::put(tx, &record)?;
             Ok(())
@@ -2929,6 +2890,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         22.0,
         &CreationEnvironment,
     )
+    .await
     .expect_err("VM review creation is unavailable until VM workspace preparation exists");
     assert!(matches!(
         vm_review_error,
@@ -2952,11 +2914,12 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
         .unwrap();
     assert_eq!(before_vm_review, after_uncertain_review);
+    let root_agent_id = context.agent.clone();
     store
-        .transaction_with::<_, StoreError>(|tx| {
+        .transaction_with::<_, StoreError>(move |tx| {
             let root = studio_runtime_store::AgentRepository::get(
                 tx,
-                &studio_runtime_store::AgentId::from(context.agent.as_str()),
+                &studio_runtime_store::AgentId::from(root_agent_id.as_str()),
             )?
             .unwrap();
             let mut root_value = root.value();
@@ -2992,7 +2955,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "dispatcher-capacity-refusal",
         22.0,
         &CreationEnvironment,
-    )
+    ).await
     .is_err());
     let after_capacity: i64 = store
         .read()
@@ -3028,16 +2991,21 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
             format!("{request_id}:0").as_bytes(),
         )
         .to_string();
+        let failpoint_sql = if failpoint == "child" {
+            format!(
+                "CREATE TRIGGER reject_child BEFORE INSERT ON runtime_agents WHEN NEW.id='{child_id}' BEGIN SELECT RAISE(ABORT,'child failpoint'); END;"
+            )
+        } else {
+            format!(
+                "CREATE TRIGGER reject_initial BEFORE INSERT ON runtime_events WHEN NEW.id='{child_id}:initial' BEGIN SELECT RAISE(ABORT,'first turn failpoint'); END;"
+            )
+        };
         store
-            .transaction_with::<_, StoreError>(|tx| {
-                let sql = if failpoint == "child" {
-                    format!("CREATE TRIGGER reject_child BEFORE INSERT ON runtime_agents WHEN NEW.id='{child_id}' BEGIN SELECT RAISE(ABORT,'child failpoint'); END;")
-                } else {
-                    format!("CREATE TRIGGER reject_initial BEFORE INSERT ON runtime_events WHEN NEW.id='{child_id}:initial' BEGIN SELECT RAISE(ABORT,'first turn failpoint'); END;")
-                };
-                tx.execute_batch(&sql)?;
+            .transaction_with::<_, StoreError>(move |tx| {
+                tx.execute_batch(&failpoint_sql)?;
                 Ok(())
-            }).await
+            })
+            .await
             .unwrap();
         let args =
             json!({"agents":[{"name":"Worker","prompt":"Do the task","workspace":"shared"}]});
@@ -3050,6 +3018,7 @@ async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
                 20.0,
                 &CreationEnvironment,
             )
+            .await
             .is_err(),
             "expected {failpoint} write failure"
         );

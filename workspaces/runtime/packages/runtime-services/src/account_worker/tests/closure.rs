@@ -9,10 +9,10 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
     peer.accepted(&start).await;
     let cursor = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"pending-recovery","delta":"acknowledged full answer"}})).await;
     peer.acknowledged(cursor).await;
-    state.bridge.run(|store| store.transaction_with(|tx| {
+    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
         tx.execute_batch("CREATE TRIGGER no_flush BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'flush unavailable'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await }).await.unwrap();
     if stopped {
         worker
             .send(AccountCommand::Stop {
@@ -40,10 +40,12 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
     state
         .bridge
         .run(|store| async move {
-            store.transaction_with(|tx| {
-                tx.execute_batch("DROP TRIGGER no_flush")?;
-                Ok(())
-            })
+            store
+                .transaction_with(move |tx| {
+                    tx.execute_batch("DROP TRIGGER no_flush")?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -53,7 +55,7 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
     let peer = Peer::new();
     let mut replacement = peer.worker(bridge).await;
     replacement.shutdown().await.unwrap();
-    let text = state.bridge.run(|store| {
+    let text = state.bridge.run(|store| async move {
         Ok(store.read()?.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:pending-recovery'", [], |row| row.get::<_, String>(0))?)
     }).await.unwrap();
     assert_eq!(text, "acknowledged full answer");
@@ -77,10 +79,10 @@ async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     peer.accepted(&start).await;
     let cursor = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"pending-error","delta":"must remain durable"}})).await;
     peer.acknowledged(cursor).await;
-    state.bridge.run(|store| store.transaction_with(|tx| {
+    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
         tx.execute_batch("CREATE TRIGGER journal_error BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'journal unavailable'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await }).await.unwrap();
     peer.frame(json!({"method":"test/barrier","params":{}}))
         .await;
     assert!(
@@ -91,11 +93,13 @@ async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     );
     state
         .bridge
-        .run(|store| {
-            store.transaction_with(|tx| {
-                tx.execute_batch("DROP TRIGGER journal_error")?;
-                Ok(())
-            })
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute_batch("DROP TRIGGER journal_error")?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -104,7 +108,7 @@ async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     let peer = Peer::new();
     let mut replacement = peer.worker(bridge).await;
     replacement.shutdown().await.unwrap();
-    let text = state.bridge.run(|store| {
+    let text = state.bridge.run(|store| async move {
         Ok(store.read()?.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:pending-error'", [], |row| row.get::<_, String>(0))?)
     }).await.unwrap();
     assert_eq!(text, "must remain durable");
@@ -115,10 +119,10 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("complete_effect".into());
-    state.bridge.run(|store| store.transaction_with(|tx| {
+    state.bridge.run(|store| async move { store.transaction_with(move |tx| {
         tx.execute_batch("CREATE TRIGGER retain_effect BEFORE DELETE ON runtime_operation_receipts WHEN OLD.id LIKE 'account-worker:effect:%' BEGIN SELECT RAISE(ABORT,'effect retirement unavailable'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await }).await.unwrap();
     let start = state.start(&mut peer, &worker).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(120),
@@ -138,11 +142,13 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     );
     state
         .bridge
-        .run(|store| {
-            store.transaction_with(|tx| {
-                tx.execute_batch("DROP TRIGGER retain_effect")?;
-                Ok(())
-            })
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute_batch("DROP TRIGGER retain_effect")?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -156,7 +162,7 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
         peer.writes.try_recv().is_err(),
         "retained Submit must not re-admit accepted input"
     );
-    let count = state.bridge.run(|store|Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?)).await.unwrap();
+    let count = state.bridge.run(|store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 0, "settlement retires effect and guard together");
     replacement.shutdown().await.unwrap();
 }
@@ -170,7 +176,13 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
     peer.accepted(&start).await;
     let cursor=peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"timer","delta":"below threshold"}})).await;
     peer.acknowledged(cursor).await;
-    let permit = state.bridge.slot.clone().acquire_owned().await.unwrap();
+    let permit = state
+        .bridge
+        .operation_slot
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
     // Keep the event lane ready while time passes. Its first DB job is blocked.
     for _ in 0..8 {
         peer.frame(json!({"method":"test/barrier","params":{}}))
@@ -184,7 +196,7 @@ async fn elapsed_flush_deadline_wins_over_replenished_events() {
         count += 1;
         let flushed = state
             .bridge
-            .run(|store| {
+            .run(|store| async move {
                 Ok(store.read()?.query_row(
                     "SELECT EXISTS(SELECT 1 FROM runtime_items WHERE id LIKE '%:timer')",
                     [],
@@ -231,7 +243,7 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, receipts, checkpoints) = state.bridge.run(|store| {
+        let (text, receipts, checkpoints) = state.bridge.run(|store| async move {
             let db=store.read()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
             let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?;
@@ -266,15 +278,18 @@ async fn competing_workers_transfer_claim_to_destination_session() {
     let agent = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
-                let mut record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                record
-                    .extra
-                    .insert("accountKey".into(), json!("destination"));
-                AgentRepository::put(tx, &record)?;
-                Ok(())
-            })
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut record =
+                        AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    record
+                        .extra
+                        .insert("accountKey".into(), json!("destination"));
+                    AgentRepository::put(tx, &record)?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -353,7 +368,7 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
         peer.writes.try_recv().is_err(),
         "Written answer must not be sent twice"
     );
-    let rows = state.bridge.run(|store| Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' OR id LIKE 'account-worker:callback:%'",[],|row|row.get::<_,i64>(0))?)).await.unwrap();
+    let rows = state.bridge.run(|store| async move { Ok(store.read()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' OR id LIKE 'account-worker:callback:%'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(
         rows, 0,
         "Written replay advances and compacts the journal prefix"
@@ -364,27 +379,39 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
 #[tokio::test]
 async fn publication_uses_the_identity_snapshot_loaded_before_serving() {
     let state = State::new().await;
-    state
-        .bridge
-        .run(|store| {
-            let directory = store.root().join("multi-server");
-            std::fs::create_dir_all(&directory).unwrap();
+    let root = state.bridge.store.root().to_path_buf();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests/publication-identity",
+        move || -> std::io::Result<()> {
+            let directory = root.join("multi-server");
+            std::fs::create_dir_all(&directory)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-                    .unwrap();
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
             }
-            std::fs::write(directory.join("identity.json"), b"invalid identity").unwrap();
-            assert!(crate::notification_dispatch::PublicationContext::load(store).is_ok());
-            let entered = std::cell::Cell::new(false);
-            scheduler::lifecycle_transaction(store, |_| {
-                entered.set(true);
+            std::fs::write(directory.join("identity.json"), b"invalid identity")
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    state
+        .bridge
+        .run(|store| async move {
+            assert!(crate::notification_dispatch::PublicationContext::load(store.as_ref()).is_ok());
+            let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let transaction_entered = Arc::clone(&entered);
+            scheduler::lifecycle_transaction(store.as_ref(), move |_| {
+                transaction_entered.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             })
             .await
             .expect("projection keeps the cached absent identity");
-            assert!(entered.get(), "the cached absent identity remains usable");
+            assert!(
+                entered.load(std::sync::atomic::Ordering::SeqCst),
+                "the cached absent identity remains usable"
+            );
             Ok(())
         })
         .await
@@ -399,17 +426,24 @@ async fn filesystem_preparation_does_not_own_database_permit() {
     let (release, blocked) = std::sync::mpsc::channel();
     let job = tokio::spawn(async move {
         bridge
-            .prepare_run("blocked-filesystem", move |_| {
-                entered.send(()).unwrap();
-                blocked.recv().unwrap();
-                Ok(())
+            .prepare_run("blocked-filesystem", move |_| async move {
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/account_worker/tests/blocked-filesystem",
+                    move || {
+                        entered.send(()).unwrap();
+                        blocked.recv().unwrap();
+                        Ok::<(), WorkerError>(())
+                    },
+                )
+                .await
+                .map_err(|_| WorkerError::TaskFailed)?
             })
             .await
     });
     observed.await.unwrap();
     let access = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        state.bridge.run(|store| {
+        state.bridge.run(|store| async move {
             Ok(store
                 .read()?
                 .query_row("SELECT COUNT(*) FROM runtime_agents", [], |row| {
@@ -541,13 +575,15 @@ async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
     let id = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                row.extra.remove("nativeEffort");
-                AgentRepository::put(tx, &row)?;
-                Ok(())
-            })
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    row.extra.remove("nativeEffort");
+                    AgentRepository::put(tx, &row)?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -589,18 +625,20 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     let id = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
-                let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                owner.id = AgentId::from("workspace-owner");
-                owner.status = studio_runtime_store::AgentStatus::Waiting;
-                owner.extra.insert("autoWake".into(), json!(false));
-                owner
-                    .extra
-                    .insert("workspaceOperation".into(), json!("capture"));
-                AgentRepository::put(tx, &owner)?;
-                Ok(())
-            })
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    owner.id = AgentId::from("workspace-owner");
+                    owner.status = studio_runtime_store::AgentStatus::Waiting;
+                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner
+                        .extra
+                        .insert("workspaceOperation".into(), json!("capture"));
+                    AgentRepository::put(tx, &owner)?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();
@@ -621,14 +659,16 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     assert!(worker.completion().await.is_err());
     state
         .bridge
-        .run(|store| {
-            store.transaction_with(|tx| {
-                let mut owner =
-                    AgentRepository::get(tx, &AgentId::from("workspace-owner"))?.unwrap();
-                owner.extra.remove("workspaceOperation");
-                AgentRepository::put(tx, &owner)?;
-                Ok(())
-            })
+        .run(|store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut owner =
+                        AgentRepository::get(tx, &AgentId::from("workspace-owner"))?.unwrap();
+                    owner.extra.remove("workspaceOperation");
+                    AgentRepository::put(tx, &owner)?;
+                    Ok(())
+                })
+                .await
         })
         .await
         .unwrap();

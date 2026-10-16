@@ -102,9 +102,10 @@ fn template(root: &Path) {
 }
 
 async fn seed_store(store: &RuntimeStore, records: &Records) {
+    let records = records.clone();
     store
-        .transaction(|tx| {
-            for (table, rows) in &records.tables {
+        .transaction(move |tx| {
+            for (table, rows) in records.tables {
                 for row in rows {
                     if table == "runtime_events" {
                         tx.execute(
@@ -133,11 +134,11 @@ async fn seed_store(store: &RuntimeStore, records: &Records) {
                             &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),
                             rusqlite::params![
                                 row["id"].as_str(),
-                                serde_json::to_string(row)?,
+                                serde_json::to_string(&row)?,
                             ],
                         )?;
                     } else {
-                        repository::write(tx, table, row)?;
+                        repository::write(tx, &table, &row)?;
                     }
                 }
             }

@@ -1,7 +1,7 @@
 //! Owns local terminal sessions for the lifetime of the server.
 
 #[cfg(unix)]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 #[cfg(unix)]
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 #[cfg(unix)]

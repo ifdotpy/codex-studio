@@ -1225,47 +1225,6 @@ pub async fn before_start(
 #[cfg(test)]
 mod destination_settings_tests {
     use super::*;
-    use std::future::Future;
-
-    fn run_async<F: Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime builds")
-            .block_on(future)
-    }
-
-    fn before_start(
-        store: &Arc<RuntimeStore>,
-        session: Option<Arc<dyn AccountSessionPort>>,
-        catalog: &ModelCatalogService,
-        preparation: &crate::account_worker::preparation::PreparationResources,
-        agent_id: &str,
-        now: f64,
-    ) -> Result<Value, TransferError> {
-        run_async(super::before_start(
-            Arc::clone(store),
-            session,
-            catalog,
-            preparation,
-            agent_id,
-            now,
-        ))
-    }
-
-    fn transfer_request(
-        store: &RuntimeStore,
-        id: &str,
-        lead: &str,
-        target: &str,
-        scope: &str,
-        provider: &str,
-        now: f64,
-    ) -> Result<Value, TransferError> {
-        run_async(crate::account_transfer_driver::request(
-            store, id, lead, target, scope, provider, now,
-        ))
-    }
 
     #[test]
     fn missing_default_and_fallback_model_refuses_instead_of_selecting_first() {
@@ -1626,25 +1585,37 @@ mod retained_executor_tests {
         }
     }
 
-    #[test]
-    fn before_start_executor_checks_and_durably_authorizes_source_queue() {
+    #[tokio::test]
+    async fn before_start_executor_checks_and_durably_authorizes_source_queue() {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let store = Arc::new(
-            run_async(RuntimeStore::open(Some(root.path())))
+            RuntimeStore::open(Some(root.path()))
+                .await
                 .expect("test fixture operation succeeds"),
         );
         let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
             "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
         .expect("test fixture operation succeeds");
-        run_async(store.transaction_with_error(move |tx| {
-            AgentRepository::put(tx, &lead)?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }))
-        .expect("test fixture operation succeeds");
-        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
-        transfer_request(&store, transfer_id, "lead", "target", "team", "codex", 1.0)
+        store
+            .transaction_with_error(move |tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
             .expect("test fixture operation succeeds");
+        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            1.0,
+        )
+        .await
+        .expect("test fixture operation succeeds");
         let session = Arc::new(GuardSession {
             store: store.clone(),
             transfer_id: transfer_id.into(),
@@ -1676,13 +1647,14 @@ mod retained_executor_tests {
         };
 
         let result = before_start(
-            &store,
+            Arc::clone(&store),
             Some(session.clone()),
             &catalog,
             &resources,
             "lead",
             2.0,
-        );
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -1722,8 +1694,8 @@ mod retained_executor_tests {
         );
     }
 
-    #[test]
-    fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {
+    #[tokio::test]
+    async fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let fixture = root.path().join("fixture");
         let state_dir = root.path().join("state");
@@ -1745,21 +1717,33 @@ mod retained_executor_tests {
         .expect("test fixture operation succeeds");
 
         let store = Arc::new(
-            run_async(RuntimeStore::open(Some(&state_dir)))
+            RuntimeStore::open(Some(&state_dir))
+                .await
                 .expect("test fixture operation succeeds"),
         );
         let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
             "model":"gpt-6-astra","cwd":cwd,"threadId":"source-thread"}))
         .expect("test fixture operation succeeds");
-        run_async(store.transaction_with_error(move |tx| {
-            AgentRepository::put(tx, &lead)?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        }))
-        .expect("test fixture operation succeeds");
+        store
+            .transaction_with_error(move |tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("test fixture operation succeeds");
         let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42285";
-        transfer_request(&store, transfer_id, "lead", "target", "team", "codex", 1.0)
-            .expect("durable transfer request succeeds");
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            1.0,
+        )
+        .await
+        .expect("durable transfer request succeeds");
 
         let catalog = ModelCatalogService::new(None);
         catalog.retain_accounts(&[
@@ -1801,58 +1785,55 @@ mod retained_executor_tests {
             guest_rpc: None,
             vm_provider_launch: None,
         };
-        run_async(crate::account_transfer_driver::begin_read(
-            &store,
-            transfer_id,
-            "lead",
-            1.5,
-        ))
-        .expect("the durable member enters Reading before preparation");
+        crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
+            .await
+            .expect("the durable member enters Reading before preparation");
         let attempt_id = format!("account-transfer:{transfer_id}:lead");
-        let generic = run_async(crate::account_worker::preparation::prepare_native_thread(
+        let generic = crate::account_worker::preparation::prepare_native_thread(
             Arc::clone(&store),
             &resources,
             "lead",
             &attempt_id,
             7,
-        ))
+        )
+        .await
         .expect_err("ordinary preparation keeps the transfer admission hold");
         assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
         assert!(
-            run_async(
-                crate::account_worker::preparation::prepare_account_transfer_native_thread(
-                    Arc::clone(&store),
-                    &resources,
-                    "lead",
-                    "a different transfer id",
-                    &attempt_id,
-                    7,
-                )
+            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                Arc::clone(&store),
+                &resources,
+                "lead",
+                "a different transfer id",
+                &attempt_id,
+                7,
             )
+            .await
             .is_err(),
             "a different owner cannot bypass the transfer hold"
         );
-        let owned = run_async(
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
-                Arc::clone(&store),
-                &resources,
-                "lead",
-                transfer_id,
-                &attempt_id,
-                7,
-            ),
+        let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
+            Arc::clone(&store),
+            &resources,
+            "lead",
+            transfer_id,
+            &attempt_id,
+            7,
         )
+        .await
         .expect("the exact Reading transfer owner may prepare its destination");
         assert!(owned.params.is_object());
 
-        run_async(store.transaction_with_error(|tx| {
-            let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-            row.extra
-                .insert("contextRepair".into(), json!({"phase":"preparing"}));
-            AgentRepository::put(tx, &row)
-        }))
-        .expect("context repair blocker is installed");
-        let context_repair = run_async(
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra
+                    .insert("contextRepair".into(), json!({"phase":"preparing"}));
+                AgentRepository::put(tx, &row)
+            })
+            .await
+            .expect("context repair blocker is installed");
+        let context_repair =
             crate::account_worker::preparation::prepare_account_transfer_native_thread(
                 Arc::clone(&store),
                 &resources,
@@ -1860,25 +1841,29 @@ mod retained_executor_tests {
                 transfer_id,
                 &attempt_id,
                 7,
-            ),
-        )
-        .expect_err("the transfer owner cannot bypass context repair");
+            )
+            .await
+            .expect_err("the transfer owner cannot bypass context repair");
         assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
-        run_async(store.transaction_with_error(|tx| {
-            let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-            row.extra.remove("contextRepair");
-            AgentRepository::put(tx, &row)
-        }))
-        .expect("context repair blocker is removed");
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra.remove("contextRepair");
+                AgentRepository::put(tx, &row)
+            })
+            .await
+            .expect("context repair blocker is removed");
 
-        run_async(store.transaction_with_error(|tx| {
-            let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-            row.extra
-                .insert("nativeRelease".into(), json!({"phase":"pending"}));
-            AgentRepository::put(tx, &row)
-        }))
-        .expect("native release blocker is installed");
-        let native_release = run_async(
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra
+                    .insert("nativeRelease".into(), json!({"phase":"pending"}));
+                AgentRepository::put(tx, &row)
+            })
+            .await
+            .expect("native release blocker is installed");
+        let native_release =
             crate::account_worker::preparation::prepare_account_transfer_native_thread(
                 Arc::clone(&store),
                 &resources,
@@ -1886,29 +1871,33 @@ mod retained_executor_tests {
                 transfer_id,
                 &attempt_id,
                 7,
-            ),
-        )
-        .expect_err("the transfer owner cannot bypass native release");
+            )
+            .await
+            .expect_err("the transfer owner cannot bypass native release");
         assert_eq!(
             native_release.to_string(),
             "thread-preparation/NativeRelease"
         );
-        run_async(store.transaction_with_error(|tx| {
-            let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-            row.extra.remove("nativeRelease");
-            AgentRepository::put(tx, &row)
-        }))
-        .expect("native release blocker is removed");
-        run_async(crate::account_transfer_driver::recover(&store, 1.75))
+        store
+            .transaction_with_error(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                row.extra.remove("nativeRelease");
+                AgentRepository::put(tx, &row)
+            })
+            .await
+            .expect("native release blocker is removed");
+        crate::account_transfer_driver::recover(&store, 1.75)
+            .await
             .expect("startup recovery returns the member to its retryable phase");
         let first = before_start(
-            &store,
+            Arc::clone(&store),
             Some(session.clone()),
             &catalog,
             &resources,
             "lead",
             2.0,
         )
+        .await
         .expect("worker before-start prepares the transfer");
         let imported = target_home.join("sessions/.studio-imports/source-thread.jsonl");
         assert!(imported.is_file());
@@ -1951,7 +1940,8 @@ mod retained_executor_tests {
         drop(store);
 
         let recovered_store = Arc::new(
-            run_async(RuntimeStore::open(Some(&state_dir)))
+            RuntimeStore::open(Some(&state_dir))
+                .await
                 .expect("store reopens after worker restart"),
         );
         let recovered_catalog = ModelCatalogService::new(None);
@@ -1996,13 +1986,14 @@ mod retained_executor_tests {
         };
         assert!(
             before_start(
-                &recovered_store,
+                Arc::clone(&recovered_store),
                 Some(recovered_session.clone()),
                 &recovered_catalog,
                 &recovered_resources,
                 "lead",
                 3.0,
             )
+            .await
             .is_err(),
             "unknown provider outcome must refuse retry after restart"
         );

@@ -269,11 +269,12 @@ impl RetainedMonitorPort {
     async fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
         use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository};
 
+        let monitor_id = id.to_owned();
         let (monitor, actor) = self
             .store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 let (snapshot, _actor) =
-                    studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
+                    studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
                 if snapshot.record()["status"] != "starting"
                     || snapshot
                         .record()
@@ -285,7 +286,7 @@ impl RetainedMonitorPort {
                         "Monitor is not awaiting its first start",
                     ));
                 }
-                let saved = MonitorsRepository::get(tx, id)?
+                let saved = MonitorsRepository::get(tx, &monitor_id)?
                     .ok_or(MonitorError::Refused("Unknown command watch"))?;
                 let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent()))?
                     .ok_or(MonitorError::Refused("Unknown agent"))?;
@@ -343,22 +344,15 @@ impl RetainedMonitorPort {
             .ok_or(MonitorError::Unavailable(
                 "account-worker/monitor-preparation",
             ))?;
-        let store = Arc::clone(&self.store);
-        let prepared_agent = agent_id.to_owned();
-        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/monitor-command-preparation",
-            move || {
-                studio_runtime_services::account_worker::preparation::prepare_monitor_command(
-                    &store,
-                    &resources,
-                    &prepared_agent,
-                    epoch,
-                )
-            },
-        )
-        .await
-        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?
-        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let prepared =
+            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+                Arc::clone(&self.store),
+                &resources,
+                agent_id,
+                epoch,
+            )
+            .await
+            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
         let config_receipt = self
             .request(
                 &operation,
@@ -447,11 +441,13 @@ impl RetainedMonitorPort {
             .join("monitors")
             .to_string_lossy()
             .into_owned();
+        let check = check.clone();
+        let check_id = check.rule_id.clone();
         self.store
-            .transaction_with(|tx| {
-                let rule = RulesRepository::get(tx, &check.rule_id)?.ok_or(
-                    MonitorError::Refused("Rule was removed before monitor admission"),
-                )?;
+            .transaction_with(move |tx| {
+                let rule = RulesRepository::get(tx, &check_id)?.ok_or(MonitorError::Refused(
+                    "Rule was removed before monitor admission",
+                ))?;
                 let actor = AgentRepository::get(tx, &AgentId::from(check.agent_id.as_str()))?
                     .ok_or(MonitorError::Refused("Rule agent is unavailable"))?;
                 let check_snapshot =
@@ -460,7 +456,7 @@ impl RetainedMonitorPort {
                         actor.value(),
                     )
                     .map_err(|_| MonitorError::Refused("Rule check record is invalid"))?;
-                if !check_snapshot.launch_allowed(check) {
+                if !check_snapshot.launch_allowed(&check) {
                     return Err(MonitorError::Refused(
                         "Rule check changed before monitor admission",
                     ));
@@ -528,15 +524,23 @@ impl RetainedMonitorPort {
     }
 
     async fn launch_rule_check(&self, check: &RuleCheck) -> Result<CheckSubmission, String> {
-        let actor = {
-            let db = self.store.read().map_err(|error| error.to_string())?;
-            studio_runtime_store::AgentRepository::get(
-                &db,
-                &studio_runtime_store::AgentId::from(check.agent_id.as_str()),
-            )
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Rule agent is unavailable".to_owned())?
-        };
+        let store = Arc::clone(&self.store);
+        let agent_id = check.agent_id.clone();
+        let actor = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/rule-monitor-owner-read",
+            move || -> Result<_, String> {
+                let db = store.read().map_err(|error| error.to_string())?;
+                studio_runtime_store::AgentRepository::get(
+                    &db,
+                    &studio_runtime_store::AgentId::from(agent_id.as_str()),
+                )
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Rule agent is unavailable".to_owned())
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
         let actor_value = serde_json::to_value(&actor).map_err(|error| error.to_string())?;
         let approved = actor_value["yoloMode"] == true
             || actor_value["approvalPolicy"].as_str() == Some("never");
@@ -551,20 +555,15 @@ impl RetainedMonitorPort {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(|| "account-worker/monitor-preparation is unavailable".to_owned())?;
-        let store = Arc::clone(&self.store);
-        let agent_id = check.agent_id.clone();
-        let epoch = check.epoch;
-        let prepared_action = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/rule-monitor-preparation",
-            move || {
-                studio_runtime_services::account_worker::preparation::prepare_monitor_command(
-                    &store, &resources, &agent_id, epoch,
-                )
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+        let prepared_action =
+            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+                Arc::clone(&self.store),
+                &resources,
+                &check.agent_id,
+                check.epoch,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         let monitor = self.persist_rule_monitor(check).await?;
         if monitor["status"] == "approval" || monitor["status"] != "starting" {
             return Ok(CheckSubmission::Accepted);
@@ -653,14 +652,15 @@ impl RetainedMonitorPort {
     }
 
     async fn reconcile_rule_check(&self, check: &RuleCheck) -> CheckReconciliation {
+        let monitor_id = check.monitor_id.clone();
         let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> = self
             .store
-            .transaction_with(|tx| {
-                let Some(record) = MonitorsRepository::get(tx, &check.monitor_id)? else {
+            .transaction_with(move |tx| {
+                let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
                     return Ok(None);
                 };
                 let (snapshot, _) =
-                    studio_runtime_services::monitor_runtime::snapshot(tx, &check.monitor_id)?;
+                    studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
                 Ok(Some((record.value().clone(), snapshot)))
             })
             .await;
@@ -723,26 +723,29 @@ impl RetainedMonitorPort {
                 } else if result["accepted"] == false {
                     let reason = result["reason"]
                         .as_str()
-                        .unwrap_or("Native monitor command was not accepted");
+                        .unwrap_or("Native monitor command was not accepted")
+                        .to_owned();
                     let now = studio_runtime_services::event_write::unix_time().unwrap_or(0.0);
+                    let monitor_id = check.monitor_id.clone();
+                    let operation = operation.clone();
                     let finished = self
                         .store
-                        .transaction_with(|tx| {
+                        .transaction_with(move |tx| {
                             let (current, actor) =
                                 studio_runtime_services::monitor_runtime::snapshot(
                                     tx,
-                                    &check.monitor_id,
+                                    &monitor_id,
                                 )?;
-                            if current.operation() != Some(operation) {
+                            if current.operation() != Some(&operation) {
                                 return Err(MonitorError::Refused(
                                     "Monitor operation identity changed",
                                 ));
                             }
                             let decision = studio_runtime_services::monitor_policy::finish(
                                 &current,
-                                Some(operation),
+                                Some(&operation),
                                 None,
-                                Some(reason),
+                                Some(&reason),
                                 now,
                             )?;
                             studio_runtime_services::monitor_runtime::apply(
@@ -765,13 +768,16 @@ impl RetainedMonitorPort {
 
     async fn fail_unsubmitted_rule_check(&self, check: &RuleCheck, error: &str) -> Option<bool> {
         let now = studio_runtime_services::event_write::unix_time().ok()?;
+        let monitor_id = check.monitor_id.clone();
+        let rule_id = check.rule_id.clone();
+        let error = error.to_owned();
         let outcome: Result<Option<bool>, MonitorError> = self
             .store
-            .transaction_with(|tx| {
-                let Some(record) = MonitorsRepository::get(tx, &check.monitor_id)? else {
+            .transaction_with(move |tx| {
+                let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
                     return Ok(None);
                 };
-                if record.get("ruleId").and_then(Value::as_str) != Some(&check.rule_id)
+                if record.get("ruleId").and_then(Value::as_str) != Some(&rule_id)
                     || record.get("status").and_then(Value::as_str) != Some("starting")
                     || record
                         .get("operation")
@@ -781,10 +787,10 @@ impl RetainedMonitorPort {
                 }
                 studio_runtime_services::monitor_runtime::finish_in_transaction(
                     tx,
-                    &check.monitor_id,
+                    &monitor_id,
                     None,
                     None,
-                    Some(error),
+                    Some(&error),
                     now,
                 )?;
                 Ok(Some(true))
@@ -953,18 +959,31 @@ impl RuleMonitor for RetainedMonitorPort {
         monitor_id: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
         Box::pin(async move {
-            let record = self.store.read()?;
-            let Some(monitor) = MonitorsRepository::get(&record, monitor_id)? else {
+            let store = Arc::clone(&self.store);
+            let monitor_id_owned = monitor_id.to_owned();
+            let agent = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/rule-monitor-cancel-read",
+                move || -> Result<Option<String>, RulesTickError> {
+                    let record = store.read()?;
+                    let Some(monitor) = MonitorsRepository::get(&record, &monitor_id_owned)? else {
+                        return Ok(None);
+                    };
+                    let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
+                        return Err(RulesTickError::MonitorUnavailable);
+                    };
+                    Ok(Some(agent.to_owned()))
+                },
+            )
+            .await
+            .map_err(|_| RulesTickError::MonitorUnavailable)??;
+            let Some(agent) = agent else {
                 return Ok(());
-            };
-            let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
-                return Err(RulesTickError::MonitorUnavailable);
             };
             studio_runtime_services::monitor_driver::cancel(
                 &self.store,
                 self,
                 monitor_id,
-                Some(agent),
+                Some(&agent),
                 studio_runtime_services::event_write::unix_time()
                     .map_err(|_| RulesTickError::MonitorUnavailable)?,
             )
@@ -1119,9 +1138,12 @@ impl MonitorPort for RetainedMonitorPort {
         command: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
         Box::pin(async move {
+            let monitor_id = id.to_owned();
             let (snapshot, actor) = self
                 .store
-                .transaction_with(|tx| studio_runtime_services::monitor_runtime::snapshot(tx, id))
+                .transaction_with(move |tx| {
+                    studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)
+                })
                 .await?;
             let operation = snapshot
                 .operation()
@@ -1150,21 +1172,19 @@ impl MonitorPort for RetainedMonitorPort {
                 let prepare_store = Arc::clone(&store);
                 let prepare_resources = Arc::clone(&resources);
                 let prepare_agent = operation.agent.clone();
-                let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/monitor-liveness-preparation",
-                    move || {
-                        prepare_monitor_permissions(
-                            &prepare_store,
-                            &prepare_resources,
-                            &prepare_agent,
-                            u64::try_from(generation)
-                                .map_err(|_| "Invalid liveness generation".to_owned())?,
-                        )
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|result| result);
+                let prepared_generation =
+                    u64::try_from(generation).map_err(|_| "Invalid liveness generation".to_owned());
+                let prepared = match prepared_generation {
+                    Ok(generation) => prepare_monitor_permissions(
+                        prepare_store,
+                        prepare_resources,
+                        &prepare_agent,
+                        generation,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+                    Err(error) => Err(error),
+                };
                 let result = match prepared {
                     Ok(settings) => run_probe(
                         session.as_ref(),
@@ -1218,11 +1238,14 @@ async fn persist_not_reattachable(
 ) -> Result<(), MonitorError> {
     let now = studio_runtime_services::event_write::unix_time()
         .map_err(|_| MonitorError::Refused("System clock unavailable"))?;
+    let expected_id = expected.id().to_owned();
+    let operation = operation.clone();
+    let reason = reason.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let (current, actor) =
-                studio_runtime_services::monitor_runtime::snapshot(tx, expected.id())?;
-            if current.operation() != Some(operation)
+                studio_runtime_services::monitor_runtime::snapshot(tx, &expected_id)?;
+            if current.operation() != Some(&operation)
                 || current.record()["status"] != "lost"
                 || current.record()["reattachRecovery"]["status"] != "running"
             {
@@ -1244,15 +1267,16 @@ async fn persist_not_reattachable(
 /// Monitor command preparation uses the shared permission builder without a
 /// turn-start attempt gate: `prepare_monitor_command(store, resources,
 /// agent_id, epoch)`. Its settings select sandboxPolicy/permissionProfile.
-fn prepare_monitor_permissions(
-    store: &RuntimeStore,
-    resources: &studio_runtime_services::account_worker::preparation::PreparationResources,
+async fn prepare_monitor_permissions(
+    store: Arc<RuntimeStore>,
+    resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
     agent_id: &str,
     epoch: u64,
 ) -> Result<Value, String> {
     let prepared = studio_runtime_services::account_worker::preparation::prepare_monitor_command(
-        store, resources, agent_id, epoch,
+        store, &resources, agent_id, epoch,
     )
+    .await
     .map_err(|error| error.to_string())?;
     Ok(prepared.settings)
 }

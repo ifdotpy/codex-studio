@@ -118,7 +118,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         .clone();
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http").await);
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),
@@ -204,7 +204,7 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
         .clone();
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http-input-ack").await);
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),
@@ -294,7 +294,7 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
             .await
             .expect("server startup recovery");
-        fixtures::seed(&store, &case);
+        fixtures::seed(&store, &case).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");
         let request = RequestRecord::from_value(json!({

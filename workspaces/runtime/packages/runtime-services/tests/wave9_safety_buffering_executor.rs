@@ -17,8 +17,8 @@ use std::{
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, NotSentReason, ProviderRequest,
-        ProviderResponse, RequestCertainty, SessionReceipt,
+        AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
+        NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
     },
     account_worker::preparation::PreparationResources,
     account_worker::retained::RequestActor,
@@ -79,107 +79,109 @@ impl AccountSessionPort for Session<'_> {
         (account == self.scope.account).then(|| self.scope.clone())
     }
 
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        let connection = self
-            .store
-            .read()
-            .map_err(|_| AccountSessionError::Persistence)?;
-        let raw = connection
-            .query_row(
-                "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|_| AccountSessionError::Persistence)?;
-        let intent: Value =
-            serde_json::from_str(&raw).map_err(|_| AccountSessionError::Persistence)?;
-        assert_eq!(intent["dispatch"], "intent");
-        assert_eq!(intent["rpcMethod"], request.method.as_str());
-        assert_eq!(intent["operationId"], request.operation);
-        assert_eq!(intent["requestParams"], request.params);
-        assert_eq!(request.expected_scope, Some(self.scope.clone()));
-        let mut calls = self.calls.lock().expect("calls");
-        let call_index = calls.len();
-        calls.push(json!({
-            "stage":intent["stage"],
-            "method":request.method.as_str(),
-            "params":request.params,
-            "operation":request.operation,
-            "scope":request.expected_scope,
-        }));
-        drop(calls);
-        if self.unknown_at == Some(call_index) {
-            return Err(AccountSessionError::Unknown);
-        }
-        if self.unknown_receipt_at == Some(call_index) {
-            return Ok(SessionReceipt {
-                scope: self.scope.clone(),
-                operation: request.operation,
-                ticket: None,
-                certainty: RequestCertainty::Unknown,
-                result: None,
-                not_sent_reason: None,
-
-                replayed: false,
-            });
-        }
-        if self.requires_at == Some(call_index) {
-            return Err(AccountSessionError::Requires(
-                "fixture/temporarily-unavailable",
-            ));
-        }
-        if self.not_sent_at == Some(call_index) {
-            let mut used = self.not_sent_used.lock().expect("not-sent state");
-            if !*used {
-                *used = true;
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            let connection = self
+                .store
+                .read()
+                .map_err(|_| AccountSessionError::Persistence)?;
+            let raw = connection
+                .query_row(
+                    "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|_| AccountSessionError::Persistence)?;
+            let intent: Value =
+                serde_json::from_str(&raw).map_err(|_| AccountSessionError::Persistence)?;
+            assert_eq!(intent["dispatch"], "intent");
+            assert_eq!(intent["rpcMethod"], request.method.as_str());
+            assert_eq!(intent["operationId"], request.operation);
+            assert_eq!(intent["requestParams"], request.params);
+            assert_eq!(request.expected_scope, Some(self.scope.clone()));
+            let mut calls = self.calls.lock().expect("calls");
+            let call_index = calls.len();
+            calls.push(json!({
+                "stage":intent["stage"],
+                "method":request.method.as_str(),
+                "params":request.params,
+                "operation":request.operation,
+                "scope":request.expected_scope,
+            }));
+            drop(calls);
+            if self.unknown_at == Some(call_index) {
+                return Err(AccountSessionError::Unknown);
+            }
+            if self.unknown_receipt_at == Some(call_index) {
                 return Ok(SessionReceipt {
                     scope: self.scope.clone(),
-                    operation: request.operation.clone(),
+                    operation: request.operation,
                     ticket: None,
-                    certainty: RequestCertainty::NotSent,
+                    certainty: RequestCertainty::Unknown,
                     result: None,
-                    not_sent_reason: Some(NotSentReason::WorkerNotSent),
+                    not_sent_reason: None,
 
                     replayed: false,
                 });
             }
-        }
-        let stage = intent["stage"].as_str().expect("intent stage");
-        let result = match request.method {
-            Method::ThreadTurnsList => {
-                let verify = stage == "verify_turns";
-                json!({"data":[{"id":"turn","status":if verify {"interrupted"} else {"inProgress"}}]})
+            if self.requires_at == Some(call_index) {
+                return Err(AccountSessionError::Requires(
+                    "fixture/temporarily-unavailable",
+                ));
             }
-            Method::ThreadItemsList => {
-                json!({"data":[{"turnId":"turn","item":{"type":"userMessage","content":[{"type":"text","text":"hello"}]}}]})
-            }
-            Method::TurnInterrupt => json!({}),
-            Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
-            Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
-            _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
-        };
-        Ok(SessionReceipt {
-            scope: self.scope.clone(),
-            operation: request.operation.clone(),
-            ticket: Some(RequestTicket {
-                generation: self.scope.generation,
-                id: RequestId::String(request.operation),
-                method: request.method,
-            }),
-            certainty: RequestCertainty::Written,
-            result: Some(
-                if self.reject_start && request.method == Method::TurnStart {
-                    ProviderResponse::Rejected(json!({"message":"start rejected"}))
-                } else {
-                    ProviderResponse::Reply(result)
-                },
-            ),
-            not_sent_reason: None,
+            if self.not_sent_at == Some(call_index) {
+                let mut used = self.not_sent_used.lock().expect("not-sent state");
+                if !*used {
+                    *used = true;
+                    return Ok(SessionReceipt {
+                        scope: self.scope.clone(),
+                        operation: request.operation.clone(),
+                        ticket: None,
+                        certainty: RequestCertainty::NotSent,
+                        result: None,
+                        not_sent_reason: Some(NotSentReason::WorkerNotSent),
 
-            replayed: false,
+                        replayed: false,
+                    });
+                }
+            }
+            let stage = intent["stage"].as_str().expect("intent stage");
+            let result = match request.method {
+                Method::ThreadTurnsList => {
+                    let verify = stage == "verify_turns";
+                    json!({"data":[{"id":"turn","status":if verify {"interrupted"} else {"inProgress"}}]})
+                }
+                Method::ThreadItemsList => {
+                    json!({"data":[{"turnId":"turn","item":{"type":"userMessage","content":[{"type":"text","text":"hello"}]}}]})
+                }
+                Method::TurnInterrupt => json!({}),
+                Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
+                Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
+                _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
+            };
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation.clone(),
+                ticket: Some(RequestTicket {
+                    generation: self.scope.generation,
+                    id: RequestId::String(request.operation),
+                    method: request.method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(
+                    if self.reject_start && request.method == Method::TurnStart {
+                        ProviderResponse::Rejected(json!({"message":"start rejected"}))
+                    } else {
+                        ProviderResponse::Reply(result)
+                    },
+                ),
+                not_sent_reason: None,
+
+                replayed: false,
+            })
         })
     }
 }
@@ -214,12 +216,14 @@ impl AccountSessionPort for IntentBlockingSession {
         (account == self.scope.account).then(|| self.scope.clone())
     }
 
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         _request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        self.requests.fetch_add(1, Ordering::SeqCst);
-        Err(AccountSessionError::Refused("unexpected dispatch"))
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Err(AccountSessionError::Refused("unexpected dispatch"))
+        })
     }
 }
 
@@ -235,60 +239,62 @@ impl AccountSessionPort for StartBlockingSession {
         (account == self.scope.account).then(|| self.scope.clone())
     }
 
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        let raw = self
-            .store
-            .read()
-            .map_err(|_| AccountSessionError::Persistence)?
-            .query_row(
-                "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|_| AccountSessionError::Persistence)?;
-        let intent: Value =
-            serde_json::from_str(&raw).map_err(|_| AccountSessionError::Persistence)?;
-        assert_eq!(intent["dispatch"], "intent");
-        assert_eq!(intent["rpcMethod"], request.method.as_str());
-        let stage = intent["stage"].as_str().unwrap_or_default();
-        if request.method == Method::TurnStart {
-            if let Some(entered) = self.entered.lock().expect("entered").take() {
-                entered.send(()).expect("notify at accepted start");
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            let raw = self
+                .store
+                .read()
+                .map_err(|_| AccountSessionError::Persistence)?
+                .query_row(
+                    "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|_| AccountSessionError::Persistence)?;
+            let intent: Value =
+                serde_json::from_str(&raw).map_err(|_| AccountSessionError::Persistence)?;
+            assert_eq!(intent["dispatch"], "intent");
+            assert_eq!(intent["rpcMethod"], request.method.as_str());
+            let stage = intent["stage"].as_str().unwrap_or_default();
+            if request.method == Method::TurnStart {
+                if let Some(entered) = self.entered.lock().expect("entered").take() {
+                    entered.send(()).expect("notify at accepted start");
+                }
+                self.release
+                    .lock()
+                    .expect("release")
+                    .recv()
+                    .expect("release accepted start");
             }
-            self.release
-                .lock()
-                .expect("release")
-                .recv()
-                .expect("release accepted start");
-        }
-        let result = match request.method {
-            Method::ThreadTurnsList => {
-                json!({"data":[{"id":"turn","status":if stage == "verify_turns" {"interrupted"} else {"inProgress"}}]})
-            }
-            Method::ThreadItemsList => {
-                json!({"data":[{"turnId":"turn","item":{"type":"userMessage","content":[{"type":"text","text":"hello"}]}}]})
-            }
-            Method::TurnInterrupt => json!({}),
-            Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
-            Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
-            _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
-        };
-        Ok(SessionReceipt {
-            scope: self.scope.clone(),
-            operation: request.operation.clone(),
-            ticket: Some(RequestTicket {
-                generation: self.scope.generation,
-                id: RequestId::String(request.operation),
-                method: request.method,
-            }),
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(result)),
-            not_sent_reason: None,
+            let result = match request.method {
+                Method::ThreadTurnsList => {
+                    json!({"data":[{"id":"turn","status":if stage == "verify_turns" {"interrupted"} else {"inProgress"}}]})
+                }
+                Method::ThreadItemsList => {
+                    json!({"data":[{"turnId":"turn","item":{"type":"userMessage","content":[{"type":"text","text":"hello"}]}}]})
+                }
+                Method::TurnInterrupt => json!({}),
+                Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
+                Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
+                _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
+            };
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation.clone(),
+                ticket: Some(RequestTicket {
+                    generation: self.scope.generation,
+                    id: RequestId::String(request.operation),
+                    method: request.method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(result)),
+                not_sent_reason: None,
 
-            replayed: false,
+                replayed: false,
+            })
         })
     }
 }
@@ -326,9 +332,12 @@ impl LifecyclePorts for LifecycleProbe {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        if let Some(store) = &self.store {
-            let stage: String = store
+    fn committed(
+        &self,
+    ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async move {
+            if let Some(store) = &self.store {
+                let stage: String = store
                 .read()?
                 .query_row(
                     "SELECT json_extract(record,'$.stage') FROM runtime_safety_retries WHERE id='agent:turn'",
@@ -336,13 +345,14 @@ impl LifecyclePorts for LifecycleProbe {
                     |row| row.get(0),
                 )
                 .map_err(studio_runtime_store::StoreError::from)?;
-            assert_eq!(
-                stage, "running",
-                "commit hook runs after acceptance transaction"
-            );
-        }
-        self.committed.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+                assert_eq!(
+                    stage, "running",
+                    "commit hook runs after acceptance transaction"
+                );
+            }
+            self.committed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
     }
 }
 
@@ -351,35 +361,37 @@ impl AccountSessionPort for BlockingSession {
         (account == self.scope.account).then(|| self.scope.clone())
     }
 
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        assert_eq!(request.method, Method::ThreadTurnsList);
-        assert_eq!(request.expected_scope, Some(self.scope.clone()));
-        self.calls
-            .lock()
-            .expect("calls")
-            .push(request.operation.clone());
-        if let Some(entered) = self.entered.lock().expect("entered").take() {
-            entered.send(()).expect("notify blocked provider");
-        }
-        self.release
-            .lock()
-            .expect("release")
-            .recv()
-            .expect("release blocked provider");
-        Ok(SessionReceipt {
-            scope: self.scope.clone(),
-            operation: request.operation,
-            ticket: None,
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(
-                json!({"data":[{"id":"turn","status":"inProgress"}]}),
-            )),
-            not_sent_reason: None,
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            assert_eq!(request.method, Method::ThreadTurnsList);
+            assert_eq!(request.expected_scope, Some(self.scope.clone()));
+            self.calls
+                .lock()
+                .expect("calls")
+                .push(request.operation.clone());
+            if let Some(entered) = self.entered.lock().expect("entered").take() {
+                entered.send(()).expect("notify blocked provider");
+            }
+            self.release
+                .lock()
+                .expect("release")
+                .recv()
+                .expect("release blocked provider");
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation,
+                ticket: None,
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(
+                    json!({"data":[{"id":"turn","status":"inProgress"}]}),
+                )),
+                not_sent_reason: None,
 
-            replayed: false,
+                replayed: false,
+            })
         })
     }
 }
@@ -1398,9 +1410,10 @@ async fn restart_applies_persisted_written_receipt_without_redispatch() {
         let interrupted = first.calls.lock().expect("calls")[interrupted_stage].clone();
         let stage = interrupted["stage"].as_str().expect("stage").to_owned();
         let operation_id = interrupted["operation"].clone();
+        let operation_id_for_transaction = operation_id.clone();
         let response = successful_response(&stage);
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 let raw: String = tx.query_row(
                     "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
                     [],
@@ -1409,14 +1422,16 @@ async fn restart_applies_persisted_written_receipt_without_redispatch() {
                 let mut operation: Value = serde_json::from_str(&raw).expect("operation");
                 operation["responses"][&stage] = response.clone();
                 operation["receipts"][&stage] = json!([{
-                    "operation":operation_id,
+                    "operation":operation_id_for_transaction.clone(),
                     "scope":interrupted["scope"],
                     "certainty":"written",
                     "result":response,
                 }]);
                 operation["dispatch"] = json!("received");
                 if stage == "start" {
-                    let request_id = operation_id.as_str().expect("start operation id");
+                    let request_id = operation_id_for_transaction
+                        .as_str()
+                        .expect("start operation id");
                     operation["requestId"] = json!(request_id);
                     operation["requestGeneration"] = json!(1);
                     let raw: String = tx.query_row(

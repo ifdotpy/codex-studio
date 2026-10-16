@@ -119,7 +119,7 @@ async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup()
             Some("resume"),
             1000.0,
             |s| usage_resume::tick(s, &observation(), 1000.0),
-            &mut StopAt(boundary),
+            StopAt(boundary),
         )
         .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
@@ -260,7 +260,7 @@ async fn wakeup_event_and_metadata_writes_restart_atomically() {
             None,
             1000.0,
             |s| Ok(studio_runtime_services::wakeups::pending_batch(s)),
-            &mut StopAt(boundary),
+            StopAt(boundary),
         )
         .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
@@ -436,10 +436,8 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
                     1000.0,
                 )
             },
-            &mut continuation_driver::DriverHooks {
-                fault: &mut StopAt(boundary),
-                capacity_admission: &mut FixtureAdmission,
-            },
+            StopAt(boundary),
+            FixtureAdmission,
         )
         .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
@@ -466,10 +464,8 @@ async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_res
                     1000.0,
                 )
             },
-            &mut continuation_driver::DriverHooks {
-                fault: &mut continuation_driver::NoFault,
-                capacity_admission: &mut FixtureAdmission,
-            },
+            continuation_driver::NoFault,
+            FixtureAdmission,
         )
         .await
         .expect("retry discovers commit");

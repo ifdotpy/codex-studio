@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty, SessionReceipt,
 };
 use studio_runtime_services::account_worker::retained::RequestActor;
-use studio_runtime_services::callback_runtime::{CallbackReplyPort, ReplyOutcome, ReplyReceipt};
-use studio_runtime_services::provider_callbacks::CallbackError;
+use studio_runtime_services::callback_runtime::{
+    CallbackReplyFuture, CallbackReplyPort, ReplyOutcome, ReplyReceipt,
+};
 use studio_runtime_services::voice;
 use studio_runtime_services::voice::account_session::AccountSessionVoicePort;
 use studio_runtime_services::voice::policy::{
@@ -163,8 +164,11 @@ async fn realtime_error_notifications_require_stop_rpc() {
 }
 
 async fn seed_callback_session(store: &RuntimeStore, id: &str, thread: &str, connection: &str) {
+    let id = id.to_owned();
+    let thread = thread.to_owned();
+    let connection = connection.to_owned();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES(?1,'agent',1,?2,'account',?3,'connecting')",
@@ -520,7 +524,7 @@ async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
 async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
     let (_root, store) = seeded_store().await;
     store
-        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+        .transaction_with_error(move |transaction| -> Result<(), voice::provider::VoiceProviderError> {
             transaction.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES('delete-retry-session','agent',1,'thread','account','7','ready')",
@@ -681,7 +685,7 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
     let unknown_session = "previous-unknown-session";
     let active_session = "currently-active-session";
     store
-        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+        .transaction_with_error(move |transaction| -> Result<(), voice::provider::VoiceProviderError> {
             transaction.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES(?1,'agent',1,'thread','account','7','unknown'), \
@@ -768,12 +772,13 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
         "account-worker:retained:account:{}:result",
         studio_runtime_store::sha256_hex(stop_operation.as_bytes())
     );
+    let retained_id_for_transaction = retained_id.clone();
     store
-        .transaction(|transaction| {
+        .transaction(move |transaction| {
             transaction.execute(
                 "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
                 rusqlite::params![
-                    retained_id,
+                    retained_id_for_transaction,
                     json!({"result":{"Reply":{"body":{"result":null}}},"cursor":2}).to_string()
                 ],
             )?;
@@ -806,7 +811,7 @@ async fn held_stop_rejection_is_requeued_for_deletion() {
         studio_runtime_store::sha256_hex(stop_operation.as_bytes())
     );
     store
-        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+        .transaction_with_error(move |transaction| -> Result<(), voice::provider::VoiceProviderError> {
             transaction.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
                  VALUES('rejected-prior-stop','agent',1,'thread','account','7','unknown')",
@@ -878,7 +883,6 @@ fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> se
             }
             Ok(serde_json::Value::Object(value))
         })
-        .await
         .expect("table snapshot rows")
         .collect::<Result<Vec<_>, _>>()
         .expect("table snapshot values");
@@ -906,40 +910,42 @@ impl AccountSessionPort for MockAccountSession {
         (self.scope.account == account).then(|| self.scope.clone())
     }
 
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        self.calls
-            .lock()
-            .expect("calls lock")
-            .push(CapturedRequest {
-                account: request.account.clone(),
-                operation: request.operation.clone(),
-                actor: request.actor.clone(),
-                expected_scope: request.expected_scope.clone(),
-                deleted_actor_session: request.deleted_actor_session.clone(),
-                method: request.method,
-                params: request.params,
-            });
-        let (certainty, result) = self
-            .outcomes
-            .lock()
-            .expect("outcomes lock")
-            .pop_front()
-            .expect("scripted session outcome");
-        Ok(SessionReceipt {
-            scope: self.scope.clone(),
-            operation: request.operation,
-            ticket: Some(RequestTicket {
-                generation: self.scope.generation,
-                id: RequestId::Number(1),
-                method: request.method,
-            }),
-            certainty,
-            result,
-            not_sent_reason: None,
-            replayed: false,
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push(CapturedRequest {
+                    account: request.account.clone(),
+                    operation: request.operation.clone(),
+                    actor: request.actor.clone(),
+                    expected_scope: request.expected_scope.clone(),
+                    deleted_actor_session: request.deleted_actor_session.clone(),
+                    method: request.method,
+                    params: request.params,
+                });
+            let (certainty, result) = self
+                .outcomes
+                .lock()
+                .expect("outcomes lock")
+                .pop_front()
+                .expect("scripted session outcome");
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation,
+                ticket: Some(RequestTicket {
+                    generation: self.scope.generation,
+                    id: RequestId::Number(1),
+                    method: request.method,
+                }),
+                certainty,
+                result,
+                not_sent_reason: None,
+                replayed: false,
+            })
         })
     }
 }
@@ -955,15 +961,17 @@ impl CallbackReplyPort for NoopCallbackReplyPort {
         false
     }
 
-    fn deliver(
-        &self,
-        reply: &studio_runtime_services::provider_callbacks::Reply,
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a studio_runtime_services::provider_callbacks::Reply,
         _deadline: Duration,
-    ) -> Result<ReplyReceipt, CallbackError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(ReplyReceipt {
-            identity: reply.identity.clone(),
-            outcome: ReplyOutcome::Written,
+    ) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ReplyReceipt {
+                identity: reply.identity.clone(),
+                outcome: ReplyOutcome::Written,
+            })
         })
     }
 }
@@ -979,15 +987,17 @@ impl CallbackReplyPort for LiveCallbackReplyPort {
         true
     }
 
-    fn deliver(
-        &self,
-        reply: &studio_runtime_services::provider_callbacks::Reply,
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a studio_runtime_services::provider_callbacks::Reply,
         _deadline: Duration,
-    ) -> Result<ReplyReceipt, CallbackError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(ReplyReceipt {
-            identity: reply.identity.clone(),
-            outcome: ReplyOutcome::Written,
+    ) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ReplyReceipt {
+                identity: reply.identity.clone(),
+                outcome: ReplyOutcome::Written,
+            })
         })
     }
 }
@@ -1124,6 +1134,8 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
     let (_root, store) = seeded_store().await;
     let callback_request_id = "voice-approval-request";
     let connection_id = "connection-7";
+    let callback_request_id_for_transaction = callback_request_id;
+    let connection_id_for_transaction = connection_id;
     let scope = VoiceProviderContext {
         agent_id: "agent".into(),
         epoch: 0,
@@ -1133,7 +1145,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
         generation: 7,
     };
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id='agent'",
                 [],
@@ -1145,7 +1157,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
             actor["turnId"] = json!("turn");
             actor["turnEpoch"] = json!(0);
             actor["startAttempt"] = json!({
-                "connectionId":connection_id,
+                "connectionId":connection_id_for_transaction,
                 "connectionGeneration":7
             });
             tx.execute(
@@ -1155,15 +1167,15 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
             tx.execute(
                 "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
                 rusqlite::params![
-                    callback_request_id,
+                    callback_request_id_for_transaction,
                     json!({
-                        "id":callback_request_id,
+                        "id":callback_request_id_for_transaction,
                         "rpcId":99,
                         "method":"item/commandExecution/requestApproval",
                         "params":{"threadId":"thread","turnId":"turn"},
                         "agent":"agent",
                         "accountKey":"account",
-                        "connectionId":connection_id,
+                        "connectionId":connection_id_for_transaction,
                         "epoch":0,
                         "supervisor":{"generation":7},
                         "status":"pending",
@@ -1298,7 +1310,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
         .expect("receipt read")
         .expect("receipt exists");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE voice_records SET text='changed text' WHERE id='written-record'",
                 [],
@@ -1331,13 +1343,14 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
 #[tokio::test]
 async fn python_approval_speech_rows_and_voice_views_match_rust() {
     let (root, store) = seeded_store().await;
+    let store = Arc::new(store);
     let request = json!({
         "id":"oracle-approval", "agent":"agent", "epoch":0,
         "status":"pending", "method":"item/commandExecution/requestApproval",
         "params":{"command":"printf safe", "cwd":"/tmp"}
     });
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
                 rusqlite::params!["oracle-approval", request.to_string()],

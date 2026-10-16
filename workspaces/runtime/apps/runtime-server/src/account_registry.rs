@@ -12,6 +12,7 @@ use std::{
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
 use studio_runtime_services::{
+    account_driver::AccountChangeSignal,
     account_worker::{
         AccountCommand, AccountHandle, StoreBridge, WorkerError, preparation::PreparationResources,
         start_account_worker_with_publication_sink,
@@ -74,7 +75,7 @@ async fn checkpoint_maintenance(
         .checkpoint_wal_if_due()
         .await
         .map_err(|error| error.to_string())
-        .and_then(|()| {
+        .and_then(|_| {
             store
                 .wal_checkpoint_retry_after()
                 .map_err(|error| error.to_string())
@@ -182,16 +183,53 @@ pub(crate) struct AccountSessionBroker {
     >,
     ensure_sender: mpsc::Sender<EnsureRequest>,
     ensure_receiver: Arc<Mutex<Option<mpsc::Receiver<EnsureRequest>>>>,
+    changes: AccountChangeSignal,
 }
 
 impl AccountSessionBroker {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::new_with_change_signal(AccountChangeSignal::new())
+    }
+
+    pub(crate) fn new_with_change_signal(changes: AccountChangeSignal) -> Self {
         let (ensure_sender, ensure_receiver) = mpsc::channel(32);
         Self {
             sessions: Arc::default(),
             ensure_sender,
             ensure_receiver: Arc::new(Mutex::new(Some(ensure_receiver))),
+            changes,
         }
+    }
+
+    pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn publish_change(&self) {
+        self.changes.publish_session_change();
+    }
+
+    fn insert_session(
+        &self,
+        account: String,
+        session: studio_runtime_services::account_worker::retained::RetainedSessionPort,
+    ) -> Result<(), WorkerError> {
+        self.sessions
+            .write()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .insert(account, session);
+        self.publish_change();
+        Ok(())
+    }
+
+    fn remove_session(&self, account: &str) -> Result<(), WorkerError> {
+        self.sessions
+            .write()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .remove(account);
+        self.publish_change();
+        Ok(())
     }
 
     fn take_ensure_receiver(&self) -> Result<mpsc::Receiver<EnsureRequest>, WorkerError> {
@@ -804,10 +842,7 @@ impl AccountRegistry {
         )
         .await?;
         self.session_broker
-            .sessions
-            .write()
-            .map_err(|_| WorkerError::TaskFailed)?
-            .insert(account.to_owned(), worker.retained_session());
+            .insert_session(account.to_owned(), worker.retained_session())?;
         self.workers.insert(account.to_owned(), worker);
         self.next_worker_completion_id = self
             .next_worker_completion_id
@@ -843,9 +878,7 @@ impl AccountRegistry {
         }
         if let Some(mut worker) = self.workers.remove(account) {
             self.worker_completion_ids.remove(account);
-            if let Ok(mut sessions) = self.session_broker.sessions.write() {
-                sessions.remove(account);
-            }
+            self.session_broker.remove_session(account)?;
             // A retained worker can lose its session before its join handle is
             // observed by the registry select loop. Stop and reap it before
             // starting the replacement so concurrent ensures still own one worker.
@@ -1125,9 +1158,12 @@ impl AccountRegistry {
         let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/account_registry",
             move || {
-                let prepared = PreparedHost::load(&store)?;
-                prepared.recheck_paths()?;
-                Ok::<_, WorkerError>(prepared)
+                let prepared = PreparedHost::load(&store)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                prepared
+                    .recheck_paths()
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                Ok::<_, WorkerError>(Arc::new(prepared))
             },
         )
         .await
@@ -1156,15 +1192,18 @@ impl AccountRegistry {
             let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-server/account_registry",
                 move || {
-                    let prepared = PreparedHost::load(&store)?;
-                    prepared.recheck_paths()?;
-                    Ok::<_, WorkerError>(prepared)
+                    let prepared = PreparedHost::load(&store)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    prepared
+                        .recheck_paths()
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    Ok::<_, WorkerError>(Arc::new(prepared))
                 },
             )
             .await
             .map_err(|_| WorkerError::TaskFailed)??;
             let mut transport = RuntimeRadioInterrupt { sender };
-            radio_runtime::handoff_interrupt(&self.store, &prepared, &effect, &mut transport, now)
+            radio_runtime::handoff_interrupt(&self.store, prepared, &effect, &mut transport, now)
                 .await
                 .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
         }
@@ -1219,8 +1258,8 @@ impl AccountRegistry {
                     } else {
                         Ok(())
                     };
-                    if let Ok(mut sessions) = self.session_broker.sessions.write() {
-                        sessions.remove(&account);
+                    if let Err(error) = self.session_broker.remove_session(&account) {
+                        eprintln!("account session registry update failed: {error}");
                     }
                     if let Err(error) = result {
                         eprintln!("account worker ended: {error}");
@@ -1639,7 +1678,7 @@ mod bounded_reconcile_tests {
         );
         let id = AgentId::from("image-agent");
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
@@ -1665,7 +1704,7 @@ mod bounded_reconcile_tests {
         let writer_store = Arc::clone(&store);
         let writer = tokio::spawn(async move {
             writer_store
-                .transaction_with(|_| {
+                .transaction_with(move |_| {
                     held_tx.send(()).expect("announce held writer");
                     release_rx.recv().expect("release held writer");
                     Ok::<_, StoreError>(())
@@ -1706,7 +1745,7 @@ mod bounded_reconcile_tests {
             .expect("runtime store");
         let id = AgentId::from("image-agent");
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
@@ -1819,6 +1858,7 @@ mod tests {
     #[tokio::test]
     async fn missing_live_account_worker_is_explicitly_not_sent() {
         let broker = AccountSessionBroker::new();
+        let changes = broker.subscribe_changes();
         assert!(broker.current_scope("account-a").is_none());
         let receipt = broker
             .request(ProviderRequest {
@@ -1840,5 +1880,6 @@ mod tests {
         );
         assert!(receipt.ticket.is_none());
         assert!(receipt.result.is_none());
+        assert!(!changes.has_changed().expect("change watcher remains open"));
     }
 }

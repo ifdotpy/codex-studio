@@ -37,7 +37,7 @@ pub fn template() -> &'static Value {
         serde_json::from_slice(&output.stdout).unwrap()
     })
 }
-pub fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
+pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let data = template();
     let root = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -63,7 +63,7 @@ pub fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         root.path().join("multi-server/identity.json"),
     )
     .unwrap();
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let context = CallbackContext {
         agent: data["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),

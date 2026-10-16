@@ -299,6 +299,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use std::sync::Mutex;
     struct FakeReplyPort {
         store: Arc<RuntimeStore>,
         outcome: ReplyOutcome,
@@ -329,9 +330,9 @@ mod tests {
         }
     }
 
-    fn pending_native_question() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    async fn pending_native_question() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         let actor = json!({
             "id":"delete-agent", "rootId":"delete-agent", "epoch":0,
             "status":"running", "autoWake":true, "isLead":true,
@@ -346,7 +347,7 @@ mod tests {
                       "threadId":"thread","turnId":"turn"},
         });
         store
-            .transaction_with::<_, CallbackError>(|tx| {
+            .transaction_with::<_, CallbackError>(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params!["delete-agent", actor.to_string()],
@@ -357,6 +358,7 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
         (directory, store)
     }
@@ -369,7 +371,7 @@ mod tests {
             (ReplyOutcome::Written, "deleted"),
             (ReplyOutcome::Unknown, "uncertain"),
         ] {
-            let (_directory, store) = pending_native_question();
+            let (_directory, store) = pending_native_question().await;
             let port = Arc::new(FakeReplyPort {
                 store: store.clone(),
                 outcome,

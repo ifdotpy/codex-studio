@@ -400,25 +400,29 @@ mod tests {
             };
 
             self.requests.fetch_add(1, Ordering::SeqCst);
-            let page = self.pages.lock().expect("pages").pop().ok_or_else(|| {
-                studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(
-                    "/".into(),
-                )
-            })?;
-            let result = Ok(SessionReceipt {
-                scope: self.current_scope(&request.account).expect("scope"),
-                operation: request.operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    id: studio_runtime_providers::RequestId::String("catalog-test".into()),
-                    generation: 1,
-                    method: studio_runtime_providers::Method::ModelList,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(page)),
-                not_sent_reason: None,
-                replayed: false,
-            });
-            Box::pin(async move { result })
+            let page = self.pages.lock().expect("pages").pop();
+            let scope = self.current_scope(&request.account).expect("scope");
+            let operation = request.operation;
+            Box::pin(async move {
+                let page = page.ok_or_else(|| {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(
+                        "/".into(),
+                    )
+                })?;
+                Ok(SessionReceipt {
+                    scope,
+                    operation,
+                    ticket: Some(studio_runtime_providers::RequestTicket {
+                        id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                        generation: 1,
+                        method: studio_runtime_providers::Method::ModelList,
+                    }),
+                    certainty: RequestCertainty::Written,
+                    result: Some(ProviderResponse::Reply(page)),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
+            })
         }
     }
 

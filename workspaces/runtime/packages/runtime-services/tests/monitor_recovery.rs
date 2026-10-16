@@ -316,9 +316,11 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
             ChildEvent::Output { bytes, .. } => {
                 output
                     .append(&store, &id, &operation, cursor, &bytes, 2001.0)
+                    .await
                     .expect("monitor fixture");
                 output
                     .append(&store, &id, &operation, cursor, &bytes, 2001.0)
+                    .await
                     .expect("monitor fixture");
                 cursor += bytes.len() as u64;
             }
@@ -360,7 +362,7 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let id = case["before"]["id"].as_str().expect("id");
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let tables = if full {
         vec![
@@ -379,7 +381,7 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
             fixtures::seed(&store, &case).await;
             let receipt = ResultReceipt {
                 version: 1,
-                key: id.into(),
+                key: id.clone(),
                 code: Some(0),
                 error: None,
                 operation: Some(operation(&case)),
@@ -396,7 +398,7 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
                 monitor_receipts::finish(&store, &receipt).await.is_err(),
                 "{table}-{boundary}"
             );
-            assert_eq!(record(&store, id), case["before"]);
+            assert_eq!(record(&store, &id), case["before"]);
             assert_eq!(fixtures::events(&store), json!([]));
             store
                 .transaction(move |tx| {
@@ -409,11 +411,11 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
             drop(store);
             let store = RuntimeStore::open(Some(&state)).await.expect("restart");
             assert!(
-                monitor_receipts::recover(&store, &[id.into()]).await[0]
+                monitor_receipts::recover(&store, std::slice::from_ref(&id)).await[0]
                     .1
                     .is_ok()
             );
-            assert_eq!(record(&store, id), case["after"]);
+            assert_eq!(record(&store, &id), case["after"]);
             assert_eq!(fixtures::events(&store), case["events"]);
         }
     }
@@ -462,7 +464,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
     case["before"]["interactive"] = json!(true);
     let store = fixtures::store(root.path(), "port").await;
     fixtures::seed(&store, &case).await;
-    let id = case["before"]["id"].as_str().expect("id");
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
     let operation = operation(&case);
     let input = Input {
         text: "hello".into(),
@@ -472,7 +474,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
     };
     let port = Port {
         store: &store,
-        id,
+        id: &id,
         sends: AtomicUsize::new(0),
     };
     assert!(matches!(
@@ -480,7 +482,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
             &store,
             &port,
             InputRequest {
-                id,
+                id: &id,
                 operation: &operation,
                 ticket: "ticket-1",
                 input: &input
@@ -495,7 +497,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
             &store,
             &port,
             InputRequest {
-                id,
+                id: &id,
                 operation: &operation,
                 ticket: "ticket-2",
                 input: &input
@@ -549,7 +551,7 @@ async fn launch_admission_serializes_cancel_before_native_submission_completes()
         .remove("operation");
     let store = Arc::new(fixtures::store(root.path(), "sequence").await);
     fixtures::seed(&store, &case).await;
-    let id = case["before"]["id"].as_str().expect("id");
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
     let prepared = monitor_runtime::PreparedStart {
         monitor: case["before"].clone(),
         actor: case["actor"].clone(),
@@ -565,17 +567,25 @@ async fn launch_admission_serializes_cancel_before_native_submission_completes()
     let start_store = Arc::clone(&store);
     let start_port = Arc::clone(&port);
     let start_prepared = Arc::clone(&prepared);
+    let start_id = id.clone();
     let start = tokio::spawn(async move {
-        monitor_driver::start(&start_store, &start_port, id, &start_prepared, 2000.0).await
+        monitor_driver::start(
+            &start_store,
+            start_port.as_ref(),
+            &start_id,
+            start_prepared.as_ref(),
+            2000.0,
+        )
+        .await
     });
     port.entered.notified().await; // The running intent committed, command/exec is unresolved.
-    let refused = monitor_driver::cancel(&store, &port, id, None, 2001.0).await;
-    let before = record(&store, id);
+    let refused = monitor_driver::cancel(&store, port.as_ref(), &id, None, 2001.0).await;
+    let before = record(&store, &id);
     port.release.notify_one();
     start.await.expect("start task").expect("start");
     assert!(refused.is_err());
     assert_ne!(before["cancelRequested"], json!(true));
-    monitor_driver::cancel(&store, &port, id, None, 2002.0)
+    monitor_driver::cancel(&store, port.as_ref(), &id, None, 2002.0)
         .await
         .expect("resolved cancel");
     assert_eq!(

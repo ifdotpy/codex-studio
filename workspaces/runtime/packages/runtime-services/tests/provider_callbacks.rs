@@ -48,7 +48,7 @@ fn template() -> &'static Template {
         }
     })
 }
-fn fixture() -> (
+async fn fixture() -> (
     tempfile::TempDir,
     std::sync::Arc<RuntimeStore>,
     CallbackContext,
@@ -62,7 +62,7 @@ fn fixture() -> (
         )
         .unwrap();
     }
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -119,7 +119,7 @@ async fn provider_callbacks_python_answer_corpus() {
     }
 }
 async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = call(
         &context,
         "task",
@@ -175,7 +175,7 @@ async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     assert!(!tool_value(&first)["id"].as_str().unwrap().is_empty());
 }
 async fn provider_callbacks_human_pending_and_write_outcomes() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = request(
         Method::ItemToolRequestUserInput,
         RequestId::Number(1),
@@ -240,7 +240,7 @@ async fn provider_callbacks_human_pending_and_write_outcomes() {
     );
 }
 async fn provider_callbacks_unknown_never_resends_or_reexecutes() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = call(
         &context,
         "unknown",
@@ -275,7 +275,7 @@ async fn provider_callbacks_unknown_never_resends_or_reexecutes() {
     ));
 }
 async fn provider_callbacks_stale_and_worker_authority() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let mut stale = context.clone();
     stale.epoch += 1;
     let frame = call(
@@ -363,10 +363,10 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
             {
                 continue;
             }
-            let (dir, store, context) = fixture();
-            store.transaction_with::<_,studio_runtime_store::StoreError>(|tx|{
+            let (dir, store, context) = fixture().await;
+            store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx|{
                 tx.execute_batch(&format!("CREATE TRIGGER callback_failpoint {timing} {operation} ON {table} WHEN {predicate} BEGIN SELECT RAISE(ABORT,'callback failpoint'); END"))?;Ok(())
-            }).unwrap();
+            }).await.unwrap();
             let frame = call(
                 &context,
                 "matrix",
@@ -399,9 +399,10 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                     tx.execute_batch("DROP TRIGGER callback_failpoint")?;
                     Ok(())
                 })
+                .await
                 .unwrap();
             drop(store);
-            let store = RuntimeStore::open(Some(dir.path())).unwrap();
+            let store = std::sync::Arc::new(RuntimeStore::open(Some(dir.path())).await.unwrap());
             let result = reply(
                 dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)
                     .await
@@ -456,7 +457,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
                 );
             }
             drop(store);
-            let store = RuntimeStore::open(Some(dir.path())).unwrap();
+            let store = std::sync::Arc::new(RuntimeStore::open(Some(dir.path())).await.unwrap());
             assert_eq!(
                 reply(
                     dispatch(std::sync::Arc::clone(&store), &context, &frame, 12.0)
@@ -483,7 +484,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
     }
 }
 async fn provider_callbacks_restart_after_submission_stays_unknown() {
-    let (dir, store, context) = fixture();
+    let (dir, store, context) = fixture().await;
     let frame = call(
         &context,
         "lost",
@@ -499,7 +500,7 @@ async fn provider_callbacks_restart_after_submission_stays_unknown() {
         .await
         .unwrap();
     drop(store);
-    let store = RuntimeStore::open(Some(dir.path())).unwrap();
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(dir.path())).await.unwrap());
     assert!(matches!(
         dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0).await,
         Err(CallbackError::Unknown)
@@ -515,7 +516,7 @@ async fn provider_callbacks_restart_after_submission_stays_unknown() {
     );
 }
 async fn provider_callbacks_not_sent_and_expiry() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = request(
         Method::ItemCommandExecutionRequestApproval,
         RequestId::Number(77),
@@ -565,7 +566,7 @@ async fn provider_callbacks_not_sent_and_expiry() {
     );
 }
 async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     for field in ["epoch", "accountKey", "threadId", "turnId"] {
         let mut actor = template().value["agents"][0].clone();
         actor[field] = json!([]);
@@ -608,7 +609,7 @@ async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
     );
 }
 async fn provider_callbacks_local_message_once_and_worker_chat() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let worker = template().value["agents"][1]["id"].as_str().unwrap();
     let frame = call(
         &context,
@@ -657,7 +658,7 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
 }
 
 async fn provider_callbacks_python_reservations_and_restart() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     recover_connection(&store, &context.account, &context.connection, 20.0)
         .await
         .unwrap();
@@ -689,6 +690,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
             tx.execute("DELETE FROM runtime_tool_request_aliases", [])?;
             Ok(())
         })
+        .await
         .unwrap();
     for case in template().value["reservations"].as_array().unwrap() {
         let frame = Frame::Request(RequestFrame {
@@ -743,7 +745,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
 }
 
 async fn provider_callbacks_utility_invalid_and_deleted() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let time = request(Method::CurrentTimeRead, RequestId::Number(0), json!({}));
     assert_eq!(
         body(&reply(
@@ -774,14 +776,17 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
     );
     let mut actor = template().value["agents"][0].clone();
     actor["deletedAt"] = json!(12.0);
+    let actor_json = actor.to_string();
+    let agent_id = context.agent.clone();
     store
-        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                rusqlite::params![actor.to_string(), context.agent],
+                rusqlite::params![actor_json, agent_id],
             )?;
             Ok(())
         })
+        .await
         .unwrap();
     let approval = request(
         Method::ItemCommandExecutionRequestApproval,
@@ -802,31 +807,29 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
 }
 
 async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
-    let (_dir, store, context) = fixture();
-    let store = std::sync::Arc::new(store);
-    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let (_dir, store, context) = fixture().await;
+    let gate = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let frame = call(
         &context,
         "concurrent",
         "orchestration_task",
         json!({"action":"create","title":"One concurrent task"}),
     );
-    let children = (0..2)
-        .map(|_| {
-            let (store, gate, context, frame) =
-                (store.clone(), gate.clone(), context.clone(), frame.clone());
-            std::thread::spawn(move || {
-                gate.wait();
-                dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
-                    .await
-                    .unwrap()
-            })
-        })
-        .collect::<Vec<_>>();
-    let replies = children
-        .into_iter()
-        .map(|h| reply(h.join().unwrap()))
-        .collect::<Vec<_>>();
+    let mut children = Vec::new();
+    for _ in 0..2 {
+        let (store, gate, context, frame) =
+            (store.clone(), gate.clone(), context.clone(), frame.clone());
+        children.push(tokio::spawn(async move {
+            gate.wait().await;
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+                .await
+                .unwrap()
+        }));
+    }
+    let mut replies = Vec::new();
+    for child in children {
+        replies.push(reply(child.await.expect("concurrent callback task")));
+    }
     assert_eq!(replies[0], replies[1]);
     assert_eq!(
         store
@@ -837,9 +840,10 @@ async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
             .unwrap(),
         1
     );
-    store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1", [&context.agent])?; Ok(())
-    }).unwrap();
+    let agent_id = context.agent.clone();
+    store.transaction_with::<_,studio_runtime_store::StoreError>(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1", [&agent_id])?; Ok(())
+    }).await.unwrap();
     assert!(
         delivery(&store, &replies[0].identity, DeliveryOutcome::Submitted)
             .await
@@ -848,7 +852,7 @@ async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
 }
 
 async fn provider_callbacks_answer_commit_failpoint() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let frame = request(
         Method::ItemPermissionsRequestApproval,
         RequestId::Number(21),
@@ -863,7 +867,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
     };
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute_batch("CREATE TRIGGER answer_fail AFTER UPDATE ON runtime_requests WHEN json_extract(NEW.record,'$.status')='answering' BEGIN SELECT RAISE(ABORT,'answer failpoint'); END")?; Ok(())
-    }).unwrap();
+    }).await.unwrap();
     let data = json!({"decision":"accept"});
     assert!(
         answer(&store, &context, &id, AnswerAuthority::User, &data, 11.0)
@@ -885,7 +889,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
     assert_eq!(store.read().unwrap().query_row("SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.delivery') IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute_batch("DROP TRIGGER answer_fail; CREATE TRIGGER submitted_fail AFTER UPDATE ON runtime_operation_receipts WHEN json_extract(NEW.result,'$.delivery')='submitted' BEGIN SELECT RAISE(ABORT,'submission failpoint'); END")?; Ok(())
-    }).unwrap();
+    }).await.unwrap();
     let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0)
         .await
         .unwrap();
@@ -907,6 +911,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
             tx.execute_batch("DROP TRIGGER submitted_fail")?;
             Ok(())
         })
+        .await
         .unwrap();
     delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
         .await
@@ -921,7 +926,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
 }
 
 async fn provider_callbacks_python_durable_answers() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     for (index, case) in template().value["answers"]
         .as_array()
         .unwrap()
@@ -977,7 +982,7 @@ async fn provider_callbacks_python_durable_answers() {
 }
 
 async fn provider_callbacks_python_dynamic_read_and_title() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     for case in template().value["dynamic"].as_array().unwrap() {
         let frame = request(
             Method::ItemToolCall,
@@ -998,7 +1003,7 @@ async fn provider_callbacks_python_dynamic_read_and_title() {
 }
 
 async fn provider_callbacks_python_visible_id_resolution() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     for (index, case) in template().value["resolutions"]
         .as_array()
         .unwrap()
@@ -1063,7 +1068,7 @@ async fn provider_callbacks_python_visible_id_resolution() {
 }
 
 async fn provider_callbacks_existing_python_card_uses_stored_identity() {
-    let (_dir, store, context) = fixture();
+    let (_dir, store, context) = fixture().await;
     let card = &template().value["legacyCard"];
     let result = answer(
         &store,

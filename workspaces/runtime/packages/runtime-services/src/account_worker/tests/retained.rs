@@ -16,82 +16,89 @@ use std::sync::{Arc, Mutex};
 
 struct ResetBrokerSession {
     port: RetainedSessionPort,
-    runtime: tokio::runtime::Handle,
     requests: Arc<Mutex<Vec<(String, Value)>>>,
     lose_response: Arc<tokio::sync::Notify>,
 }
 
 impl AccountSessionPort for ResetBrokerSession {
-    fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
-        (self.port.scope().account == account)
-            .then(|| self.port.scope().clone())
-            .ok_or(AccountSessionError::Unknown)
+    fn ensure_session<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, ConnectionScope> {
+        Box::pin(async move {
+            (self.port.scope().account == account)
+                .then(|| self.port.scope().clone())
+                .ok_or(AccountSessionError::Unknown)
+        })
     }
 
-    fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-        if account != "default" {
-            return Err(AccountSessionError::Unknown);
-        }
-        Ok(json!({
-            "accountKey":"default",
-            "data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{
-                "id":"credit-A","status":"available","resetType":"codexRateLimits"
-            }]}}
-        }))
+    fn read_limits<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            if account != "default" {
+                return Err(AccountSessionError::Unknown);
+            }
+            Ok(json!({
+                "accountKey":"default",
+                "data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{
+                    "id":"credit-A","status":"available","resetType":"codexRateLimits"
+                }]}}
+            }))
+        })
     }
 
     fn provider_request(
         &self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push((request.operation.clone(), request.params.clone()));
-        let call = SessionRequest {
-            scope: self.port.scope().clone(),
-            expected_scope: request.expected_scope,
-            operation: request.operation,
-            actor: None,
-            transfer: None,
-            deleted_actor_session: None,
-            method: request.method,
-            params: request.params,
-            deadline: request.deadline,
-        };
-        let lose_response = self.lose_response.clone();
-        let receipt = self
-            .runtime
-            .block_on(async {
-                tokio::select! {
-                    result = self.port.request(call) => result,
-                    _ = lose_response.notified() => Err(PortError::Unknown),
-                }
-            })
+    ) -> crate::account_session_runtime::AccountSessionFuture<'_, SessionReceipt> {
+        Box::pin(async move {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((request.operation.clone(), request.params.clone()));
+            let call = SessionRequest {
+                scope: self.port.scope().clone(),
+                expected_scope: request.expected_scope,
+                operation: request.operation,
+                actor: None,
+                transfer: None,
+                deleted_actor_session: None,
+                method: request.method,
+                params: request.params,
+                deadline: request.deadline,
+            };
+            let lose_response = self.lose_response.clone();
+            let receipt = tokio::select! {
+                result = self.port.request(call) => result,
+                _ = lose_response.notified() => Err(PortError::Unknown),
+            }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
                 _ => AccountSessionError::Refused("Retained reset request was refused"),
             })?;
-        let (certainty, result) = match receipt.result {
-            RequestResult::Reply(value) => (
-                RequestCertainty::Written,
-                Some(ProviderResponse::Reply(value)),
-            ),
-            RequestResult::Rejected(value) => (
-                RequestCertainty::Written,
-                Some(ProviderResponse::Rejected(value)),
-            ),
-            RequestResult::NotSent => (RequestCertainty::NotSent, None),
-            RequestResult::Unknown => return Err(AccountSessionError::Unknown),
-        };
-        Ok(SessionReceipt {
-            scope: receipt.scope,
-            operation: receipt.operation,
-            ticket: Some(receipt.ticket),
-            certainty,
-            result,
-            not_sent_reason: None,
-            replayed: receipt.replayed,
+            let (certainty, result) = match receipt.result {
+                RequestResult::Reply(value) => (
+                    RequestCertainty::Written,
+                    Some(ProviderResponse::Reply(value)),
+                ),
+                RequestResult::Rejected(value) => (
+                    RequestCertainty::Written,
+                    Some(ProviderResponse::Rejected(value)),
+                ),
+                RequestResult::NotSent => (RequestCertainty::NotSent, None),
+                RequestResult::Unknown => return Err(AccountSessionError::Unknown),
+            };
+            Ok(SessionReceipt {
+                scope: receipt.scope,
+                operation: receipt.operation,
+                ticket: Some(receipt.ticket),
+                certainty,
+                result,
+                not_sent_reason: None,
+                replayed: receipt.replayed,
+            })
         })
     }
 }
@@ -117,13 +124,9 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
 async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     let broker_state = tempfile::tempdir().unwrap();
     let broker_root = broker_state.path().to_path_buf();
-    let broker_store = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker/tests/retained/reset",
-        move || studio_runtime_store::RuntimeStore::open(Some(&broker_root)),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let broker_store = studio_runtime_store::RuntimeStore::open(Some(&broker_root))
+        .await
+        .unwrap();
     let bridge = StoreBridge::new(Arc::new(broker_store)).await.unwrap();
     let mut peer = Peer::new();
     let mut worker = peer.worker(bridge).await;
@@ -132,7 +135,6 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     let lose_response = Arc::new(tokio::sync::Notify::new());
     let session = Arc::new(ResetBrokerSession {
         port: port.clone(),
-        runtime: tokio::runtime::Handle::current(),
         requests: requests.clone(),
         lose_response: lose_response.clone(),
     });
@@ -148,11 +150,16 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     // lock, then reopen it below to model the service process restarting.
     let reset_state = tempfile::tempdir().unwrap();
     let reset_root = reset_state.path().to_path_buf();
-    let reset_store = studio_runtime_store::RuntimeStore::open(Some(&reset_root)).unwrap();
+    let reset_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
+            .await
+            .unwrap(),
+    );
     let first_session = session.clone();
     let first_body = body.clone();
-    let mut first = tokio::task::spawn_blocking(move || {
-        crate::limit_reset::consume_reset(&reset_store, first_session.as_ref(), &first_body)
+    let first_store = reset_store.clone();
+    let mut first = tokio::spawn(async move {
+        crate::limit_reset::consume_reset(&first_store, first_session.as_ref(), &first_body).await
     });
     let first_wire = tokio::select! {
         wire = peer.writes.recv() => wire.expect("retained worker keeps provider transport open"),
@@ -185,11 +192,16 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     assert_eq!(uncertain["outcome"], "uncertain");
 
     // Opening the durable service store again models recovery after a process restart.
-    let reset_store = studio_runtime_store::RuntimeStore::open(Some(&reset_root)).unwrap();
+    let reset_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
+            .await
+            .unwrap(),
+    );
     let retry_session = session.clone();
     let retry_body = body.clone();
-    let retry = tokio::task::spawn_blocking(move || {
+    let retry = tokio::spawn(async move {
         crate::limit_reset::consume_reset(&reset_store, retry_session.as_ref(), &retry_body)
+            .await
             .unwrap()
     });
     let retry_wire = peer.next_write().await;
@@ -272,7 +284,7 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
 async fn recovered_publications(state: &State) -> Vec<(String, String)> {
     state
         .bridge
-        .run(|store| {
+        .run(|store| async move {
             let db = store.read()?;
             let mut statement = db.prepare(
                 "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
@@ -578,14 +590,14 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
     assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
 
-    state.bridge.run(|store| {
-        store.transaction(|tx| {
+    state.bridge.run(|store| async move {
+        store.transaction(move |tx| {
             tx.execute(
                 "UPDATE runtime_operation_receipts SET result=json_set(result,'$.cursor',1) WHERE id LIKE 'account-worker:retained:default:%:result' AND json_extract(result,'$.result')='NotSent'",
                 [],
             )?;
             Ok(())
-        })?;
+        }).await?;
         Ok(())
     }).await.unwrap();
     assert_eq!(
@@ -619,15 +631,17 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
     );
     let (stored_call, retry_request) = state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
-                let prior = crate::account_worker::store::receipt(tx, &key, "submitted")?
-                    .ok_or_else(|| crate::account_worker::WorkerError::Capacity)?;
-                let call: Call = serde_json::from_value(prior["call"].clone())
-                    .map_err(|_| crate::account_worker::WorkerError::Capacity)?;
-                let request = crate::account_worker::store::decode(&prior["request"])?;
-                Ok((call, request))
-            })
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let prior = crate::account_worker::store::receipt(tx, &key, "submitted")?
+                        .ok_or_else(|| crate::account_worker::WorkerError::Capacity)?;
+                    let call: Call = serde_json::from_value(prior["call"].clone())
+                        .map_err(|_| crate::account_worker::WorkerError::Capacity)?;
+                    let request = crate::account_worker::store::decode(&prior["request"])?;
+                    Ok((call, request))
+                })
+                .await
         })
         .await
         .unwrap();
@@ -744,7 +758,7 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
         assert_eq!(receipt.scope.generation, generation);
         worker.shutdown().await.unwrap();
 
-        let (retained_generations, checkpoints) = state.bridge.run(|store| {
+        let (retained_generations, checkpoints) = state.bridge.run(|store| async move {
             let db = store.read()?;
             let retained_generations = db.query_row(
                 "SELECT COUNT(DISTINCT json_extract(result,'$.call.scope.generation')) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:default:%:submitted'",
@@ -820,8 +834,8 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
     .unwrap();
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with::<_, StoreError>(|tx| {
+        .run(move |store| async move {
+            store.transaction_with::<_, StoreError>(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'result',?2)",
                     rusqlite::params![
@@ -837,7 +851,7 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
                     ],
                 )?;
                 Ok(())
-            })?;
+            }).await?;
             Ok(())
         })
         .await
@@ -917,8 +931,8 @@ async fn restart_history_case(outcome: &str) {
     let fail_terminal_settlement = outcome == "terminal_failure";
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
+        .run(move |store| async move {
+            store.transaction_with(move |tx| {
                 let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                     .expect("seed agent");
                 let event = "annotation:input";
@@ -945,7 +959,7 @@ async fn restart_history_case(outcome: &str) {
                     )?;
                 }
                 Ok::<(), WorkerError>(())
-            })?;
+            }).await?;
             Ok(())
         })
         .await
@@ -995,7 +1009,7 @@ async fn restart_history_case(outcome: &str) {
                 let item_id = format!("{agent}:answer");
                 let transcript = state
                     .bridge
-                    .run(move |store| {
+                    .run(move |store| async move {
                         Ok(studio_runtime_store::TranscriptRepository::item(
                             &*store.read()?,
                             &agent,
@@ -1018,7 +1032,7 @@ async fn restart_history_case(outcome: &str) {
                     let item_id = format!("{agent}:answer");
                     let item = state
                         .bridge
-                        .run(move |store| {
+                        .run(move |store| async move {
                             Ok(studio_runtime_store::TranscriptRepository::item(
                                 &*store.read()?,
                                 &agent,
@@ -1102,8 +1116,8 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let epoch = state.epoch;
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
+        .run(move |store| async move {
+            store.transaction_with(move |tx| {
                 let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                     .expect("seed agent");
                 let attempt = json!({
@@ -1125,7 +1139,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 AgentRepository::put(tx, &agent)?;
                 tx.execute("UPDATE runtime_events SET status='uncertain',error='Server restarted before delivery acknowledgement' WHERE id='annotation:input'", [])?;
                 Ok::<(), WorkerError>(())
-            })?;
+            }).await?;
             Ok(())
         })
         .await
@@ -1134,7 +1148,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let agent = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
+        .run(move |store| async move {
             let raw: String = store.read()?.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [&agent],
@@ -1155,7 +1169,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
             });
             let action = RecoveryAction::AcceptStart { turn };
             let mut completion = super::super::restart_recovery::RestartInputCompletion::default();
-            let outcome = store.transaction_with(|tx| {
+            let outcome = store.transaction_with(move |tx| {
                 tx.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.contextRepairWait.nextCheckAt',1) WHERE id=?1",
                     [&agent],
@@ -1163,7 +1177,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 let stale_wait = completion
                     .complete(tx, &snapshot, &scope, &action)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                assert!(matches!(stale_wait, RecoveryOutcome::Superseded));
+                assert!(matches!(stale_wait.outcome, RecoveryOutcome::Superseded));
                 tx.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.contextRepairWait.nextCheckAt',0) WHERE id=?1",
                     [&agent],
@@ -1175,7 +1189,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 let stale_event = completion
                     .complete(tx, &snapshot, &scope, &action)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                assert!(matches!(stale_event, RecoveryOutcome::Superseded));
+                assert!(matches!(stale_event.outcome, RecoveryOutcome::Superseded));
                 tx.execute(
                     "UPDATE runtime_events SET status='uncertain' WHERE id='annotation:input'",
                     [],
@@ -1183,8 +1197,8 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 completion
                     .complete(tx, &snapshot, &scope, &action)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
-            })?;
-            assert!(matches!(outcome, RecoveryOutcome::Applied(_)));
+            }).await?;
+            assert!(matches!(outcome.outcome, RecoveryOutcome::Applied(_)));
             Ok(())
         })
         .await
@@ -1196,7 +1210,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let item_id = format!("{agent}:answer");
     let item = state
         .bridge
-        .run(move |store| {
+        .run(move |store| async move {
             Ok(
                 studio_runtime_store::TranscriptRepository::item(&*store.read()?, &agent, &item_id)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
@@ -1334,14 +1348,16 @@ async fn retained_authorization_refuses_deleted_agent() {
     let agent = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
-            store.transaction(|tx| {
-                tx.execute(
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
                     [agent],
                 )?;
-                Ok(())
-            })?;
+                    Ok(())
+                })
+                .await?;
             Ok(())
         })
         .await
@@ -1377,8 +1393,8 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
         "generation":scope.generation
     });
     let actor_for_store = actor.clone();
-    state.bridge.run(move |store| {
-        store.transaction_with(|tx| {
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
                 [&actor_for_store],
@@ -1388,7 +1404,7 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
                 rusqlite::params![receipt_id, json!({"agent":actor_for_store,"epoch":epoch,"voiceEndSessions":[session]}).to_string()],
             )?;
             Ok::<(), studio_runtime_store::StoreError>(())
-        })?;
+        }).await?;
         Ok(())
     }).await.unwrap();
 
@@ -1527,7 +1543,7 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     // The same permit remains available while the journal/barrier is paused.
     state
         .bridge
-        .run(|s| {
+        .run(|s| async move {
             let _: i64 = s.read()?.query_row("SELECT 1", [], |r| r.get(0))?;
             Ok(())
         })
@@ -1774,12 +1790,12 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
             scope.clone(),
             "fake-thread-0".into(),
             &mut history,
-            &observation,
+            observation.as_ref(),
         )
         .unwrap();
         let mut runtime = RecoveryRuntime {
             store,
-            observation,
+            observation: Arc::clone(&observation),
             completion,
             task_completion,
         };
@@ -1800,7 +1816,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     );
     state
         .bridge
-        .run(|store| {
+        .run(|store| async move {
             let _: i64 = store.read()?.query_row("SELECT 1", [], |row| row.get(0))?;
             Ok(())
         })
@@ -1829,18 +1845,19 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
     let wire = peer.write("thread/read").await;
-    state.bridge.run(|s| s.transaction_with(|tx| { tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'journal failed'); END;")?; Ok(()) })).await.unwrap();
+    state.bridge.run(|s| async move { s.transaction_with(move |tx| { tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'journal failed'); END;")?; Ok(()) }).await }).await.unwrap();
     peer.frame(json!({"id":wire["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
         .await;
     assert_eq!(waiter.await.unwrap().unwrap_err(), PortError::Unknown);
     assert!(worker.completion().await.is_err());
     state
         .bridge
-        .run(|s| {
-            s.transaction_with(|tx| {
+        .run(|s| async move {
+            s.transaction_with(move |tx| {
                 tx.execute_batch("DROP TRIGGER fail_journal")?;
                 Ok(())
             })
+            .await
         })
         .await
         .unwrap();

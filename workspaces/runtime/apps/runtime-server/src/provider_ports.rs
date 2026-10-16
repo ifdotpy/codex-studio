@@ -311,6 +311,7 @@ pub(crate) struct LiveProviderConnections {
     pub session: Arc<dyn AccountSessionPort>,
     pub session_binaries:
         Arc<std::sync::Mutex<std::collections::BTreeMap<String, SessionExecutables>>>,
+    pub changes: tokio::sync::watch::Receiver<u64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -321,6 +322,10 @@ pub(crate) struct SessionExecutables {
 }
 
 impl ActiveProviderConnections for LiveProviderConnections {
+    fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.clone()
+    }
+
     fn snapshot(&self) -> Vec<ProviderProfile> {
         let Ok(snapshot) = self.accounts.snapshot() else {
             return Vec::new();
@@ -751,7 +756,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
     use studio_runtime_providers::Method;
     use studio_runtime_services::account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+        AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use studio_runtime_services::account_worker::retained::RequestActor;
@@ -771,45 +776,47 @@ mod tests {
             })
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            let method = request.method;
-            let scope = request.expected_scope.clone().unwrap_or_else(|| {
-                self.current_scope(&request.account)
-                    .expect("live fixture scope")
-            });
-            let operation = request.operation.clone();
-            let mut requests = self.requests.lock().expect("fixture request list");
-            requests.push(request);
-            let certainty = if self.unknown_start && method == Method::ThreadStart {
-                RequestCertainty::Unknown
-            } else {
-                RequestCertainty::Written
-            };
-            let result = match method {
-                Method::ThreadStart => Some(ProviderResponse::Reply(
-                    json!({"thread":{"id":"title-thread"}}),
-                )),
-                Method::TurnStart => {
-                    Some(ProviderResponse::Reply(json!({"turn":{"id":"title-turn"}})))
-                }
-                Method::ThreadTurnsList => Some(ProviderResponse::Reply(json!({"data":[{
-                    "id":"title-turn", "status":"completed", "items":[{
-                        "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
-                    }]
-                }]}))),
-                _ => None,
-            };
-            Ok(SessionReceipt {
-                scope,
-                operation,
-                ticket: None,
-                certainty,
-                result,
-                not_sent_reason: None,
-                replayed: false,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                let method = request.method;
+                let scope = request.expected_scope.clone().unwrap_or_else(|| {
+                    self.current_scope(&request.account)
+                        .expect("live fixture scope")
+                });
+                let operation = request.operation.clone();
+                let mut requests = self.requests.lock().expect("fixture request list");
+                requests.push(request);
+                let certainty = if self.unknown_start && method == Method::ThreadStart {
+                    RequestCertainty::Unknown
+                } else {
+                    RequestCertainty::Written
+                };
+                let result = match method {
+                    Method::ThreadStart => Some(ProviderResponse::Reply(
+                        json!({"thread":{"id":"title-thread"}}),
+                    )),
+                    Method::TurnStart => {
+                        Some(ProviderResponse::Reply(json!({"turn":{"id":"title-turn"}})))
+                    }
+                    Method::ThreadTurnsList => Some(ProviderResponse::Reply(json!({"data":[{
+                        "id":"title-turn", "status":"completed", "items":[{
+                            "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
+                        }]
+                    }]}))),
+                    _ => None,
+                };
+                Ok(SessionReceipt {
+                    scope,
+                    operation,
+                    ticket: None,
+                    certainty,
+                    result,
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }

@@ -1163,7 +1163,8 @@ mod tests {
 
     use super::{
         CleanupAction, CleanupEffect, CleanupPorts, EffectFailure, WorkspaceCleanupError,
-        cleanup_agent_workspace_with_ports, queued_cleanup_intent, reconcile_pending_cleanup,
+        begin_effect, cleanup_agent_workspace_with_ports, complete_effect, queued_cleanup_intent,
+        reconcile_pending_cleanup,
     };
 
     struct FakePorts {
@@ -1311,7 +1312,7 @@ mod tests {
             Arc::clone(&store),
             "cleanup-agent".to_owned(),
             CleanupAction::Archive,
-            Arc::clone(&ports),
+            ports.clone(),
         )
         .await
         .expect("archive cleanup completes");
@@ -1349,7 +1350,7 @@ mod tests {
                 Arc::clone(&store),
                 "cleanup-agent".to_owned(),
                 CleanupAction::Archive,
-                Arc::clone(&ports)
+                ports.clone()
             )
             .await,
             Err(WorkspaceCleanupError::Held)
@@ -1370,7 +1371,7 @@ mod tests {
                 Arc::clone(&store),
                 "cleanup-agent".to_owned(),
                 CleanupAction::Archive,
-                Arc::clone(&ports)
+                ports.clone()
             )
             .await
             .expect_err("unknown blocks replay")
@@ -1448,7 +1449,7 @@ mod tests {
             Arc::clone(&store),
             "cleanup-agent".to_owned(),
             CleanupAction::Delete,
-            Arc::clone(&ports),
+            ports.clone(),
         )
         .await
         .expect("delete removes image workspace");
@@ -1505,7 +1506,7 @@ mod tests {
             Arc::clone(&store),
             "cleanup-agent".to_owned(),
             action,
-            Arc::clone(&ports),
+            ports.clone(),
         )
         .await
         .expect("written release replays from its receipt");
@@ -1581,7 +1582,7 @@ mod tests {
                 Arc::clone(&store),
                 "cleanup-agent".to_owned(),
                 CleanupAction::Archive,
-                Arc::clone(&ports)
+                ports.clone()
             )
             .await,
             Err(WorkspaceCleanupError::Held)
@@ -1695,7 +1696,7 @@ mod tests {
                 Arc::clone(&store),
                 "cleanup-agent".to_owned(),
                 CleanupAction::Archive,
-                Arc::clone(&ports)
+                ports.clone()
             )
             .await,
             Err(WorkspaceCleanupError::NotSent)
@@ -1704,7 +1705,7 @@ mod tests {
             Arc::clone(&store),
             "cleanup-agent".to_owned(),
             CleanupAction::Archive,
-            Arc::clone(&ports),
+            ports.clone(),
         )
         .await
         .expect("definitely unsent effect retries");

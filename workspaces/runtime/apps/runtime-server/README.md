@@ -32,6 +32,37 @@ runtime admissions start. The retained monitor task handles queued results,
 rule events, and durable deadlines; its first tick does not repeat startup
 recovery after new monitor work may have been admitted.
 
+The server opens one `RuntimeStore`; its Canvas writer is a Tokio-owned SQLite
+actor with bounded admission. The writer limit is owned by
+[`MAX_PENDING_WRITES`](../../packages/runtime-store/src/sqlite_actor.rs).
+The four-connection Canvas reader cap, including the dedicated version reader,
+is owned by
+[`CANVAS_READER_CONNECTION_CAPACITY`](../../packages/runtime-store/src/lib.rs).
+Analytics remains a separate database and writer. See the [SQLite actor
+migration plan](../../../../docs/plans/rust-sqlite-actor.md) for cancellation,
+receipt, and shutdown boundaries.
+
+Background work is signaled by committed changes and durable deadlines, with
+bounded retry backoff after failures:
+
+- Continuation, auth-probe, monitor, and federation schedulers wait for their
+  earliest durable deadline and relevant change or commit signals. Auth probes
+  read the earliest persisted `dueAt` for the account. Active VM Claude
+  credential security refresh has a separate cadence owned by
+  [`VM_CREDENTIAL_REFRESH_INTERVAL`](../../packages/runtime-services/src/claude_auth_runtime.rs).
+- The peer-link owner reacts to targeted `runtime_access_clients` invalidation
+  hints and child exit. It rereads authoritative peer rows, keeps a running
+  child in sync, restarts it after a failed peer update, and uses bounded
+  backoff after failed snapshots, failed starts, or child exit. A table hint may
+  follow an ambiguous commit; it triggers a reread and never replays the
+  mutation.
+- Provider-version checks react to active account/session profile changes and
+  the `checkProviderUpdates` preference. The upstream release cache TTL is
+  owned by
+  [`UPSTREAM_TTL_SECONDS`](../../packages/runtime-services/src/provider_versions.rs)
+  and expires after 24 hours. This cache TTL does not control credential
+  refresh.
+
 On a shutdown signal, the server closes HTTP mutation admission, drains admitted
 mutations and durable account login/cancellation work while their dependencies
 remain live, then stops those dependencies. The existing 20-second
@@ -40,6 +71,11 @@ promise that every operation finishes before that deadline. If the watchdog
 forces process exit, existing durable intents, receipts, unknown outcomes, and
 recovery behavior remain authoritative. Shutdown adds no automatic request
 replay.
+
+Most read-only HTTP requests remain request-scoped. Cold entity pulls are a
+narrow exception: when they must maintain entity projections, the tracked
+operation retains the projection lock through commit and cache marking after
+the client disconnects.
 
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the

@@ -467,6 +467,7 @@ impl HttpState {
     }
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        self.credentials.shutdown().await;
         self.cost_scan_cancelled
             .store(true, std::sync::atomic::Ordering::Release);
         let cost_refresh = tokio::time::timeout(
@@ -499,6 +500,7 @@ impl HttpState {
     /// Close admission and wait for accepted HTTP mutations before stopping their dependencies.
     pub async fn shutdown_mutations(&self) {
         self.mutation_tasks.shutdown().await;
+        self.credentials.close_admission();
     }
 
     /// Admit a previously validated signed mutation into the shared request-lifetime owner.
@@ -973,8 +975,11 @@ mod tests {
     #[tokio::test]
     async fn sync_preferences_write_is_registered_in_the_production_router() {
         let directory = tempfile::tempdir().expect("isolated state directory");
-        let store =
-            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
@@ -1229,9 +1234,9 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_refusal_precedes_closed_mutation_admission_and_keeps_request_id() {
-        let (state, _directory) = state();
-        state.close_mutation_admission();
-        let app = super::validation_probe_router(state).expect("probe router starts");
+        let (first_state, _directory) = state();
+        first_state.close_mutation_admission();
+        let app = super::validation_probe_router(first_state).expect("probe router starts");
         let request = Request::builder()
             .method("POST")
             .uri("/api/agents")
@@ -1267,6 +1272,87 @@ mod tests {
         let response = app.oneshot(accepted_request).await.expect("response");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()["x-studio-request-id"], "request-closed");
+    }
+
+    #[tokio::test]
+    async fn accepted_mutation_can_start_credentials_after_http_close_and_drains_first() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        let state = Arc::new(HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(Arc::clone(&store)),
+            None,
+        ));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let credentials = Arc::clone(&state.credentials);
+        let operation_store = Arc::clone(&store);
+        let operation = async move {
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            let result = credentials.identity(operation_store, None).await;
+            axum::response::Response::builder()
+                .status(if result.is_ok() {
+                    StatusCode::OK
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })
+                .body(Body::empty())
+                .expect("mutation response builds")
+        };
+        let response_waiter = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                state
+                    .run_tracked_mutation(
+                        "POST /api/federation/credentials/rename".to_owned(),
+                        Some("credential-lifecycle-fixture".to_owned()),
+                        operation,
+                    )
+                    .await
+            })
+        };
+        started_rx
+            .await
+            .expect("accepted mutation enters its credential-free preflight");
+
+        state.close_mutation_admission();
+        let shutdown_state = Arc::clone(&state);
+        let shutdown = tokio::spawn(async move { shutdown_state.shutdown_mutations().await });
+        tokio::task::yield_now().await;
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must wait while the accepted mutation is suspended"
+        );
+        release_tx
+            .send(())
+            .expect("accepted mutation is awaiting its credential phase");
+        shutdown.await.expect("mutation drain task completes");
+        let response = response_waiter
+            .await
+            .expect("accepted mutation response task completes");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            state
+                .credentials
+                .identity(Arc::clone(&store), None)
+                .await
+                .is_err(),
+            "credential admission closes only after the accepted mutation has drained"
+        );
+        state
+            .shutdown_services()
+            .await
+            .expect("services stop after credentials drain");
     }
 
     #[tokio::test]

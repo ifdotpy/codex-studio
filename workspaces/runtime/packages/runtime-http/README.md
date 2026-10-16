@@ -9,8 +9,9 @@
 - **Forbidden dependencies:** Python runtime modules, SQLite, provider SDKs,
   and the runtime-server application.
 - **Invariants:** schema bytes stay canonicalizer-v3 stable; documented but
-  unimplemented operations return the common 501 error; synchronous domain
-  interfaces remain outside the async edge.
+  unimplemented operations return the common 501 error; async store operations
+  are awaited through their route boundary without a synchronous `block_on`
+  adapter.
 - **Configuration owner:** `studio-runtime-server` supplies listener identity,
   process token, workspace identity, and local diagnostics to `HttpState`.
 - **Focused check:** `cargo nextest run -p studio-runtime-http`.
@@ -70,15 +71,29 @@ validates each registered request before invoking a handler, and the extractors
 read the resulting `ValidatedRequest`; a raw body handler therefore runs only
 after shared validation. `ApiError` serializes through the shared
 `{ "error": "..." }` envelope. Put only the small, route-specific port needed
-by that group in state. For synchronous store work,
-clone the port and inputs, call it inside `tokio::task::spawn_blocking`, and
-map join/domain failures to `ApiError`; never retain a store transaction across
-an await.
+by that group in state. Await asynchronous `RuntimeStore` operations directly.
+Use `tokio::task::spawn_blocking` only for synchronous filesystem, process, or
+CPU work that must not run on a Tokio worker; never use it to disguise an async
+store operation. Do not retain a store transaction across an await.
 
 The server opens one `RuntimeStore` for `CODEX_AGENTS_STATE_DIR` at startup and
-passes its shared handle through `HttpState`. Route handlers clone that handle
-before entering `spawn_blocking`; they do not open another database connection
-or hold a transaction across an await.
+passes its shared handle through `HttpState`. Route handlers use that handle;
+they do not open another database connection or hold a transaction across an
+await.
+
+## Mutation lifetime
+
+After request safety, trust, body, and schema validation, accepted
+`POST`/`PUT`/`PATCH`/`DELETE` operations enter the shared `TaskTracker` before
+mutation-sync and handler execution. A disconnected client drops only the
+response waiter; it does not cancel or replay the admitted mutation. Tracker
+admission closes before shutdown drain, and tracked work drains while its
+providers and account workers remain live, bounded by the server's existing
+shutdown watchdog. Ordinary read-only `GET`, `HEAD`, and `OPTIONS` requests stay
+request-scoped. Cold `/api/sync/pull` entity projection maintenance is the
+narrow GET exception: its commit and cache mark share tracked lifetime after
+client disconnect. See the [SQLite actor migration preflight](../../../../docs/plans/rust-sqlite-actor.md)
+for unknown-outcome and shutdown guarantees.
 
 Export a `routes() -> RouteGroup` from the group module. Register each route
 with one method-specific constructor such as `get(path, status, handler)` or

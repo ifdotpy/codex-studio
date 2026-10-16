@@ -6,8 +6,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering as AtomicOrdering},
-        mpsc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     },
 };
 use studio_runtime_store::RuntimeStore;
@@ -31,20 +30,89 @@ fn isolated_tempdir() -> tempfile::TempDir {
         .expect("tmpfs test directory")
 }
 
-#[derive(Default)]
-struct MutableConnections(Mutex<Vec<ProviderProfile>>);
+struct MutableConnections(Mutex<Vec<ProviderProfile>>, tokio::sync::watch::Sender<u64>);
+
+impl MutableConnections {
+    fn new(profiles: Vec<ProviderProfile>) -> Self {
+        let (changes, _) = tokio::sync::watch::channel(0);
+        Self(Mutex::new(profiles), changes)
+    }
+
+    fn replace(&self, profiles: Vec<ProviderProfile>) {
+        *self.0.lock().expect("connection fixture lock") = profiles;
+        self.1.send_modify(|generation| *generation += 1);
+    }
+}
 
 impl ActiveProviderConnections for MutableConnections {
     fn snapshot(&self) -> Vec<ProviderProfile> {
         self.0.lock().expect("connection fixture lock").clone()
+    }
+
+    fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.1.subscribe()
     }
 }
 
 struct DisabledStore;
 
 impl ProviderVersionStore for DisabledStore {
-    fn upstream_enabled(&self) -> bool {
-        false
+    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
+        Ok(false)
+    }
+
+    fn persist_warnings<'a>(
+        &'a self,
+        _: &'a [String],
+        _: &'a [Value],
+    ) -> Pin<Box<dyn Future<Output = Result<(), ProviderVersionsError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct RecoveringStore {
+    unavailable: AtomicBool,
+    reads: AtomicUsize,
+    completed_passes: AtomicUsize,
+}
+
+impl ProviderVersionStore for RecoveringStore {
+    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
+        self.reads.fetch_add(1, AtomicOrdering::SeqCst);
+        if self.unavailable.load(AtomicOrdering::SeqCst) {
+            Err(ProviderVersionsError::PreferenceRead)
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn persist_warnings<'a>(
+        &'a self,
+        _: &'a [String],
+        _: &'a [Value],
+    ) -> Pin<Box<dyn Future<Output = Result<(), ProviderVersionsError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.completed_passes.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        })
+    }
+}
+
+struct DropObservedStore(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+
+impl Drop for DropObservedStore {
+    fn drop(&mut self) {
+        if let Ok(sender) = self.0.get_mut()
+            && let Some(sender) = sender.take()
+        {
+            let _ignored = sender.send(());
+        }
+    }
+}
+
+impl ProviderVersionStore for DropObservedStore {
+    fn upstream_enabled(&self) -> Result<bool, ProviderVersionsError> {
+        Ok(false)
     }
 
     fn persist_warnings<'a>(
@@ -64,9 +132,17 @@ impl Clock for FixedClock {
     }
 }
 
+struct MutableClock(AtomicU64);
+
+impl Clock for MutableClock {
+    fn now(&self) -> f64 {
+        self.0.load(AtomicOrdering::SeqCst) as f64
+    }
+}
+
 struct CountingProbe {
     calls: AtomicUsize,
-    observed: Option<mpsc::Sender<String>>,
+    observed: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl VersionProbe for CountingProbe {
@@ -231,7 +307,43 @@ fn cached_release_expiry_matches_the_python_ttl_boundary() {
 }
 
 #[test]
-fn active_connection_signature_tracks_server_and_connection_identity() {
+fn failed_release_attempt_uses_bounded_retry_after_a_stale_cache() {
+    let entry = CacheEntry {
+        version: Some("2.1.9".into()),
+        etag: None,
+        fetched_at: Some(100_000.0),
+        last_attempt_at: 100_000.0 + UPSTREAM_TTL_SECONDS,
+    };
+    let failed_at = entry.last_attempt_at;
+    assert_eq!(
+        next_attempt_at(&entry),
+        failed_at + FAILURE_RETRY_SECONDS as f64
+    );
+    assert!(!attempt_due(
+        &entry,
+        failed_at + FAILURE_RETRY_SECONDS as f64 - 1.0
+    ));
+    assert!(attempt_due(
+        &entry,
+        failed_at + FAILURE_RETRY_SECONDS as f64
+    ));
+}
+
+#[test]
+fn failed_monitor_pass_schedules_bounded_retry_and_idle_disabled_pass_disarms() {
+    let monotonic_now = tokio::time::Instant::now();
+    assert_eq!(
+        next_check_deadline(true, false, &Default::default(), 200_000.0, monotonic_now,),
+        Some(monotonic_now + Duration::from_secs(FAILURE_RETRY_SECONDS))
+    );
+    assert_eq!(
+        next_check_deadline(false, false, &Default::default(), 200_000.0, monotonic_now,),
+        None
+    );
+}
+
+#[test]
+fn full_profile_equality_tracks_session_and_profile_changes() {
     let profile = ProviderProfile {
         account_key: "connected".into(),
         provider: "codex".into(),
@@ -242,16 +354,16 @@ fn active_connection_signature_tracks_server_and_connection_identity() {
     };
     let mut reconnected = profile.clone();
     reconnected.connection_id = Some("connection-b".into());
-    assert_ne!(
-        connection_identity(&profile),
-        connection_identity(&reconnected)
-    );
+    assert_ne!(profile, reconnected);
     reconnected.connection_id = profile.connection_id.clone();
     reconnected.server_identity = "server-b".into();
-    assert_ne!(
-        connection_identity(&profile),
-        connection_identity(&reconnected)
-    );
+    assert_ne!(profile, reconnected);
+    reconnected.server_identity = profile.server_identity.clone();
+    reconnected.configured_binary = Some("/configured/codex".into());
+    assert_ne!(profile, reconnected);
+    reconnected.configured_binary = None;
+    reconnected.provider = "claude".into();
+    assert_ne!(profile, reconnected);
 }
 
 #[cfg(unix)]
@@ -572,8 +684,11 @@ async fn preference_read_error_fails_closed_without_an_upstream_request() {
         .expect("preference source made unreadable");
     let store = runtime_provider_version_store(runtime);
     assert!(
-        !store.upstream_enabled(),
-        "preference storage error disables upstream"
+        matches!(
+            store.upstream_enabled(),
+            Err(ProviderVersionsError::Store(_))
+        ),
+        "preference storage errors remain typed"
     );
 
     let fetch = Arc::new(CountingFetch(AtomicUsize::new(0)));
@@ -596,13 +711,109 @@ async fn preference_read_error_fails_closed_without_an_upstream_request() {
 }
 
 #[tokio::test]
+async fn preference_read_failure_retries_without_using_stale_enablement() {
+    let temporary = isolated_tempdir();
+    let store = Arc::new(RecoveringStore {
+        unavailable: AtomicBool::new(false),
+        reads: AtomicUsize::new(0),
+        completed_passes: AtomicUsize::new(0),
+    });
+    let fetch = Arc::new(CountingFetch(AtomicUsize::new(0)));
+    let clock = Arc::new(MutableClock(AtomicU64::new(200_000)));
+    let connections = Arc::new(MutableConnections::new(vec![profile(
+        "connected",
+        "codex",
+        "connection-1",
+    )]));
+    let monitor = ProviderVersionMonitor::start(
+        store.clone(),
+        Some(connections),
+        temporary.path().join("cache.json"),
+        Arc::new(CountingProbe {
+            calls: AtomicUsize::new(0),
+            observed: None,
+        }),
+        fetch.clone(),
+        clock.clone(),
+    )
+    .await
+    .expect("monitor starts with provider updates enabled");
+    assert!(monitor.wait_until_checked(Duration::from_secs(3)).await);
+    assert_eq!(fetch.0.load(AtomicOrdering::SeqCst), RELEASES.len());
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.completed_passes.load(AtomicOrdering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial pass persists its warning snapshot");
+
+    clock
+        .0
+        .fetch_add(FAILURE_RETRY_SECONDS + 1, AtomicOrdering::SeqCst);
+    store.unavailable.store(true, AtomicOrdering::SeqCst);
+    monitor.wake();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.completed_passes.load(AtomicOrdering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("targeted wake observes the transient preference read error");
+    assert_eq!(
+        fetch.0.load(AtomicOrdering::SeqCst),
+        RELEASES.len(),
+        "unknown preference state must not make an upstream request"
+    );
+
+    store.unavailable.store(false, AtomicOrdering::SeqCst);
+    monitor.wake();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.completed_passes.load(AtomicOrdering::SeqCst) < 3
+            || fetch.0.load(AtomicOrdering::SeqCst) < RELEASES.len() * 2
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a successful preference read resumes upstream checks");
+    monitor.shutdown().await;
+}
+
+#[tokio::test]
+async fn dropping_idle_monitor_releases_store_and_worker_ownership() {
+    let temporary = isolated_tempdir();
+    let (dropped, released) = tokio::sync::oneshot::channel();
+    let monitor = ProviderVersionMonitor::start(
+        Arc::new(DropObservedStore(Mutex::new(Some(dropped)))),
+        None,
+        temporary.path().join("cache.json"),
+        Arc::new(CountingProbe {
+            calls: AtomicUsize::new(0),
+            observed: None,
+        }),
+        Arc::new(CountingFetch(AtomicUsize::new(0))),
+        Arc::new(FixedClock),
+    )
+    .await
+    .expect("monitor starts");
+    assert!(monitor.wait_until_checked(Duration::from_secs(3)).await);
+
+    drop(monitor);
+    tokio::time::timeout(Duration::from_secs(3), released)
+        .await
+        .expect("idle worker does not retain the monitor")
+        .expect("store drop signal");
+}
+
+#[tokio::test]
 async fn unsupported_provider_is_projected_without_launching_a_probe() {
     let temporary = isolated_tempdir();
-    let connections = Arc::new(MutableConnections(Mutex::new(vec![profile(
+    let connections = Arc::new(MutableConnections::new(vec![profile(
         "other",
         "unsupported",
         "connection-1",
-    )])));
+    )]));
     let probe = Arc::new(CountingProbe {
         calls: AtomicUsize::new(0),
         observed: None,
@@ -624,14 +835,14 @@ async fn unsupported_provider_is_projected_without_launching_a_probe() {
 }
 
 #[tokio::test]
-async fn connection_change_wake_starts_a_new_probe_without_waiting_for_interval() {
+async fn profile_change_notification_starts_a_new_probe_without_waiting_for_cache_expiry() {
     let temporary = isolated_tempdir();
-    let connections = Arc::new(MutableConnections(Mutex::new(vec![profile(
+    let connections = Arc::new(MutableConnections::new(vec![profile(
         "connected",
         "codex",
         "connection-1",
-    )])));
-    let (sender, receiver) = mpsc::channel();
+    )]));
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let monitor = ProviderVersionMonitor::start(
         Arc::new(DisabledStore),
         Some(connections.clone()),
@@ -646,18 +857,18 @@ async fn connection_change_wake_starts_a_new_probe_without_waiting_for_interval(
     .await
     .expect("monitor starts");
     assert_eq!(
-        receiver
-            .recv_timeout(Duration::from_secs(3))
+        tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("initial probe timeout")
             .expect("initial probe"),
         "connection-1"
     );
-    connections.0.lock().expect("connection fixture lock")[0] =
-        profile("connected", "codex", "connection-2");
-    monitor.wake();
+    connections.replace(vec![profile("connected", "codex", "connection-2")]);
     assert_eq!(
-        receiver
-            .recv_timeout(Duration::from_secs(3))
-            .expect("wake-triggered probe"),
+        tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("profile-change probe timeout")
+            .expect("profile-change probe"),
         "connection-2"
     );
     monitor.shutdown().await;

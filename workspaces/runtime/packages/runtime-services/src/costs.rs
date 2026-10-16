@@ -748,10 +748,12 @@ mod tests {
         assert!(read_local_claude_usage(temp.path(), &members, &accounts).is_empty());
     }
 
-    #[test]
-    fn session_cost_prices_claude_history_and_suppresses_analytics_receipts() {
+    #[tokio::test]
+    async fn session_cost_prices_claude_history_and_suppresses_analytics_receipts() {
         let temp = tempdir().expect("temporary fixture directory");
-        let store = RuntimeStore::open(Some(temp.path())).expect("runtime store opens");
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("runtime store opens");
         let profile = temp.path().join("claude-profile");
         let project = profile.join("projects/project");
         fs::create_dir_all(project).expect("create Claude project");
@@ -832,11 +834,12 @@ mod tests {
             "total":{"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":5,"outputTokens":10,"totalTokens":135}
         });
         store
-            .analytics_transaction::<_, StoreError>(|tx, _| {
+            .analytics_transaction::<_, StoreError>(move |tx, _| {
                 AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &agent)?;
                 AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &receipt)?;
                 Ok(())
             })
+            .await
             .expect("write analytics fixtures");
         assert!(matches!(
             session_cost(&store, "agent"),

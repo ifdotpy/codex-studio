@@ -74,7 +74,7 @@ impl AccountSessionPort for SupersededRecoveryPort {
 
 #[tokio::test]
 async fn connection_recovery_http_returns_the_synchronous_worker_status() {
-    let (root, store, context) = fixture::fixture();
+    let (root, store, context) = fixture::fixture().await;
     let port = Arc::new(RecoveryPort(AtomicUsize::new(0)));
     let mut state = HttpState::new(
         "token".into(),
@@ -115,7 +115,7 @@ async fn connection_recovery_http_returns_the_synchronous_worker_status() {
 
 #[tokio::test]
 async fn connection_recovery_without_history_capability_returns_not_implemented() {
-    let (root, store, context) = fixture::fixture();
+    let (root, store, context) = fixture::fixture().await;
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
@@ -149,7 +149,7 @@ async fn connection_recovery_without_history_capability_returns_not_implemented(
 
 #[tokio::test]
 async fn connection_recovery_unknown_outcome_is_service_unavailable() {
-    let (root, store, context) = fixture::fixture();
+    let (root, store, context) = fixture::fixture().await;
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),
@@ -186,7 +186,7 @@ async fn connection_recovery_unknown_outcome_is_service_unavailable() {
 
 #[tokio::test]
 async fn connection_recovery_superseded_outcome_is_successful_http_result() {
-    let (root, store, context) = fixture::fixture();
+    let (root, store, context) = fixture::fixture().await;
     let mut state = HttpState::new(
         "token".into(),
         "fixture".into(),

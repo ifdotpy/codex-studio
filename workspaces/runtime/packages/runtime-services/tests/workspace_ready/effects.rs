@@ -92,7 +92,6 @@ impl Fixture {
     }
     async fn reserve(&self, plan: &ProvisionIdentity) {
         let store = std::sync::Arc::clone(&self.store);
-        let id = self.id.clone();
         let snapshot = snapshot(&self.store, &self.id).expect("snapshot");
         let plan = plan.clone();
         store
@@ -511,11 +510,15 @@ async fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_fail
     let fixture = Fixture::new().await;
     let context = fixture.context();
     let plan = fixture.plan();
-    let expired = Git {
-        deadline: Instant::now(),
-    };
-    let outcome =
-        provision(&fixture.store, &context, plan.clone(), &expired).expect("deadline classified");
+    let deadline = Instant::now();
+    let outcome = provision(
+        std::sync::Arc::clone(&fixture.store),
+        context,
+        plan.clone(),
+        deadline,
+    )
+    .await
+    .expect("deadline classified");
     assert!(matches!(outcome, WorkspaceDecision::Refuse(_)));
     assert!(!plan.identity.destination.exists());
     assert_eq!(
@@ -552,7 +555,7 @@ async fn common_git_directory_serialization_defers_without_starting_another_effe
     let fixture = Fixture::new().await;
     let plan = fixture.plan();
     let lock = repository_lock(&plan.identity.common_dir).expect("lock");
-    let _guard = lock.lock().expect("held lock");
+    let _guard = lock.lock().await;
     assert!(matches!(
         prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
             .await
@@ -846,6 +849,7 @@ async fn hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete() 
 }
 
 async fn reserve_other(fixture: &Fixture, cwd: &Path) {
+    let cwd = cwd.to_path_buf();
     fixture.store.transaction(move |tx| {
         tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('other-restore',?1)",
             [json!({"id":"other-restore","agent":"other","kind":"restore","phase":"local_mutation","cwd":cwd}).to_string()])?;
@@ -879,7 +883,14 @@ async fn parent_and_destination_reservations_block_but_progress_does_not() {
     let plan = fixture.plan();
     fixture.patch("progress", json!("ordinary update")).await;
     assert!(matches!(
-        provision(&fixture.store, &context, plan, &git()).expect("progress ignored"),
+        provision(
+            std::sync::Arc::clone(&fixture.store),
+            context,
+            plan,
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("progress ignored"),
         WorkspaceDecision::Ready { .. }
     ));
 }
@@ -897,8 +908,14 @@ async fn checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_r
             "reservation" => reserve_other(&fixture, &plan.destination).await,
             _ => (),
         }
-        let decision =
-            publish_verified(&fixture.store, &plan, Ok(&checkpoint), &git()).expect("publication");
+        let decision = publish_verified(
+            std::sync::Arc::clone(&fixture.store),
+            plan.clone(),
+            Ok(checkpoint),
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("publication");
         if change == "none" {
             assert!(matches!(decision, WorkspaceDecision::Ready { .. }));
         } else {
@@ -1055,7 +1072,16 @@ async fn post_effect_symlink_escape_is_refused_without_cleanup() {
     std::fs::create_dir(&outside).expect("outside destination");
     // Inject the exact interval after observation and before effect.
     symlink(&outside, fixture.repo.join(".worktrees")).expect("ancestor replaced");
-    assert_recovery(provision(&fixture.store, &context, plan.clone(), &git()).expect("classified"));
+    assert_recovery(
+        provision(
+            std::sync::Arc::clone(&fixture.store),
+            context,
+            plan.clone(),
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("classified"),
+    );
     assert_eq!(fixture.actor()["worktreeReady"], false);
     assert!(
         outside.join("codex-agents").join(&fixture.id).is_dir(),
@@ -1348,7 +1374,14 @@ async fn stale_reservation_precondition_never_starts_git_effect() {
     let plan = fixture.plan();
     fixture.patch("epoch", json!(1)).await;
     assert!(matches!(
-        provision(&fixture.store, &context, plan.clone(), &git()).expect("defer"),
+        provision(
+            std::sync::Arc::clone(&fixture.store),
+            context,
+            plan.clone(),
+            Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("defer"),
         WorkspaceDecision::Defer { .. }
     ));
     assert!(!plan.identity.destination.exists());

@@ -108,7 +108,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
             .query_row(
                 "SELECT record FROM runtime_event_meta WHERE id=?1",
                 ["00000000-0000-4000-8000-000000000002"],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
             .expect("saved attachment metadata")
     })
@@ -134,17 +134,19 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
 
     struct NoTransport;
     impl PairedTransport for NoTransport {
-        fn exchange(
-            &self,
-            _: &str,
-            _: &serde_json::Value,
+        fn exchange<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a serde_json::Value,
             _: std::time::Duration,
-        ) -> Result<serde_json::Value, AccessError> {
-            Err(refused(
-                503,
-                "unused_transport",
-                "The receiver test does not send a second request",
-            ))
+        ) -> futures_util::future::BoxFuture<'a, Result<serde_json::Value, AccessError>> {
+            Box::pin(async {
+                Err(refused(
+                    503,
+                    "unused_transport",
+                    "The receiver test does not send a second request",
+                ))
+            })
         }
     }
 
@@ -273,12 +275,12 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     .expect("duplicate message receipt");
     assert_eq!(duplicate_receipt["id"], receipt["id"]);
     assert_eq!(duplicate_receipt["status"], receipt["status"]);
-    let outbox_count = support::read(fixture.store.clone(), |connection| {
+    let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
             .expect("queued paired intent count")
     })
@@ -310,13 +312,16 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     .expect("message receipts");
     assert_eq!(receipts["items"][0]["id"], receipt["id"]);
     assert_eq!(receipts["items"][0]["status"], "stored_only");
-    let (server, raw): (String, String) = connection
-        .query_row(
-            "SELECT server,body FROM runtime_server_outbox WHERE state='queued'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("paired remote event intent");
+    let (server, raw): (String, String) = support::read(fixture.store.clone(), |connection| {
+        connection
+            .query_row(
+                "SELECT server,body FROM runtime_server_outbox WHERE state='queued'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("paired remote event intent")
+    })
+    .await;
     let envelope: serde_json::Value = serde_json::from_str(&raw).expect("outbox envelope");
     assert_eq!(server, "remote-server");
     assert_eq!(envelope["action"], "input");
@@ -324,8 +329,6 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(envelope["payload"]["link"], "remote-link");
     assert_eq!(envelope["payload"]["kind"], "user");
     assert_eq!(envelope["payload"]["text"], "Continue on the paired server");
-    drop(connection);
-
     let receiver = support::Fixture::new("remote-anchor-home", python::prepared_python).await;
     receiver
         .store
@@ -407,7 +410,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
                 .query_row(
             "SELECT COUNT(*),MAX(status) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
             (read_event_id.as_str(), "late-operation-recipient"),
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         )
                 .expect("durable home user event");
             let (inbox_state, inbox_result): (String, String) = connection
@@ -455,12 +458,12 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .as_str()
         .expect("request ID")
         .to_owned();
-    let uncertain_event_count = support::read(receiver.store.clone(), move |connection| {
+    let uncertain_event_count: i64 = support::read(receiver.store.clone(), move |connection| {
         connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE id=?1",
                 [uncertain_request_id.as_str()],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
             .expect("uncertain retry has no event")
     })
@@ -484,7 +487,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             .query_row(
             "SELECT body FROM runtime_server_outbox WHERE server='remote-server' AND json_extract(body,'$.payload.text')=?1",
             [&unicode_for_query],
-            |row| row.get(0),
+            |row| row.get::<_, String>(0),
         )
         .expect("queued Unicode paired input")
     })
@@ -507,7 +510,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             .query_row(
             "SELECT COUNT(*),MAX(text) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
             (read_unicode_event_id.as_str(), "late-operation-recipient"),
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         )
             .expect("durable Unicode home user event")
     })
@@ -586,12 +589,12 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .expect("a committed-effect retry stays uncertain after link epoch change");
     assert_eq!(epoch_changed_retry, ExchangeOutcome::Unknown);
     let event_id_after_epoch = remote_event_id.clone();
-    let event_count = support::read(receiver.store.clone(), move |connection| {
+    let event_count: i64 = support::read(receiver.store.clone(), move |connection| {
         connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
                 (event_id_after_epoch.as_str(), "late-operation-recipient"),
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
             .expect("home event remains durable after epoch change")
     })
@@ -628,12 +631,12 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .await
         .expect("changed-content HTTP response");
     assert_eq!(changed.status(), axum::http::StatusCode::BAD_REQUEST);
-    let outbox_count = support::read(fixture.store.clone(), |connection| {
+    let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
             .expect("queued paired intent count after conflict")
     })

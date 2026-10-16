@@ -99,6 +99,7 @@ fn copy_template(corpus: &RadioCorpus, root: &Path) {
     }
 }
 async fn seed(store: &RuntimeStore, snapshot: &Value) {
+    let snapshot = snapshot.clone();
     let identity = store.root().join("multi-server");
     fs::create_dir_all(&identity).expect("identity directory");
     fs::write(
@@ -121,7 +122,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
     }
 
     store
-        .transaction(|db| {
+        .transaction(move |db| {
             for (table, rows) in snapshot.as_object().expect("snapshot") {
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
@@ -272,7 +273,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
     let case = case.clone();
     let mode = case["mode"].as_str().expect("mode").to_owned();
     match mode.as_str() {
-        "convert" => studio_runtime_services::peer_conversion::convert(&store, &case["body"]).await,
+        "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await,
         "project" => studio_runtime_services::projects::write(
             std::sync::Arc::clone(&store),
             case["body"].clone(),
@@ -482,7 +483,9 @@ async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
                 seed(&store, &original_case["before"]).await;
                 let before = state(&store, &original_case["before"]);
                 let all_before = database_rows(&store);
-                store.transaction(|db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).await.expect("failpoint");
+                let table_for_trigger = table.to_string();
+                let boundary_for_trigger = boundary.to_string();
+                store.transaction(move |db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary_for_trigger} INSERT ON {table_for_trigger} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary_for_trigger} UPDATE ON {table_for_trigger} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).await.expect("failpoint");
                 assert!(
                     run(std::sync::Arc::clone(&store), original_case)
                         .await
@@ -581,8 +584,8 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("floor"));
-    let prepared = PreparedHost::load(&store).expect("prepare");
-    store.transaction_with(|db|->Result<(),ProjectsError> {
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    store.transaction_with(move |db|->Result<(),ProjectsError> {
         assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",None,1000.0)?);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
@@ -594,15 +597,18 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
             .expect("restart"),
     );
     assert!(!radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("released"));
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    let prepared_for_tick = std::sync::Arc::clone(&prepared);
     store
-        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .transaction_with(move |db| {
+            radio_runtime::tick(db, &prepared_for_tick, &mut Ingress, 1000.0)
+        })
         .await
         .expect("next input");
     let committed = database_rows(&store);
     let prepared = PreparedHost::load(&store).expect("prepare");
     store
-        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .transaction_with(move |db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
         .await
         .expect("retry tick");
     assert_eq!(database_rows(&store), committed, "one continuation only");
@@ -646,9 +652,12 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     copy_template(corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    let prepared_for_tick = std::sync::Arc::clone(&prepared);
     let first = store
-        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .transaction_with(move |db| {
+            radio_runtime::tick(db, &prepared_for_tick, &mut Ingress, 1000.0)
+        })
         .await
         .expect("persist pending intent");
     assert_eq!(first.len(), 1);
@@ -664,18 +673,27 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .await
             .expect("restart with pending"),
     );
-    let prepared = PreparedHost::load(&store).expect("prepare");
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).expect("prepare"));
+    let prepared_for_tick = std::sync::Arc::clone(&prepared);
     let recovered = store
-        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1001.0))
+        .transaction_with(move |db| {
+            radio_runtime::tick(db, &prepared_for_tick, &mut Ingress, 1001.0)
+        })
         .await
         .expect("recover intent");
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].request_id, format!("radio-interrupt:{event}"));
     let mut transport = TransportDouble::accepted();
     assert!(
-        radio_runtime::handoff_interrupt(&store, &prepared, &recovered[0], &mut transport, 1002.0)
-            .await
-            .expect("handoff")
+        radio_runtime::handoff_interrupt(
+            &store,
+            std::sync::Arc::clone(&prepared),
+            &recovered[0],
+            &mut transport,
+            1002.0
+        )
+        .await
+        .expect("handoff")
     );
     assert_eq!(transport.calls, vec![format!("radio-interrupt:{event}")]);
     drop(store);
@@ -687,7 +705,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     );
     let prepared = PreparedHost::load(&store).expect("prepare");
     let held = store
-        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
+        .transaction_with(move |db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
         .await
         .expect("hold unknown handoff");
     assert!(held.is_empty(), "claimed Unknown interrupt is never resent");
@@ -702,9 +720,12 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .expect("open crash state"),
     );
     seed(&crash_store, &case["before"]).await;
-    let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
+    let crash_prepared = std::sync::Arc::new(PreparedHost::load(&crash_store).expect("prepare"));
+    let prepared_for_tick = std::sync::Arc::clone(&crash_prepared);
     let pending = crash_store
-        .transaction_with(|db| radio_runtime::tick(db, &crash_prepared, &mut Ingress, 2000.0))
+        .transaction_with(move |db| {
+            radio_runtime::tick(db, &prepared_for_tick, &mut Ingress, 2000.0)
+        })
         .await
         .expect("pending");
     let crash_event = pending[0]
@@ -714,12 +735,10 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .to_owned();
     assert!(
         crash_store
-            .transaction_with(|db| radio_runtime::claim_interrupt(
-                db,
-                &crash_prepared,
-                &crash_event,
-                2001.0
-            ))
+            .transaction_with({
+                let crash_prepared = std::sync::Arc::clone(&crash_prepared);
+                move |db| radio_runtime::claim_interrupt(db, &crash_prepared, &crash_event, 2001.0)
+            })
             .await
             .expect("claim before simulated crash")
     );
@@ -729,12 +748,12 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             .await
             .expect("restart after claim crash"),
     );
-    let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
+    let crash_prepared = std::sync::Arc::new(PreparedHost::load(&crash_store).expect("prepare"));
     let mut transport = TransportDouble::accepted();
     assert!(
         !radio_runtime::handoff_interrupt(
             &crash_store,
-            &crash_prepared,
+            std::sync::Arc::clone(&crash_prepared),
             &pending[0],
             &mut transport,
             2002.0
@@ -790,7 +809,12 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         }).await
         .expect("intervening row update");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)).await,
+        store
+            .transaction_with({
+                let prepared = std::sync::Arc::new(prepared);
+                move |db| prepared.recheck(db)
+            })
+            .await,
         Err(ProjectsError::Conflict(_))
     ));
     store
@@ -813,7 +837,10 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         }).await
         .expect("same dispatch advances from idle to running");
     store
-        .transaction_with(|db| prepared.recheck(db))
+        .transaction_with({
+            let prepared = std::sync::Arc::new(prepared);
+            move |db| prepared.recheck(db)
+        })
         .await
         .expect("same dispatch status change preserves prepared paths");
     let prepared = PreparedHost::load(&store).expect("fresh prepare for startup progression");
@@ -836,13 +863,16 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         }).await
         .expect("same dispatch progresses to running");
     store
-        .transaction_with(|db| prepared.recheck(db))
+        .transaction_with({
+            let prepared = std::sync::Arc::new(prepared);
+            move |db| prepared.recheck(db)
+        })
         .await
         .expect("same start attempt progressing to running is permitted");
     for terminal_status in ["interrupted", "archived"] {
         let prepared = PreparedHost::load(&store).expect("fresh prepare");
         store
-            .transaction(|db| {
+            .transaction(move |db| {
                 db.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.status',?1) WHERE id='a'",
                     [terminal_status],
@@ -852,7 +882,12 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
             .await
             .expect("terminal status during preparation");
         assert!(matches!(
-            store.transaction_with(|db| prepared.recheck(db)).await,
+            store
+                .transaction_with({
+                    let prepared = std::sync::Arc::new(prepared);
+                    move |db| prepared.recheck(db)
+                })
+                .await,
             Err(ProjectsError::Conflict(_))
         ));
     }
@@ -868,7 +903,12 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         .await
         .expect("agent deleted during preparation");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)).await,
+        store
+            .transaction_with({
+                let prepared = std::sync::Arc::new(prepared);
+                move |db| prepared.recheck(db)
+            })
+            .await,
         Err(ProjectsError::Conflict(_))
     ));
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
@@ -882,7 +922,12 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         }).await
         .expect("agent stop during preparation");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)).await,
+        store
+            .transaction_with({
+                let prepared = std::sync::Arc::new(prepared);
+                move |db| prepared.recheck(db)
+            })
+            .await,
         Err(ProjectsError::Conflict(_))
     ));
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
@@ -897,7 +942,12 @@ async fn prepared_host_fences_source_rows_changed_before_the_writer() {
         .await
         .expect("project row update");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)).await,
+        store
+            .transaction_with({
+                let prepared = std::sync::Arc::new(prepared);
+                move |db| prepared.recheck(db)
+            })
+            .await,
         Err(ProjectsError::Conflict(_))
     ));
 }

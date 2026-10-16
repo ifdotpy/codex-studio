@@ -321,9 +321,10 @@ async fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
             let phase = phase.to_owned();
             let failpoint_phase = phase.clone();
             let timing = timing.to_owned();
+            let trigger_timing = timing.clone();
             store.transaction(move |tx| {
                 for (index, event) in ["INSERT", "UPDATE"].iter().enumerate() {
-                    tx.execute_batch(&format!("CREATE TEMP TRIGGER p18_failure_{index} {timing} {event} ON runtime_account_transfers WHEN json_extract(NEW.record,'$.members.lead.phase')='{failpoint_phase}' BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
+                    tx.execute_batch(&format!("CREATE TEMP TRIGGER p18_failure_{index} {trigger_timing} {event} ON runtime_account_transfers WHEN json_extract(NEW.record,'$.members.lead.phase')='{failpoint_phase}' BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
                 }
                 Ok(())
             }).await.expect("install failpoint");
@@ -347,7 +348,7 @@ async fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
                 .await
                 .expect("restart");
             driver::recover(&store, 11.0).await.expect("recover");
-            let expected = match phase {
+            let expected = match phase.as_str() {
                 "reading" => "waiting",
                 "submitted" => "blocked",
                 _ => "unknown",
