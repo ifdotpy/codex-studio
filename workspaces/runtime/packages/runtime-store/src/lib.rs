@@ -371,7 +371,7 @@ fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_
     }
 }
 
-fn fire_resource_change_observers(observers: &Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>) {
+fn fire_resource_change_observers(observers: &Mutex<Vec<ChangeObserver>>) {
     let callbacks = observers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -385,16 +385,34 @@ fn fire_resource_change_observers(observers: &Mutex<Vec<Arc<dyn Fn() + Send + Sy
     }
 }
 
-fn transaction_has_resource_change(total_changes: Option<i64>, receipt_updates: u64) -> bool {
+fn transaction_has_resource_change(total_changes: Option<u64>, receipt_updates: u64) -> bool {
     let Some(total_changes) = total_changes else {
+        // A missing or underflowed delta cannot prove the write was receipt-only.
         return true;
     };
     if total_changes == 0 && receipt_updates == 0 {
         return false;
     }
-    let receipt_only =
-        total_changes > 0 && u64::try_from(total_changes).ok() == Some(receipt_updates);
+    let receipt_only = total_changes > 0 && total_changes == receipt_updates;
     !receipt_only
+}
+
+#[cfg(test)]
+mod resource_change_classifier_tests {
+    use super::transaction_has_resource_change;
+
+    #[test]
+    fn suppresses_only_an_exact_positive_receipt_only_count() {
+        assert!(!transaction_has_resource_change(Some(0), 0));
+        assert!(!transaction_has_resource_change(Some(3), 3));
+        assert!(transaction_has_resource_change(Some(3), 2));
+        assert!(transaction_has_resource_change(Some(3), 0));
+        assert!(transaction_has_resource_change(None, 0));
+        assert!(transaction_has_resource_change(
+            Some(u64::MAX),
+            u64::MAX - 1
+        ));
+    }
 }
 
 fn install_table_change_hooks(
@@ -627,7 +645,7 @@ pub struct RuntimeStore {
     identity_registry_lease: Arc<IdentityRegistryLease>,
     commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     table_commit_observers: Arc<TableChangeObserverRegistry>,
-    resource_change_observers: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    resource_change_observers: Arc<Mutex<Vec<ChangeObserver>>>,
     table_change_flags: Arc<AtomicU32>,
     resource_receipt_update_count: Arc<AtomicU64>,
     #[cfg(test)]

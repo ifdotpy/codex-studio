@@ -748,6 +748,7 @@ async fn restore_history_watcher(
                 *failures = 0;
                 #[cfg(test)]
                 wake.watcher_recoveries.fetch_add(1, Ordering::AcqRel);
+                #[cfg(test)]
                 wake.watcher_recovered.notify_one();
                 return Ok(Some(watcher));
             }

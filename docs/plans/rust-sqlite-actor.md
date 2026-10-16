@@ -59,7 +59,7 @@ The source regressions are
 [`admitted_write_keeps_account_operation_lease_after_caller_cancellation`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
 and
 [`cancelled_writer_admission_does_not_retain_account_operation_lease`](../../workspaces/runtime/packages/runtime-store/src/lib.rs).
-Their test gate remains pending with the rest of the actor integration checks.
+They passed as part of the actor validation gate recorded below.
 
 The runtime server opens one `Arc<RuntimeStore>` in
 [`runtime-server/src/main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs)
@@ -303,9 +303,15 @@ hint is neither a receipt nor permission to replay a mutation.
   queued. The old implementation reopens the post-slice state after the new
   owner is fully stopped.
 
-The current async cutover has not passed an integration validation gate. The
-acceptance list is a required gate, not evidence that it has passed. No
-provider call or runtime-state access is claimed here.
+The actor validation gate passed on 2026-10-16 at commit
+[`5f545fdd`](https://github.com/ifdotpy/codex-studio/commit/5f545fdd):
+`just test-fast` (6,000 server tests, 63 bridge tests, 2,200 Rust tests, 921 web
+tests, 10 tooling tests, and 5 browser tests), strict workspace Clippy with
+`-D warnings`, workspace doctests, and strict runtime mypy. Any later delivery
+must rerun the required gate against its exact commit head. Raw-read migration
+and live backend/browser behavior validation remain separate pending work; this
+gate does not claim that a backend was deployed or that live behavior was
+verified.
 
 ## Historical production writer caller inventory
 

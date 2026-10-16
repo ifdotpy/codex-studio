@@ -1,6 +1,6 @@
 # Targeted runtime invalidations
 
-**Status:** Source implementation present; serial test gate and idle-browser validation pending.
+**Status:** Source review complete; this branch's build, test, and live idle-browser validation are pending.
 **Audience:** maintainers changing Canvas commit notifications or their consumers.
 
 ## Goal and boundaries
@@ -101,8 +101,13 @@ fails open to a broad wake.
 
 ## Required fixtures
 
-Deterministic source fixtures now cover the store-level cases below; their
-serial execution remains pending:
+Deterministic source fixtures cover the store-level cases below. The base actor
+validation gate passed on 2026-10-16 at
+[`5f545fdd`](https://github.com/ifdotpy/codex-studio/commit/5f545fdd), including
+`just test-fast`, strict workspace Clippy, workspace doctests, and strict
+runtime mypy. That result does not validate this branch's changes. Its build and
+test gate must run before delivery against the exact commit head; live
+idle-browser validation also remains pending:
 
 - A no-op transaction and a known rollback produce no typed hint and no broad
   resource wake.
@@ -154,11 +159,10 @@ The source owners are `runtime-store` for table and resource observers,
 `runtime-server`/`runtime-services` for dependency groups, and `runtime-http` for
 the resource subscriber. Keep the HTTP classifier limited to the resource
 observer; do not remove the separate broad commit signal, explicit route
-notifications, or any non-SQL source. Source fixtures exist, but the root-owned
-serial test and workspace gates have not been reported as passing. The real
-HTTP/browser idle path still needs before/after validation, including proof that
-receipt-only writes stay quiet while event and resource writes still wake
-subscribers. No performance or live behavior result is claimed here.
+notifications, or any non-SQL source. The real HTTP/browser idle path still
+needs before/after validation, including proof that receipt-only writes stay
+quiet while event and resource writes still wake subscribers. No deployed
+backend, performance, or live behavior result is claimed here.
 
 An unrelated test-planner follow-up remains outside this slice:
 [`run.py`](../../workspaces/runtime/apps/server/tests/server/run.py) reads

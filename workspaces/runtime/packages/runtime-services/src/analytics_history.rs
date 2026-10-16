@@ -1101,16 +1101,12 @@ impl HistoryCollector {
             self.begin_round();
             return Ok(false);
         };
+        if self.visited.len() >= actors.len() || self.visited.contains(text(&agent["id"])) {
+            self.begin_round();
+        }
+        self.visited.insert(text(&agent["id"]).to_owned());
         let result = self
-            .step_selected(
-                store,
-                agent.clone(),
-                actors.len(),
-                profile,
-                clock,
-                cancel,
-                budget,
-            )
+            .step_selected(store, agent.clone(), profile, clock, cancel, budget)
             .await;
         if matches!(
             &result,
@@ -1136,16 +1132,11 @@ impl HistoryCollector {
         &mut self,
         store: &RuntimeStore,
         agent: Value,
-        actor_count: usize,
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
         budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
-        if self.visited.len() >= actor_count || self.visited.contains(text(&agent["id"])) {
-            self.begin_round();
-        }
-        self.visited.insert(text(&agent["id"]).to_owned());
         let discovery = Arc::clone(&self.discovery);
         let cancel_discovery = Arc::clone(&cancel);
         let account_key = agent["accountKey"].as_str().unwrap_or("default").to_owned();
