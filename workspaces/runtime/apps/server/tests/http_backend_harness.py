@@ -985,6 +985,21 @@ class BackendProcess:
             return []
         return [float(line) for line in self._provider_start_log.read_text(encoding="utf-8").splitlines()]
 
+    def _signal_group(self, process: subprocess.Popen, sig: int) -> None:
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS can report EPERM for an already-reaped process group.
+            # Only accept it after the owned child and both output pipes end.
+            if process.poll() is None:
+                raise
+            if not all(done.wait(PIPE_READER_DRAIN_TIMEOUT_SECONDS) for done in (
+                self._stdout_reader_done, self._stderr_reader_done,
+            )):
+                raise
+
     def stop(self) -> None:
         process = self._process
         if process is None:
@@ -998,10 +1013,7 @@ class BackendProcess:
                 if process.poll() is None:
                     process.terminate()
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGTERM)
             if process.poll() is None:
                 wait_started = time.monotonic()
                 process.wait(timeout=STOP_TIMEOUT_SECONDS)
@@ -1011,10 +1023,7 @@ class BackendProcess:
             if os.name == "nt":
                 process.kill()
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGKILL)
             try:
                 process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired as error:
@@ -1027,10 +1036,7 @@ class BackendProcess:
             group_cleanup_started = time.monotonic()
             self.origin = None
             if os.name != "nt":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGKILL)
             stuck_readers = []
             for stream_name, reader_done in (
                 ("stdout", self._stdout_reader_done),

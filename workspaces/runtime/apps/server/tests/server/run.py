@@ -157,6 +157,7 @@ BROWSER_SUITES = frozenset({
 })
 LIVE_SUITES = frozenset({f"{TESTS_REL}/runtime-live.py"})
 EXPENSIVE_SUITES = frozenset({
+    f"{TESTS_REL}/account-transfer-lazy-load-contract.py",
     # Real APFS images: about 118 s alone, so any parallel load passes the 120 s deadline.
     f"{TESTS_REL}/workspace-images-macos.py",
     f"{TESTS_REL}/account-costs-contract.py", f"{TESTS_REL}/analytics-memory-contract.py",

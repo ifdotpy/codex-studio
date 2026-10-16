@@ -112,6 +112,13 @@ contains a 1,500-notification storm with a live scheduler. Its busy-retry connec
 count depends on runtime contention, so select it only with
 `just test-server-load workspaces/runtime/apps/server/tests/notification-scheduler-contract.py`.
 
+The account transfer latency assertion remains in
+`account-transfer-lazy-load-contract.py`: 300 idle members must rebind within
+one second without native calls. Select it with `just test-server-load
+workspaces/runtime/apps/server/tests/account-transfer-lazy-load-contract.py`.
+The ordinary contract checks the same rebinding behavior with three members
+and no wall-clock performance threshold.
+
 Measure a suite by running it alone through `just test server <exact-suite-path>`.
 If it exceeds 10 seconds, speed it up first; the maintainer decides whether it
 must move to heavy because it cannot be made fast and deterministic. A suite
