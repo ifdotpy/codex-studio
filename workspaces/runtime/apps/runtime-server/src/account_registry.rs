@@ -8,7 +8,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
 use studio_runtime_services::{
@@ -43,22 +43,52 @@ fn next_retry_delay(current: Duration) -> Duration {
 fn defer_wake(
     last_error: Option<&str>,
     now: tokio::time::Instant,
-    retry_at: tokio::time::Instant,
+    retry_at: Option<tokio::time::Instant>,
 ) -> bool {
-    last_error.is_some() && now < retry_at
+    last_error.is_some() && retry_at.is_some_and(|retry_at| now < retry_at)
 }
 
-async fn try_checkpoint_maintenance(
-    checkpoint: impl FnOnce() -> Result<bool, String> + Send + 'static,
+fn next_registry_retry_at(
+    archive_retry_at: Option<tokio::time::Instant>,
+    checkpoint_retry_at: Option<tokio::time::Instant>,
+    worker_retry_at: &BTreeMap<String, tokio::time::Instant>,
+) -> Option<tokio::time::Instant> {
+    archive_retry_at
+        .into_iter()
+        .chain(checkpoint_retry_at)
+        .chain(worker_retry_at.values().copied())
+        .min()
+}
+
+fn archive_deadline_read_deferred(
+    retry_at: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
 ) -> bool {
-    match studio_runtime_process::blocking_pool::spawn_blocking(
+    retry_at.is_some_and(|retry_at| retry_at > now)
+}
+
+async fn checkpoint_maintenance(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+) -> (bool, Option<tokio::time::Instant>) {
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/wal-checkpoint-maintenance",
-        checkpoint,
+        move || {
+            store
+                .checkpoint_wal_if_due()
+                .map_err(|error| error.to_string())?;
+            store
+                .wal_checkpoint_retry_after()
+                .map_err(|error| error.to_string())
+        },
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        Ok(Err(_)) | Err(_) => false,
+    .await;
+    match result {
+        Ok(Ok(Some(delay))) => {
+            let delay = if delay.is_zero() { RETRY_DELAY } else { delay };
+            (true, Some(tokio::time::Instant::now() + delay))
+        }
+        Ok(Ok(None)) => (true, None),
+        Ok(Err(_)) | Err(_) => (false, Some(tokio::time::Instant::now() + RETRY_DELAY)),
     }
 }
 
@@ -106,10 +136,12 @@ pub(crate) struct AccountRegistry {
     radio_clock: Arc<dyn Fn() -> f64 + Send + Sync>,
     workers: BTreeMap<String, AccountHandle>,
     worker_completion_ids: BTreeMap<String, u64>,
+    worker_retry_at: BTreeMap<String, tokio::time::Instant>,
+    worker_retry_delay: BTreeMap<String, Duration>,
+    accepted_archive_batch_full: bool,
     next_worker_completion_id: u64,
     worker_completions: FuturesUnordered<WorkerCompletion>,
     session_broker: AccountSessionBroker,
-    last_accepted_archive_tick: Option<Instant>,
     accepted_archive_tick_enabled: bool,
     ensure_requests: mpsc::Receiver<EnsureRequest>,
     after_account: String,
@@ -719,10 +751,12 @@ impl AccountRegistry {
             radio_clock: Arc::new(event_time),
             workers: BTreeMap::new(),
             worker_completion_ids: BTreeMap::new(),
+            worker_retry_at: BTreeMap::new(),
+            worker_retry_delay: BTreeMap::new(),
+            accepted_archive_batch_full: false,
             next_worker_completion_id: 0,
             worker_completions: FuturesUnordered::new(),
             session_broker,
-            last_accepted_archive_tick: None,
             accepted_archive_tick_enabled: config.accepted_archive_tick_enabled,
             ensure_requests,
             after_account: String::new(),
@@ -784,6 +818,8 @@ impl AccountRegistry {
             }
             (completion_account, completion_id)
         }));
+        self.worker_retry_at.remove(account);
+        self.worker_retry_delay.remove(account);
         Ok(())
     }
 
@@ -817,21 +853,17 @@ impl AccountRegistry {
     /// Startup and post-commit use the same persisted selection, so a crash
     /// between commit and notify cannot strand a queued event.
     pub async fn reconcile(&mut self, shutdown: Option<&Shutdown>) -> Result<(), WorkerError> {
+        let now = tokio::time::Instant::now();
+        self.worker_retry_at.retain(|_, deadline| *deadline > now);
         self.tick_radio().await?;
-        let archive_tick_at = Instant::now();
-        if self.accepted_archive_tick_enabled
-            && studio_runtime_services::work_write::accepted_archive_tick_due(
-                self.last_accepted_archive_tick,
-                archive_tick_at,
-            )
-        {
-            self.last_accepted_archive_tick = Some(archive_tick_at);
+        self.accepted_archive_batch_full = false;
+        if self.accepted_archive_tick_enabled {
             let archive_store = self.store.clone();
             let archive_now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
-            tokio::task::spawn_blocking(move || {
+            let handled = tokio::task::spawn_blocking(move || {
                 studio_runtime_services::work_write::accepted_archive_tick(
                     &archive_store,
                     archive_now,
@@ -840,6 +872,8 @@ impl AccountRegistry {
             .await
             .map_err(|_| WorkerError::TaskFailed)?
             .map_err(|_| WorkerError::TaskFailed)?;
+            self.accepted_archive_batch_full =
+                handled >= studio_runtime_services::work_write::ACCEPTED_ARCHIVE_PAGE_SIZE;
         }
         let stopped = || shutdown.is_some_and(|stop| *stop.subscribe().borrow());
         let store = self.store.clone();
@@ -856,6 +890,14 @@ impl AccountRegistry {
             if stopped() {
                 break;
             }
+            if self
+                .worker_retry_at
+                .get(&account)
+                .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
+            {
+                continue;
+            }
+            self.worker_retry_at.remove(&account);
             self.after_account.clone_from(&account);
             let (image_agents, agents, image_recovery) =
                 classify_pending_agents(self.store.clone(), account.clone(), pending_agents)
@@ -983,7 +1025,9 @@ impl AccountRegistry {
         self.bridge.set_continuation_wake(continuation_wake);
         let mut stop = shutdown.subscribe();
         let mut retry_delay = RETRY_DELAY;
-        let mut retry_at = tokio::time::Instant::now();
+        let mut retry_at = Some(tokio::time::Instant::now());
+        let mut checkpoint_retry_at = None;
+        let mut archive_deadline_retry_at = None;
         let mut last_reconcile_error: Option<String> = None;
         loop {
             if *stop.borrow() {
@@ -997,7 +1041,12 @@ impl AccountRegistry {
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
                     request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
-                    _ = tokio::time::sleep_until(retry_at) => Some(RegistryTrigger::Retry),
+                    _ = async {
+                        match retry_at {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => Some(RegistryTrigger::Retry),
                 }
             };
             match trigger {
@@ -1017,6 +1066,16 @@ impl AccountRegistry {
                         eprintln!("account worker ended: {error}");
                     }
                     // Do not reconnect in a hot loop after an unavailable provider.
+                    let delay = self
+                        .worker_retry_delay
+                        .get(&account)
+                        .copied()
+                        .unwrap_or(RETRY_DELAY);
+                    let deadline = tokio::time::Instant::now() + delay;
+                    self.worker_retry_at.insert(account.clone(), deadline);
+                    self.worker_retry_delay
+                        .insert(account, next_retry_delay(delay));
+                    retry_at = Some(retry_at.map_or(deadline, |current| current.min(deadline)));
                     continue;
                 }
                 Some(RegistryTrigger::WorkerExited(_, _)) => continue,
@@ -1044,17 +1103,22 @@ impl AccountRegistry {
                 }
                 Some(RegistryTrigger::Retry) => {
                     let store = self.store.clone();
-                    let checkpoint_succeeded = try_checkpoint_maintenance(move || {
-                        store
-                            .checkpoint_wal_if_due()
-                            .map_err(|error| error.to_string())
-                    })
-                    .await;
+                    let (checkpoint_succeeded, next_checkpoint) =
+                        checkpoint_maintenance(store).await;
+                    checkpoint_retry_at = next_checkpoint;
                     if !checkpoint_succeeded {
                         eprintln!("account registry WAL checkpoint deferred after failure");
                     }
                 }
-                Some(RegistryTrigger::Wake) => {}
+                Some(RegistryTrigger::Wake) => {
+                    let store = self.store.clone();
+                    let (checkpoint_succeeded, next_checkpoint) =
+                        checkpoint_maintenance(store).await;
+                    checkpoint_retry_at = next_checkpoint;
+                    if !checkpoint_succeeded {
+                        eprintln!("account registry WAL checkpoint deferred after commit wake");
+                    }
+                }
                 None => continue,
             }
             match self.reconcile(Some(&shutdown)).await {
@@ -1064,7 +1128,7 @@ impl AccountRegistry {
                         eprintln!("account registry reconciliation deferred: {message}");
                         last_reconcile_error = Some(message);
                     }
-                    retry_at = tokio::time::Instant::now() + retry_delay;
+                    retry_at = Some(tokio::time::Instant::now() + retry_delay);
                     retry_delay = next_retry_delay(retry_delay);
                 }
                 Ok(()) => {
@@ -1072,7 +1136,64 @@ impl AccountRegistry {
                         eprintln!("account registry reconciliation recovered");
                     }
                     retry_delay = RETRY_DELAY;
-                    retry_at = tokio::time::Instant::now() + RETRY_DELAY;
+                    let archive_retry_at = if !self.accepted_archive_tick_enabled {
+                        None
+                    } else if archive_deadline_read_deferred(
+                        archive_deadline_retry_at,
+                        tokio::time::Instant::now(),
+                    ) {
+                        archive_deadline_retry_at
+                    } else {
+                        archive_deadline_retry_at = None;
+                        let store = self.store.clone();
+                        let accepted_batch_full = self.accepted_archive_batch_full;
+                        match studio_runtime_process::blocking_pool::spawn_blocking(
+                            "runtime-server/account_registry",
+                            move || {
+                                studio_runtime_services::work_write::next_archive_retry_at(
+                                    &store,
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs_f64(),
+                                    accepted_batch_full,
+                                )
+                            },
+                        )
+                        .await
+                        {
+                            Ok(Ok(Some(deadline))) => {
+                                let now_wall = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                let delay = (deadline - now_wall).max(0.0);
+                                Some(tokio::time::Instant::now() + Duration::from_secs_f64(delay))
+                            }
+                            Ok(Ok(None)) => None,
+                            Ok(Err(error)) => {
+                                eprintln!(
+                                    "account registry archive deadline read deferred: {error}"
+                                );
+                                let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
+                                archive_deadline_retry_at = Some(retry_at);
+                                Some(retry_at)
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "account registry archive deadline worker failed: {error}"
+                                );
+                                let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
+                                archive_deadline_retry_at = Some(retry_at);
+                                Some(retry_at)
+                            }
+                        }
+                    };
+                    retry_at = next_registry_retry_at(
+                        archive_retry_at,
+                        checkpoint_retry_at,
+                        &self.worker_retry_at,
+                    );
                 }
             }
         }
@@ -1363,18 +1484,6 @@ mod bounded_reconcile_tests {
         assert!(!recovery);
     }
 
-    #[tokio::test]
-    async fn checkpoint_failure_is_logged_and_registry_work_continues() {
-        assert!(
-            !try_checkpoint_maintenance(|| { Err("injected checkpoint failure".to_owned()) }).await
-        );
-        let registry_work = tokio::spawn(async { "reconciliation remains runnable" });
-        assert_eq!(
-            registry_work.await.expect("registry task continues"),
-            "reconciliation remains runnable"
-        );
-    }
-
     #[test]
     fn account_wake_page_returns_workspace_mode_with_pending_agents() {
         let directory = tempfile::tempdir().expect("isolated store directory");
@@ -1413,8 +1522,11 @@ mod bounded_reconcile_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, defer_wake, next_retry_delay};
-    use std::time::Duration;
+    use super::{
+        AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, archive_deadline_read_deferred,
+        defer_wake, next_registry_retry_at, next_retry_delay,
+    };
+    use std::{collections::BTreeMap, time::Duration};
     use studio_runtime_services::account_session_runtime::{
         NotSentReason, ProviderRequest, RequestCertainty, RetainedAccountSession,
     };
@@ -1440,13 +1552,38 @@ mod tests {
     fn reconciliation_wakes_wait_for_the_scheduled_retry_after_failure() {
         let now = tokio::time::Instant::now();
         let retry_at = now + Duration::from_secs(2);
-        assert!(defer_wake(Some("supervisor unavailable"), now, retry_at));
-        assert!(!defer_wake(None, now, retry_at));
+        assert!(defer_wake(
+            Some("supervisor unavailable"),
+            now,
+            Some(retry_at)
+        ));
+        assert!(!defer_wake(None, now, Some(retry_at)));
+        assert!(!defer_wake(Some("supervisor unavailable"), now, None));
         assert!(!defer_wake(
             Some("supervisor unavailable"),
             retry_at,
-            retry_at,
+            Some(retry_at),
         ));
+    }
+
+    #[test]
+    fn deferred_checkpoint_keeps_registry_asleep_until_its_deadline() {
+        let now = tokio::time::Instant::now();
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+        assert_eq!(
+            next_registry_retry_at(None, Some(checkpoint_retry_at), &BTreeMap::new()),
+            Some(checkpoint_retry_at),
+            "a deferred WAL checkpoint schedules the next registry wake without another commit"
+        );
+    }
+
+    #[test]
+    fn archive_deadline_read_failure_suppresses_repeated_commit_driven_reads() {
+        let now = tokio::time::Instant::now();
+        let retry_at = now + RETRY_DELAY;
+        assert!(archive_deadline_read_deferred(Some(retry_at), now));
+        assert!(!archive_deadline_read_deferred(Some(retry_at), retry_at));
+        assert!(!archive_deadline_read_deferred(None, now));
     }
 
     #[tokio::test]

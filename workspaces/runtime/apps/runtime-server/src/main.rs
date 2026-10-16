@@ -43,8 +43,12 @@ const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
 // Allow the worker and retained-service bounds to complete before process exit.
 const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
+// Retry failed durable scheduler work after this bounded delay; commits can wake sooner.
+const SCHEDULER_FAILURE_RETRY: Duration = Duration::from_secs(30);
 const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
-const CONTINUATION_IDLE_RECHECK_SECONDS: u64 = 24 * 60 * 60;
+const AUTH_RESUME_PROOF_PENDING_PREDICATE: &str = "json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}'";
+const CURRENT_USAGE_RESUME_DUE_ROWS: &str = "SELECT resume.agent AS agent,CAST(json_extract(resume.record,'$.dueAt') AS REAL) AS due FROM runtime_usage_resumes AS resume JOIN runtime_agents AS owner ON owner.id=resume.agent AND json_extract(owner.record,'$.usageResume.id')=resume.id WHERE json_extract(resume.record,'$.status')='scheduled' AND json_type(resume.record,'$.dueAt') IN ('integer','real')";
+const CURRENT_CAPACITY_RETRY_DUE_ROWS: &str = "SELECT retry.agent AS agent,CAST(json_extract(retry.record,'$.dueAt') AS REAL) AS due FROM runtime_capacity_retries AS retry JOIN runtime_agents AS owner ON owner.id=retry.agent AND json_extract(owner.record,'$.capacityRetry.id')=retry.id WHERE json_extract(retry.record,'$.status')='scheduled' AND json_type(retry.record,'$.dueAt') IN ('integer','real')";
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
 
@@ -546,6 +550,20 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .await?;
     startup_trace("provider-and-io-setup-completed");
     let monitor_wake = state.event_wake_handle();
+    let orchestration_wake = Arc::new(Notify::new());
+    let federation_wake = Arc::new(Notify::new());
+    {
+        let registry_wake = Arc::clone(&monitor_wake);
+        store.add_commit_observer(move || registry_wake.notify_one());
+    }
+    {
+        let wake = Arc::clone(&orchestration_wake);
+        store.add_commit_observer(move || wake.notify_one());
+    }
+    {
+        let wake = Arc::clone(&federation_wake);
+        store.add_commit_observer(move || wake.notify_one());
+    }
     let continuation_scheduler_wake = state.continuation_wake_handle();
     let monitor_port = Arc::new(monitor_port::RetainedMonitorPort::new(
         Arc::clone(&store),
@@ -563,6 +581,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             Arc::clone(&monitor_wake),
         ),
     );
+    monitor_port.set_dispatch_wake(monitor_runtime.dispatch_wake_handle());
     state = state.open_app_server_log();
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
@@ -697,20 +716,81 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         monitor_shutdown.subscribe(),
     ));
     let orchestration_task = state.orchestration_driver_handle().map(|driver| {
+        let wake = Arc::clone(&orchestration_wake);
         let mut shutdown = monitor_shutdown.subscribe();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut failure_retry_at = None;
             loop {
-                tokio::select! {
-                    _ = shutdown.changed() => break,
-                    _ = tick.tick() => {
-                        let driver = Arc::clone(&driver);
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|value| value.as_secs() as i64)
-                            .unwrap_or_default();
-                        drop(studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || driver.pump_due(now)).await);
+                if *shutdown.borrow() {
+                    break;
+                }
+                if let Some(retry_at) = failure_retry_at
+                    && retry_at > tokio::time::Instant::now()
+                {
+                    if !wait_for_scheduler_wake(&wake, &mut shutdown, Some(retry_at)).await {
+                        break;
                     }
+                    continue;
+                }
+                let now = epoch_seconds() as i64;
+                let pump = Arc::clone(&driver);
+                match studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/main",
+                    move || pump.pump_due(now),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => failure_retry_at = None,
+                    Ok(Err(error)) => {
+                        eprintln!("orchestration delivery pass failed: {error}");
+                        failure_retry_at =
+                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                    }
+                    Err(error) => {
+                        eprintln!("orchestration delivery worker failed: {error}");
+                        failure_retry_at =
+                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                    }
+                }
+                let query = Arc::clone(&driver);
+                let next = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/main",
+                    move || query.next_due_at(),
+                )
+                .await;
+                let (due, deadline_read_failed) = match next {
+                    Ok(Ok(Some(at))) => (
+                        Some(
+                            tokio::time::Instant::now()
+                                + Duration::from_secs(scheduler_delay_seconds(
+                                    at,
+                                    epoch_seconds() as i64,
+                                )),
+                        ),
+                        false,
+                    ),
+                    Ok(Ok(None)) => (None, false),
+                    Ok(Err(error)) => {
+                        eprintln!("orchestration deadline read failed: {error}");
+                        (
+                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY),
+                            true,
+                        )
+                    }
+                    Err(error) => {
+                        eprintln!("orchestration deadline worker failed: {error}");
+                        (
+                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY),
+                            true,
+                        )
+                    }
+                };
+                if deadline_read_failed {
+                    failure_retry_at = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                }
+                let due = due.into_iter().chain(failure_retry_at).min();
+                if !wait_for_scheduler_wake(&wake, &mut shutdown, due).await {
+                    break;
                 }
             }
         })
@@ -718,54 +798,172 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let federation_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let federation_store = Arc::clone(&store);
     let federation_stop = Arc::clone(&federation_cancelled);
+    let federation_wake_task = Arc::clone(&federation_wake);
     let mut federation_shutdown = monitor_shutdown.subscribe();
     let federation_task = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut pairing_retries = BTreeMap::<String, (tokio::time::Instant, Duration)>::new();
+        let mut delivery_retries = BTreeMap::<String, (tokio::time::Instant, Duration)>::new();
+        let mut read_failure_retry_at = None;
         loop {
-            tokio::select! {
-                _ = federation_shutdown.changed() => {
+            if *federation_shutdown.borrow() {
+                federation_stop.store(true, std::sync::atomic::Ordering::Release);
+                break;
+            }
+            if let Some(retry_at) = read_failure_retry_at
+                && retry_at > tokio::time::Instant::now()
+            {
+                if !wait_for_retry_or_shutdown(&mut federation_shutdown, retry_at).await {
                     federation_stop.store(true, std::sync::atomic::Ordering::Release);
                     break;
                 }
-                _ = tick.tick() => {
-                    let store = Arc::clone(&federation_store);
-                    let cancelled = Arc::clone(&federation_stop);
-                    if let Err(error) = studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || {
-                        let Ok(snapshot) = studio_runtime_services::federation::snapshot(&store) else { return };
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|value| value.as_secs_f64())
-                            .unwrap_or_default();
-                        if let Ok(pairings) =
-                            studio_runtime_services::federation_delivery::pending_pairings(&store)
-                        {
-                            for id in pairings {
-                                let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
-                                if let Err(error) = studio_runtime_services::federation_delivery::pair_peer(
-                                    &store, &id, now, &mut transport, &cancelled,
-                                ) {
-                                    eprintln!("federation pairing failed: {error}");
-                                }
-                                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                                    break;
-                                }
-                            }
+                read_failure_retry_at = None;
+                continue;
+            }
+            let store = Arc::clone(&federation_store);
+            let cancelled = Arc::clone(&federation_stop);
+            let mut retries = pairing_retries.clone();
+            let mut delivery_retry_state = delivery_retries.clone();
+            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/main",
+                move || {
+                    let wall_now = epoch_seconds();
+                    let monotonic_now = tokio::time::Instant::now();
+                    let mut read_retry_due = None;
+                    let pairings_read_ok;
+                    let pairings = match studio_runtime_services::federation_delivery::pending_pairings(&store) {
+                        Ok(pairings) => {
+                            pairings_read_ok = true;
+                            pairings
                         }
-                        for peer in snapshot["peers"].as_array().into_iter().flatten() {
-                            if peer["status"] != "approved" { continue; }
-                            let Some(id) = peer["id"].as_str() else { continue };
-                            let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
-                            if let Err(error) = studio_runtime_services::federation_delivery::pump_peer(
-                                &store, id, now, &mut transport, &cancelled,
-                            ) {
-                                eprintln!("federation delivery failed: {error}");
-                            }
-                            if cancelled.load(std::sync::atomic::Ordering::Acquire) { break; }
+                        Err(error) => {
+                            eprintln!("federation pairing scan failed: {error}");
+                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                            pairings_read_ok = false;
+                            Vec::new()
                         }
-                    }).await {
-                        eprintln!("federation delivery worker failed: {error}");
+                    };
+                    if pairings_read_ok {
+                        let pending = pairings.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+                        retries.retain(|id, _| pending.contains(id));
                     }
+                    for id in pairings {
+                        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                            break;
+                        }
+                        if pairing_retry_is_pending(&retries, &id, monotonic_now) {
+                            continue;
+                        }
+                        let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                        match studio_runtime_services::federation_delivery::pair_peer(
+                            &store, &id, wall_now, &mut transport, &cancelled,
+                        ) {
+                            Ok(updated) => {
+                                // The remote has not accepted this same durable invite yet. Its
+                                // successful response still needs bounded retry, even though the
+                                // peer-row update itself wakes this scheduler.
+                                if let Some(delay) = successful_pair_retry_delay(
+                                    &updated,
+                                    retries.get(&id).map(|(_, previous)| *previous),
+                                ) {
+                                    retries.insert(
+                                        id,
+                                        (tokio::time::Instant::now() + delay, delay),
+                                    );
+                                } else {
+                                    retries.remove(&id);
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("federation pairing failed: {error}");
+                                let delay = next_federation_retry_delay(retries.get(&id).map(|(_, previous)| *previous));
+                                retries.insert(id, (tokio::time::Instant::now() + delay, delay));
+                            }
+                        }
+                    }
+                    match studio_runtime_services::federation::snapshot(&store) {
+                        Ok(snapshot) => {
+                            let approved = snapshot["peers"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter(|peer| peer["status"] == "approved")
+                                .filter_map(|peer| peer["id"].as_str().map(str::to_owned))
+                                .collect::<std::collections::BTreeSet<_>>();
+                            delivery_retry_state.retain(|id, _| approved.contains(id));
+                            for id in approved {
+                                if delivery_retry_state
+                                    .get(&id)
+                                    .is_some_and(|(at, _)| *at > monotonic_now)
+                                {
+                                    continue;
+                                }
+                                let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                                if let Err(error) = studio_runtime_services::federation_delivery::pump_peer(
+                                    &store, &id, wall_now, &mut transport, &cancelled,
+                                ) {
+                                    eprintln!("federation delivery failed: {error}");
+                                    let delay = next_federation_retry_delay(
+                                        delivery_retry_state.get(&id).map(|(_, previous)| *previous),
+                                    );
+                                    delivery_retry_state.insert(id, (tokio::time::Instant::now() + delay, delay));
+                                } else {
+                                    delivery_retry_state.remove(&id);
+                                }
+                                if cancelled.load(std::sync::atomic::Ordering::Acquire) { break; }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("federation peer snapshot failed: {error}");
+                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                        }
+                    }
+                    let delivery_due = match studio_runtime_services::federation_delivery::delivery_deadlines_by_peer(&store) {
+                        Ok(values) => values.into_iter().filter_map(|(peer, at)| {
+                            let retry = delivery_retry_state.get(&peer).map(|(retry_at, _)| *retry_at);
+                            if retry.is_some_and(|retry_at| retry_at > monotonic_now) {
+                                retry
+                            } else {
+                                Some(tokio::time::Instant::now()
+                                    + Duration::from_secs_f64((at - epoch_seconds()).max(0.0)))
+                            }
+                        }).min(),
+                        Err(error) => {
+                            eprintln!("federation delivery deadline read failed: {error}");
+                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY)
+                        }
+                    };
+                    let due = read_retry_due
+                        .into_iter()
+                        .chain(delivery_due)
+                        .chain(delivery_retry_state.values().map(|(at, _)| *at))
+                        .min();
+                    (retries, delivery_retry_state, due, read_retry_due)
+                },
+            ).await;
+            let due = match outcome {
+                Ok((retries, delivery_retry_state, delivery_due, read_retry_due)) => {
+                    pairing_retries = retries;
+                    delivery_retries = delivery_retry_state;
+                    read_failure_retry_at = read_retry_due;
+                    pairing_retries
+                        .values()
+                        .map(|(at, _)| *at)
+                        .chain(delivery_retries.values().map(|(at, _)| *at))
+                        .chain(delivery_due)
+                        .min()
                 }
+                Err(error) => {
+                    eprintln!("federation delivery worker failed: {error}");
+                    let retry_at = tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY;
+                    read_failure_retry_at = Some(retry_at);
+                    Some(retry_at)
+                }
+            };
+            if !wait_for_scheduler_wake(&federation_wake_task, &mut federation_shutdown, due).await
+            {
+                federation_stop.store(true, std::sync::atomic::Ordering::Release);
+                break;
             }
         }
     });
@@ -843,24 +1041,27 @@ async fn continuation_scheduler(
         if *shutdown.borrow() {
             return;
         }
+        if let Some(retry_at) = retry_not_before {
+            let now = epoch_seconds();
+            if retry_at > now {
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_secs_f64(retry_at - now);
+                if !wait_for_retry_or_shutdown(&mut shutdown, deadline).await {
+                    return;
+                }
+                retry_not_before = None;
+                continue;
+            }
+            retry_not_before = None;
+        }
         let store_for_due = Arc::clone(&store);
         let now = epoch_seconds();
         let next_due = match studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/continuation-scheduler",
             move || -> studio_runtime_store::StoreResult<Option<f64>> {
                 let db = store_for_due.read()?;
-                let due: Option<f64> = db.query_row(
-                    "SELECT MIN(due) FROM (\
-                     SELECT CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real') \
-                     UNION ALL SELECT CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_capacity_retries WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real'))",
-                    [],
-                    |row| row.get(0),
-                )?;
-                let auth_proof_pending: bool = db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}')",
-                    [],
-                    |row| row.get(0),
-                )?;
+                let due = continuation_next_due(&db)?;
+                let auth_proof_pending = auth_resume_proof_exists(&db)?;
                 Ok(if auth_proof_pending { Some(now) } else { due })
             },
         )
@@ -869,21 +1070,21 @@ async fn continuation_scheduler(
             Ok(Ok(value)) => value,
             Ok(Err(error)) => {
                 eprintln!("continuation scheduler due-time read failed: {error}");
-                Some(now + 60.0)
+                let retry_at = now + CONTINUATION_FAILURE_RETRY_SECONDS;
+                retry_not_before = Some(retry_at);
+                Some(retry_at)
             }
             Err(error) => {
                 eprintln!("continuation scheduler blocking read failed: {error}");
-                Some(now + 60.0)
+                let retry_at = now + CONTINUATION_FAILURE_RETRY_SECONDS;
+                retry_not_before = Some(retry_at);
+                Some(retry_at)
             }
         };
         let next_due = next_due
             .map(|due| retry_not_before.map_or(due, |retry_at: f64| due.max(retry_at)))
             .or(retry_not_before);
-        let delay = next_due
-            .map(|due| std::time::Duration::from_secs_f64((due - now).max(0.0)))
-            .unwrap_or(std::time::Duration::from_secs(
-                CONTINUATION_IDLE_RECHECK_SECONDS,
-            ));
+        let delay = next_due.map(|due| Duration::from_secs_f64((due - now).max(0.0)));
         match wait_for_continuation(delay, &wake, &mut shutdown).await {
             ContinuationWait::Due => {
                 let store_for_tick = Arc::clone(&store);
@@ -897,7 +1098,6 @@ async fn continuation_scheduler(
                     Ok(Ok(changed)) => {
                         retry_not_before = None;
                         if changed {
-                            wake.notify_one();
                             event_wake.notify_one();
                         }
                     }
@@ -913,9 +1113,7 @@ async fn continuation_scheduler(
                     }
                 }
             }
-            ContinuationWait::Wake => {
-                retry_not_before = None;
-            }
+            ContinuationWait::Wake => {}
             ContinuationWait::Shutdown => return,
         }
     }
@@ -929,12 +1127,17 @@ enum ContinuationWait {
 }
 
 async fn wait_for_continuation(
-    delay: Duration,
+    delay: Option<Duration>,
     wake: &Notify,
     shutdown: &mut watch::Receiver<bool>,
 ) -> ContinuationWait {
     tokio::select! {
-        _ = tokio::time::sleep(delay) => ContinuationWait::Due,
+        _ = async {
+            match delay {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => ContinuationWait::Due,
         _ = wake.notified() => ContinuationWait::Wake,
         changed = shutdown.changed() => {
             if changed.is_err() || *shutdown.borrow() {
@@ -951,24 +1154,7 @@ fn run_continuation_tick(
     now: f64,
 ) -> studio_runtime_store::StoreResult<bool> {
     let db = store.read()?;
-    let mut statement = db.prepare_cached(
-        "SELECT DISTINCT agent FROM (\
-         SELECT agent,CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real') \
-         UNION ALL SELECT agent,CAST(json_extract(record,'$.dueAt') AS REAL) due FROM runtime_capacity_retries WHERE json_extract(record,'$.status')='scheduled' AND json_type(record,'$.dueAt') IN ('integer','real')) \
-         WHERE due<=?1 ORDER BY agent LIMIT 32",
-    )?;
-    let mut agents = statement
-        .query_map([now], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    if agents.is_empty() {
-        let mut statement = db.prepare_cached(
-            "SELECT id FROM runtime_agents WHERE json_type(record,'$.authResumeProofPending')='object' LIMIT 32",
-        )?;
-        agents = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-    }
+    let agents = continuation_tick_agents(&db, now)?;
     drop(db);
     let limits_reader = store.read()?;
     let limits = account_state::limits_snapshots(&limits_reader)?
@@ -1010,6 +1196,132 @@ fn run_continuation_tick(
         changed |= staged;
     }
     Ok(changed)
+}
+
+fn auth_resume_proof_exists(
+    connection: &rusqlite::Connection,
+) -> studio_runtime_store::StoreResult<bool> {
+    connection
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE {AUTH_RESUME_PROOF_PENDING_PREDICATE})"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn continuation_next_due(
+    connection: &rusqlite::Connection,
+) -> studio_runtime_store::StoreResult<Option<f64>> {
+    let sql = format!(
+        "SELECT MIN(due) FROM ({CURRENT_USAGE_RESUME_DUE_ROWS} UNION ALL {CURRENT_CAPACITY_RETRY_DUE_ROWS})"
+    );
+    connection
+        .query_row(&sql, [], |row| row.get(0))
+        .map_err(Into::into)
+}
+
+fn continuation_tick_agents(
+    connection: &rusqlite::Connection,
+    now: f64,
+) -> studio_runtime_store::StoreResult<Vec<String>> {
+    let sql = format!(
+        "SELECT DISTINCT agent FROM ({CURRENT_USAGE_RESUME_DUE_ROWS} UNION ALL {CURRENT_CAPACITY_RETRY_DUE_ROWS}) WHERE due<=?1 ORDER BY agent LIMIT 32"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let due_agents = statement
+        .query_map([now], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    if due_agents.is_empty() {
+        auth_resume_proof_agents(connection)
+    } else {
+        Ok(due_agents)
+    }
+}
+
+fn auth_resume_proof_agents(
+    connection: &rusqlite::Connection,
+) -> studio_runtime_store::StoreResult<Vec<String>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT id FROM runtime_agents WHERE {AUTH_RESUME_PROOF_PENDING_PREDICATE} ORDER BY id LIMIT 32"
+    ))?;
+    statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+async fn wait_for_scheduler_wake(
+    wake: &Notify,
+    shutdown: &mut watch::Receiver<bool>,
+    due: Option<tokio::time::Instant>,
+) -> bool {
+    if *shutdown.borrow() {
+        return false;
+    }
+    tokio::select! {
+        changed = shutdown.changed() => changed.is_ok() && !*shutdown.borrow(),
+        _ = wake.notified() => true,
+        _ = async {
+            match due {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => true,
+    }
+}
+
+/// A persisted read failure blocks all work until its retry deadline. Commit
+/// notifications are intentionally not an input here, so they cannot bypass
+/// the bounded error backoff.
+async fn wait_for_retry_or_shutdown(
+    shutdown: &mut watch::Receiver<bool>,
+    retry_at: tokio::time::Instant,
+) -> bool {
+    loop {
+        if *shutdown.borrow() {
+            return false;
+        }
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return false;
+                }
+            }
+            _ = tokio::time::sleep_until(retry_at) => return true,
+        }
+    }
+}
+
+fn next_federation_retry_delay(previous: Option<Duration>) -> Duration {
+    previous.map_or(Duration::from_secs(5), |delay| {
+        delay.saturating_mul(2).min(Duration::from_secs(300))
+    })
+}
+
+fn successful_pair_retry_delay(
+    updated: &serde_json::Value,
+    previous: Option<Duration>,
+) -> Option<Duration> {
+    (updated["localApproved"] == true && updated["remoteApproved"] != true)
+        .then(|| next_federation_retry_delay(previous))
+}
+
+fn pairing_retry_is_pending(
+    retries: &BTreeMap<String, (tokio::time::Instant, Duration)>,
+    peer_id: &str,
+    now: tokio::time::Instant,
+) -> bool {
+    retries
+        .get(peer_id)
+        .is_some_and(|(retry_at, _)| *retry_at > now)
+}
+
+fn scheduler_delay_seconds(deadline: i64, now: i64) -> u64 {
+    deadline.saturating_sub(now).max(0) as u64
 }
 
 fn epoch_seconds() -> f64 {
@@ -1196,12 +1508,16 @@ async fn shutdown_signal() -> ShutdownReason {
 
 #[cfg(test)]
 mod exit_logging_tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
     use tokio::sync::{Notify, watch};
 
     use super::{
-        ContinuationWait, ShutdownReason, error_exit_log, panic_observed_log,
-        runtime_initialization_exit_log, shutdown_exit_log, shutdown_join, wait_for_continuation,
+        ContinuationWait, ShutdownReason, auth_resume_proof_agents, auth_resume_proof_exists,
+        continuation_next_due, continuation_tick_agents, error_exit_log,
+        next_federation_retry_delay, pairing_retry_is_pending, panic_observed_log,
+        runtime_initialization_exit_log, scheduler_delay_seconds, shutdown_exit_log, shutdown_join,
+        successful_pair_retry_delay, wait_for_continuation, wait_for_retry_or_shutdown,
+        wait_for_scheduler_wake,
     };
 
     #[test]
@@ -1251,12 +1567,13 @@ mod exit_logging_tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn continuation_timer_waits_for_due_time_and_wakes_on_enable_or_cancel() {
+    async fn continuation_waits_for_real_deadline_or_event() {
         let wake = Arc::new(Notify::new());
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let timer_wake = Arc::clone(&wake);
         let timer = tokio::spawn(async move {
-            wait_for_continuation(Duration::from_secs(10), &timer_wake, &mut shutdown_rx).await
+            wait_for_continuation(Some(Duration::from_secs(10)), &timer_wake, &mut shutdown_rx)
+                .await
         });
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(9)).await;
@@ -1267,7 +1584,7 @@ mod exit_logging_tests {
         let (shutdown_tx2, mut shutdown_rx2) = watch::channel(false);
         let timer_wake = Arc::clone(&wake);
         let wake_task = tokio::spawn(async move {
-            wait_for_continuation(Duration::from_secs(10_000), &timer_wake, &mut shutdown_rx2).await
+            wait_for_continuation(None, &timer_wake, &mut shutdown_rx2).await
         });
         tokio::task::yield_now().await;
         wake.notify_one();
@@ -1277,7 +1594,7 @@ mod exit_logging_tests {
         let shutdown_for_task = shutdown_tx.clone();
         let shutdown_task = tokio::spawn(async move {
             let mut shutdown_rx = shutdown_for_task.subscribe();
-            wait_for_continuation(Duration::from_secs(10_000), &timer_wake, &mut shutdown_rx).await
+            wait_for_continuation(None, &timer_wake, &mut shutdown_rx).await
         });
         tokio::task::yield_now().await;
         shutdown_tx.send_replace(true);
@@ -1286,6 +1603,273 @@ mod exit_logging_tests {
             ContinuationWait::Shutdown
         );
         drop(shutdown_tx2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuation_idle_wait_has_no_24_hour_recheck() {
+        let wake = Arc::new(Notify::new());
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let waiter_wake = Arc::clone(&wake);
+        let waiter = tokio::spawn(async move {
+            wait_for_continuation(None, &waiter_wake, &mut shutdown_rx).await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(24 * 60 * 60 + 1)).await;
+        assert!(!waiter.is_finished());
+        wake.notify_one();
+        assert_eq!(waiter.await.expect("idle wake"), ContinuationWait::Wake);
+        drop(shutdown_tx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuation_failure_backoff_ignores_a_queued_work_wake() {
+        let wake = Notify::new();
+        wake.notify_one();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let retry_at = tokio::time::Instant::now() + Duration::from_secs(60);
+        let waiter =
+            tokio::spawn(
+                async move { wait_for_retry_or_shutdown(&mut shutdown_rx, retry_at).await },
+            );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert!(!waiter.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(waiter.await.expect("failure retry deadline"));
+        let (_, mut shutdown_rx) = watch::channel(false);
+        assert_eq!(
+            wait_for_continuation(None, &wake, &mut shutdown_rx).await,
+            ContinuationWait::Wake,
+            "failure cooldown leaves the queued work notification for the regular wait"
+        );
+        drop(shutdown_tx);
+    }
+
+    #[test]
+    fn auth_resume_proof_tick_skips_empty_objects_before_real_pending_proof() {
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
+            )
+            .expect("agents table");
+        for index in 0..40 {
+            connection
+                .execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                    rusqlite::params![
+                        format!("empty-{index:02}"),
+                        serde_json::json!({"authResumeProofPending":{}}).to_string()
+                    ],
+                )
+                .expect("empty proof row");
+        }
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
+                [
+                    serde_json::json!({"authResumeProofPending":{"requestId":"stable-request"}})
+                        .to_string(),
+                ],
+            )
+            .expect("pending proof row");
+
+        assert!(auth_resume_proof_exists(&connection).expect("pending proof exists"));
+        assert_eq!(
+            auth_resume_proof_agents(&connection).expect("pending proof batch"),
+            vec!["real-proof".to_owned()]
+        );
+    }
+
+    #[test]
+    fn stale_due_children_cannot_starve_a_real_auth_resume_proof() {
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
+                 CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);",
+            )
+            .expect("continuation tables");
+        for index in 0..32 {
+            let agent = format!("agent-{index:02}");
+            connection
+                .execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                    rusqlite::params![
+                        agent,
+                        serde_json::json!({"usageResume":{"id":"new-current-id"}}).to_string()
+                    ],
+                )
+                .expect("owner row");
+            connection
+                .execute(
+                    "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?2,?3)",
+                    rusqlite::params![
+                        format!("stale-resume-{index:02}"),
+                        agent,
+                        serde_json::json!({"status":"scheduled","dueAt":1.0}).to_string()
+                    ],
+                )
+                .expect("stale due child");
+        }
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
+                [serde_json::json!({"authResumeProofPending":{"account":{"proofAt":1.0,"afterId":""}}}).to_string()],
+            )
+            .expect("pending proof owner");
+
+        assert_eq!(
+            continuation_next_due(&connection).expect("current child deadline"),
+            None
+        );
+        assert_eq!(
+            continuation_tick_agents(&connection, 100.0).expect("tick agent batch"),
+            vec!["real-proof".to_owned()]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduler_wakes_survive_pre_wait_commits_and_due_deadlines() {
+        let registry_wake = Notify::new();
+        let orchestration_wake = Notify::new();
+        registry_wake.notify_one();
+        orchestration_wake.notify_one();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        assert!(wait_for_scheduler_wake(&registry_wake, &mut shutdown_rx, None).await);
+        assert!(wait_for_scheduler_wake(&orchestration_wake, &mut shutdown_rx, None).await);
+
+        let (shutdown_idle_tx, mut shutdown_idle_rx) = watch::channel(false);
+        let idle_wake = Arc::new(Notify::new());
+        let idle_wake_task = Arc::clone(&idle_wake);
+        let idle_waiter = tokio::spawn(async move {
+            wait_for_scheduler_wake(&idle_wake_task, &mut shutdown_idle_rx, None).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!idle_waiter.is_finished());
+        idle_wake.notify_one();
+        assert!(idle_waiter.await.expect("idle wake waiter"));
+
+        let (shutdown_due_tx, mut shutdown_due_rx) = watch::channel(false);
+        let wake = Notify::new();
+        let due = tokio::time::Instant::now() + Duration::from_secs(12);
+        let waiter = tokio::spawn(async move {
+            wait_for_scheduler_wake(&wake, &mut shutdown_due_rx, Some(due)).await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(12)).await;
+        assert!(waiter.await.expect("deadline waiter"));
+        drop((shutdown_tx, shutdown_idle_tx, shutdown_due_tx));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_failure_retry_gate_does_not_run_on_a_pending_commit_wake() {
+        let commit_wake = Notify::new();
+        commit_wake.notify_one();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let retry_at = tokio::time::Instant::now() + Duration::from_secs(30);
+        let waiter =
+            tokio::spawn(
+                async move { wait_for_retry_or_shutdown(&mut shutdown_rx, retry_at).await },
+            );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!waiter.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(waiter.await.expect("retry gate waiter"));
+        drop(shutdown_tx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn committed_change_wakes_both_independent_scheduler_subscribers() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .expect("runtime store");
+        store
+            .transaction(|tx| {
+                tx.execute_batch("CREATE TABLE scheduler_wake_fixture(id INTEGER PRIMARY KEY);")?;
+                Ok(())
+            })
+            .expect("wake fixture table");
+        let registry = Arc::new(Notify::new());
+        let orchestration = Arc::new(Notify::new());
+        {
+            let registry = Arc::clone(&registry);
+            store.add_commit_observer(move || registry.notify_one());
+        }
+        {
+            let orchestration = Arc::clone(&orchestration);
+            store.add_commit_observer(move || orchestration.notify_one());
+        }
+        store
+            .transaction(|tx| {
+                tx.execute("INSERT INTO scheduler_wake_fixture DEFAULT VALUES", [])?;
+                Ok(())
+            })
+            .expect("committed change");
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        assert!(wait_for_scheduler_wake(&registry, &mut shutdown_rx, None).await);
+        assert!(wait_for_scheduler_wake(&orchestration, &mut shutdown_rx, None).await);
+        drop(shutdown_tx);
+    }
+
+    #[test]
+    fn pairing_failure_backoff_is_bounded() {
+        let delays = (0..8)
+            .scan(None, |previous, _| {
+                let next = next_federation_retry_delay(*previous);
+                *previous = Some(next);
+                Some(next)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delays,
+            [5, 10, 20, 40, 80, 160, 300, 300].map(Duration::from_secs)
+        );
+    }
+
+    #[test]
+    fn successful_pending_pairing_waits_before_retry_after_its_own_commit() {
+        let now = tokio::time::Instant::now();
+        let response = serde_json::json!({"localApproved": true, "remoteApproved": false});
+        let delay = successful_pair_retry_delay(&response, None)
+            .expect("pending remote approval has a retry deadline");
+        assert_eq!(delay, Duration::from_secs(5));
+        let mut retries = BTreeMap::new();
+        retries.insert("peer-id".to_owned(), (now + delay, delay));
+
+        // pair_peer commits the same pending response before the scheduler waits;
+        // the resulting wake cannot bypass this peer's retry deadline.
+        assert!(pairing_retry_is_pending(&retries, "peer-id", now));
+        assert!(!pairing_retry_is_pending(&retries, "peer-id", now + delay));
+        assert_eq!(
+            successful_pair_retry_delay(
+                &serde_json::json!({"localApproved": true, "remoteApproved": true}),
+                None,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn overdue_scheduler_deadlines_are_immediate_not_wrapped_durations() {
+        assert_eq!(scheduler_delay_seconds(9, 10), 0);
+        assert_eq!(scheduler_delay_seconds(10, 10), 0);
+        assert_eq!(scheduler_delay_seconds(14, 10), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduler_wait_exits_on_shutdown() {
+        let wake = Notify::new();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let waiter =
+            tokio::spawn(
+                async move { wait_for_scheduler_wake(&wake, &mut shutdown_rx, None).await },
+            );
+        tokio::task::yield_now().await;
+        shutdown_tx.send_replace(true);
+        assert!(!waiter.await.expect("shutdown waiter"));
     }
 }
 

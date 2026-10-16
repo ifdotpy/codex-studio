@@ -105,6 +105,31 @@ impl ReviewerArchiveRepository {
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
+
+    /// Earliest persisted retry deadline using the same eligibility predicate
+    /// and index as `due_retries`.
+    pub fn next_retry_at(connection: &Connection, after: f64) -> StoreResult<Option<f64>> {
+        let eligibility = retry_eligibility("record");
+        let scheduled = "CASE WHEN json_valid(record) THEN \
+            json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL ELSE 0 END";
+        let deadline = "CASE WHEN json_valid(record) THEN \
+            COALESCE(json_extract(record,'$.reviewArchiveNextAt'),0) END";
+        let numeric_deadline = "CASE WHEN json_valid(record) THEN \
+            json_type(record,'$.reviewArchiveNextAt') IN ('integer','real') ELSE 0 END";
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {deadline} FROM runtime_agents INDEXED BY runtime_agent_reviewer_archive_retry_due \
+                     WHERE {eligibility} AND {scheduled} AND {numeric_deadline} \
+                       AND CAST(json_extract(record,'$.reviewArchiveNextAt') AS REAL)>?1 \
+                     ORDER BY {deadline},id LIMIT 1"
+                ),
+                [after],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
 }
 
 /// Owns the candidate index predicate and its consuming query predicate.
@@ -290,6 +315,30 @@ mod tests {
         assert!(ids.iter().any(|id| id == "eligible-whitespace-object"));
         assert!(ids.iter().all(|id| !id.starts_with("excluded-")));
         assert!(!ids.iter().any(|id| id == "malformed"));
+    }
+
+    #[test]
+    fn next_retry_deadline_uses_the_same_due_index_eligibility() {
+        let connection = database();
+        put_agent(
+            &connection,
+            "later",
+            serde_json::json!({"reviewArchiveScheduled":"event-later","reviewArchiveNextAt":88.0}),
+        );
+        put_agent(
+            &connection,
+            "earlier",
+            serde_json::json!({"reviewArchiveScheduled":"event-earlier","reviewArchiveNextAt":42.0}),
+        );
+        put_agent(
+            &connection,
+            "not-scheduled",
+            serde_json::json!({"reviewArchiveNextAt":1.0}),
+        );
+        assert_eq!(
+            Repository::next_retry_at(&connection, 0.0).expect("retry deadline query"),
+            Some(42.0)
+        );
     }
 
     #[test]

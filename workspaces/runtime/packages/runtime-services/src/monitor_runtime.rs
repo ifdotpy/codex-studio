@@ -20,6 +20,7 @@ pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
 pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
 const STARTUP_RECEIPT_BATCH: usize = 64;
+const MONITOR_TICK_BATCH: usize = 64;
 const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -619,10 +620,34 @@ pub fn finish_in_transaction(
     apply(tx, &snapshot, &actor, &decision, now)
 }
 
-pub fn tick(store: &RuntimeStore, now: f64) -> Result<Vec<(String, Effect)>, MonitorError> {
+pub struct TickPage {
+    pub effects: Vec<(String, Effect)>,
+    /// Continue the ordered running-monitor scan after this ID when set.
+    pub next_after: Option<String>,
+}
+
+pub fn tick_page(
+    store: &RuntimeStore,
+    now: f64,
+    after: Option<&str>,
+) -> Result<TickPage, MonitorError> {
     store.transaction_with(|tx| {
+        let mut statement = tx.prepare_cached(
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1 ORDER BY id LIMIT ?2",
+        ).map_err(studio_runtime_store::StoreError::from)?;
+        let ids = statement
+            .query_map((after.unwrap_or(""), (MONITOR_TICK_BATCH + 1) as i64), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(studio_runtime_store::StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        drop(statement);
+        let has_more = ids.len() > MONITOR_TICK_BATCH;
+        let mut ids = ids.into_iter().take(MONITOR_TICK_BATCH).collect::<Vec<_>>();
+        let next_after = has_more.then(|| ids.last().cloned()).flatten();
         let mut effects = Vec::new();
-        for id in repository::running_ids(tx)? {
+        for id in ids.drain(..) {
             let (snapshot, actor) = snapshot(tx, &id)?;
             let decision = policy::tick(&snapshot, now)?;
             apply(tx, &snapshot, &actor, &decision, now)?;
@@ -634,7 +659,7 @@ pub fn tick(store: &RuntimeStore, now: f64) -> Result<Vec<(String, Effect)>, Mon
                     .map(|effect| (id.clone(), effect)),
             );
         }
-        Ok(effects)
+        Ok(TickPage { effects, next_after })
     })
 }
 

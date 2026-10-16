@@ -781,6 +781,21 @@ impl RuntimeStore {
         Ok(true)
     }
 
+    /// Return the remaining cadence before a requested checkpoint can run.
+    /// The server uses this only after an event-triggered checkpoint was
+    /// deferred, so no periodic WAL polling is needed.
+    pub fn wal_checkpoint_retry_after(&self) -> StoreResult<Option<Duration>> {
+        if !self.wal_checkpoint_requested.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let elapsed = self
+            .last_wal_checkpoint
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .elapsed();
+        Ok(Some(WAL_CHECKPOINT_CADENCE.saturating_sub(elapsed)))
+    }
+
     pub(crate) fn request_wal_checkpoint(&self) {
         self.wal_checkpoint_requested.store(true, Ordering::Release);
     }
@@ -1621,6 +1636,28 @@ mod diagnostics_hook_tests {
         );
         assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
         store.set_diagnostics_callback(None);
+    }
+
+    #[test]
+    fn requested_checkpoint_exposes_its_remaining_cadence_without_polling() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        assert_eq!(
+            store.wal_checkpoint_retry_after().expect("initial retry"),
+            None
+        );
+        store
+            .transaction(|transaction| {
+                transaction
+                    .execute_batch("CREATE TABLE checkpoint_deadline_witness(value INTEGER);")?;
+                transaction.execute("INSERT INTO checkpoint_deadline_witness VALUES (1)", [])?;
+                Ok(())
+            })
+            .expect("commit requests checkpoint");
+        let retry_after = store
+            .wal_checkpoint_retry_after()
+            .expect("requested checkpoint cadence");
+        assert!(retry_after.is_some_and(|delay| delay <= WAL_CHECKPOINT_CADENCE));
     }
 }
 

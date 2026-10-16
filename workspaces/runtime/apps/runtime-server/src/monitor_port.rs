@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 use serde_json::{Value, json};
 use studio_runtime_providers::Method;
@@ -182,6 +183,7 @@ pub(crate) struct RetainedMonitorPort {
     preparation: RwLock<
         Option<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
     >,
+    dispatch_wake: RwLock<Option<Arc<Notify>>>,
     input_replies: Mutex<BTreeMap<String, InputReply>>,
 }
 
@@ -191,7 +193,26 @@ impl RetainedMonitorPort {
             store,
             session,
             preparation: RwLock::new(None),
+            dispatch_wake: RwLock::new(None),
             input_replies: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn set_dispatch_wake(&self, wake: Arc<Notify>) {
+        *self
+            .dispatch_wake
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    }
+
+    fn wake_dispatch(&self) {
+        if let Some(wake) = self
+            .dispatch_wake
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            wake.notify_one();
         }
     }
 
@@ -658,6 +679,7 @@ impl RetainedMonitorPort {
                             if queued.is_err() {
                                 return CheckReconciliation::Unknown;
                             }
+                            self.wake_dispatch();
                         }
                     }
                     CheckReconciliation::Submitted
@@ -823,6 +845,7 @@ impl MonitorNative for RetainedMonitorPort {
             {
                 return Submission::Unknown;
             }
+            self.wake_dispatch();
         } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
             let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
             let reply = match receipt.result {
@@ -986,6 +1009,7 @@ impl MonitorPort for RetainedMonitorPort {
                 studio_runtime_services::event_write::unix_time()
                     .map_err(|_| MonitorError::Refused("System clock unavailable"))?,
             )?;
+            self.wake_dispatch();
             return Ok(None);
         }
         Ok(Some(ReattachProof {
@@ -1014,6 +1038,11 @@ impl MonitorPort for RetainedMonitorPort {
             ))?;
         let store = Arc::clone(&self.store);
         let session = Arc::clone(&self.session);
+        let dispatch_wake = self
+            .dispatch_wake
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let id = id.to_owned();
         let command = command.to_owned();
         std::thread::Builder::new()
@@ -1036,6 +1065,8 @@ impl MonitorPort for RetainedMonitorPort {
                     .is_err()
                 {
                     eprintln!("monitor liveness probe result could not be persisted");
+                } else if let Some(wake) = dispatch_wake {
+                    wake.notify_one();
                 }
             })
             .map_err(|_| MonitorError::Refused("Could not schedule monitor liveness probe"))?;

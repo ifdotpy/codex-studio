@@ -19,7 +19,8 @@ use crate::event_write::{self, EventWriteError as Error};
 use thiserror::Error;
 
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
-const ACCEPTED_ARCHIVE_PAGE_SIZE: usize = 16;
+/// Maximum accepted archive receipts handled by one scheduler pass.
+pub const ACCEPTED_ARCHIVE_PAGE_SIZE: usize = 16;
 const ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS: u64 = 2;
 const ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS: u64 = 60;
 const ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT: u64 = 6;
@@ -486,13 +487,30 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
     Ok(())
 }
 
-/// Match Python's one-second maintenance cadence without coupling retry
-/// deadlines to the monotonic clock used to throttle the tick itself.
-pub fn accepted_archive_tick_due(
-    last: Option<std::time::Instant>,
-    now: std::time::Instant,
-) -> bool {
-    last.is_none_or(|last| now.saturating_duration_since(last) >= std::time::Duration::from_secs(1))
+/// Find the next durable archive retry deadline. New reviewer candidates are
+/// discovered on startup and after commits; only persisted retries need a timer.
+pub fn next_archive_retry_at(
+    store: &RuntimeStore,
+    now: f64,
+    accepted_batch_full: bool,
+) -> Result<Option<f64>, WorkWriteError> {
+    if accepted_batch_full {
+        return Ok(Some(now));
+    }
+    Ok(store.read_transaction(|connection| {
+        let accepted: Option<f64> = connection.query_row(
+            "SELECT MIN(CAST(json_extract(result,'$.nextAttemptAt') AS REAL)) \
+             FROM runtime_operation_receipts \
+             WHERE signature='accepted-archive-v1' \
+               AND json_extract(result,'$.status') IN ('pending','retryable','unknown') \
+               AND json_type(result,'$.nextAttemptAt') IN ('integer','real') \
+               AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>?1",
+            [now],
+            |row| row.get(0),
+        )?;
+        let reviewer = ReviewerArchiveRepository::next_retry_at(connection, now)?;
+        Ok(accepted.into_iter().chain(reviewer).reduce(f64::min))
+    })?)
 }
 
 /// Persist uncertainty before the synchronous accept route attempts an archive
@@ -2915,7 +2933,7 @@ mod actor_tests {
     use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
-        accepted_archive_due_records, accepted_archive_tick, accepted_archive_tick_due,
+        accepted_archive_due_records, accepted_archive_tick, next_archive_retry_at,
         write_action_as_agent, write_as_agent,
     };
     use rusqlite::Connection;
@@ -3021,17 +3039,54 @@ mod actor_tests {
     }
 
     #[test]
-    fn accepted_archive_tick_matches_one_second_maintenance_cadence() {
-        let start = std::time::Instant::now();
-        assert!(accepted_archive_tick_due(None, start));
-        assert!(!accepted_archive_tick_due(
-            Some(start),
-            start + std::time::Duration::from_millis(999)
-        ));
-        assert!(accepted_archive_tick_due(
-            Some(start),
-            start + std::time::Duration::from_secs(1)
-        ));
+    fn archive_scheduler_uses_earliest_persisted_retry_deadline() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        assert_eq!(
+            next_archive_retry_at(&store, 100.0, false).expect("empty deadline query"),
+            None
+        );
+        store
+            .transaction(|tx| {
+                for (id, due) in [("later", 88.0), ("earlier", 42.0)] {
+                    tx.execute(
+                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'accepted-archive-v1',?2)",
+                    rusqlite::params![id, json!({"status":"retryable","nextAttemptAt":due + 100.0}).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("archive receipts commit");
+        assert_eq!(
+            next_archive_retry_at(&store, 100.0, false).expect("deadline query"),
+            Some(142.0)
+        );
+        assert_eq!(
+            next_archive_retry_at(&store, 100.0, true).expect("full batch deadline"),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn empty_archive_maintenance_does_not_commit_or_self_wake() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let commits = std::sync::Arc::clone(&commits);
+            store.add_commit_observer(move || {
+                commits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        assert_eq!(
+            accepted_archive_tick(&store, 100.0).expect("maintenance pass"),
+            0
+        );
+        assert_eq!(
+            accepted_archive_tick(&store, 100.0).expect("second maintenance pass"),
+            0
+        );
+        assert_eq!(commits.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

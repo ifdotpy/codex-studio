@@ -1509,13 +1509,28 @@ pub enum DeliveryDecision {
     Execute,
     Return(ExchangeOutcome),
 }
+const PEER_REPLAY_SAFE_ACTIONS: &[&str] = &[
+    "event",
+    "input",
+    "message",
+    "move_send",
+    "location_info",
+    "location_matches",
+    "stop",
+];
+
+fn peer_replay_safe_sql_values() -> String {
+    PEER_REPLAY_SAFE_ACTIONS
+        .iter()
+        .map(|action| format!("'{action}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn peer_replay_safe(action: &str) -> bool {
     // Every input variant binds its stable request identity to a durable
     // message receipt or event row before reporting an applied effect.
-    matches!(
-        action,
-        "event" | "input" | "message" | "move_send" | "location_info" | "location_matches" | "stop"
-    )
+    PEER_REPLAY_SAFE_ACTIONS.contains(&action)
 }
 
 fn peer_retry_delay(attempts: i64) -> i64 {
@@ -1832,9 +1847,14 @@ impl OrchestrationDriver {
     /// records its result in short transactions around the transport call.
     pub fn pump_due(&self, now: i64) -> Result<usize, AccessError> {
         let pending = self.store.read_transaction(|tx| {
-            let mut statement = tx.prepare(
-                "SELECT server,body,state FROM runtime_server_outbox WHERE state IN ('queued','running') AND next_at<=?1 ORDER BY rowid LIMIT ?2",
-            )?;
+            let sql = format!(
+                "SELECT server,body,state FROM runtime_server_outbox \
+                 WHERE next_at<=?1 AND (state='queued' OR (state='running' \
+                   AND json_extract(body,'$.action') IN ({}))) \
+                 ORDER BY rowid LIMIT ?2",
+                peer_replay_safe_sql_values()
+            );
+            let mut statement = tx.prepare(&sql)?;
             let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1870,6 +1890,15 @@ impl OrchestrationDriver {
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Return the next persisted delivery deadline without scanning on a timer.
+    /// Unsafe operations stranded in `running` remain unknown and are excluded;
+    /// peer operations can replay with their existing durable identity.
+    pub fn next_due_at(&self) -> Result<Option<i64>, AccessError> {
+        self.store
+            .read_transaction(|tx| outbox_next_due_at(tx))
+            .map_err(Into::into)
     }
     #[allow(clippy::too_many_arguments)]
     fn finish(
@@ -1995,6 +2024,20 @@ fn retired(
     Ok(false)
 }
 
+fn outbox_next_due_at(
+    connection: &rusqlite::Connection,
+) -> studio_runtime_store::StoreResult<Option<i64>> {
+    let sql = format!(
+        "SELECT MIN(next_at) FROM runtime_server_outbox \
+         WHERE state='queued' OR (state='running' AND \
+           json_extract(body,'$.action') IN ({}))",
+        peer_replay_safe_sql_values()
+    );
+    connection
+        .query_row(&sql, [], |row| row.get(0))
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2098,6 +2141,33 @@ mod tests {
             [5, 10, 20, 40, 80, 160, 300, 300]
         );
         assert_eq!(peer_retry_delay(-1), 5);
+    }
+
+    #[test]
+    fn next_due_excludes_unknown_one_shot_running_rows() {
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at INTEGER);",
+            )
+            .expect("outbox table");
+        for (action, state, due) in [
+            ("exec", "running", 1),
+            ("input", "running", 9),
+            ("message", "queued", 7),
+            ("event", "completed", 0),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_server_outbox(server,body,state,next_at) VALUES('peer',?1,?2,?3)",
+                    params![serde_json::json!({"action":action}).to_string(), state, due],
+                )
+                .expect("outbox row");
+        }
+        assert_eq!(
+            outbox_next_due_at(&connection).expect("deadline query"),
+            Some(7)
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use thiserror::Error;
 pub const TAIL_CHARS: usize = 12_000;
 pub const CHUNK_BYTES: usize = 65_536;
 pub const PROBE_LEASE_SECONDS: f64 = 90.0;
+pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -181,7 +182,7 @@ fn minus_one() -> i64 {
     -1
 }
 fn stall_default() -> u64 {
-    1800
+    DEFAULT_MONITOR_STALL_SECONDS
 }
 fn success_default() -> Vec<i64> {
     vec![0]

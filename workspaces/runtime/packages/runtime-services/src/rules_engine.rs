@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::event_write::{python_json, python_strip, truthy};
 
 pub const OUTPUT_CHARACTERS: usize = 12_000;
-const DEFAULT_STALL_SECONDS: u64 = 1800;
+pub const DEFAULT_RULE_STALL_SECONDS: u64 = 1800;
+/// Delay past the exact low-worker duration because its alert predicate is strict `>`.
+pub const LOW_WORKER_STRICT_DEADLINE_MARGIN_SECONDS: f64 = 0.001;
 const MIN_COMMAND_MILLISECONDS: u64 = 1000;
 const MAX_COMMAND_MILLISECONDS: u64 = 86_400_000;
 const STOPPED: &str = "The agent was stopped. Resume this rule explicitly.";
@@ -114,7 +116,7 @@ fn minus_one() -> i64 {
     -1
 }
 fn default_stall() -> u64 {
-    DEFAULT_STALL_SECONDS
+    DEFAULT_RULE_STALL_SECONDS
 }
 
 #[derive(Clone, Deserialize)]
@@ -609,7 +611,7 @@ impl RuleSnapshot {
             next["fileActivityAt"] = json!(now);
             next["fileGeneration"] = json!(0);
             next["stallWakeGeneration"] = json!(-1);
-            next["stallTimeoutSeconds"] = json!(DEFAULT_STALL_SECONDS);
+            next["stallTimeoutSeconds"] = json!(DEFAULT_RULE_STALL_SECONDS);
             next["livenessCommand"] = json!("");
         }
         if r.kind == Kind::LowWorkers {

@@ -114,6 +114,34 @@ pub fn pending_pairings(store: &RuntimeStore) -> std::result::Result<Vec<String>
     })
 }
 
+/// Queued delivery deadlines for approved peers. The server uses the peer key
+/// to apply in-memory network failure backoff without delaying unrelated peers.
+pub fn delivery_deadlines_by_peer(
+    store: &RuntimeStore,
+) -> std::result::Result<Vec<(String, f64)>, StoreError> {
+    store.read_transaction(|connection| {
+        let mut statement = connection.prepare(
+                "SELECT peer.id,MIN(CASE WHEN json_type(outbox.record,'$.nextAt') IN ('integer','real') \
+                     THEN CAST(json_extract(outbox.record,'$.nextAt') AS REAL) END) \
+                 FROM runtime_federation_outbox AS outbox \
+                 JOIN runtime_federation_peers AS peer ON peer.id=outbox.peer_id \
+                 WHERE json_extract(peer.record,'$.status')='approved' \
+                   AND json_extract(outbox.record,'$.status')='queued' \
+                 GROUP BY peer.id ORDER BY peer.id",
+            )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
+        })?;
+        rows.filter_map(|row| match row {
+            Ok((peer, Some(deadline))) => Some(Ok((peer, deadline))),
+            Ok((_, None)) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
+    })
+}
+
 /// Complete a durable outgoing invitation pairing. The peer row already holds
 /// the invitation ID/token before any network call, so retries keep its identity.
 pub fn pair_peer(
@@ -622,4 +650,42 @@ pub fn send_message_in_transaction(
     room["updated"] = json!(now);
     effects::save_room(tx, &peer, &room)?;
     Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delivery_deadlines_by_peer;
+    use serde_json::json;
+    use studio_runtime_store::RuntimeStore;
+
+    #[test]
+    fn next_delivery_deadline_ignores_unapproved_peers_and_nonqueued_rows() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        store
+            .transaction(|tx| {
+                for (peer_id, status) in [("approved", "approved"), ("pending", "pending")] {
+                    tx.execute(
+                        "INSERT INTO runtime_federation_peers(id,record) VALUES (?1,?2)",
+                        rusqlite::params![peer_id, json!({"id":peer_id,"status":status}).to_string()],
+                    )?;
+                }
+                for (id, peer, status, due) in [
+                    ("future", "approved", "queued", 52.0),
+                    ("earlier-but-unapproved", "pending", "queued", 1.0),
+                    ("done", "approved", "sent", 0.0),
+                ] {
+                    tx.execute(
+                        "INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES (?1,?2,?3)",
+                        rusqlite::params![id, peer, json!({"status":status,"nextAt":due}).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("fixture rows commit");
+        assert_eq!(
+            delivery_deadlines_by_peer(&store).expect("deadline query"),
+            vec![("approved".to_owned(), 52.0)]
+        );
+    }
 }

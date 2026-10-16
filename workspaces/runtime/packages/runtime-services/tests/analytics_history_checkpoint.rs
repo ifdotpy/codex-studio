@@ -784,7 +784,7 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
 }
 
 #[test]
-fn active_import_quota_notification_and_timer_budget() {
+fn active_import_quota_notification_waits_for_event() {
     use studio_runtime_services::analytics_history_schedule::HistorySchedule;
     let (_, mut active) = fixture();
     active["status"] = json!("running");
@@ -803,9 +803,7 @@ fn active_import_quota_notification_and_timer_budget() {
                 .expect("active")["id"],
             "a"
         );
-        schedule
-            .completed(&active, &checkpoint, 10., false, false)
-            .expect("poll");
+        schedule.completed(&active, &checkpoint, 10.).expect("poll");
     }
     assert_eq!(
         schedule
@@ -816,13 +814,13 @@ fn active_import_quota_notification_and_timer_budget() {
     );
     checkpoint["status"] = json!("current");
     schedule
-        .completed(&archive, &checkpoint, 10., false, false)
+        .completed(&archive, &checkpoint, 10.)
         .expect("archive complete");
     schedule
-        .completed(&active, &checkpoint, 10., true, false)
+        .completed(&active, &checkpoint, 10.)
         .expect("watch");
     assert!(schedule.next(&actors, 11.).expect("selection").is_none());
-    schedule.notify("a");
+    schedule.notify("a").expect("notification");
     assert_eq!(
         schedule
             .next(&actors, 11.)
@@ -830,7 +828,11 @@ fn active_import_quota_notification_and_timer_budget() {
             .expect("dirty")["id"],
         "a"
     );
-    assert!((schedule.delay(11., 0., 0.15) - 1.).abs() < 0.00001);
+    assert!(schedule.has_pending());
+    schedule
+        .completed(&active, &checkpoint, 11.)
+        .expect("notified actor complete");
+    assert!(!schedule.has_pending());
 }
 
 #[test]

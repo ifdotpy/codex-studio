@@ -49,6 +49,10 @@ pub enum HistoryError {
     BudgetUnavailable,
     #[error("analytics history discovery exceeded its bounded entry budget")]
     DiscoveryLimit,
+    #[error("analytics history filesystem watcher failed")]
+    Watcher(#[from] notify::Error),
+    #[error("account profile snapshot could not be read")]
+    AccountDriver(#[from] crate::account_driver::AccountDriverError),
 }
 #[derive(Clone, Copy)]
 pub struct BatchLimits {
@@ -911,11 +915,21 @@ pub struct HistoryCollector {
     visited: std::collections::BTreeSet<String>,
 }
 impl HistoryCollector {
-    /// Start each caller-owned timer/notification round with a fresh shared scan.
-    /// An idle selection or revisiting an actor also closes the previous round.
+    /// Start a fresh fairness round while retaining watcher-maintained profile
+    /// indexes. An idle selection or revisiting an actor closes the prior round.
     pub fn begin_round(&mut self) {
-        self.discovery = DiscoveryRound::default();
+        self.discovery.begin_round();
         self.visited.clear();
+    }
+
+    /// Apply one watcher event to the persistent profile discovery cache.
+    pub fn file_changed(&mut self, profile: &Path, path: &Path, removed: bool) {
+        self.discovery.file_changed(profile, path, removed);
+    }
+
+    /// Force a one-time profile rescan after directory changes or watcher overflow.
+    pub fn profile_changed(&mut self, profile: &Path) {
+        self.discovery.invalidate(profile);
     }
     pub fn step(
         &mut self,
@@ -961,7 +975,7 @@ impl HistoryCollector {
             .map_err(|_| HistoryError::Read)?;
         if let Some(checkpoint) = Repo::read(&db, CaptureTable::History, &key)? {
             self.schedule
-                .completed(&agent, &checkpoint, clock.monotonic, false, false)?;
+                .completed(&agent, &checkpoint, clock.monotonic)?;
         }
         Ok(advanced)
     }

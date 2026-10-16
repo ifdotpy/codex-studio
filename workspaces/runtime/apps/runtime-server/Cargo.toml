@@ -12,6 +12,7 @@ data-encoding = { workspace = true }
 getrandom = { workspace = true }
 futures-util = { workspace = true }
 mime_guess = { workspace = true }
+notify = { workspace = true }
 studio-runtime-process = { path = "../../packages/runtime-process" }
 studio-runtime-providers = { path = "../../packages/runtime-providers" }
 studio-runtime-http = { path = "../../packages/runtime-http" }
@@ -26,7 +27,6 @@ tokio = { workspace = true, features = ["io-std"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-notify = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }

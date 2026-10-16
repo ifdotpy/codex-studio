@@ -51,22 +51,33 @@ fn path(root: &Path, id: &str) -> PathBuf {
     ))
 }
 
-/// No provider or database call happens before the exact first result is durable.
-pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, MonitorError> {
-    receipt.validate()?;
+/// Ensure the first-result directory exists before installing its native watcher.
+/// The consumer then scans after watch registration, covering both existing and
+/// concurrently published receipts without an interval scan.
+pub fn prepare_watch_directory(root: &Path) -> Result<PathBuf, MonitorError> {
     let directory = root.join("monitor-results");
-    if !directory.exists() {
-        fs::create_dir(&directory)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    match fs::create_dir(&directory) {
+        Ok(()) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+            }
+            File::open(root)?.sync_all()?;
         }
-        File::open(root)?.sync_all()?;
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(MonitorError::Io(error)),
     }
     if !fs::symlink_metadata(&directory)?.is_dir() {
         return Err(MonitorError::InvalidResultReceipt("directory"));
     }
+    Ok(directory)
+}
+
+/// No provider or database call happens before the exact first result is durable.
+pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, MonitorError> {
+    receipt.validate()?;
+    let directory = prepare_watch_directory(root)?;
     let target = path(root, &receipt.key);
     if target.exists() {
         return read(&target, Some(&receipt.key));
@@ -150,8 +161,9 @@ pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(),
         .collect()
 }
 
-/// Bounded startup/timer recovery, including receipts for already terminal rows.
-/// Invalid or unreadable receipts are retained and logged while the batch continues.
+/// Recover at most `limit` valid receipts, scanning past invalid entries so they
+/// cannot starve later receipts. Invalid or unreadable files remain in place and
+/// are reported; successful batches can be drained by the caller until short.
 pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
     if limit == 0 {
         return Ok(0);
@@ -177,10 +189,7 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
             return Ok(0);
         }
     };
-    let mut scanned = 0;
-    while scanned < 64 {
-        let Some(entry) = entries.next() else { break };
-        scanned += 1;
+    while let Some(entry) = entries.next() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -214,15 +223,13 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
             continue;
         }
         if let Err(error) = acknowledge(store.root(), &receipt.key) {
-            report_recovery_warning(&entry.path(), error);
+            report_recovery_warning(&entry.path(), &error);
+            return Err(error);
         }
         recovered += 1;
         if recovered >= limit.min(64) {
             return Ok(recovered);
         }
-    }
-    if scanned == 64 && entries.next().is_some() {
-        report_recovery_warning(&directory, "scan reached the 64-file bound");
     }
     Ok(recovered)
 }
