@@ -378,3 +378,26 @@ private journal before forwarding it. If a response is uncertain, rerun with
 readback only and never repeats a create, settings save, prompt, or delete.
 Set the URL, UUID, account keys, project path, evidence paths, and Chromium path
 to the intended values before running either command.
+
+## Rust server idle observation
+
+Use the read-only observer to measure a running Linux server while the web UI is
+idle:
+
+```sh
+node scripts/verify-rust-idle.mjs \
+  --url "$HTTPS_URL" \
+  --pid "$RUST_SERVER_PID" \
+  --evidence-dir "$EVIDENCE_DIR"
+```
+
+The script opens the bare URL in headless Chromium, waits for the top-level
+sidebar, then records bounded API request counts, failures, page errors, and
+process CPU and I/O counters. `--duration-ms`, `--settle-ms`, and `--chromium`
+can override its defaults; the script enforces hard time bounds and writes a
+private JSON artifact on success or failure. It sends no API writes and fails
+on HTTP errors, failed requests, page errors, or measurement failures. Closing
+the browser after the observation window is outside the measured interval. A
+completed measurement does not prove that no agents were active or that the
+server was idle; zero exit status only means the measurement completed without
+the listed errors.
