@@ -21,8 +21,40 @@ export type PendingUpload = {
   created: number;
   asset?: Attachment;
 };
-export const uploadsChanged = () =>
+const UPLOADS_CHANNEL_NAME = "studio-uploads-changed";
+let uploadsChannel: BroadcastChannel | undefined;
+let uploadsChannelSubscribers = 0;
+export function onUploadsChanged(listener: () => void) {
+  window.addEventListener("studio-uploads-changed", listener);
+  let channel: BroadcastChannel | undefined;
+  if (typeof BroadcastChannel !== "undefined") {
+    uploadsChannel ??= new BroadcastChannel(UPLOADS_CHANNEL_NAME);
+    channel = uploadsChannel;
+    channel.addEventListener("message", listener);
+    uploadsChannelSubscribers += 1;
+  }
+  return () => {
+    window.removeEventListener("studio-uploads-changed", listener);
+    if (!channel) return;
+    channel.removeEventListener("message", listener);
+    uploadsChannelSubscribers -= 1;
+    if (!uploadsChannelSubscribers) {
+      channel.close();
+      uploadsChannel = undefined;
+    }
+  };
+}
+export const uploadsChanged = () => {
   window.dispatchEvent(new Event("studio-uploads-changed"));
+  if (typeof BroadcastChannel === "undefined") return;
+  if (uploadsChannel) {
+    uploadsChannel.postMessage({ type: "changed" });
+    return;
+  }
+  const channel = new BroadcastChannel(UPLOADS_CHANNEL_NAME);
+  channel.postMessage({ type: "changed" });
+  setTimeout(() => channel.close(), 0);
+};
 const database = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(
