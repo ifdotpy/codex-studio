@@ -10,8 +10,8 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_services::federation_credentials::CredentialError;
 use studio_runtime_services::multi_server::{self, MultiServerError};
-use studio_runtime_services::resource_notify::ResourceNotifications;
 use studio_runtime_services::remote_transport::{self, MultiServerExchangeInput};
+use studio_runtime_services::resource_notify::ResourceNotifications;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -134,10 +134,7 @@ pub(super) async fn read_snapshot(state: &HttpState) -> Result<Value, ApiError> 
     .map_err(|_| ApiError::internal())?
 }
 
-pub(super) fn publish_resource_change(
-    notifications: &ResourceNotifications,
-    request_id: &str,
-) {
+pub(super) fn publish_resource_change(notifications: &ResourceNotifications, request_id: &str) {
     let request = serde_json::json!({
         "requestId": request_id,
         "resources": [{"kind": "multi-server"}],
@@ -173,10 +170,7 @@ pub(super) fn notify_snapshot_change(
 fn semantic_snapshot(snapshot: &Value) -> Value {
     let mut semantic = snapshot.clone();
     for collection in ["clients", "servers"] {
-        let Some(records) = semantic
-            .get_mut(collection)
-            .and_then(Value::as_array_mut)
-        else {
+        let Some(records) = semantic.get_mut(collection).and_then(Value::as_array_mut) else {
             continue;
         };
         for record in records {
@@ -251,14 +245,9 @@ async fn manage(
                             "The Tailscale owner identity is unavailable",
                         )
                     })?;
-                let result = multi_server::create_invite(
-                    &store,
-                    &identity,
-                    &body,
-                    "local",
-                    Some(&owner),
-                )
-                .map_err(map_service_error)?;
+                let result =
+                    multi_server::create_invite(&store, &identity, &body, "local", Some(&owner))
+                        .map_err(map_service_error)?;
                 publish_resource_change(&notifications, &request_id);
                 Ok(result)
             },
@@ -279,16 +268,14 @@ async fn manage(
         let notifications = state.resource_notifications.clone();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/multi_server/accept-invite",
-            move || {
-                match accept_invite(&store, &credentials, origin.as_deref(), whoami, &body) {
-                    Ok(result) => {
-                        publish_resource_change(&notifications, &request_id);
-                        Ok(result)
-                    }
-                    Err(error) => {
-                        publish_uncertain_write_hint(&notifications);
-                        Err(error)
-                    }
+            move || match accept_invite(&store, &credentials, origin.as_deref(), whoami, &body) {
+                Ok(result) => {
+                    publish_resource_change(&notifications, &request_id);
+                    Ok(result)
+                }
+                Err(error) => {
+                    publish_uncertain_write_hint(&notifications);
+                    Err(error)
                 }
             },
         )
@@ -391,9 +378,7 @@ async fn manage(
                                 body["label"].as_str().unwrap_or_default(),
                                 body["requestId"].as_str().unwrap_or_default(),
                                 "local",
-                                |request_id| {
-                                    publish_resource_change(&notifications, request_id)
-                                },
+                                |request_id| publish_resource_change(&notifications, request_id),
                             )
                             .map_err(map_credential_error)?;
                     } else {
@@ -423,7 +408,7 @@ async fn manage(
                 if action != "name" {
                     notify_snapshot_change(&notifications, &request_id, &before, &result);
                 }
-                Ok(result)
+                Ok::<Value, ApiError>(result)
             },
         )
         .await
