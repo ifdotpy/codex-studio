@@ -261,6 +261,22 @@ pub fn validate_code(code: &str) -> Result<(), LoginError> {
         Err(LoginError::InvalidCode)
     }
 }
+
+/// Validate the `authorizationCode#state` input accepted by Claude CLI's
+/// `auth login` stdin handler. Keep the generic printable-code validator above
+/// for callers that handle other provider code formats.
+pub fn validate_manual_authorization_code(code: &str) -> Result<(), LoginError> {
+    validate_code(code)?;
+    let mut parts = code.trim().split('#');
+    let authorization_code = parts.next().unwrap_or_default();
+    let state = parts.next().unwrap_or_default();
+    if !authorization_code.trim().is_empty() && !state.trim().is_empty() && parts.next().is_none() {
+        Ok(())
+    } else {
+        Err(LoginError::InvalidCode)
+    }
+}
+
 pub fn verification_url(value: &str) -> bool {
     static URL: std::sync::OnceLock<Result<regex::Regex, regex::Error>> =
         std::sync::OnceLock::new();

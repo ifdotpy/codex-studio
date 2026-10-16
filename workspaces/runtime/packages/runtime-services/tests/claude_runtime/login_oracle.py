@@ -55,7 +55,7 @@ for state in ("starting","pending","ready","error","cancelled"):
                 manager._save(job)
                 before=json.loads((manager.directory/(rid+".json")).read_text())
                 error=None
-                try:manager.code(rid,"fixture-code")
+                try:manager.code(rid,"fixture-code#fixture-state")
                 except ValueError as e:error=str(e)
                 after=json.loads((manager.directory/(rid+".json")).read_text())
                 rows.append(dict(name=f"{state}-{submitted}-{ready}",input=before,ready=ready,error=error,expected=after,writes=len(writes)))

@@ -33,12 +33,12 @@ async fn add_replay_completion_and_restart_keep_identity_and_no_secrets() {
     );
     link(&f, &s, &child).await;
     assert_eq!(
-        s.code(ID, "fixture-code".into())
+        s.code(ID, "fixture-code#fixture-state".into())
             .await
             .expect("valid fixture")["codeSubmitted"],
         true
     );
-    s.code(ID, "another-code".into())
+    s.code(ID, "another-code#another-state".into())
         .await
         .expect("valid fixture");
     assert_eq!(child.writes.lock().expect("valid fixture").len(), 1);
@@ -65,7 +65,7 @@ async fn code_write_unknown_is_latched_and_never_repeated() {
     let child = f.launcher.next().await;
     link(&f, &s, &child).await;
     child.write_unknown.store(true, Ordering::SeqCst);
-    let submission = s.code(ID, "fixture-code".into());
+    let submission = s.code(ID, "fixture-code#fixture-state".into());
     tokio::pin!(submission);
     // Stop polling the caller as soon as the actor writes. Joining the actor
     // closes its command receiver before the caller sends its redundant Cancel.
@@ -87,7 +87,7 @@ async fn code_write_unknown_is_latched_and_never_repeated() {
     assert!(child.closed.load(Ordering::SeqCst));
     assert_eq!(s.status(ID).await.expect("valid fixture"), unknown);
     assert_eq!(
-        s.code(ID, "fixture-code".into())
+        s.code(ID, "fixture-code#fixture-state".into())
             .await
             .expect("valid fixture"),
         unknown
@@ -96,7 +96,7 @@ async fn code_write_unknown_is_latched_and_never_repeated() {
     let restart = f.open().await;
     assert_eq!(
         restart
-            .code(ID, "fixture-code".into())
+            .code(ID, "fixture-code#fixture-state".into())
             .await
             .expect("durable unknown result"),
         unknown
@@ -116,7 +116,11 @@ async fn receipt_failpoints_before_and_after_code_intent_never_send() {
         link(&f, &s, &child).await;
         f.receipts.after.store(after, Ordering::SeqCst);
         f.receipts.fail.store(true, Ordering::SeqCst);
-        assert!(s.code(ID, "fixture-code".into()).await.is_err());
+        assert!(
+            s.code(ID, "fixture-code#fixture-state".into())
+                .await
+                .is_err()
+        );
         assert!(child.writes.lock().expect("valid fixture").is_empty());
         s.shutdown().await.expect("valid fixture");
         f.receipts.fail.store(false, Ordering::SeqCst);
@@ -206,7 +210,7 @@ exit 0
         .await
         .expect("valid fixture");
     f.status(&s, ID, "pending").await;
-    s.code(ID, "fixture-code".into())
+    s.code(ID, "fixture-code#fixture-state".into())
         .await
         .expect("valid fixture");
     let ready = f.status(&s, ID, "ready").await;
@@ -646,7 +650,7 @@ async fn unknown_receipt_cancel_write_failures_reopen_without_resend() {
         assert_eq!(saved["status"], if after { "cancelled" } else { "error" });
         restarted.cancel(ID).await.expect("resolve exact receipt");
         restarted
-            .code(ID, "fixture-code".into())
+            .code(ID, "fixture-code#fixture-state".into())
             .await
             .expect("terminal code is not retried");
         assert!(f.launcher.receiver.lock().await.try_recv().is_err());

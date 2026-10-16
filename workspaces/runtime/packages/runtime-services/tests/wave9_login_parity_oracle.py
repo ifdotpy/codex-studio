@@ -117,7 +117,7 @@ def claude_case(root, adding):
         job["process"] = process
         manager._publish_verification_url(job, URL)
         pending = manager.status(request)
-        code = manager.code(request, "fixture-code") if adding else None
+        code = manager.code(request, "fixture-code#fixture-state") if adding else None
         cancelled = manager.cancel(request)
         # The scripted child has no background reader, so run the worker's
         # finally-path cleanup after the fake process boundary reports exit.

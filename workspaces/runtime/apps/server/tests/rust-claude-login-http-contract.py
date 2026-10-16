@@ -44,7 +44,7 @@ exit 0
                 self.assertNotEqual(value["status"], "error", value)
                 return value if value["status"] == wanted else None
             backend.wait_until(lambda: status("pending"), "scripted verification URL")
-            request("POST", "/api/accounts/claude/login/code", {"login_id":rid,"code":"fixture-code"})
+            request("POST", "/api/accounts/claude/login/code", {"login_id":rid,"code":"fixture-code#fixture-state"})
             ready = backend.wait_until(lambda: status("ready"), "scripted account registration")
             self.assertEqual(ready["email"], "fixture@example.test")
             self.assertEqual(request("POST", "/api/accounts/claude/add", body)["accountKey"], ready["accountKey"])

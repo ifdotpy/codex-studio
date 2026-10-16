@@ -412,7 +412,10 @@ impl LoginService {
     pub async fn code(&self, id: &str, code: String) -> Result<Value, LoginError> {
         self.available()?;
         request_id(id)?;
-        validate_code(&code)?;
+        // Validate the provider-specific delimiter before persisting the
+        // one-shot code intent or writing to the child. A malformed local
+        // input is safe to correct; once the pipe write starts it is not.
+        super::validate_manual_authorization_code(&code)?;
         let entry = self.jobs.entry(id)?;
         let mut job = entry.lock().await;
         let (next, write) = job
