@@ -6698,7 +6698,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if self.closed:
                         break
                     periodic_due = not interval or time.monotonic() >= deadlines[name]
-                    if not periodic_due and not (name == "dispatch" and work_woke):
+                    # A queued cross-server request is delivered at once (docs/peer-link.md).
+                    woken_delivery = (name == "cross_server"
+                                      and bool(getattr(service, "wake_requested", lambda: False)()))
+                    if not periodic_due and not (name == "dispatch" and work_woke) and not woken_delivery:
                         continue
                     try:
                         run()

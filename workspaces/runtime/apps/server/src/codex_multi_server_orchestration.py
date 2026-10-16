@@ -39,6 +39,7 @@ from codex_multi_server_transport_limits import (
 TIMEOUT = 20
 # One QUIC link stream of an export (docs/peer-link.md).
 STREAM_SECONDS = 600
+WAKE_RECHECK_SECONDS = 0.05
 MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
 RECEIPT_AGE = 7 * 86400
@@ -263,6 +264,10 @@ class MultiServerService:
         self._claim_lock = threading.RLock()
         # The scheduler claim must never wait behind an inbound SQLite writer.
         self._tick_lock = threading.Lock()
+        # A queued request wakes the delivery at once instead of at the next 1-second tick, so
+        # remote events (agent events, command exits, worker state) reach the paired server in
+        # one exchange (docs/peer-link.md). The periodic tick stays the fallback.
+        self._wake = threading.Event()
         self._diagnostic_lock = threading.Lock()
         self._command_lock = threading.RLock()
         self._command_service: Any = None
@@ -397,8 +402,13 @@ class MultiServerService:
             return key
         db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint) VALUES (?,?,?,?,?,?)',
                    (key, server, body, 'queued', time.time(), digest))
+        self._wake.set()
         self.runtime.changed.set()
         return key
+
+    def wake_requested(self) -> bool:
+        """True once after a request was queued; the scheduler then delivers without waiting."""
+        return self._wake.is_set()
 
     def deliver(self, key: str) -> dict[str, Any]:
         # Retry only the same durable envelope. The receiver never repeats an
@@ -534,23 +544,17 @@ class MultiServerService:
             if self._running or self.runtime.closed:
                 return
             self._running = True
+        woken = self._wake.is_set()
+        self._wake.clear()
         def run() -> None:
             try:
                 if time.time() - self._pruned_at > 3600:
                     self.prune()
-                with self.runtime.read_db() as db:
-                    keys = [r[0] for r in db.execute("""
-                        SELECT current.id FROM runtime_server_outbox current
-                        WHERE current.state='queued' AND current.next_at<=?
-                          AND (json_extract(current.body,'$.action')!='input' OR NOT EXISTS (
-                            SELECT 1 FROM runtime_server_outbox earlier
-                            WHERE earlier.rowid<current.rowid AND earlier.state!='complete'
-                              AND earlier.server=current.server
-                              AND json_extract(earlier.body,'$.action')='input'
-                              AND json_extract(earlier.body,'$.payload.worker')=json_extract(current.body,'$.payload.worker')
-                              AND json_extract(earlier.body,'$.payload.link')=json_extract(current.body,'$.payload.link')))
-                        ORDER BY current.rowid LIMIT 8
-                        """, (time.time(),))]
+                keys = self._due_keys()
+                if not keys and woken:
+                    # The wake can come before the queuing transaction commits.
+                    time.sleep(WAKE_RECHECK_SECONDS)
+                    keys = self._due_keys()
                 for key in keys:
                     if self.runtime.closed:
                         break
@@ -559,6 +563,22 @@ class MultiServerService:
                 with self._tick_lock:
                     self._running = False
         self.runtime.delivery_executor().submit(run)
+
+    def _due_keys(self) -> list[str]:
+        with self.runtime.read_db() as db:
+            rows = db.execute("""
+                SELECT current.id FROM runtime_server_outbox current
+                WHERE current.state='queued' AND current.next_at<=?
+                  AND (json_extract(current.body,'$.action')!='input' OR NOT EXISTS (
+                    SELECT 1 FROM runtime_server_outbox earlier
+                    WHERE earlier.rowid<current.rowid AND earlier.state!='complete'
+                      AND earlier.server=current.server
+                      AND json_extract(earlier.body,'$.action')='input'
+                      AND json_extract(earlier.body,'$.payload.worker')=json_extract(current.body,'$.payload.worker')
+                      AND json_extract(earlier.body,'$.payload.link')=json_extract(current.body,'$.payload.link')))
+                ORDER BY current.rowid LIMIT 8
+                """, (time.time(),)).fetchall()
+        return [r[0] for r in rows]
 
     def prune(self) -> None:
         now = time.time()

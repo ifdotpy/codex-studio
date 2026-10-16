@@ -1141,6 +1141,45 @@ class CrossServer(unittest.TestCase):
         offsets = self.bundle_fetch_with(LinkTransport('home', self.network, lose_after=300 * 1024))
         self.assertEqual(offsets[0], 256 * 1024)
 
+
+    def run_tick(self, service):
+        service.tick()
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
+        while service._running and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(service._running)
+
+    def test_a_queued_request_wakes_the_delivery_once(self):
+        service = self.network['remote']
+        with self.remote.db() as db:
+            service.queue(db, 'home', 'projects', {}, 'wake-one')
+        self.assertTrue(service.wake_requested())
+        self.run_tick(service)
+        self.assertFalse(service.wake_requested())
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute("SELECT state FROM runtime_server_outbox WHERE id='wake-one'").fetchone()[0],
+                             'complete')
+
+    def test_a_wake_before_the_commit_checks_the_outbox_again(self):
+        service = self.network['remote']
+        with self.remote.db() as db:
+            service.queue(db, 'home', 'projects', {}, 'wake-late')
+        original, reads = service._due_keys, []
+        def late():
+            reads.append(1)
+            return [] if len(reads) == 1 else original()
+        with patch.object(service, '_due_keys', side_effect=late):
+            self.run_tick(service)
+        self.assertEqual(len(reads), 2)
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute("SELECT state FROM runtime_server_outbox WHERE id='wake-late'").fetchone()[0],
+                             'complete')
+        # Without a wake, an empty outbox read is not repeated.
+        reads.clear()
+        with patch.object(service, '_due_keys', side_effect=lambda: reads.append(1) or []):
+            self.run_tick(service)
+        self.assertEqual(len(reads), 1)
+
     def test_review_incremental_fetch_releases_bundle_and_does_not_store_chunk_data(self):
         repo, git = self.review_repo()
         (repo / 'old-blob').write_bytes(os.urandom(2 * 1024 * 1024))
