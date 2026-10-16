@@ -15,10 +15,30 @@ identities, response payloads, event delivery, and HTTP behavior unchanged. Keep
 all existing model-catalog, Mac sync, host-secret, and route-owned resource
 notifications. Do not suppress or merge them into this classifier.
 
+History import failures caused by a typed discovery bound or invalid budget
+records block only the affected actor until relevant profile, agent, or budget
+input changes. Budget state and usage commits use separate store observers and
+resume budget-blocked actors without refreshing the agent roster. They do not
+create timer retries or prevent other actors from importing. Transient store,
+read, and concurrency failures retain the bounded retry deadline. The history
+schedule owns typed per-blocked-actor inputs; unrelated roster commits must not
+unblock it. Per-profile discovery-limit failures are cached until a structural
+file or profile event invalidates them, avoiding repeated scans of the same
+oversized profile. Exhausting only the current cross-profile fairness-round
+budget yields once and resumes under a fresh budget rather than permanently
+blocking a valid profile.
+
+The history consumer observes `runtime_agents` for roster changes and both
+`runtime_budget` and `runtime_budget_usage` for budget eligibility. A budget
+invalid actor resumes only after one of those budget inputs changes. Discovery
+limits remain cached per profile and reopen only after a structural change for
+that profile; exhausting the cross-profile round budget starts a fresh round
+without a retry timer.
+
 ## Named owners and consumers
 
 - [`ObservedTable`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
-  owns the closed table set and row-change hooks. Callers register synchronous,
+  owns the closed 22-table set and row-change hooks. Callers register synchronous,
   infallible callbacks with `add_table_change_observer`; each callback only
   signals its consumer to reread current rows. The source-owned dependency groups
   are:
@@ -28,7 +48,7 @@ notifications. Do not suppress or merge them into this classifier.
   | Account registry scheduler                        | `runtime_agents`, `runtime_events`, `runtime_event_meta`, `runtime_rooms`, `runtime_operation_receipts`, `runtime_work`                                                         | [`main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs), `REGISTRY_WAKE_TABLES`                                          |
   | Server orchestration                              | `runtime_server_outbox`, `runtime_access_clients`, `runtime_server_links`                                                                                                       | [`main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs), `ORCHESTRATION_WAKE_TABLES`                                     |
   | Federation snapshot, pairing, and delivery queues | `runtime_federation_settings`, `runtime_federation_identity`, `runtime_federation_peers`, `runtime_federation_invites`, `runtime_federation_rooms`, `runtime_federation_outbox` | [`main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs), `FEDERATION_WAKE_TABLES`                                        |
-  | History roster                                    | `runtime_agents`                                                                                                                                                                | [`history_runtime.rs`](../../workspaces/runtime/apps/runtime-server/src/history_runtime.rs)                                            |
+  | History roster and budget eligibility             | `runtime_agents`, `runtime_budget`, `runtime_budget_usage`                                                                                                                      | [`history_runtime.rs`](../../workspaces/runtime/apps/runtime-server/src/history_runtime.rs)                                            |
   | Monitor scheduling                                | `runtime_monitors`, `runtime_rules`, `runtime_agents`                                                                                                                           | [`monitor_runtime_wiring.rs`](../../workspaces/runtime/packages/runtime-services/src/monitor_runtime_wiring.rs), `MONITOR_WAKE_TABLES` |
   | Peer-link snapshot                                | `runtime_access_clients`                                                                                                                                                        | [`peer_link.rs`](../../workspaces/runtime/apps/runtime-server/src/peer_link.rs)                                                        |
   | Account auth-resume waiters                       | `runtime_usage_resumes`                                                                                                                                                         | [`account_worker.rs`](../../workspaces/runtime/packages/runtime-services/src/account_worker.rs), `StoreBridge`                         |
@@ -89,7 +109,15 @@ serial execution remains pending:
 - A successful change wakes only consumers registered for that table; unrelated
   tables wake no targeted consumer. The source has table-mask coverage for all
   named observer tables and transaction-level routing fixtures for the account
-  registry, orchestration, monitor, and history paths. The store mask and rowid fixtures are
+  registry, orchestration, monitor, and history paths. History specifically
+  verifies that agent changes dirty the roster while budget and usage changes
+  dirty only budget eligibility via
+  [`only_agent_commits_dirty_the_history_roster`](../../workspaces/runtime/apps/runtime-server/src/history_runtime.rs)
+  and [`budget_commit_unblocks_only_budget_invalid_actors`](../../workspaces/runtime/packages/runtime-services/src/analytics_history_schedule.rs).
+  Profile-scoped structural invalidation and fresh-round behavior are covered by
+  [`profile_tree_change_unblocks_discovery_limits_without_roster_changes`](../../workspaces/runtime/packages/runtime-services/src/analytics_history_schedule.rs)
+  and [`round_budget_exhaustion_resets_without_permanently_blocking_a_valid_profile`](../../workspaces/runtime/packages/runtime-services/src/analytics_history/discovery.rs).
+  The store mask and rowid fixtures are
   [`table_change_mask_covers_each_named_observer_table`](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
   and
   [`tracked_observer_tables_must_keep_rowid_storage`](../../workspaces/runtime/packages/runtime-store/src/lib.rs);
@@ -131,3 +159,9 @@ serial test and workspace gates have not been reported as passing. The real
 HTTP/browser idle path still needs before/after validation, including proof that
 receipt-only writes stay quiet while event and resource writes still wake
 subscribers. No performance or live behavior result is claimed here.
+
+An unrelated test-planner follow-up remains outside this slice:
+[`run.py`](../../workspaces/runtime/apps/server/tests/server/run.py) reads
+process-wide `RUSAGE_CHILDREN.ru_maxrss` as a suite peak. The reported 7.24 GB
+cannot be attributed to the individual server suite from that measurement;
+correcting the planner is separate work.

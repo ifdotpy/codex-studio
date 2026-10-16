@@ -1487,7 +1487,7 @@ async fn collector_updates_shared_discovery_from_file_event_across_rounds() {
             assert!(advanced, "the first actor imports its rollout");
             let duplicate = sessions.join("rollout-duplicate-thread.jsonl");
             fs::copy(&path, &duplicate).expect("new file between actors");
-            collector.file_changed(root.path(), &duplicate, false);
+            collector.file_changed(root.path(), &duplicate, false, true, "default");
             collector
                 .schedule
                 .notify("a")

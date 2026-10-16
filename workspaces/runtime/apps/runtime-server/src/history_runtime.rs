@@ -10,7 +10,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event
 use serde_json::Value;
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::analytics_history::{
-    HistoryClock, HistoryCollector, HistoryError, StoreHistoryBudgetSink,
+    HistoryClock, HistoryCollector, HistoryError, HistoryRetryPolicy, StoreHistoryBudgetSink,
 };
 use studio_runtime_store::{AgentRecord, ObservedTable, RuntimeStore, Table};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -52,6 +52,7 @@ pub(crate) struct HistoryRuntime {
 #[derive(Default)]
 struct PendingHistoryEvents {
     roster_dirty: bool,
+    budget_dirty: bool,
     accounts_dirty: bool,
     overflow: bool,
     files: BTreeMap<PathBuf, PendingFileEvent>,
@@ -70,11 +71,29 @@ struct HistoryWake {
     notify: Notify,
     #[cfg(test)]
     watcher_recoveries: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    watcher_recovered: Notify,
+    #[cfg(test)]
+    initialized: Notify,
+    #[cfg(test)]
+    step_attempts: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    step_completions: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    step_pending: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    budget_failures: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    step_finished: Notify,
 }
 
 impl HistoryWake {
     fn commit(&self) {
         self.with_pending(|pending| pending.roster_dirty = true);
+    }
+
+    fn budget(&self) {
+        self.with_pending(|pending| pending.budget_dirty = true);
     }
 
     fn filesystem(&self, result: notify::Result<Event>, registry_parent: &Path) {
@@ -461,6 +480,16 @@ async fn run_event_driven_with_wake(
     runtime
         .store
         .add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
+    let budget_observer_wake = Arc::clone(&wake);
+    runtime
+        .store
+        .add_table_change_observer(ObservedTable::Budget, move || budget_observer_wake.budget());
+    let usage_observer_wake = Arc::clone(&wake);
+    runtime
+        .store
+        .add_table_change_observer(ObservedTable::BudgetUsage, move || {
+            usage_observer_wake.budget()
+        });
 
     // Install the registry watch before reading either external accounts or the
     // durable roster. Notifications arriving during these snapshots stay queued.
@@ -482,6 +511,8 @@ async fn run_event_driven_with_wake(
     runtime = next_runtime;
     let mut roster = Arc::new(roster?);
     runtime.collector.schedule.refresh(&roster)?;
+    #[cfg(test)]
+    wake.initialized.notify_one();
 
     let mut failures = 0_u32;
     let mut watcher_failures = 0_u32;
@@ -492,6 +523,9 @@ async fn run_event_driven_with_wake(
         }
 
         let pending = wake.take();
+        if pending.budget_dirty {
+            runtime.collector.schedule.budget_changed();
+        }
         if let Some(error) = pending.error {
             eprintln!("provider history filesystem watcher failed: {error}");
             drop(watcher);
@@ -562,15 +596,21 @@ async fn run_event_driven_with_wake(
                 .collect::<Vec<_>>();
             for (account, home) in affected {
                 if is_rollout_profile_path(&home, &path) {
-                    runtime.collector.file_changed(&home, &path, event.removed);
+                    runtime.collector.file_changed(
+                        &home,
+                        &path,
+                        event.removed,
+                        event.structural,
+                        &account,
+                    );
                     for actor in roster
                         .iter()
                         .filter(|actor| actor_matches_rollout(actor, &account, &path))
                     {
-                        runtime
-                            .collector
-                            .schedule
-                            .notify(actor["id"].as_str().ok_or(HistoryError::Read)?)?;
+                        runtime.collector.schedule.notify_rollout(
+                            actor["id"].as_str().ok_or(HistoryError::Read)?,
+                            event.structural,
+                        )?;
                     }
                 } else if profile_tree_changed(&home, &path, event) {
                     runtime.collector.profile_changed(&home);
@@ -631,6 +671,9 @@ async fn run_event_driven_with_wake(
         if runtime.collector.schedule.has_pending() {
             let clock = history_clock(&runtime);
             let actors = Arc::clone(&roster);
+            #[cfg(test)]
+            wake.step_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let result = runtime.step(&actors, clock).await;
             match result {
                 Ok(_) => {
@@ -638,10 +681,31 @@ async fn run_event_driven_with_wake(
                     retry_at = None;
                 }
                 Err(error) => {
-                    failures = failures.saturating_add(1);
-                    retry_at = Some(tokio::time::Instant::now() + history_error_backoff(failures));
+                    #[cfg(test)]
+                    if error.retry_policy() == HistoryRetryPolicy::WaitForBudgetChange {
+                        wake.budget_failures
+                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    }
+                    if error.retry_policy() != HistoryRetryPolicy::Backoff {
+                        failures = 0;
+                        retry_at = None;
+                    } else {
+                        failures = failures.saturating_add(1);
+                        retry_at =
+                            Some(tokio::time::Instant::now() + history_error_backoff(failures));
+                    }
                     eprintln!("provider history import failed: {error}");
                 }
+            }
+            #[cfg(test)]
+            {
+                wake.step_pending.store(
+                    runtime.collector.schedule.has_pending(),
+                    std::sync::atomic::Ordering::Release,
+                );
+                wake.step_completions
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                wake.step_finished.notify_one();
             }
             continue;
         }
@@ -684,6 +748,7 @@ async fn restore_history_watcher(
                 *failures = 0;
                 #[cfg(test)]
                 wake.watcher_recoveries.fetch_add(1, Ordering::AcqRel);
+                wake.watcher_recovered.notify_one();
                 return Ok(Some(watcher));
             }
             Err(error) => {
@@ -801,6 +866,14 @@ mod tests {
         let wake = Arc::new(HistoryWake::default());
         let observer_wake = Arc::clone(&wake);
         store.add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
+        let budget_observer_wake = Arc::clone(&wake);
+        store.add_table_change_observer(ObservedTable::Budget, move || {
+            budget_observer_wake.budget()
+        });
+        let usage_observer_wake = Arc::clone(&wake);
+        store.add_table_change_observer(ObservedTable::BudgetUsage, move || {
+            usage_observer_wake.budget()
+        });
 
         store
             .transaction(|tx| {
@@ -834,6 +907,41 @@ mod tests {
         assert!(
             wake.take().roster_dirty,
             "agent changes must refresh the history roster"
+        );
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_budget(id,record) VALUES('history-budget-fixture','{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit budget input");
+        let pending = wake.take();
+        assert!(
+            pending.budget_dirty,
+            "budget changes must wake blocked imports"
+        );
+        assert!(
+            !pending.roster_dirty,
+            "budget changes must not read or refresh the agent roster"
+        );
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES('history-budget-usage-fixture','history-agent','response',1,1.0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit usage repair");
+        assert!(
+            wake.take().budget_dirty,
+            "usage changes also resume budget-invalid imports"
         );
     }
 
@@ -966,6 +1074,20 @@ mod tests {
         .expect("history watcher should import before its deadline")
     }
 
+    async fn wait_for_step_completion(wake: &HistoryWake, count: u64) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = wake.step_finished.notified();
+                if wake.step_completions.load(Ordering::Acquire) >= count {
+                    return;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("history step completion deadline");
+    }
+
     #[tokio::test]
     async fn shutdown_stops_the_history_task() {
         let root = tempdir().expect("temporary store");
@@ -1055,6 +1177,25 @@ mod tests {
         }
         std::fs::write(&rollout, &bytes).expect("fixture rollout");
 
+        let second_thread = "history-thread-after-recovery";
+        let second_response = "history-response-after-recovery";
+        let second_rollout = sessions.join("rollout-20261016-history-thread-after-recovery.jsonl");
+        let second_records = [
+            json!({"type":"session_meta","timestamp":1,"payload":{"id":second_thread}}),
+            json!({"type":"event_msg","timestamp":2,"payload":{"type":"task_started","turn_id":"history-turn-after-recovery"}}),
+            json!({"type":"event_msg","timestamp":3,"payload":{"type":"task_complete","turn_id":"history-turn-after-recovery","status":"completed"}}),
+            json!({"type":"token_usage_record","timestamp":4,"payload":{
+                "thread_id":second_thread,"response_id":second_response,
+                "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+            }}),
+        ];
+        let mut second_bytes = Vec::new();
+        for record in second_records {
+            second_bytes.extend(serde_json::to_vec(&record).expect("recovery rollout record"));
+            second_bytes.push(b'\n');
+        }
+        std::fs::write(&second_rollout, &second_bytes).expect("fixture recovery rollout");
+
         let runtime = HistoryRuntime::new(Arc::clone(&store), accounts);
         let (shutdown, receiver) = watch::channel(false);
         let wake = Arc::new(HistoryWake::default());
@@ -1063,8 +1204,15 @@ mod tests {
             receiver,
             Arc::clone(&wake),
         ));
+        tokio::time::timeout(Duration::from_secs(5), wake.initialized.notified())
+            .await
+            .expect("history runtime initialization deadline");
         let first = wait_for_offset(&state, bytes.len() as u64).await;
         assert_eq!(first["status"], "current");
+        wait_for_step_completion(&wake, 1).await;
+        let attempts_before_failure = wake.step_attempts.load(Ordering::Acquire);
+        let completions_before_failure = wake.step_completions.load(Ordering::Acquire);
+        let budget_failures_before = wake.budget_failures.load(Ordering::Acquire);
 
         let second_agent = AgentRecord::from_value(json!({
             "id": "history-agent-after-recovery", "rootId": "history-agent-after-recovery",
@@ -1077,55 +1225,148 @@ mod tests {
         }))
         .expect("typed recovery fixture agent");
         let second_agent_id = second_agent.id().as_ref().to_owned();
-        store
-            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&second_agent))
-            .await
-            .expect("persist recovery fixture agent");
-        let second_thread = "history-thread-after-recovery";
-        let second_rollout = sessions.join("rollout-20261016-history-thread-after-recovery.jsonl");
-        let second_records = [
-            json!({"type":"session_meta","timestamp":1,"payload":{"id":second_thread}}),
-            json!({"type":"event_msg","timestamp":2,"payload":{"type":"task_started","turn_id":"history-turn-after-recovery"}}),
-            json!({"type":"event_msg","timestamp":3,"payload":{"type":"task_complete","turn_id":"history-turn-after-recovery","status":"completed"}}),
-            json!({"type":"token_usage_record","timestamp":4,"payload":{
-                "thread_id":second_thread,"response_id":"history-response-after-recovery",
-                "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
-            }}),
-        ];
-        let mut second_bytes = Vec::new();
-        for record in second_records {
-            second_bytes.extend(serde_json::to_vec(&record).expect("recovery rollout record"));
-            second_bytes.push(b'\n');
-        }
-        std::fs::write(&second_rollout, &second_bytes).expect("fixture recovery rollout");
+        let second_agent_value = second_agent.value();
+        let budget_snapshot = studio_runtime_services::budget::BudgetSnapshot::from_records(
+            &second_agent_value,
+            &second_agent_value,
+            None,
+            200.0,
+        )
+        .expect("valid fixture budget identity");
+        let usage_params = json!({
+            "threadId": second_thread,
+            "turnId": "history-turn-after-recovery",
+            "responseId": second_response,
+            "tokenUsage": {
+                "total": {"totalTokens": 23},
+                "last": {"totalTokens": 23}
+            },
+            "requestUsage": {"totalTokens": 23},
+            "rawTokenUsageRecord": {
+                "response_id": second_response,
+                "usage": {"total_tokens": 23},
+                "thread_token_usage": {"total_tokens": 23}
+            },
+            "usageSource": "responseRecord"
+        });
+        let usage_key = studio_runtime_services::budget::UsageObservation::from_record(
+            &budget_snapshot,
+            &usage_params,
+            4.0,
+            studio_runtime_services::budget::CaptureSource::History,
+        )
+        .expect("valid fixture usage");
+        let usage_key = usage_key.key().to_owned();
         let second_checkpoint_id = format!("{second_agent_id}:default:{second_thread}");
+        let invalid_budget_usage_id = usage_key.clone();
+        let invalid_budget_id = second_agent_id.clone();
+        wake.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .error = Some("fixture watcher failure".to_owned());
+        store
+            .transaction(move |tx| {
+                Table::<AgentRecord>::new(tx).put(&second_agent)?;
+                tx.execute(
+                    "INSERT INTO runtime_budget(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        invalid_budget_id,
+                        json!({
+                            "cutoff": 0.0,
+                            "floor": 0,
+                            "spent": 0,
+                            "before": 0,
+                            "after": 0,
+                            "historicalNotices": 0,
+                            "noticeSpent": 0,
+                            "counter": null,
+                            "thread": second_thread,
+                            "noticeAt": 0.0,
+                            "created": 0.0,
+                            "lastAmount": null,
+                            "ambiguousNotices": [],
+                            "faults": []
+                        })
+                        .to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES(?1,'wrong-agent','response',23,4.0)",
+                    [invalid_budget_usage_id],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("persist recovery fixture and invalid usage identity");
 
-        // The store commit and watcher error arrive in one pending batch. A
-        // successful recovery must re-read the roster before returning idle.
-        wake.filesystem(
-            Err(notify::Error::generic("fixture watcher failure")),
-            &state.join("accounts"),
-        );
+        // The store commit wake releases the coalesced watcher failure. A
+        // successful recovery must reread the durable roster before returning idle.
         tokio::time::timeout(Duration::from_secs(5), async {
-            while wake.watcher_recoveries.load(Ordering::Acquire) == 0 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            loop {
+                let notified = wake.watcher_recovered.notified();
+                if wake.watcher_recoveries.load(Ordering::Acquire) != 0 {
+                    break;
+                }
+                notified.await;
             }
         })
         .await
         .expect("filesystem watcher should recover before its deadline");
 
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(checkpoint) = read_history_checkpoint_for(&state, &second_checkpoint_id)
-                    && checkpoint["offset"].as_u64() == Some(second_bytes.len() as u64)
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("roster commit coalesced with watcher failure should import new actor");
+        // Watcher recovery notifies the old roster, and the queued commit adds
+        // the new actor. Drain both bounded hints before asserting the second
+        // actor's durable budget failure left the loop idle.
+        wait_for_step_completion(&wake, completions_before_failure + 2).await;
+        assert_eq!(
+            wake.step_attempts.load(Ordering::Acquire),
+            attempts_before_failure + 2,
+            "the old-roster refresh and recovery actor each get one attempt"
+        );
+        assert!(
+            read_history_checkpoint_for(&state, &second_checkpoint_id).is_none(),
+            "invalid usage identity must retain the history checkpoint"
+        );
+        assert_eq!(
+            wake.budget_failures.load(Ordering::Acquire),
+            budget_failures_before + 1,
+            "the second actor's failure must be classified as waiting for a budget change"
+        );
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            wake.step_attempts.load(Ordering::Acquire),
+            attempts_before_failure + 2,
+            "permanent budget input failures must remain idle without a timer"
+        );
+        assert_eq!(
+            wake.step_completions.load(Ordering::Acquire),
+            completions_before_failure + 2,
+            "both bounded recovery attempts should finish before time advances"
+        );
+        assert!(
+            !wake.step_pending.load(Ordering::Acquire),
+            "permanent budget failure should leave no scheduled history retry"
+        );
+        tokio::time::resume();
+
+        let repaired_usage_id = usage_key.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "UPDATE runtime_budget_usage SET agent='history-agent-after-recovery' WHERE id=?1",
+                    [repaired_usage_id],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("repair only the durable budget usage identity");
+        wait_for_step_completion(&wake, completions_before_failure + 3).await;
+        let second = read_history_checkpoint_for(&state, &second_checkpoint_id)
+            .expect("repaired usage should commit the second actor checkpoint");
+        assert_eq!(second["offset"].as_u64(), Some(second_bytes.len() as u64));
+        assert_eq!(second["status"], "current");
 
         let appended = json!({"type":"token_usage_record","timestamp":5,"payload":{
             "thread_id":"history-thread","response_id":"history-response-2",

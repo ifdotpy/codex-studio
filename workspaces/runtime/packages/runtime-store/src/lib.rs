@@ -165,6 +165,8 @@ pub enum ObservedTable {
     FederationOutbox,
     NativeActionReceipts,
     AccessReceipts,
+    Budget,
+    BudgetUsage,
 }
 
 type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
@@ -193,6 +195,8 @@ impl ObservedTable {
             Self::FederationOutbox => "runtime_federation_outbox",
             Self::NativeActionReceipts => "runtime_native_action_receipts",
             Self::AccessReceipts => "runtime_access_receipts",
+            Self::Budget => "runtime_budget",
+            Self::BudgetUsage => "runtime_budget_usage",
         }
     }
 
@@ -218,6 +222,8 @@ impl ObservedTable {
             Self::FederationOutbox => 1 << 16,
             Self::NativeActionReceipts => 1 << 17,
             Self::AccessReceipts => 1 << 18,
+            Self::Budget => 1 << 20,
+            Self::BudgetUsage => 1 << 21,
         }
     }
 
@@ -229,7 +235,7 @@ impl ObservedTable {
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 20] = [
+const OBSERVED_TABLES: [ObservedTable; 22] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
@@ -250,6 +256,8 @@ const OBSERVED_TABLES: [ObservedTable; 20] = [
     ObservedTable::FederationOutbox,
     ObservedTable::NativeActionReceipts,
     ObservedTable::AccessReceipts,
+    ObservedTable::Budget,
+    ObservedTable::BudgetUsage,
 ];
 
 /// Value-free observations emitted by the optional diagnostics callback.

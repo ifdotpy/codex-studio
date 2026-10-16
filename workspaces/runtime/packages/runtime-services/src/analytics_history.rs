@@ -52,10 +52,61 @@ pub enum HistoryError {
     BudgetUnavailable,
     #[error("analytics history discovery exceeded its bounded entry budget")]
     DiscoveryLimit,
+    #[error("analytics history discovery reached the current fairness-round budget")]
+    DiscoveryRoundLimit,
     #[error("analytics history filesystem watcher failed")]
     Watcher(#[from] notify::Error),
     #[error("account profile snapshot could not be read")]
     AccountDriver(#[from] crate::account_driver::AccountDriverError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryRetryPolicy {
+    Backoff,
+    ContinueAfterRoundBudget,
+    WaitForProfileInput,
+    WaitForBudgetChange,
+}
+
+impl HistoryError {
+    pub fn retry_policy(&self) -> HistoryRetryPolicy {
+        match self {
+            Self::Budget(crate::budget::BudgetError::Invalid(_)) => {
+                HistoryRetryPolicy::WaitForBudgetChange
+            }
+            Self::DiscoveryLimit => HistoryRetryPolicy::WaitForProfileInput,
+            Self::DiscoveryRoundLimit => HistoryRetryPolicy::ContinueAfterRoundBudget,
+            _ => HistoryRetryPolicy::Backoff,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::{HistoryError, HistoryRetryPolicy};
+
+    #[test]
+    fn permanent_input_failures_wait_for_input_but_transient_reads_back_off() {
+        assert_eq!(
+            HistoryError::Budget(crate::budget::BudgetError::Invalid(
+                "runtime_budget/tokenBudget".to_owned(),
+            ))
+            .retry_policy(),
+            HistoryRetryPolicy::WaitForBudgetChange
+        );
+        assert_eq!(
+            HistoryError::DiscoveryLimit.retry_policy(),
+            HistoryRetryPolicy::WaitForProfileInput
+        );
+        assert_eq!(
+            HistoryError::DiscoveryRoundLimit.retry_policy(),
+            HistoryRetryPolicy::ContinueAfterRoundBudget
+        );
+        assert_eq!(
+            HistoryError::Read.retry_policy(),
+            HistoryRetryPolicy::Backoff
+        );
+    }
 }
 #[derive(Clone, Copy)]
 pub struct BatchLimits {
@@ -1013,11 +1064,21 @@ impl HistoryCollector {
     }
 
     /// Apply one watcher event to the persistent profile discovery cache.
-    pub fn file_changed(&mut self, profile: &Path, path: &Path, removed: bool) {
+    pub fn file_changed(
+        &mut self,
+        profile: &Path,
+        path: &Path,
+        removed: bool,
+        structural: bool,
+        account: &str,
+    ) {
         self.discovery
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .file_changed(profile, path, removed);
+            .file_changed(profile, path, removed, structural);
+        if structural {
+            self.schedule.discovery_changed(Some(account));
+        }
     }
 
     /// Force a one-time profile rescan after directory changes or watcher overflow.
@@ -1040,7 +1101,48 @@ impl HistoryCollector {
             self.begin_round();
             return Ok(false);
         };
-        if self.visited.len() >= actors.len() || self.visited.contains(text(&agent["id"])) {
+        let result = self
+            .step_selected(
+                store,
+                agent.clone(),
+                actors.len(),
+                profile,
+                clock,
+                cancel,
+                budget,
+            )
+            .await;
+        if matches!(
+            &result,
+            Err(error) if matches!(
+                error.retry_policy(),
+                HistoryRetryPolicy::WaitForProfileInput | HistoryRetryPolicy::WaitForBudgetChange
+            )
+        ) {
+            match &result {
+                Err(error) if error.retry_policy() == HistoryRetryPolicy::WaitForBudgetChange => {
+                    self.schedule
+                        .block_for_budget_change(&agent, clock.monotonic)?;
+                }
+                _ => self
+                    .schedule
+                    .block_for_input_change(&agent, clock.monotonic)?,
+            }
+        }
+        result
+    }
+
+    async fn step_selected(
+        &mut self,
+        store: &RuntimeStore,
+        agent: Value,
+        actor_count: usize,
+        profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
+        clock: HistoryClock,
+        cancel: Arc<AtomicBool>,
+        budget: &dyn HistoryBudgetSink,
+    ) -> Result<bool, HistoryError> {
+        if self.visited.len() >= actor_count || self.visited.contains(text(&agent["id"])) {
             self.begin_round();
         }
         self.visited.insert(text(&agent["id"]).to_owned());
