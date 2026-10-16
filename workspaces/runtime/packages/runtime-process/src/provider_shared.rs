@@ -1,10 +1,14 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
 use crate::protocol::{
     AckRequest, AdminCloseHandleRequest, CursorRequest, FinishFallbackRequest, HandleRequest,
-    HealthRequest, OpenRequest, OperationStatusRequest, RetireCommandRequest, WriteRequest,
+    HealthRequest, NextBatchRequest, OpenRequest, OperationStatusRequest, RetireCommandRequest,
+    WriteRequest,
 };
 use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
-use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
+use crate::{
+    BackendIdentity, OperationId, SUPERVISOR_PROTOCOL_V2, SupervisorAction, SupervisorError,
+    SupervisorHandle, SupervisorHandshakeV2, SupervisorHandshakeV2Result,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
@@ -131,6 +135,32 @@ pub(crate) fn validate_handshake(response: &str) -> Result<(), SupervisorError> 
     }
 }
 
+pub(crate) fn handshake_request_v2(identity: &BackendIdentity) -> SupervisorHandshakeV2 {
+    SupervisorHandshakeV2 {
+        protocol: SUPERVISOR_PROTOCOL_V2,
+        state_dir: identity.state_dir.clone(),
+        backend_id: Some(identity.backend_id.clone()),
+        probe: false,
+        operator: false,
+    }
+}
+
+pub(crate) fn validate_handshake_v2(response: &str) -> Result<(), SupervisorError> {
+    let value: SupervisorHandshakeV2Result = serde_json::from_str(response)?;
+    let received = value.protocol;
+    if value.ok && received == Some(SUPERVISOR_PROTOCOL_V2) {
+        Ok(())
+    } else {
+        Err(SupervisorError::ProtocolMismatch {
+            expected: SUPERVISOR_PROTOCOL_V2,
+            received,
+            detail: value
+                .error
+                .unwrap_or_else(|| "supervisor did not confirm protocol v2".to_owned()),
+        })
+    }
+}
+
 struct RequestEnvelope<R> {
     request: R,
     action: String,
@@ -164,6 +194,7 @@ handle_request!(
     OperationStatusRequest,
     RetireCommandRequest,
     WriteRequest,
+    NextBatchRequest,
 );
 
 impl SupervisorRequest for HealthRequest {
@@ -297,7 +328,7 @@ pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(
     .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })
 }
 
-pub(crate) fn serialize_frame(value: &Value) -> Result<Vec<u8>, SupervisorError> {
+pub(crate) fn serialize_frame(value: &impl Serialize) -> Result<Vec<u8>, SupervisorError> {
     let mut frame = serde_json::to_vec(value)?;
     if frame.len() + 1 > crate::transport::MAX_FRAME_BYTES {
         return Err(SupervisorError::InvalidFrame(

@@ -731,6 +731,7 @@ function fastTierCommands(root) {
       item: { name: "Rust workspace", ecosystem: "cargo" },
       label: "Rust nextest",
       commands: [
+        ["cargo", ["build", "-p", "studio-process-supervisor", "--locked"]],
         [
           "cargo",
           [
@@ -1244,6 +1245,13 @@ export async function execute(
             ...(args[0] === "nextest"
               ? {
                   NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
+                  STUDIO_SUPERVISOR_BINARY: path.join(
+                    cargoTarget(root),
+                    "debug",
+                    process.platform === "win32"
+                      ? "codex-process-supervisor.exe"
+                      : "codex-process-supervisor",
+                  ),
                   // Rust Python-oracle tests must not resolve Node through a
                   // developer PATH that may traverse protected agent homes.
                   CODEX_NODE: process.execPath,

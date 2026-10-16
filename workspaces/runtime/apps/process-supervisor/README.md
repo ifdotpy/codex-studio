@@ -2,8 +2,9 @@
 
 ## Change contract
 
-Own native child processes independently of backend connections and speak the
-existing Python supervisor protocol v1. The binary only accepts an explicit
+Own native child processes independently of backend connections and accept both
+the existing Python supervisor protocol v1 and the explicitly negotiated v2
+event-wait protocol. The binary only accepts an explicit
 `--state` directory. It does not install a service, choose a production state,
 connect to another supervisor, or change HTTP operations. Linux is the initial
 target. Other platforms refuse startup until native identity/transport support
@@ -33,9 +34,18 @@ lease without connecting to or signaling the current owner. Service installation
 and production cutover remain separate operator actions; existing launchers
 continue to select Python.
 
-Connections perform the unchanged protocol/state-directory/backend handshake.
-Only one backend identity may own connections at a time; probes do not acquire
-ownership. Operator-close requests require the operator handshake and exact
+V1 connections retain their unchanged protocol/state-directory/backend
+handshake and action behavior. V2 clients explicitly request protocol 2 and
+require the daemon to echo version 2; they do not fall back to v1. V2 `nextBatch`
+waits for a committed event or terminal reader completion on a separate
+same-backend connection, leaving the control connection available for ACK and
+other actions. Its ordered event payloads are raw JSON and batches are bounded
+by the shared limit in [`runtime-process/src/protocol.rs`](../../packages/runtime-process/src/protocol.rs).
+The frame-size limit remains owned by [`codex_shared_values.py`](../../server/src/codex_shared_values.py)
+and its generated Rust contract. A
+disconnected event-wait connection does not stop the child. Only one backend
+identity may own connections at a time; probes do not acquire ownership.
+Operator-close requests require the operator handshake and exact
 recorded PID, start time, and launch signature. Backend disconnect, detach and
 backend process death leave children and their journal intact.
 
@@ -113,18 +123,20 @@ connection slot and backend admission, and leaves existing children untouched.
 Capacity and framing refusals never signal existing children. Native identity on
 macOS and Windows transport are named startup refusals in this first cut.
 
-## Protocol v2 proposal (not implemented)
+## Protocol migration
 
-- `nextWait(handle, generation, cursor, deadlineMs)` would wait for a committed
-  event, reader completion or a bounded deadline. It must be cancellable on
-  disconnect, retain v1 cursor validation and reader ordering, and advertise its
-  capability only after a version negotiation. V1 `next` remains nonblocking.
-- `receiptLookup(handle, generation, operationId, digest)` would inspect every
-  operation category without sending child input or changing its receipt. It
-  must distinguish missing, accepted, conflicting and foreign-generation
-  receipts, and report that accepted does not prove delivery. The caller's
-  durable operation and exact transport ticket remain bound to the receipt;
-  an unknown outcome is never authorization to resend.
+V1 clients keep their original handshake, actions, and response shapes,
+including nonblocking `next`. The new Rust provider factory requests v2
+explicitly; a v1-only daemon rejects that handshake, and the client does not
+silently retry with v1. When upgrading a v1-only daemon that owns active
+children, leave it running until those handles are safely idle, then replace it
+with the v2-capable daemon. Do not stop an active v1 daemon to force an upgrade:
+its child ownership must remain intact.
 
-Both additions need a separately versioned protocol and client capability tests.
-They are not aliases for v1 actions and must not alter existing action responses.
+V2 adds `nextBatch` for event-driven waiting. It validates the requested
+generation and cursor, returns ordered committed events without advancing the
+acknowledged cursor, and waits until an event or terminal completion is
+available. It does not run a periodic empty query. The separate event-wait
+connection can be cancelled by disconnect without affecting the child or the
+control connection. Other v2 control actions retain their existing action
+shapes; v1 responses remain unchanged.

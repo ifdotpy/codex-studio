@@ -51,7 +51,8 @@ test-fast-rest-non-rust:
 
 [doc("Run one hash partition of the Rust workspace fast tier.")]
 test-fast-rust-partition partition count:
-    @CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run --workspace --profile ci --locked --partition hash:{{quote(partition)}}/{{quote(count)}}
+    @cargo build -p studio-process-supervisor --locked
+    @STUDIO_SUPERVISOR_BINARY="${CARGO_TARGET_DIR:-target}/debug/codex-process-supervisor" CODEX_NODE="$(node -p 'process.execPath')" cargo nextest run --workspace --profile ci --locked --partition hash:{{quote(partition)}}/{{quote(count)}}
 
 [doc("Run one stable shard of the default server suites; index is zero-based.")]
 test-server-shard index count:

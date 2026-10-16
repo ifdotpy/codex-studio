@@ -3,8 +3,36 @@ use std::io;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use strum::Display;
+
+pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
+pub const SUPERVISOR_NEXT_BATCH_MAX_EVENTS: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorHandshakeV2 {
+    pub protocol: u64,
+    pub state_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_id: Option<BackendId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub probe: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub operator: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorHandshakeV2Result {
+    pub ok: bool,
+    pub protocol: Option<u64>,
+    pub error: Option<String>,
+}
 
 /// Backend identity sent in the supervisor handshake.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,12 +68,14 @@ pub struct HandleIdentity {
 #[serde(transparent)]
 pub struct Generation(pub u64);
 
-#[derive(Clone, Copy, Debug, Display, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Display, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum SupervisorAction {
     Health,
     Open,
     Next,
+    NextBatch,
     FinishFallback,
     AdminCloseHandle,
     RetireCommand,
@@ -244,6 +274,49 @@ pub struct NextResult {
     pub stderr_reader_alive: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextBatchRequest {
+    pub handle: SupervisorHandle,
+    pub cursor: EventCursor,
+    pub generation: Generation,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextBatchRequestEnvelope {
+    pub action: SupervisorAction,
+    #[serde(rename = "requestId")]
+    pub request_id: Option<u64>,
+    #[serde(flatten)]
+    pub request: NextBatchRequest,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextBatchResult {
+    pub events: Vec<SupervisorEventV2>,
+    #[serde(rename = "returnCode")]
+    pub return_code: Option<i32>,
+    pub backpressure: bool,
+    #[serde(rename = "stdoutReaderAlive")]
+    pub stdout_reader_alive: bool,
+    #[serde(rename = "stderrReaderAlive")]
+    pub stderr_reader_alive: bool,
+}
+
+/// Protocol-v2 event payload is the journal's original JSON value, embedded
+/// directly in the frame rather than quoted as protocol-v1's JSON string.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorEventV2 {
+    pub sequence: EventCursor,
+    pub generation: Generation,
+    pub kind: EventKind,
+    pub payload: Box<RawValue>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
