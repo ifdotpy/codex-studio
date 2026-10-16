@@ -58,3 +58,13 @@ They do not inject an operating-system Finder drag. Geometry restoration and
 actual LaunchAgent reconfiguration are not exercised against the user's live
 profile. No load tests, live model requests, or backend restart were performed.
 The full repository fast tier was not rerun for this client-only update.
+
+## Packaged startup isolation
+
+The initial package-start check timed out before profile creation. A process
+sample located the main thread inside AppKit's persistent-window restore alert,
+not in Studio or certificate validation. The package check now passes Apple's
+`ApplePersistenceIgnoreState` argument for that hidden test process. This keeps
+AppKit restoration separate from the user's installed app, just as the test
+already isolates the Studio profile and backend state. It does not change user
+defaults or delete any saved window, chat, or draft data.

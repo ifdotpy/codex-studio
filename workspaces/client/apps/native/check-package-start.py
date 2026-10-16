@@ -29,7 +29,11 @@ owned_pid = None
 host = None
 try:
     with (fixture / "host.log").open("w") as log:
-        host = subprocess.Popen([str(executable), "--hidden"], env=env,
+        # AppKit restores state by bundle ID, outside CODEX_DESKTOP_PROFILE.
+        # Its documented test-only argument isolates that state too, so a prior
+        # test termination cannot open a modal restore prompt before setup.
+        # https://developer.apple.com/library/archive/releasenotes/AppKit/RN-AppKitOlderNotes/
+        host = subprocess.Popen([str(executable), "--hidden", "-ApplePersistenceIgnoreState", "YES"], env=env,
                                 stdout=log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
