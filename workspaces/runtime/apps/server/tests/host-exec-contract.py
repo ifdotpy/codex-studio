@@ -292,6 +292,32 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
         self.assertFalse((self.line / "must-not-run").exists())
 
+    async def test_rejected_run_releases_both_leases_and_rotates_generation(self):
+        self.host.slots = 1
+        call = self.guest.call
+        async def changed(method, params, phase, *options):
+            if method == "run":
+                slot = self.host.slot(self.host.load(params["operationId"]))
+                (slot / "source" / "main.swift").write_text("changed after transfer")
+            return await call(method, params, phase, *options)
+        with patch.object(self.guest, "call", side_effect=changed):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("run-rejected", 'open("must-not-run", "w").write("bad")')
+        self.assertEqual(caught.exception.code, "sync_conflict")
+        old = self.host.load("run-rejected")
+        self.assertEqual(old["state"], "released")
+        self.assertEqual(old["preRunError"]["code"], "sync_conflict")
+        self.assertNotIn("startedAt", old)
+        self.assertFalse(self.host.commands)
+        self.assertFalse((Path(old["slotPath"]) / "must-not-run").exists())
+        self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
+        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        self.assertFalse((staging / "lease.json").exists())
+        new = await self.execute("after-rejected-run", 'print("next command")')
+        self.assertEqual(new["slotPath"], old["slotPath"])
+        self.assertNotEqual(new["generation"], old["generation"])
+        self.assertEqual(new["exitCode"], 0)
+
     async def test_lost_run_response_keeps_lease(self):
         call = self.guest.call
         async def lost(method, params, phase, *options):
