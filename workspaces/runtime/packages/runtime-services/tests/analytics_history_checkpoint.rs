@@ -1337,7 +1337,7 @@ fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules()
 }
 
 #[test]
-fn collector_shares_discovery_between_actors_until_next_round() {
+fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     let (root, agent) = fixture();
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).expect("sessions");
@@ -1359,24 +1359,34 @@ fn collector_shares_discovery_between_actors_until_next_round() {
     let cancel = AtomicBool::new(false);
     let mut collector = history::HistoryCollector::default();
     for index in 0..2 {
-        assert!(
-            collector
-                .step(
-                    &store,
-                    &actors,
-                    |_| Ok(root.path().to_path_buf()),
-                    history::HistoryClock {
-                        observed_at: 200.,
-                        monotonic: 10. + index as f64
-                    },
-                    &cancel,
-                    &Budget
-                )
-                .expect("actor import")
-        );
+        let advanced = collector
+            .step(
+                &store,
+                &actors,
+                |_| Ok(root.path().to_path_buf()),
+                history::HistoryClock {
+                    observed_at: 200.,
+                    monotonic: 10. + index as f64,
+                },
+                &cancel,
+                &Budget,
+            )
+            .expect("actor import");
         if index == 0 {
-            fs::copy(&path, sessions.join("rollout-duplicate-thread.jsonl"))
-                .expect("new file between actors");
+            assert!(advanced, "the first actor imports its rollout");
+            let duplicate = sessions.join("rollout-duplicate-thread.jsonl");
+            fs::copy(&path, &duplicate).expect("new file between actors");
+            collector.file_changed(root.path(), &duplicate, false);
+            collector
+                .schedule
+                .notify("a")
+                .expect("notify first actor for new rollout");
+            collector
+                .schedule
+                .notify("b")
+                .expect("notify second actor for new rollout");
+        } else {
+            assert!(!advanced, "ambiguous rollout is not imported");
         }
     }
     let db = AnalyticsRepository::new(root.path())
@@ -1386,23 +1396,26 @@ fn collector_shares_discovery_between_actors_until_next_round() {
         Repo::read(&db, CaptureTable::History, "b:default:thread")
             .expect("row")
             .expect("second checkpoint")["status"],
-        "current"
+        "ambiguous"
     );
     drop(db);
     collector.begin_round();
-    collector
-        .step(
-            &store,
-            &actors,
-            |_| Ok(root.path().to_path_buf()),
-            history::HistoryClock {
-                observed_at: 201.,
-                monotonic: 20.,
-            },
-            &cancel,
-            &Budget,
-        )
-        .expect("next round");
+    assert!(
+        !collector
+            .step(
+                &store,
+                &actors,
+                |_| Ok(root.path().to_path_buf()),
+                history::HistoryClock {
+                    observed_at: 201.,
+                    monotonic: 20.,
+                },
+                &cancel,
+                &Budget,
+            )
+            .expect("next round"),
+        "a watcher-updated ambiguous profile is refused without import"
+    );
     assert_eq!(
         checkpoint(&store).expect("new discovery")["status"],
         "ambiguous"
