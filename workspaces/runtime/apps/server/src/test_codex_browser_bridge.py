@@ -476,7 +476,7 @@ class Binds(unittest.TestCase):
             lambda _target, _headers: None,
             lambda _forward, _reason: None,
         )
-        with patch.object(bridge_module.socket, "socket", make_socket):
+        with patch.object(socket, "socket", make_socket):
             with self.assertRaisesRegex(PortBusy, "Port 43210 is in use"):
                 forward.bind()
 

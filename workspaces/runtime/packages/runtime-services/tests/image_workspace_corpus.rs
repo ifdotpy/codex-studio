@@ -147,6 +147,10 @@ impl WorkspaceBackend for ScriptedBackend {
         Ok(Some(0))
     }
 
+    fn available_bytes(&self, _path: &Path) -> Result<u64, ImageWorkspaceError> {
+        Ok(u64::MAX)
+    }
+
     fn exec_prefix(&self) -> Vec<String> {
         Vec::new()
     }

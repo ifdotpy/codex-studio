@@ -169,6 +169,16 @@ pub trait WorkspaceBackend: Send + Sync {
     fn remove_layer(&self, agent_dir: &Path) -> Result<(), ImageWorkspaceError>;
     fn remove_base_version(&self, path: &Path) -> Result<(), ImageWorkspaceError>;
     fn private_bytes(&self, path: &Path) -> Result<Option<u64>, ImageWorkspaceError>;
+    /// Available bytes on the host filesystem containing `path`.
+    ///
+    /// The production default preserves the host free-space preflight. Tests
+    /// may override this boundary so lifecycle behavior does not depend on the
+    /// machine running them.
+    fn available_bytes(&self, path: &Path) -> Result<u64, ImageWorkspaceError> {
+        let stats = rustix::fs::statvfs(path)
+            .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+        Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+    }
     fn exec_prefix(&self) -> Vec<String>;
     fn base_needs_refresh(
         &self,
@@ -844,13 +854,20 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         staging: Option<&WorkspaceBaseStaging>,
     ) -> Result<(), ImageWorkspaceError> {
         let required = minimum_free(variable, default)?;
+        self.require_space_bytes(required, purpose, staging)
+    }
+
+    fn require_space_bytes(
+        &self,
+        required: u64,
+        purpose: &'static str,
+        staging: Option<&WorkspaceBaseStaging>,
+    ) -> Result<(), ImageWorkspaceError> {
         let mut existing = self.store.as_path();
         while !existing.exists() {
             existing = existing.parent().ok_or(ImageWorkspaceError::InvalidState)?;
         }
-        let stats = rustix::fs::statvfs(existing)
-            .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
-        let free = stats.f_bavail.saturating_mul(stats.f_frsize);
+        let free = self.backend.available_bytes(existing)?;
         if free < required {
             return Err(ImageWorkspaceError::FreeSpace {
                 purpose,
@@ -1579,6 +1596,7 @@ mod tests {
         store: PathBuf,
         fail_once: Mutex<Option<&'static str>>,
         copy_gate: Option<CopyGate>,
+        available_bytes: Option<u64>,
     }
 
     impl FakeBackend {
@@ -1713,6 +1731,9 @@ mod tests {
         fn private_bytes(&self, _: &Path) -> Result<Option<u64>, ImageWorkspaceError> {
             Ok(Some(0))
         }
+        fn available_bytes(&self, _: &Path) -> Result<u64, ImageWorkspaceError> {
+            Ok(self.available_bytes.unwrap_or(u64::MAX))
+        }
         fn exec_prefix(&self) -> Vec<String> {
             Vec::new()
         }
@@ -1809,6 +1830,27 @@ mod tests {
     }
 
     #[test]
+    fn low_space_preflight_uses_the_injected_host_probe() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let manager = WorkspaceLifecycle::with_backend(
+            fixture.path().join("store"),
+            FakeBackend {
+                available_bytes: Some(0),
+                ..FakeBackend::default()
+            },
+        );
+
+        assert!(matches!(
+            manager.require_space_bytes(1, "image base", None),
+            Err(ImageWorkspaceError::FreeSpace {
+                purpose: "image base",
+                free: 0,
+                required: 1,
+            })
+        ));
+    }
+
+    #[test]
     fn async_workspace_provision_returns_while_base_copy_is_blocked() {
         let fixture = tempfile::tempdir().expect("fixture");
         let store = fixture.path().join("store");
@@ -1826,6 +1868,7 @@ mod tests {
                     entered: entered_tx,
                     release: Mutex::new(release_rx),
                 }),
+                available_bytes: None,
             },
         ));
         let (result_tx, result_rx) = mpsc::channel();
@@ -1885,6 +1928,7 @@ mod tests {
                 store: store.clone(),
                 fail_once: Mutex::new(None),
                 copy_gate: None,
+                available_bytes: None,
             },
         );
         let key = repo_key(&project.canonicalize().expect("canonical project"));
@@ -1919,6 +1963,7 @@ mod tests {
             store: store.clone(),
             fail_once: Mutex::new(Some("copy")),
             copy_gate: None,
+            available_bytes: None,
         };
         let manager = WorkspaceLifecycle::with_backend(&store, backend);
 

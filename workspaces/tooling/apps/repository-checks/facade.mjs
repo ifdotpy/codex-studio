@@ -44,6 +44,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
     "FSEvents (lead's W9 decision).",
   ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
+    "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
+  ],
 ];
 const UNSAFE_RUST_ALLOWLIST_BY_FILE = new Map(UNSAFE_RUST_ALLOWLIST);
 const DECLARATION_SECTIONS = [
