@@ -383,7 +383,10 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
         serde_json::from_value(case["records"].clone()).expect("records"),
     )
     .await;
-    drop(store);
+    store
+        .checkpoint_wal_passive()
+        .await
+        .expect("seed database checkpoint");
     for delete in [false, true] {
         for effect in [
             "monitor-starting",
