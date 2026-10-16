@@ -11,7 +11,6 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
-from studio_api.models import ErrorResponse
 from codex_federation_limits import FEDERATION_BODY_LIMIT, FEDERATION_PATHS
 from studio_api.federation.models import (
     ApprovePeerRequest,
@@ -28,7 +27,7 @@ from studio_api.federation.models import (
     StatusRequest,
 )
 from codex_federation import SIGNED_REQUEST_MODELS
-from studio_api.responses import api_write_responses, error_responses, register_route_components
+from studio_api.responses import api_write_responses, register_route_components
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -53,7 +52,6 @@ class RequestHeaders:
 
 MAX_BODY_BYTES = FEDERATION_BODY_LIMIT
 SIGNED_REQUEST_OPERATION_MODELS: dict[str, type[BaseModel]] = {}
-NO_GET_PATHS = ("/api/federation", *FEDERATION_PATHS)
 
 
 def _raw_headers(request: Request) -> RequestHeaders:
@@ -248,13 +246,5 @@ def create_router(context: ApiContext) -> APIRouter:
     async def pull(request: Request) -> Response:
         return await signed_post(request, "pull")
     _register_request_schema(router.routes[-1], "PullRequest", PullRequest, "pull")
-
-    async def no_get_counterpart(request: Request) -> Response:
-        return context.send(request, {"error": "Not found"}, status=404)
-
-    for path in NO_GET_PATHS:
-        router.add_api_route(path, no_get_counterpart, methods=["GET"],
-                             response_model=ErrorResponse, status_code=404,
-                             responses=error_responses((401, 403, 404, 429, 500, 503)))
 
     return router

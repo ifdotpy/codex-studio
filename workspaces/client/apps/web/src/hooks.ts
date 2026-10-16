@@ -19,7 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ApiError, errorText, type PostResult } from "./api";
+import { errorText, type PostResult } from "./api";
 import "./sync/client";
 import {
   isProjectionDatabaseClosedError,
@@ -27,6 +27,7 @@ import {
 } from "./sync/entityCacheStorage";
 import "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
+import { retryableReadError } from "./sync/readRetry";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
 import {
@@ -182,7 +183,10 @@ export function useSnapshot(
   );
   const credentialFailures = useRef(0);
   const refresh = useCallback(
-    async (credentialsOnly = replicated.current): Promise<void> => {
+    async (
+      credentialsOnly = replicated.current,
+      onProjection?: (projection: Snapshot, workspaceId: string) => void,
+    ): Promise<void> => {
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
       const request = ++generation.current;
@@ -196,9 +200,15 @@ export function useSnapshot(
             : old,
         );
         if (!credentialsOnly) {
-          const projection = await refreshProjection();
+          let projectionWorkspaceId = "";
+          const projection = await refreshProjection({
+            onWorkspaceId: (id) => {
+              projectionWorkspaceId = id;
+            },
+          });
           if (request !== generation.current) return;
           setData({ ...projection, token: session.token });
+          onProjection?.(projection, projectionWorkspaceId);
         }
         if (request !== generation.current) return;
         credentialFailures.current = 0;
@@ -211,11 +221,7 @@ export function useSnapshot(
         });
         // Retry this read without waiting for the healthy 30-second poll. Writes
         // retain their own receipt rules and never use this retry.
-        const transient =
-          e instanceof TypeError ||
-          (e instanceof ApiError &&
-            ((e.status >= 500 && e.status < 600) ||
-              [408, 429].includes(e.status)));
+        const transient = retryableReadError(e);
         if (transient && !document.hidden && navigator.onLine !== false) {
           const delay = Math.min(
             500 * 2 ** Math.min(credentialFailures.current++, 4),

@@ -182,18 +182,20 @@ export function connectUiPreferences(
       token = (await request("/api/session")).token;
       do {
         sendAgain = false;
-        for (const { scope, fields, serialized } of pendingFields()) {
+        for (const { scope, fields } of pendingFields()) {
           const result = await request("/api/sync/preferences", {
             scope,
             fields,
           });
           if (stopped) return;
-          confirmed[scope] = serialized;
           acknowledgePreferenceFields(
             scope,
             fields,
             result.fields as PreferenceFields,
             storage,
+          );
+          confirmed[scope] = canonicalPreferenceJson(
+            result.fields as PreferenceFields,
           );
         }
       } while (sendAgain && !stopped);

@@ -43,63 +43,69 @@ async fn log(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let state_dir = state.state_dir.clone();
     let response_id = id.clone();
-    let prepared = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let monitor = MonitorsRepository::get(&connection, &id)
-            .map_err(store_read_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
-        let monitor_id = monitor.id().as_ref();
-        let value = monitor.value();
-        let owner = value
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(owner))
-            .map_err(store_read_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-        let agent_value = agent.value();
-        if agent_value.get("deletedAt").is_some_and(is_truthy) {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "This agent was deleted",
-            ));
-        }
-        let path = value
-            .get("log")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let tail = value
-            .get("tail")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?
-            .as_bytes()
-            .to_vec();
-        let bytes = value
-            .get("bytes")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
-        let truncated = bytes > size;
-        let (start, end, status) = match range.as_deref() {
-            Some(range) => match byte_range(range, size) {
-                Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
-                None => return Ok(Prepared::unsatisfiable(size)),
-            },
-            None => (0, size, StatusCode::OK),
-        };
-        if let LogSource::File(file) = &mut source {
-            file.seek(SeekFrom::Start(start))
-                .map_err(|_| ApiError::internal())?;
-        }
-        Ok::<_, ApiError>(Prepared {
-            source,
-            size,
-            truncated,
-            start,
-            end,
-            status,
-        })
-    })
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/monitors",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let monitor = MonitorsRepository::get(&connection, &id)
+                .map_err(store_read_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
+            let monitor_id = monitor.id().as_ref();
+            let value = monitor.value();
+            let owner = value
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let agent = AgentRepository::get(&connection, &AgentId::from(owner))
+                .map_err(store_read_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
+            let agent_value = agent.value();
+            if agent_value
+                .get("deletedAt")
+                .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This agent was deleted",
+                ));
+            }
+            let path = value
+                .get("log")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let tail = value
+                .get("tail")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?
+                .as_bytes()
+                .to_vec();
+            let bytes = value
+                .get("bytes")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
+            let truncated = bytes > size;
+            let (start, end, status) = match range.as_deref() {
+                Some(range) => match byte_range(range, size) {
+                    Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+                    None => return Ok(Prepared::unsatisfiable(size)),
+                },
+                None => (0, size, StatusCode::OK),
+            };
+            if let LogSource::File(file) = &mut source {
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|_| ApiError::internal())?;
+            }
+            Ok::<_, ApiError>(Prepared {
+                source,
+                size,
+                truncated,
+                start,
+                end,
+                status,
+            })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     prepared.response(&response_id)
@@ -180,12 +186,15 @@ impl Prepared {
                             return Ok::<_, std::io::Error>(None);
                         }
                         let limit = remaining.min(LOG_CHUNK_BYTES) as usize;
-                        let (file, chunk) = tokio::task::spawn_blocking(move || {
-                            let mut chunk = vec![0; limit];
-                            let count = file.read(&mut chunk)?;
-                            chunk.truncate(count);
-                            Ok::<_, std::io::Error>((file, chunk))
-                        })
+                        let (file, chunk) = studio_runtime_process::blocking_pool::spawn_blocking(
+                            "runtime-http/routes/monitors",
+                            move || {
+                                let mut chunk = vec![0; limit];
+                                let count = file.read(&mut chunk)?;
+                                chunk.truncate(count);
+                                Ok::<_, std::io::Error>((file, chunk))
+                            },
+                        )
                         .await
                         .map_err(std::io::Error::other)??;
                         if chunk.is_empty() {
@@ -270,39 +279,43 @@ fn byte_range(value: &str, size: u64) -> Option<(u64, u64)> {
 }
 
 fn invalid_monitor(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object monitors/{id}"),
-    )
+    ApiError::invalid_stored("monitors", id)
 }
 
 fn store_read_error(error: StoreError) -> ApiError {
-    match error {
-        StoreError::InvalidStoredObject { table, id } => {
-            let object = table.strip_prefix("runtime_").unwrap_or(table);
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            )
-        }
-        _ => ApiError::internal(),
-    }
-}
-
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
+    ApiError::stored(error)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::byte_range;
+    use super::{byte_range, invalid_monitor, store_read_error};
+    use crate::error::{InternalErrorCause, InternalErrorKind};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use studio_runtime_store::StoreError;
+
+    #[test]
+    fn invalid_stored_monitor_data_is_redacted_and_service_unavailable() {
+        let invalid_record = invalid_monitor("private-monitor-id").into_response();
+        let invalid_row = store_read_error(StoreError::InvalidStoredObject {
+            table: "runtime_monitors",
+            id: "private-monitor-id".into(),
+        })
+        .into_response();
+
+        for response in [invalid_record, invalid_row] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        let database_failure =
+            store_read_error(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
+        assert_eq!(
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
+        );
+    }
 
     #[test]
     fn byte_ranges_cover_open_suffix_and_parser_edge_cases() {

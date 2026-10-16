@@ -40,11 +40,14 @@ TESTS = SERVER_TESTS_ROOT
 TESTS_REL = TESTS.relative_to(ROOT).as_posix()
 SOURCE_REL = SERVER_SOURCE_ROOT.relative_to(ROOT).as_posix()
 sys.path.insert(0, str(TESTS))
+from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
 TERMINALS_SUITE = f"{TESTS_REL}/terminals-contract.py"
+P20_CUTOVER_SUITE = f"{TESTS_REL}/wave7-p20-host-cutover-contract.py"
+P20_MANIFEST_PREBUILD_TIMEOUT_SECONDS = 900
 CODEX_BIN_SUITES = frozenset({TERMINALS_SUITE, f"{TESTS_REL}/test_isolation_contract.py"})
 COMPONENT_ROOTS = (
     f"{SOURCE_REL}/analytics/tests",
@@ -902,6 +905,11 @@ def _slice_test_ids(test_ids, count):
     return [test_ids[index::count] for index in range(count) if test_ids[index::count]]
 
 
+def _base_unittest_id(test_id):
+    """Map a unittest subtest result ID back to its selected test method."""
+    return test_id.partition(" ")[0]
+
+
 def _focused_suite_slice_count(relative, test_count, workers):
     """Bound focused test slices by the selected suite and focused worker plan."""
     if (relative in NEVER_SLICE_SUITES or is_http_boundary_suite(relative)
@@ -940,6 +948,9 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment["XDG_CONFIG_HOME"] = str(temp_root / "config")
     environment["CODEX_HOME"] = str(temp_root / "codex-home")
     environment["CODEX_AGENTS_PYTHON"] = sys.executable
+    # Keep Python's fatal-signal traceback enabled in every isolated suite
+    # process, including native and extension-module crashes.
+    environment["PYTHONFAULTHANDLER"] = "1"
     # Prevent host Git settings and background index maintenance from changing
     # fixture repositories while another suite copies or fingerprints them.
     isolated_git_config = isolated_home / ".gitconfig"
@@ -973,6 +984,17 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     if not node:
         node = shutil.which("node", path=safe_path)
     path_entries = [str(Path(sys.executable).parent), os.defpath]
+    if relative == f"{TESTS_REL}/wave7-p20-host-cutover-contract.py":
+        # The P20 census invokes Cargo to read the Rust HTTP route manifest.
+        # Preserve only the caller's Cargo/Rust compiler directories; suites
+        # otherwise use the restricted PATH below so provider tools stay hidden.
+        for tool in ("cargo", "rustc"):
+            executable = shutil.which(tool, path=safe_path)
+            if executable:
+                directory = str(Path(executable).absolute().parent)
+                if directory not in path_entries:
+                    path_entries.insert(0, directory)
+
     if sys.platform == "darwin":
         # macOS os.defpath omits the system administration tools used by host probes.
         path_entries.extend(("/usr/sbin", "/sbin"))
@@ -1105,6 +1127,7 @@ def _unix_socket_path_error(temp_root):
         temp_root / "studio-shutdown-00000000" / "state" / "canvas.sock",
         temp_root / "studio-decoy-supervisor-00000000" / "supervisor.sock",
         temp_root / "state" / "codex-agents" / "supervisor.sock",
+        temp_root / "o-00000000" / "tmp" / "h-00000000" / "state" / "supervisor.sock",
     )
     longest = max(prospective, key=lambda path: len(os.fsencode(path)))
     path_bytes = len(os.fsencode(longest))
@@ -1712,6 +1735,8 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     suite_tmp_root = TEST_TMP_ROOT
     owned_tmp_root = None
     plan = None
+    p20_manifest_path = None
+    p20_manifest_error = None
     explicit_jobs = workers
 
     def run_one(index, relative, kind, selectors=None, shard_index=0, expected_ids=None):
@@ -1741,6 +1766,11 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 (temp_root / name).mkdir()
             environment = _suite_environment(root, temp_root, audit_home=audit_home,
                                              relative=relative)
+            if relative == P20_CUTOVER_SUITE:
+                if p20_manifest_error:
+                    return f"could not prebuild the Rust route manifest: {p20_manifest_error}", 0
+                if p20_manifest_path is not None:
+                    environment[P20_OPERATION_MANIFEST_ENV] = str(p20_manifest_path)
             if not relative.endswith(".mjs") and (
                     relative.startswith(f"{SOURCE_REL}/studio_api/")
                     or is_unittest_suite(root / relative)):
@@ -1771,7 +1801,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
                 records = ([json.loads(line) for line in outcome_file.read_text().splitlines()]
                            if outcome_file.exists() else [])
-                observed_ids = {record["id"] for record in records}
+                observed_ids = {_base_unittest_id(record["id"]) for record in records}
                 if observed_ids != set(expected_ids):
                     missing = sorted(set(expected_ids) - observed_ids)
                     extra = sorted(observed_ids - set(expected_ids))
@@ -1838,6 +1868,44 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         if explicit_jobs is not None and plan["workers"] < explicit_jobs:
             print(f"explicit --jobs reduced from {explicit_jobs} to {plan['workers']} by "
                   f"{plan['limitingBound']} resource bound", flush=True)
+
+    if save_measurements and any(relative == P20_CUTOVER_SUITE for relative, _kind in runnable):
+        manifest_handle = tempfile.NamedTemporaryFile(
+            dir=suite_tmp_root, prefix="p20-operation-manifest-", suffix=".json", delete=False
+        )
+        p20_manifest_path = Path(manifest_handle.name)
+        manifest_handle.close()
+        prebuild_command = [
+            sys.executable,
+            str(root / P20_CUTOVER_SUITE),
+            "--write-operation-manifest",
+            str(p20_manifest_path),
+        ]
+        prebuild_home = os.environ.get("HOME", str(Path.home()))
+        cargo_home = os.environ.get("CARGO_HOME", str(Path(prebuild_home) / ".cargo"))
+        try:
+            with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix="p20-prebuild-env-") as scratch:
+                prebuild_environment = _suite_environment(
+                    root, Path(scratch), relative=P20_CUTOVER_SUITE
+                )
+                # Cargo needs its caller cache, while its child environment still
+                # gets the runner's protected-PATH filtering and process isolation.
+                prebuild_environment["HOME"] = prebuild_home
+                prebuild_environment["USERPROFILE"] = prebuild_home
+                prebuild_environment["CARGO_HOME"] = cargo_home
+                prebuild_environment.pop("CODEX_AGENTS_PYTHON", None)
+                returncode, error, _expected, _unexpected = run_process(
+                    prebuild_command,
+                    root,
+                    P20_MANIFEST_PREBUILD_TIMEOUT_SECONDS,
+                    prebuild_environment,
+                )
+            if error or returncode:
+                p20_manifest_error = error or f"prebuild command exited {returncode}"
+            else:
+                print("Prebuilt P20 Rust route manifest before suite deadlines.", flush=True)
+        except OSError as error:
+            p20_manifest_error = str(error)
 
     indexed.sort(key=lambda item: suite_seconds.get(item[1], 0), reverse=True)
     first_pending_index = len(runnable) - len(indexed) + 1
@@ -1922,6 +1990,8 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     finally:
         if owned_tmp_root is not None:
             _remove_owned_scratch_root(owned_tmp_root)
+        if p20_manifest_path is not None:
+            p20_manifest_path.unlink(missing_ok=True)
     order = {relative: index for index, (relative, _kind) in enumerate(runnable)}
     failures.sort(key=lambda failure: order[failure[0]])
     if execute is run_process:

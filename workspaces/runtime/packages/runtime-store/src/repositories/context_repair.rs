@@ -68,7 +68,7 @@ impl ContextRepairRepository {
         let Some(agent) = Self::agent(db, id)? else {
             return Ok(None);
         };
-        let mut query = db.prepare("SELECT e.id,e.agent,e.epoch,e.kind,CASE WHEN length(CAST(e.text AS BLOB))<=65536 THEN e.text ELSE NULL END,e.status,e.created,e.turn_id,e.error,CASE WHEN length(CAST(m.record AS BLOB))<=65536 THEN m.record WHEN m.record IS NULL THEN NULL ELSE 'invalid-oversize' END FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id LIMIT ?3")?;
+        let mut query = db.prepare_cached("SELECT e.id,e.agent,e.epoch,e.kind,CASE WHEN length(CAST(e.text AS BLOB))<=65536 THEN e.text ELSE NULL END,e.status,e.created,e.turn_id,e.error,CASE WHEN length(CAST(m.record AS BLOB))<=65536 THEN m.record WHEN m.record IS NULL THEN NULL ELSE 'invalid-oversize' END FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id LIMIT ?3")?;
         let rows = query.query_map(params![id, agent["epoch"].as_i64(), i64::try_from(limit).map_err(|_| StoreError::RecordContract("capture bound"))?], |row| {
             Ok((json!({"id": row.get::<_,String>(0)?, "agent": row.get::<_,String>(1)?, "epoch": row.get::<_,i64>(2)?, "kind": row.get::<_,String>(3)?, "text": row.get::<_,String>(4)?, "status": row.get::<_,String>(5)?, "created": row.get::<_,f64>(6)?, "turn_id": row.get::<_,Option<String>>(7)?, "error": row.get::<_,Option<String>>(8)?}), row.get::<_,Option<String>>(9)?))
         })?;

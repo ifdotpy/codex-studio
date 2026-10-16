@@ -242,6 +242,24 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it("does not repost a pulled preference row with reordered object keys", async () => {
+    const origin = "https://reordered-pull.invalid";
+    const fields = {
+      z: { value: "last", timestamp: 2, writer: "w" },
+      a: { value: "first", timestamp: 1, writer: "w" },
+    };
+    const server = backend(origin, { a: fields.a, z: fields.z });
+    receivePreferenceFields("user", fields);
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+    } finally {
+      stop();
+    }
+  });
+
   it("merges both servers and catches up an offline server without new edit versions", async () => {
     const theme = '["codex-studio-preferences-v1","theme"]';
     const size = '["codex-studio-preferences-v1","mainFontSize"]';

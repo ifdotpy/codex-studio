@@ -249,9 +249,15 @@ class MultiServerBoundary:
                 sent_body = True
                 return {"type": "http.request", "body": raw, "more_body": False}
 
+            # A paired server learns the QUIC link address from a signed response (docs/peer-link.md).
+            link = service.link.advert() if service.link is not None else None
+            identity_headers = [(b"x-studio-server", principal["targetServerId"].encode())]
+            if link and principal.get("kind") == "server":
+                identity_headers.append((b"x-studio-link", link.encode()))
+
             async def identified_send(message: Message) -> None:
                 if message["type"] == "http.response.start":
-                    message = {**message, "headers": [*message.get("headers", []), (b"x-studio-server", principal["targetServerId"].encode())]}
+                    message = {**message, "headers": [*message.get("headers", []), *identity_headers]}
                 await cors_send(message)
 
             receipt_replayed = False

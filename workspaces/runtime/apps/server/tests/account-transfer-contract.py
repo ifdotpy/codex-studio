@@ -202,10 +202,12 @@ class TransferContract(f.AccountContracts):
 
     def complete_fork(self, index=0):
         self.pending[index][2].set_result({'thread': {'id': 'target-thread-'+str(index)}, 'model':'gpt-6-astra'})
-        for worker in self.lazy_test_threads:
-            worker.join(3)
-        for worker in list(self.store.workers):
-            worker.join(3)
+        # Future completion only wakes the transfer owner; it does not publish
+        # the durable receipt. Observe the owners finishing before reading it.
+        workers = [*self.lazy_test_threads, *list(self.store.workers)]
+        for worker in workers:
+            worker.join(HANG_GUARD_SECONDS)
+            self.assertFalse(worker.is_alive(), "transfer owner did not finish after the native reply")
 
     def test_fork_preserves_only_a_verified_current_tool_catalog(self):
         from codex_native_tools import needs_refresh
@@ -481,6 +483,9 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(aid)['accountKey'], self.other_key)
         self.assertEqual(self.pending[0][0], 'thread/fork')
         self.assertTrue(self.pending[0][1]['deferGoalContinuation'])
+        self.assertIn('config', self.pending[0][1])
+        self.assertIn('developerInstructions', self.pending[0][1])
+        self.assertNotIn('dynamicTools', self.pending[0][1])
         self.complete_fork()
         self.assertEqual(self.receipt(op['id'])['status'], 'completed')
         self.assertEqual(self.runtime.agent(aid)['accountTransfer']['status'], 'completed')

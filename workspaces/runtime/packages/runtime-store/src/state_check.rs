@@ -190,7 +190,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         ("runtime_tool_request_aliases", "request"),
         ("runtime_tool_requests", "record"),
         ("runtime_tool_results", "result"),
-        ("sync_entities", "payload"),
     ] {
         let mut report = StateCheckTable {
             table,
@@ -202,11 +201,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
             reports.push(report);
             continue;
         }
-        let condition = if table == "sync_entities" {
-            " WHERE deleted=0 AND collection IN ('agent','project','room','request','complaint')"
-        } else {
-            ""
-        };
         let query = if table == "runtime_chat_messages" {
             "SELECT id,deliveries,seq,room,sender,text,created FROM runtime_chat_messages"
                 .to_owned()
@@ -216,7 +210,7 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         } else if table == "runtime_tool_request_aliases" {
             "SELECT alias,json_object('agent',agent,'alias',alias,'request',request) FROM runtime_tool_request_aliases".to_owned()
         } else {
-            format!("SELECT id,{column} FROM {table}{condition}")
+            format!("SELECT id,{column} FROM {table}")
         };
         let mut statement = connection.prepare(&query)?;
         let mut rows = statement.query([])?;
@@ -266,5 +260,213 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
             .collect();
         reports.push(report);
     }
+    reports.push(check_sync_entities(connection)?);
     Ok(reports)
+}
+
+fn check_sync_entities(connection: &Connection) -> StoreResult<StateCheckTable> {
+    let table = "sync_entities";
+    let mut report = StateCheckTable {
+        table,
+        row_count: 0,
+        rejected_count: 0,
+        failures: Vec::new(),
+    };
+    if !crate::system_reads::exists(connection, table)? {
+        return Ok(report);
+    }
+    let mut statement =
+        connection.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities")?;
+    let mut rows = statement.query([])?;
+    let mut failures = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        report.row_count += 1;
+        let (collection, id, sequence, hash, payload, deleted) = match (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, i64>(2),
+            row.get::<_, String>(3),
+            row.get::<_, Option<String>>(4),
+            row.get::<_, i64>(5),
+        ) {
+            (Ok(collection), Ok(id), Ok(sequence), Ok(hash), Ok(payload), Ok(deleted)) => {
+                (collection, id, sequence, hash, payload, deleted)
+            }
+            _ => {
+                record_failure(&mut failures, &mut report.rejected_count, "", "storageType");
+                continue;
+            }
+        };
+        if collection.starts_with("transcript:") {
+            if let Some((pointer, keyword)) =
+                crate::repositories::transcript::hash_only_sync_entity_storage_error(
+                    &collection,
+                    &id,
+                    sequence,
+                    &hash,
+                    payload.is_none(),
+                    deleted,
+                )
+            {
+                record_failure(&mut failures, &mut report.rejected_count, pointer, keyword);
+            }
+            continue;
+        }
+        if !matches!(deleted, 0 | 1) {
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                "/deleted",
+                "enum",
+            );
+            continue;
+        }
+        let deleted = deleted == 1;
+        let Some(raw) = payload else {
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                "/payload",
+                "storageType",
+            );
+            continue;
+        };
+        let mut payload = match serde_json::from_str::<Value>(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                record_failure(&mut failures, &mut report.rejected_count, "", "json");
+                continue;
+            }
+        };
+        if let Some((pointer, keyword)) = studio_runtime_schema::normalize_sync_entity_payload(
+            &collection,
+            &id,
+            deleted,
+            &mut payload,
+        )
+        .map_err(crate::StoreError::SchemaValidation)?
+        {
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                &pointer,
+                &keyword,
+            );
+        }
+    }
+    report.failures = failures
+        .into_iter()
+        .map(|((pointer, keyword), count)| StateCheckFailure {
+            pointer,
+            keyword,
+            count,
+        })
+        .collect();
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    use super::check_sync_entities;
+
+    #[test]
+    fn sync_state_check_validates_unfiltered_rows_and_tombstones() {
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_entities (
+                    collection TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    hash TEXT NOT NULL,
+                    payload TEXT,
+                    deleted INTEGER NOT NULL
+                );",
+            )
+            .expect("sync table creates");
+        let rows = [
+            (
+                "task",
+                "task-1",
+                json!({
+                    "collection":"task",
+                    "id":"task-1",
+                    "value":{"id":"task-1","legacyField":true}
+                }),
+                0,
+            ),
+            (
+                "task",
+                "task-invalid",
+                json!({
+                    "collection":"task",
+                    "id":"task-invalid",
+                    "value":{"id":17}
+                }),
+                0,
+            ),
+            (
+                "room",
+                "room-deleted",
+                json!({
+                    "collection":"room",
+                    "id":"room-deleted",
+                    "value":{"id":17,"oldField":true}
+                }),
+                1,
+            ),
+            (
+                "unknown",
+                "unknown-1",
+                json!({
+                    "collection":"unknown",
+                    "id":"unknown-1",
+                    "value":{"id":"unknown-1"}
+                }),
+                0,
+            ),
+        ];
+        for (collection, id, payload, deleted) in rows {
+            connection
+                .execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                     VALUES (?1,?2,1,'fixture-hash',?3,?4)",
+                    (collection, id, payload.to_string(), deleted),
+                )
+                .expect("sync fixture row inserts");
+        }
+        connection
+            .execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                 VALUES ('transcript:agent-1','@meta',1,?1,NULL,1)",
+                ["a".repeat(64)],
+            )
+            .expect("hash-only transcript fixture inserts");
+        connection
+            .execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                 VALUES ('transcript:agent-1','item:item-2',2,?1,'{}',0)",
+                ["b".repeat(64)],
+            )
+            .expect("malformed hash-only transcript fixture inserts");
+
+        let report = check_sync_entities(&connection).expect("sync entities validate");
+        assert_eq!(report.row_count, 6);
+        assert_eq!(report.rejected_count, 3);
+        assert!(report.failures.iter().any(|failure| {
+            failure.pointer == "/collection" && failure.keyword == "unknownCollection"
+        }));
+        assert!(report.failures.iter().any(|failure| {
+            failure.pointer == "/payload" && failure.keyword == "storageRepresentation"
+        }));
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.keyword != "unknownCollection")
+        );
+    }
 }

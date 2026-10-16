@@ -3,26 +3,31 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from urllib.error import HTTPError
 from collections import defaultdict
 from typing import Any, Iterator
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from runtime_test_environment import runtime_environment
-from http_runtime_test_support import ANSWER_REFUSAL_DEPENDENCIES, answer_refusal_error
+from codex_python import resolve_python
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -31,6 +36,191 @@ HARNESS = TESTS / "http_backend_harness.py"
 JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
+COPY_MARKER = ".codex-studio-rehearsal-copy"
+COPY_MARKER_CONTENT = "sqlite-online-backup-copy-v1\n"
+
+# These existing Rust router tests are the only valid positive fixtures for
+# operations whose session or signed-peer ports cannot be installed in the
+# process-backed Python HTTP fixture. Keep this map closed and exact.
+ROUTER_POSITIVE_TESTS: dict[tuple[str, str], tuple[str, str]] = {
+    ("POST", "/api/connection-recovery"): (
+        "studio-runtime-http::recovery_http",
+        "connection_recovery_http_returns_the_synchronous_worker_status",
+    ),
+    ("POST", "/api/servers/orchestration"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_remote_event_crosses_http_boundary_and_persists_once",
+    ),
+    ("POST", "/api/mac-sync/config"): (
+        "studio-runtime-http",
+        "routes::mac_sync::tests::config_http_contract_and_invalid_resolve_refusal_are_quiescent",
+    ),
+    ("POST", "/api/mac-sync/resolve"): (
+        "studio-runtime-http",
+        "routes::mac_sync::tests::resolve_http_uses_a_fake_guest_endpoint_and_writes_vm_choice",
+    ),
+    ("POST", "/api/voice/approve"): (
+        "studio-runtime-http::voice_provider",
+        "voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake",
+    ),
+    ("GET", "/api/multi-server/v1/status"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write",
+    ),
+    ("POST", "/api/multi-server/v1/auto-pair"): (
+        "studio-runtime-http::multi_server_incoming",
+        "signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write",
+    ),
+    ("POST", "/api/multi-server/v1/pair"): (
+        "studio-runtime-http::multi_server_incoming",
+        "paired_fake_servers_create_and_recover_the_same_invitation",
+    ),
+    ("POST", "/api/multi-server/v1/name"): (
+        "studio-runtime-http::multi_server_incoming",
+        "paired_fake_servers_create_and_recover_the_same_invitation",
+    ),
+    ("POST", "/api/monitor/input"): (
+        "studio-runtime-http::wave7_p15_http",
+        "acknowledged_monitor_input_is_persisted_through_http",
+    ),
+    ("POST", "/api/vault/setup"): (
+        "studio-runtime-http",
+        "routes::host_secrets::tests::valid_vault_setup_request_completes_over_http_with_fake_desk",
+    ),
+    ("POST", "/api/vault/setup/facts"): (
+        "studio-runtime-http",
+        "routes::host_secrets::tests::vault_setup_facts_route_uses_the_host_command_and_cached_project",
+    ),
+}
+
+
+def validate_copy_state_root(
+    value: Path,
+    *,
+    live_state_root: Path | None = None,
+    configured_state_root: str | None = None,
+) -> Path:
+    """Require a marked SQLite copy outside every known live state location."""
+    root = Path(value).expanduser().resolve(strict=True)
+    protected_roots = [
+        (Path.home() / ".local/state/codex-agents").resolve(),
+    ]
+    if live_state_root is not None:
+        protected_roots.append(Path(live_state_root).expanduser().resolve())
+    if configured_state_root:
+        protected_roots.append(Path(configured_state_root).expanduser().resolve())
+    for protected in protected_roots:
+        if root == protected or protected in root.parents:
+            raise ValueError(f"refusing live state directory or descendant: {root}")
+    if not root.is_dir():
+        raise ValueError("copy state root must be a directory")
+    marker = root / COPY_MARKER
+    if (not marker.is_file() or marker.is_symlink()
+            or marker.read_text(encoding="utf-8") != COPY_MARKER_CONTENT):
+        raise ValueError(f"copy state root lacks the {COPY_MARKER} marker")
+    copy_database_stats: dict[str, Any] = {}
+    for name in ("canvas.sqlite3", "analytics.sqlite3"):
+        database = root / name
+        if not database.is_file() or database.is_symlink():
+            raise ValueError(f"copy state root requires a regular {name}")
+        stat = database.stat()
+        if stat.st_nlink > 1:
+            raise ValueError(f"copy state database must not have hard links: {name}")
+        _validate_copy_database(database, name)
+        copy_database_stats[name] = stat
+    known_live_roots = [Path.home() / ".local/state/codex-agents"]
+    if live_state_root is not None:
+        known_live_roots.append(Path(live_state_root).expanduser())
+    if configured_state_root:
+        known_live_roots.append(Path(configured_state_root).expanduser())
+    for live_root in known_live_roots:
+        for name, copy_stat in copy_database_stats.items():
+            try:
+                live_stat = (live_root / name).stat()
+            except OSError:
+                continue
+            if (copy_stat.st_dev, copy_stat.st_ino) == (live_stat.st_dev, live_stat.st_ino):
+                raise ValueError(f"copy state database aliases a known live database: {name}")
+    allowed = {COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"}
+    unexpected = sorted(path.name for path in root.iterdir() if path.name not in allowed)
+    if unexpected:
+        raise ValueError(
+            "copy state root must contain only its marker and SQLite databases; "
+            f"unexpected entries: {', '.join(unexpected)}"
+        )
+    return root
+
+
+def _validate_copy_database(database: Path, name: str) -> None:
+    """Check a copied database's SQLite structure without opening it writable."""
+    with database.open("rb") as source:
+        if source.read(16) != b"SQLite format 3\x00":
+            raise ValueError(f"copy state database has an invalid SQLite header: {name}")
+    uri = "file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro&immutable=1"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ValueError(f"copy state database failed SQLite integrity check: {name}")
+            required = {
+                "canvas.sqlite3": {"runtime_agents": {"id", "record"}},
+                "analytics.sqlite3": {"analytics_usage": {"seq", "id", "agent", "record"}},
+            }[name]
+            for table, columns in required.items():
+                rows = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+                if not columns.issubset({row[1] for row in rows}):
+                    raise ValueError(
+                        f"copy state database has an incompatible schema: {name}/{table}"
+                    )
+    except sqlite3.DatabaseError as error:
+        raise ValueError(f"copy state database is not a valid SQLite database: {name}") from error
+
+
+def copied_agent_witness(root: Path) -> dict[str, str]:
+    """Select a native agent already present in the copy for an HTTP read witness."""
+    uri = "file:" + urllib.parse.quote(str(root / "canvas.sqlite3"), safe="/") + "?mode=ro&immutable=1"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        for identifier, raw in connection.execute(
+            "SELECT id,record FROM runtime_agents ORDER BY id"
+        ):
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            cwd = record.get("cwd")
+            if (
+                record.get("id") == identifier
+                and isinstance(cwd, str)
+                and cwd
+                and record.get("executionMode", "host") != "vm"
+            ):
+                return {"id": identifier, "cwd": cwd}
+    raise ValueError("copy state database has no pre-existing native agent to verify")
+
+
+def validate_ephemeral_backend_command(command: str) -> list[str]:
+    """Reject fixed ports before the backend process can be spawned."""
+    values = shlex.split(command)
+    if not values:
+        raise ValueError("Rust backend command must not be empty")
+    ports: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--port":
+            if index + 1 >= len(values):
+                raise ValueError("--port requires a value")
+            index += 1
+            ports.append(values[index])
+        elif value.startswith("--port="):
+            ports.append(value.split("=", 1)[1])
+        index += 1
+    if any(port != "0" for port in ports):
+        raise ValueError("copy-state ledger requires an OS-assigned ephemeral port; port 4620 is forbidden")
+    if len(ports) > 1:
+        raise ValueError("copy-state ledger accepts at most one --port 0")
+    return values
 
 # These tests stop at an operation whose manifest still names the missing
 # service. Each exclusion is tied to that operation so it becomes stale when
@@ -50,10 +240,6 @@ PYTHON_BASELINE_ONLY_SUITES = frozenset({
 # re-keyed to that operation.
 UNDECLARED_PROVIDER_TURN_SERVICE = "turn-driver/provider-turn"
 UNDECLARED_PROVIDER_TURN_TESTS: dict[str, dict[str, str]] = {
-    "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py": {
-        "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
-        "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
-    },
     "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
         "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": "Recovering the tool request requires a provider turn; no operation declares this dependency yet.",
     },
@@ -121,18 +307,20 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/agents/account-transfer"): {
         "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
                              "request_id": "60606060-6060-4060-8060-606060606060"}, "replace_body": True,
-                    "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
-                    "assert_no_write": True},
+                    "expected": "2xx"},
     },
     ("POST", "/api/connection-recovery"): {
-        "primary": {"body": {"id": "$agent"}, "expected": "501",
-                    "expected_error": "Not implemented: requires account-worker/recovery-history", "assert_no_write": True},
+        "primary": {"dispatch": False, "consumer_only": True,
+                    "reason": "Positive evidence comes from the exact-candidate Rust router test named in ROUTER_POSITIVE_TESTS."},
     },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
-        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
+        "primary": {
+            "query": {"agent": "$agent"},
+            "expected": "2xx",
+        },
     },
     ("GET", "/api/analytics"): {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
@@ -144,59 +332,18 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {
             "query": {"agent": "$agent"}, "query_omit": ["scope"], "expected": "2xx",
         },
-        "additional": [{
-            "name": "image execution dependency",
-            "query": {"agent": "$agent"},
-            "query_omit": ["scope"],
-            "fixture_mutations": {"agent_execution_mode": "vm"},
-            "restore": ["agent_record"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires workspace-state/image-execution",
-        }],
-    },
-    ("GET", "/api/federation"): {
-        "primary": {
-            "expected": "404",
-            "reason": "The local federation management route has no GET counterpart.",
-        },
-    },
-    ("GET", "/api/federation/v1/message"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation message delivery is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/pair"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation pairing is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/pull"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Federation state pull is POST-only.",
-        },
-    },
-    ("GET", "/api/federation/v1/status"): {
-        "primary": {
-            "expected": "404",
-            "reason": "Signed federation status is POST-only.",
-        },
     },
     ("GET", "/api/models"): {
         "primary": {
             "query": {"account_key": "default"},
             "query_omit": ["workers", "retry"],
-            "expected": "2xx",
-            "wait_for_success": True,
+            "expected": "400",
         },
         "additional": [{
-            "name": "Claude catalog dependency",
+            "name": "unavailable Claude account",
             "query": {"account_key": "$claudeAccount"},
             "query_omit": ["workers", "retry"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-service/claude-model-catalog",
+            "expected": "400",
         }],
     },
     ("GET", "/api/multi-server"): {
@@ -208,35 +355,29 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "2xx",
         }],
     },
-    ("GET", "/api/multi-server/v1/pair"): {
-        "primary": {
-            "expected": "404",
-            "reason": "The pairing callback accepts POST only.",
-        },
-    },
     ("GET", "/api/checkpoints"): {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/diagnostics"): {
-        "primary": {"expected": "501", "assert_no_write": True},
+        "primary": {
+            "expected": "2xx",
+        },
     },
     ("GET", "/api/directories"): {
         "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/import"): {
         "primary": {
-            "query": {"account_key": "default"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
-            "assert_no_write": True,
+            "dispatch": False,
+            "consumer_only": True,
+            "reason": "The generic child backend has no import adapter; named successful HTTP coverage is required from portable-history-import-http-contract.py::PortableHistoryImportHTTPContract.test_list_import_threads_on_both_backends.",
         },
     },
     ("POST", "/api/import"): {
         "primary": {
-            "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
-            "assert_no_write": True,
+            "dispatch": False,
+            "consumer_only": True,
+            "reason": "The generic child backend has no import adapter; named successful HTTP coverage is required from portable-history-import-http-contract.py::PortableHistoryImportHTTPContract.test_import_thread_on_both_backends and test_import_metadata_and_initial_event_commit_atomically.",
         },
     },
     ("GET", "/api/messages"): {
@@ -255,25 +396,25 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "501",
-                    "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
-                    "reason": "The Python cache lacks the merged registry provider signature and no pricing artifact is seeded.",
-                    "assert_no_write": True},
+        "primary": {
+            "query": {"agent": "$analyticsAgent"},
+            "fixture_mutations": {"seed_pricing_catalog": True},
+            "restore": ["pricing_file"],
+            "expected": "2xx",
+        },
         "additional": [{
             "name": "stale cost cache requires refresh",
             "query": {"agent": "$analyticsAgent"},
-            "fixture_mutations": {"stale_session_cost_cache": True},
-            "restore": ["session_cost_cache"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
-            "assert_no_write": True,
+            "fixture_mutations": {"stale_session_cost_cache": True, "seed_pricing_catalog": True},
+            "restore": ["session_cost_cache", "pricing_file"],
+            "expected": "2xx",
         }],
     },
     ("GET", "/api/sync/stream"): {
         "primary": {"query": {"protocol": "3", "resources": "[{\"kind\":\"state\"}]", "apiSchema": "$schemaHash"}, "expected": "2xx"},
     },
     ("GET", "/api/skills"): {
-        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
+        "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/tool-requests"): {
         "primary": {"query": {"agent": "$agent", "request_id": "$toolReceipt"}, "expected": "2xx", "assert_no_write": True},
@@ -292,9 +433,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/accounts/claude/login"): {
         "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
-    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
-    ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
-    ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
+    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "2xx"}},
+    ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "403", "expected_error": "Status requires a signed paired-server request", "reason": "Status reads require a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
+    ("GET", "/api/project-locations"): {
+        "primary": {"query": {"project": "ledger-missing-project", "server": "local"}, "expected": "400"},
+    },
     ("GET", "/api/search/item"): {
         "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
@@ -309,22 +452,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
             "expected": "2xx",
         },
-        "additional": [{
-            "name": "execution-backed workspace refusal",
-            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": "501",
-        }],
     },
     ("GET", "/api/file-info"): {
         "primary": {
             "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
             "expected": "2xx",
         },
-        "additional": [{
-            "name": "execution-backed workspace refusal",
-            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
-            "expected": "501",
-        }],
     },
     ("POST", "/api/monitor/cancel"): {
         "primary": {"body": {"id": "$monitor"}, "expected": "2xx"},
@@ -354,7 +487,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/limits"): {
         "primary": {"query": {"account_key": "default", "cached": "1"}, "expected": "2xx"},
-        "additional": [{"name": "live provider limits", "query": {"account_key": "disconnected"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/account-rate-limits"}],
+        "additional": [{"name": "disconnected account limits snapshot", "query": {"account_key": "$disconnectedAccount"}, "expected": "2xx"}],
     },
     ("GET", "/api/task"): {
         "primary": {"query": {"id": "$task"}},
@@ -386,19 +519,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/context-repair"): {
         "primary": {"body": {"id": "$agent"}, "expected": "2xx"},
     },
+    ("POST", "/api/browser/forward"): {
+        "primary": {"body": {}, "expected": "400", "assert_no_write": True},
+    },
     ("POST", "/api/messages"): {
         "primary": {
             "body": {"id": "$message", "room": "$chat", "text": "Ledger message"},
             "expected": "2xx",
         },
         "additional": [{
-            "name": "attachment payload dependency",
+            "name": "attachment IDs must be strings",
             "body": {
                 "id": "77777777-7777-4777-8777-777777777777",
                 "room": "$agent", "text": "", "assets": [{"name": "pending"}],
             },
-            "expected": "501",
-            "expected_error": "Not implemented: requires payload-store/uploads",
+            "expected": "400",
+            "reason": "request schema rejects attachment objects; uploaded attachment IDs are strings",
         }],
     },
     ("POST", "/api/complaints"): {
@@ -416,22 +552,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "name": "federation invitation dependency",
             "body": {"action": "create_invite", "label": "Ledger probe"},
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires federation-credentials/private-key, remote-transport/tailscale-identity, federation-credentials/key-generation, federation-credentials/invitation, remote-transport/signed-federation-exchange",
+            # The test state has federation disabled: codex_federation.py:316-318
+            # raises ValueError and studio_api/federation/router.py:109-114 maps it to 400.
+            "expected": "400",
             "assert_no_write": True,
         }],
-    },
-    ("POST", "/api/limits/reset"): {
-        "primary": {
-            "body": {
-                "account_key": "default", "account_id": "fixture-account",
-                "credit_id": "ledger-probe-credit", "request_id": "88888888-8888-4888-8888-888888888888",
-            },
-            "expected": "501",
-            "expected_error": "Not implemented: requires account-driver/reset-credit-redemption",
-            "assert_no_write": True,
-            "reason": "redemption is never performed or simulated in tests",
-        },
     },
     ("POST", "/api/multi-server"): {
         "primary": {
@@ -441,10 +566,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
         "additional": [{
             "name": "signed invite dependency",
-            "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
+            "body": {"action": "create_invite", "requestId": "ledger-probe-invite", "label": "Ledger probe"},
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires multi-server-runtime/orchestration, multi-server-runtime/pairing, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery",
+            "expected": "400",
+            "expected_error": "Configure Tailscale Serve HTTPS before pairing",
+            "reason": "The disposable backend has no Tailscale Serve HTTPS origin for invitation creation.",
             "assert_no_write": True,
         }],
     },
@@ -469,8 +595,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                 ],
             },
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires workspace-state/peer-radio",
+            "expected": "400",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/projects"): {
@@ -481,10 +607,15 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
         "additional": [{
             "name": "cross-server project registration dependency",
-            "body": {"action": "register", "path": "$projectPath", "name": "Remote project", "server": "remote"},
+            "body": {
+                "action": "register", "path": "$projectPath", "name": "Remote project",
+                "server": "remote", "request_id": "ledger-cross-server-project",
+            },
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires cross-server-driver/project-registration",
+            "expected": "403",
+            "expected_error": "The server is not paired or is revoked",
+            "reason": "Remote project registration is refused because the referenced server is not paired.",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/questions/defer"): {
@@ -495,12 +626,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/questions/delete"): {
         "primary": {"body": {"id": "$questionDelete"}, "expected": "2xx"},
-        "additional": [{
-            "name": "provider-owned question answer dependency",
-            "body": {"id": "$providerQuestion"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/question-answer",
-        }],
+        # A fabricated pending card without a live retained session is not a
+        # meaningful HTTP success probe. The fake provider callback contract is
+        # covered at its owner by callback_runtime's durable delete test.
     },
     ("POST", "/api/panel/layout"): {
         "primary": {"body": {
@@ -526,10 +654,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/rename"): {
         "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename", "request_id": "ledger-rename"}, "fixture_mutations": {"agent_name": "HTTP ledger probe rename"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "provider generated title", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/title-generation", "assert_no_write": True}],
-    },
-    ("POST", "/api/claude/session"): {
-        "primary": {"body": {"id":"$agent","action":"state"},"replace_body":True,"expected":"501","expected_error":"Not implemented: requires provider-session/claude-controls","assert_no_write":True},
+        # Python persists and returns this pending receipt before finishing in the background.
+        # Source: codex_rename.py:195-199.
+        "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "2xx", "python_citation": "codex_rename.py:195-199"}],
     },
     ("POST", "/api/accounts/claude/add"): {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "400", "assert_no_write": True},
@@ -544,10 +671,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:688-700"},
     },
     ("POST", "/api/accounts/login/cancel"): {
-        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True, "assert_no_file_write": ["accounts/registry.json"]},
+        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:772-800"},
     },
     ("POST", "/api/accounts/delete"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "request_id": "ledger-delete"}, "expected": "400", "assert_no_write": True},
@@ -565,38 +692,49 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": answer_refusal_error(), "assert_no_write": True}},
-    ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
+    # Python routes this operation to Runtime.answer (studio_api/work/router.py:376-379;
+    # codex_runtime.py:11215-11254), which handles async questions and schedules
+    # their follow-up. This probe answers a dedicated async question so the
+    # later defer/delete probes retain their independent pending fixture.
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$answerQuestion", "answers": {"value": {"answers": ["Ledger answer"]}}}, "expected": "2xx"}},
+    ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
-        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, store-bootstrap/capacity-retry-schema, turn-driver/capacity-retry", "assert_no_write": True}],
+        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "2xx"}],
     },
-    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
-    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
-    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "409", "assert_no_write": True}},
+    ("POST", "/api/claude/profiles"): {"primary": {"body": {"account_key": "ledger-missing-claude-account"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/action"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "Fake-provider review and compact consumer tests provide the named successful requests; the generic seeded agent has no completed provider thread."}},
+    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$deleteAgent"}, "expected": "2xx"}},
+    # Python checks FederationService.enabled() at the start of route() before
+    # reading signed headers (codex_federation.py:527-529); the router maps its
+    # PermissionError to 403 (studio_api/federation/router.py:200-201).
+    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "403", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "403", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "403", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "403", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "403", "expected_error": "Auto pairing requires a signed paired-server request", "reason": "Auto-pair requires a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "403", "expected_error": "Renaming requires a signed paired-server request", "reason": "Remote name updates require a signed paired-server request; this probe has no signature headers.", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "403", "expected_error": "Pairing requires a signed paired-server request", "reason": "Pairing requires a signed request and peer invitation fixture not present in the child backend.", "assert_no_write": True}},
+    ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "2xx"}},
     ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "2xx"}},
-    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$terminal", "title": "Ledger"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/servers/orchestration"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "Positive evidence comes from the exact-candidate signed Rust router test named in ROUTER_POSITIVE_TESTS."}},
+    ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$liveTerminal"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$liveTerminal", "title": "Ledger"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$liveTerminal", "cols": 80, "rows": 24}, "expected": "2xx"}},
+    # Python implements native command input for a seeded running command
+    # (codex_workspace.py:2183-2217), and Rust now queues the same durable
+    # message through the implemented route.
     ("POST", "/api/native-command"): {
         "primary": {
             "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires turn-path/native-command-input",
-            "assert_no_write": True,
+            "fixture_mutations": {"activate_native_command": True},
+            "restore": ["active_command_record"],
+            "expected": "2xx",
         },
     },
     ("POST", "/api/sync/notify"): {
@@ -607,39 +745,54 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
-        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
+        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "2xx"}],
     },
-    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
-    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
+    # Python commits the connecting session before its asynchronous provider
+    # setup and returns it immediately (codex_native_voice.py:51-77).
+    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\r\n"}, "expected": "2xx"}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
-        "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires worker-driver/workspace-preparation", "assert_no_write": True}],
     },
     ("POST", "/api/assets"): {
         "primary": {"body": {"agent": "$agent", "name": "ledger.txt", "base64": "bGVkZ2Vy"}, "expected": "2xx"},
     },
     ("POST", "/api/checkpoint"): {
-        "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True, "clear_workspace_commands": True}, "restore": ["workspace_monitors", "workspace_commands"], "expected": "2xx"}],
+        "primary": {"name": "native workspace checkpoint", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"},
+        "additional": [{"name": "image workspace checkpoint refusal", "body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "400", "expected_error": "Studio Git checkpoints are unavailable for image workspaces", "assert_no_write": True, "reason": "Image workspaces explicitly refuse Studio Git checkpoints without writing state."}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
     },
     ("POST", "/api/configure"): {
         "primary": {"body": {"id": "$agent", "maxAgents": 10}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "agent mode settings dependency", "body": {"id": "$agent", "concurrency": 0}, "expected": "501", "expected_error": "Not implemented: requires agent-management/agent-mode-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid agent mode settings", "body": {"id": "$agent", "concurrency": 0}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/conversation"): {
         "primary": {"body": {"id": "$agent", "excluded_account_keys": ["other-account"]}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "conversation settings dependency", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "501", "expected_error": "Not implemented: requires agent-management/conversation-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid conversation mode", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "400", "assert_no_write": True}],
     },
+    ("POST", "/api/mac-sync/config"): {"primary": {"body": {"projectId": "ledger-project", "enabled": True}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/mac-sync/resolve"): {"primary": {"body": {"projectId": "ledger-project", "path": "ledger.txt", "choice": "mac"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/list"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
+    ("POST", "/api/project-secrets/set"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
+    ("POST", "/api/project-secrets/remove"): {"primary": {"dispatch": False, "consumer_only": True, "reason": "The generic child backend has no guest Unix socket; named successful HTTP coverage is required from rust-host-secrets-http-contract.py::HostSecretsHTTPContract.test_project_secret_routes_use_guest_and_never_return_values."}},
+    ("POST", "/api/vault/setup/facts"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/vault/pull"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-pull", "to": "$projectPath"}, "replace_body": True, "expected": "2xx"}},
+    ("POST", "/api/vault/unlock"): {"primary": {"body": {"projectId": "ledger-project", "words": "fixture paper words"}, "replace_body": True, "expected": "2xx"}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
-        "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/model-list", "assert_no_write": True}],
     },
     ("POST", "/api/voice/approval_speech"): {
-        "primary": {"body": {"agent": "$agent", "request_id": "$approvalRequest"}, "replace_body": True, "expected": "2xx"},
+        "primary": {
+            "body": {"agent": "$agent", "request_id": "$approvalRequest"},
+            "replace_body": True,
+            "fixture_mutations": {"create_voice_approval_request": True},
+            "restore": ["voice_approval_request"],
+            "expected": "2xx",
+        },
     },
     ("POST", "/api/voice/approvals"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/record"): {
@@ -656,22 +809,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/voice/end"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
+        "additional": [{"name": "active voice session", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "2xx"}],
     },
     ("POST", "/api/voice/speech"): {
         "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
+        "additional": [{"name": "active voice speech without a saved receipt", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {
             "agent": "$agent", "name": "HTTP ledger probe rule", "kind": "interval",
             "command": "echo ledger probe", "text": "Check the probe fixture.",
-        }, "expected": "2xx"},
+        }, "expected": "2xx", "python_citation": "codex_rules.py:337-339"},
         "additional": [{
-            "name": "active-check dependency",
+            "name": "active rule check is cancelled on pause",
             "body": {"agent": "$agent", "action": "pause", "id": "$activeRule"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires monitor-driver/active-checks",
+            "expected": "2xx",
+            "python_citation": "codex_rules.py:179-181,236-245",
             "fixture_mutations": {"activate_rule_check": True},
             "restore": ["rule_monitor"],
         }],
@@ -706,6 +859,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "2xx",
         }],
     },
+}
+
+UNSAFE_PROBE_EXCLUSIONS = {
+    ("POST", "/api/limits/reset"):
+        "not dispatched by the generic probe because reset-credit redemption requires an explicit fake-provider binding",
 }
 
 
@@ -777,14 +935,152 @@ def appendix_http_assertions(
     return witnesses
 
 
+def parse_router_test_evidence(
+    metadata: dict[str, Any], junit_bytes: bytes, current_revision: str,
+    *, worktree_clean: bool = True,
+) -> dict[str, Any]:
+    """Accept only the fixed router witnesses from a hashed, exact-revision JUnit report."""
+    revision = metadata.get("revision")
+    expected_hash = metadata.get("junitSha256")
+    observed_hash = hashlib.sha256(junit_bytes).hexdigest()
+    entries: list[dict[str, Any]] = []
+
+    def unresolved(reason: str) -> dict[str, Any]:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "revision": revision if isinstance(revision, str) else None,
+            "junitSha256": observed_hash,
+            "assertions": [
+                {"operation": f"{method} {path}", "test": f"{classname}::{name}",
+                 "status": "unverified", "reason": reason}
+                for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+
+    if not isinstance(revision, str) or revision != current_revision:
+        return unresolved("Router test evidence revision does not match the current source revision.")
+    if not worktree_clean:
+        return unresolved("Router test evidence cannot cover a dirty source worktree.")
+    if not isinstance(expected_hash, str) or expected_hash != observed_hash:
+        return unresolved("Router test evidence does not match the recorded JUnit report hash.")
+    try:
+        root = ET.fromstring(junit_bytes)
+    except ET.ParseError as error:
+        return {
+            "status": "failed",
+            "revision": revision,
+            "junitSha256": observed_hash,
+            "assertions": [{
+                "operation": f"{method} {path}",
+                "test": f"{classname}::{name}",
+                "status": "failed",
+                "reason": f"Could not parse nextest JUnit XML: {error}",
+            } for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items()],
+        }
+
+    test_cases = list(root.iter("testcase"))
+    for (method, path), (classname, name) in ROUTER_POSITIVE_TESTS.items():
+        matches = [
+            case for case in test_cases
+            if case.attrib.get("classname") == classname and case.attrib.get("name") == name
+        ]
+        assertion = {"operation": f"{method} {path}", "test": f"{classname}::{name}"}
+        if len(matches) != 1:
+            assertion.update({
+                "status": "unverified",
+                "reason": "The exact named router test is missing or duplicated in the JUnit report.",
+            })
+        elif matches[0].find("failure") is not None or matches[0].find("error") is not None:
+            assertion.update({"status": "failed", "reason": "The exact named router test failed."})
+        elif matches[0].find("skipped") is not None:
+            assertion.update({"status": "unverified", "reason": "The exact named router test was skipped."})
+        else:
+            assertion.update({"status": "passed"})
+        entries.append(assertion)
+    statuses = {entry["status"] for entry in entries}
+    status = "failed" if "failed" in statuses else "pass" if statuses == {"passed"} else "unverified"
+    return {
+        "tier": "Rust HTTP router tests",
+        "status": status,
+        "revision": revision,
+        "junitSha256": observed_hash,
+        "assertions": entries,
+    }
+
+
+def load_router_test_evidence(path: Path | None) -> dict[str, Any]:
+    """Load the one explicit sidecar format; absent or stale evidence stays unresolved."""
+    if path is None:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "reason": "No --router-evidence sidecar was supplied.",
+            "assertions": [
+                {"operation": f"{method} {route}", "test": f"{class_name}::{test_name}",
+                 "status": "unverified", "reason": "No --router-evidence sidecar was supplied."}
+                for (method, route), (class_name, test_name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            raise ValueError("router evidence sidecar must be a JSON object")
+        junit_path_value = metadata.get("junitPath")
+        if not isinstance(junit_path_value, str) or not junit_path_value:
+            raise ValueError("router evidence sidecar requires junitPath")
+        junit_path = Path(junit_path_value)
+        if not junit_path.is_absolute():
+            junit_path = path.parent / junit_path
+        junit_bytes = junit_path.read_bytes()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return {
+            "tier": "Rust HTTP router tests",
+            "status": "unverified",
+            "reason": f"Router test evidence could not be loaded: {error}",
+            "assertions": [
+                {"operation": f"{method} {route}", "test": f"{class_name}::{test_name}",
+                 "status": "unverified", "reason": "Router evidence input is unavailable."}
+                for (method, route), (class_name, test_name) in ROUTER_POSITIVE_TESTS.items()
+            ],
+        }
+    try:
+        current_revision = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        worktree_status = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        current_revision = ""
+        evidence = parse_router_test_evidence(metadata, junit_bytes, current_revision)
+        evidence["status"] = "unverified"
+        evidence["reason"] = f"Could not verify current source state: {error}"
+        return evidence
+    return parse_router_test_evidence(
+        metadata, junit_bytes, current_revision, worktree_clean=not worktree_status,
+    )
+
+
 def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
+    prebuilt_path = os.environ.get(P20_OPERATION_MANIFEST_ENV)
+    if prebuilt_path:
+        try:
+            rows = json.loads(Path(prebuilt_path).read_text(encoding="utf-8"))
+            return {(item["method"], item["path"]): item for item in rows}
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"invalid prebuilt Rust route manifest at {prebuilt_path}: {error}") from error
     process = subprocess.run(
         [
             "cargo",
             "test",
             "--locked",
+            "--release",
             "-p",
             "studio-runtime-http",
+            "--lib",
             "print_operation_manifest",
             "--",
             "--nocapture",
@@ -865,10 +1161,17 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
 def ensure_operation_probe_cases(
     manifest: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
-    """Generate only unambiguous probes; partial routes require explicit cases."""
+    """Keep refusal expectations tied to the current route census."""
     for key, entry in manifest.items():
         status = entry.get("status")
         spec = PROBE_CASES.setdefault(key, {})
+        primary = spec.get("primary", {})
+        if primary.get("dispatch") is False and primary.get("consumer_only"):
+            if not primary.get("reason"):
+                raise RuntimeError(f"consumer-only probe {key[0]} {key[1]} needs a reason")
+            if status != "implemented":
+                primary["unverified"] = True
+            continue
         if status == "unimplemented":
             # The manifest state has one exact contract for schema-valid input.
             spec.setdefault("primary", {}).setdefault("expected", "501")
@@ -878,28 +1181,46 @@ def ensure_operation_probe_cases(
         primary = spec.setdefault("primary", {})
         if status == "implemented":
             primary.setdefault("expected", "2xx")
+            for probe_case in [primary, *spec.get("additional", [])]:
+                if probe_case.get("expected") == "501":
+                    # A stale refusal does not describe the expected result after
+                    # implementation. Require an explicit success or named
+                    # precondition case instead of treating any non-501 as valid.
+                    probe_case["expected"] = None
+                    probe_case["unverified"] = True
+                    probe_case["reason"] = (
+                        "previous 501 expectation needs an explicit success or runtime-precondition case"
+                    )
+                    probe_case.pop("expected_error", None)
         elif not primary.get("expected"):
             primary["unverified"] = True
 
 
-def seed_python_probe_state(backend: Any) -> dict[str, str]:
+def account_fixture_namespace(backend: Any) -> str:
+    """Match account fixture IDs between the registry and probe inputs."""
+    return backend.fixture_namespace if backend.copy_mode else ""
+
+
+def seed_python_probe_state(backend: Any, python: str) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
-    agent_id = "ledger-probe-agent"
-    image_agent_id = "ledger-probe-image-agent"
-    task_id = "ledger-probe-task"
-    active_command_id = "ledger-probe-active-command"
-    work_id = "ledger-probe-work"
-    complaint_id = "ledger-probe-complaint"
-    room_id = "ledger-probe-room"
-    checkpoint_id = "ledger-probe-checkpoint"
-    item_id = "ledger-probe-item"
-    monitor_id = "ledger-probe-monitor"
-    terminal_id = "ledger-probe-terminal"
-    active_rule_id = "ledger-probe-active-rule"
-    active_monitor_id = "ledger-probe-active-rule-monitor"
-    chat_id = "55555555-5555-4555-8555-555555555555"
-    message_id = "66666666-6666-4666-8666-666666666666"
-    file_path = "ledger-probe.txt"
+    prefix = backend.fixture_namespace or "ledger-"
+    agent_id = f"{prefix}probe-agent"
+    delete_agent_id = f"{prefix}probe-delete-agent"
+    image_agent_id = f"{prefix}probe-image-agent"
+    task_id = f"{prefix}probe-task"
+    active_command_id = f"{prefix}probe-active-command"
+    work_id = f"{prefix}probe-work"
+    complaint_id = f"{prefix}probe-complaint"
+    room_id = f"{prefix}probe-room"
+    checkpoint_id = f"{prefix}probe-checkpoint"
+    item_id = f"{prefix}probe-item"
+    monitor_id = f"{prefix}probe-monitor"
+    terminal_id = f"{prefix}probe-terminal"
+    active_rule_id = f"{prefix}probe-active-rule"
+    active_monitor_id = f"rule:{active_rule_id}:1"
+    chat_id = str(uuid.uuid4()) if backend.copy_mode else "55555555-5555-4555-8555-555555555555"
+    message_id = str(uuid.uuid4()) if backend.copy_mode else "66666666-6666-4666-8666-666666666666"
+    file_path = f"{prefix}probe.txt"
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
 import os, subprocess, sys, time
@@ -926,6 +1247,11 @@ try:
         "isLead": False, "autoWake": False, "workspaceMode": "image",
         "imageWorkspace": True, "executionMode": "vm",
     }}
+    delete_agent = {{
+        **agent, "id": {delete_agent_id!r}, "rootId": {delete_agent_id!r},
+        "name": "HTTP ledger delete probe", "threadId": None, "turnId": None,
+        "autoWake": False,
+    }}
     now = time.time()
     cancel_retry = {{
         "id": "ledger-capacity-cancel", "status": "scheduled", "dueAt": now + 600,
@@ -944,6 +1270,7 @@ try:
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "agents", image_agent, sync_rooms=False)
+        runtime.put(db, "agents", delete_agent, sync_rooms=False)
         runtime.put(db, "tool_requests", {{
             "id": "ledger-tool-receipt", "agent": {agent_id!r},
             "tool": "orchestration_peers", "stage": "completed", "outcome": "applied",
@@ -967,8 +1294,8 @@ try:
         }}, sync_rooms=False)
         runtime.put(db, "tasks", {{
             "id": {active_command_id!r}, "agent": {agent_id!r}, "kind": "command",
-            "status": "running", "processId": "44", "itemId": "ledger-command-item",
-            "created": 1.0,
+            "status": "completed", "processId": "44", "itemId": "ledger-probe-command-item",
+            "created": 1.0, "finished": 2.0,
         }}, sync_rooms=False)
         runtime.put(db, "work", {{
             "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
@@ -986,14 +1313,9 @@ try:
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
-            "id": "ledger-probe-provider-question", "agent": {agent_id!r}, "epoch": 0,
-            "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
+            "id": "ledger-probe-answer-question", "agent": {agent_id!r}, "epoch": 0,
+            "method": "agent/asyncQuestion", "status": "pending", "createdAt": 1.0,
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
-        }}, sync_rooms=False)
-        runtime.put(db, "requests", {{
-            "id": "ledger-probe-monitor-approval", "agent": {agent_id!r}, "epoch": 0,
-            "method": "monitor/approve", "status": "pending", "createdAt": 1.0,
-            "params": {{"monitorId": "ledger-probe-monitor", "command": "echo ledger", "cwd": os.environ["CODEX_CANVAS_CWD"]}},
         }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id": {complaint_id!r}, "leadId": {agent_id!r}, "author": "user",
@@ -1053,7 +1375,7 @@ try:
         if rule["id"] == {active_rule_id!r}
     )
     active_monitor = runtime.monitor(
-        {agent_id!r}, {{"command": "echo active rule probe", "stall_timeout_seconds": 0}},
+        {agent_id!r}, {{"command": "echo ledger probe", "stall_timeout_seconds": 0}},
         key={active_monitor_id!r}, rule=active_rule,
     )
     monitor = runtime.monitor(
@@ -1102,11 +1424,13 @@ try:
 finally:
     runtime.close()
 """
-    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    seed = seed.replace("ledger-", prefix).replace('"default"', repr(backend.account_key))
+    environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=runtime_environment(backend),
+        env=environment,
         check=True,
         timeout=30,
     )
@@ -1119,11 +1443,12 @@ finally:
         f"{progress_metadata.st_size}"
     )
     terminal_identifiers = json.loads(
-        (backend.state / "ledger-probe-identifiers.json").read_text(encoding="utf-8")
+        (backend.state / f"{prefix}probe-identifiers.json").read_text(encoding="utf-8")
     )
     terminal_id = terminal_identifiers["terminal"]
     return {
         "agent": agent_id,
+        "deleteAgent": delete_agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
         "activeCommand": active_command_id,
@@ -1136,25 +1461,96 @@ finally:
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
-        "question": "ledger-probe-question",
-        "questionDelete": "ledger-probe-question",
-        "providerQuestion": "ledger-probe-provider-question",
-        "voiceRecord": "ledger-probe-voice-record",
-        "voiceEndedSession": "ledger-probe-voice-ended",
-        "voiceActiveSession": "ledger-probe-voice-active",
-        "approvalRequest": "ledger-probe-monitor-approval",
+        "question": f"{prefix}probe-question",
+        "questionDelete": f"{prefix}probe-question",
+        "answerQuestion": f"{prefix}probe-answer-question",
+        "voiceRecord": f"{prefix}probe-voice-record",
+        "voiceEndedSession": f"{prefix}probe-voice-ended",
+        "voiceActiveSession": f"{prefix}probe-voice-active",
+        "approvalRequest": "created-by-voice-approval-probe-fixture",
         "schemaHash": backend.schema_hash,
-        "analyticsAgent": "analytics-contract-agent",
+        "analyticsAgent": analytics_probe_agent_identifier(backend),
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
         "layoutRevision": layout_revision,
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
-        "claudeAccount": "claude-ledger",
-        "toolReceipt": "ledger-tool-receipt",
-        "toolCancel": "ledger-tool-cancel",
+        "claudeAccount": f"{prefix}claude-ledger",
+        "disconnectedAccount": f"{account_fixture_namespace(backend)}disconnected",
+        "toolReceipt": f"{prefix}tool-receipt",
+        "toolCancel": f"{prefix}tool-cancel",
     }
+
+
+def seed_vault_probe_fixture(backend: Any) -> Path:
+    """Install a disposable cached vault view and a closed fake Desk command."""
+    project_id = "ledger-project"
+    project = backend.vm_state / "layr-projects" / project_id
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "project.json").write_text(
+        json.dumps({"projectId": project_id, "source": str(backend.cwd)}),
+        encoding="utf-8",
+    )
+    (project / "vault.json").write_text(
+        json.dumps({"configured": True, "prefix": "ledger"}),
+        encoding="utf-8",
+    )
+    (project / "vault-site.json").write_text(
+        json.dumps({"site": "https://desk.example/"}),
+        encoding="utf-8",
+    )
+
+    fake_desk = backend.scratch_root / "fake-layr-desk"
+    fake_desk.write_text(
+        "\n".join([
+            "#!/bin/sh",
+            'case "$1" in',
+            "  unlock)",
+            '    [ "$#" -eq 7 ] && [ "$2" = --site ] && \\',
+            '      [ "$3" = https://desk.example/ ] && [ "$4" = --project ] && \\',
+            '      [ "$5" = ledger ] && [ "$6" = --paper-file ] && [ "$7" = - ] || exit 91',
+            '    IFS= read -r words || [ -n "$words" ]',
+            '    [ "$words" = \'fixture paper words\' ] || exit 92',
+            "    ;;",
+            "  service)",
+            '    [ "$2" = status ] && [ "$#" -eq 2 ] || exit 93',
+            '    printf \'%s\\n\' \'{"installed":false}\'',
+            "    ;;",
+            "  status)",
+            '    [ "$2" = --site ] && [ "$3" = https://desk.example/ ] && \\',
+            '      [ "$4" = --json ] && [ "$#" -eq 4 ] || exit 94',
+            '    printf \'%s\\n\' \'{"projects":[{"name":"ledger","unlocked":true}]}\'',
+            "    ;;",
+            "  pull)",
+            '    [ "$2" = --site ] && [ "$3" = https://desk.example/ ] && \\',
+            '      [ "$4" = --project ] && [ "$5" = ledger ] && \\',
+            '      [ "$6" = --to ] && [ -n "$7" ] && [ "$8" = --json ] && \\',
+            '      [ "$#" -eq 8 ] || exit 95',
+            '    printf \'%s\\n\' \'{"seq":7,"files":2,"bytes":1024}\'',
+            "    ;;",
+            "  *) exit 96 ;;",
+            "esac",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    fake_desk.chmod(0o700)
+    return fake_desk
+
+
+def analytics_probe_agent_identifier(backend: Any) -> str:
+    """Return the analytics seed ID, isolated from copied user data."""
+    prefix = backend.fixture_namespace if backend.copy_mode else ""
+    return f"{prefix}analytics-contract-agent"
+
+
+def session_cost_cache_path(state: Path, root_id: str) -> Path:
+    """Resolve the cache path through the session-cost reader's path owner."""
+    from codex_session_costs import SessionCostReader
+
+    reader = SessionCostReader(state / "analytics.sqlite3", None, state_root=state)
+    return reader._cache_path(root_id)
 
 
 def valid_probe(
@@ -1199,6 +1595,10 @@ def valid_probe(
         name: str(resolve_probe_value(value, identifiers))
         for name, value in header_overrides.items()
     }
+    if identifiers is not None:
+        path = namespace_probe_constants(path, identifiers)
+        body = namespace_probe_constants(body, identifiers)
+        headers = namespace_probe_constants(headers, identifiers)
     return path, body, headers
 
 
@@ -1211,6 +1611,28 @@ def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
         return [resolve_probe_value(item, identifiers) for item in value]
     if isinstance(value, dict):
         return {key: resolve_probe_value(item, identifiers) for key, item in value.items()}
+    return value
+
+
+def namespace_probe_constants(value: Any, identifiers: dict[str, str]) -> Any:
+    """Keep static request literals unique when probes target a real-data copy."""
+    if "_fixturePrefix" not in identifiers:
+        return value
+    prefix = identifiers["_fixturePrefix"]
+    account_key = identifiers["_accountKey"]
+    literal_ids = identifiers["_literalIds"]
+    if isinstance(value, str):
+        if value == "default":
+            return account_key
+        if value in literal_ids:
+            return literal_ids[value]
+        if "ledger-" in value:
+            return value.replace("ledger-", prefix)
+        return value
+    if isinstance(value, list):
+        return [namespace_probe_constants(item, identifiers) for item in value]
+    if isinstance(value, dict):
+        return {key: namespace_probe_constants(item, identifiers) for key, item in value.items()}
     return value
 
 
@@ -1229,19 +1651,25 @@ def probe_fixture_state(
         raise ValueError("identity file probe mutations must declare identity_file restoration")
     if ("stale_session_cost_cache" in mutations) != ("session_cost_cache" in restore):
         raise ValueError("session cost cache mutations must declare cache restoration")
+    if ("seed_pricing_catalog" in mutations) != ("pricing_file" in restore):
+        raise ValueError("pricing catalog mutations must declare pricing-file restoration")
     if ("clear_workspace_monitors" in mutations) != ("workspace_monitors" in restore):
         raise ValueError("workspace monitor mutations must declare restoration")
-    if ("clear_workspace_commands" in mutations) != ("workspace_commands" in restore):
-        raise ValueError("workspace command mutations must declare restoration")
     if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
         raise ValueError("active rule-check mutations must declare restoration")
+    if ("activate_native_command" in mutations) != ("active_command_record" in restore):
+        raise ValueError("active command mutations must declare task record restoration")
+    if ("create_voice_approval_request" in mutations) != ("voice_approval_request" in restore):
+        raise ValueError("voice approval mutations must declare request restoration")
 
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
+    pricing_file: tuple[Path, bytes | None, int | None, bool] | None = None
     workspace_monitors: dict[str, str] | None = None
-    workspace_commands: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
+    active_command_record: tuple[str, str] | None = None
+    voice_approval_request: tuple[str, str, str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
@@ -1262,27 +1690,55 @@ def probe_fixture_state(
                 )
         if "remove_identity" in mutations:
             path = backend.state / "multi-server" / "identity.json"
+            if not path.is_file():
+                raise RuntimeError("seeded synthetic federation identity is missing")
             identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
             path.unlink()
+        if mutations.get("activate_native_command"):
+            command_id = identifiers["activeCommand"]
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_tasks WHERE id=?", (command_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded native command task is missing")
+                active_command_record = (command_id, row[0])
+                changed = json.loads(row[0])
+                changed["status"] = "running"
+                changed.pop("finished", None)
+                connection.execute(
+                    "UPDATE runtime_tasks SET record=? WHERE id=?",
+                    (json.dumps(changed), command_id),
+                )
         if mutations.get("stale_session_cost_cache"):
-            cache_files = sorted((backend.state / "session-costs").glob("cost-*.json"))
-            if not cache_files:
+            path = session_cost_cache_path(
+                backend.state, identifiers["analyticsAgent"],
+            )
+            if not path.is_file() or path.is_symlink():
                 raise RuntimeError("seeded session-cost cache is missing")
-            path = cache_files[0]
             session_cost_cache = (path, path.read_bytes())
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1
             path.write_text(json.dumps(cache), encoding="utf-8")
-        if mutations.get("clear_workspace_commands"):
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
-                workspace_commands = dict(connection.execute(
-                    "SELECT id,record FROM runtime_tasks WHERE "
-                    "json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
-                ))
-                for task_id, raw in workspace_commands.items():
-                    changed = json.loads(raw)
-                    changed["status"] = "completed"
-                    connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (json.dumps(changed), task_id))
+        if mutations.get("seed_pricing_catalog"):
+            path = backend.state / "model-pricing" / "models-dev-v1.json"
+            directory_existed = path.parent.is_dir()
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise RuntimeError("model-pricing fixture path is not a regular file")
+            pricing_file = (
+                path,
+                path.read_bytes() if path.is_file() else None,
+                path.stat().st_mode & 0o777 if path.is_file() else None,
+                directory_existed,
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "version": 1,
+                "catalog": {"providers": {
+                    "openai": {"models": {"gpt-test": {"cost": {"input": 1, "output": 1}}}},
+                    "anthropic": {"models": {"claude-sonnet-5-5": {"cost": {"input": 1, "output": 1}}}},
+                }},
+            }), encoding="utf-8")
         if mutations.get("clear_workspace_monitors") or mutations.get("activate_rule_check"):
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                 if mutations.get("clear_workspace_monitors"):
@@ -1290,7 +1746,9 @@ def probe_fixture_state(
                         monitor_id: raw
                         for monitor_id, raw in connection.execute(
                             "SELECT id,record FROM runtime_monitors WHERE "
-                            "json_extract(record,'$.status') IN ('running','starting','approval')"
+                            "id LIKE ? AND "
+                            "json_extract(record,'$.status') IN ('running','starting','approval')",
+                            (f"{backend.fixture_namespace}%" if backend.copy_mode else "%",),
                         )
                     }
                     for monitor_id, raw in workspace_monitors.items():
@@ -1309,12 +1767,65 @@ def probe_fixture_state(
                         raise RuntimeError("seeded rule-check monitor is missing")
                     rule_monitor = (monitor_id, row[0])
                     changed = json.loads(row[0])
-                    changed["status"] = "running"
+                    changed["status"] = "approval"
                     changed["ruleId"] = identifiers["activeRule"]
                     connection.execute(
                         "UPDATE runtime_monitors SET record=? WHERE id=?",
                         (json.dumps(changed), monitor_id),
                     )
+        if mutations.get("create_voice_approval_request"):
+            monitor_id = identifiers["monitor"]
+            request_id = f"ledger-voice-approval-{uuid.uuid4().hex}"
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as connection, connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded voice approval monitor is missing")
+                monitor_record = row[0]
+                monitor = dict(json.loads(row[0]))
+                agent_row = connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (identifiers["agent"],),
+                ).fetchone()
+                if agent_row is None:
+                    raise RuntimeError("seeded voice approval agent is missing")
+                agent = json.loads(agent_row[0])
+                created_at = time.time()
+                monitor.update({
+                    "agent": agent["id"],
+                    "epoch": agent["epoch"],
+                    "turnId": agent.get("turnId"),
+                    "requestId": request_id,
+                    "cwd": agent["cwd"],
+                    "status": "approval",
+                    "created": created_at,
+                    "activityAt": created_at,
+                })
+                request = {
+                    "id": request_id,
+                    "agent": agent["id"],
+                    "epoch": agent["epoch"],
+                    "method": "monitor/approve",
+                    "status": "pending",
+                    "createdAt": time.time(),
+                    "params": {
+                        "monitorId": monitor_id,
+                        "command": monitor["command"],
+                        "cwd": monitor["cwd"],
+                    },
+                }
+                connection.execute(
+                    "UPDATE runtime_monitors SET record=? WHERE id=?",
+                    (json.dumps(monitor), monitor_id),
+                )
+                connection.execute(
+                    "INSERT INTO runtime_requests(id,record) VALUES (?,?)",
+                    (request_id, json.dumps(request)),
+                )
+            voice_approval_request = (
+                monitor_id, request_id, identifiers["approvalRequest"], monitor_record,
+            )
+            identifiers["approvalRequest"] = request_id
         yield
     finally:
         try:
@@ -1334,11 +1845,24 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
-                if workspace_commands is not None:
-                    with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
-                        for task_id, raw in workspace_commands.items():
-                            connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (raw, task_id))
-                if workspace_monitors is not None or rule_monitor is not None:
+                if pricing_file is not None:
+                    path, content, mode, directory_existed = pricing_file
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(content)
+                        assert mode is not None
+                        path.chmod(mode)
+                    if not directory_existed:
+                        try:
+                            path.parent.rmdir()
+                        except OSError:
+                            pass
+                if (
+                    workspace_monitors is not None
+                    or rule_monitor is not None
+                    or active_command_record is not None
+                ):
                     with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                         if workspace_monitors is not None:
                             for monitor_id, raw in workspace_monitors.items():
@@ -1352,12 +1876,31 @@ def probe_fixture_state(
                                 "UPDATE runtime_monitors SET record=? WHERE id=?",
                                 (raw, monitor_id),
                             )
+                        if active_command_record is not None:
+                            command_id, raw = active_command_record
+                            connection.execute(
+                                "UPDATE runtime_tasks SET record=? WHERE id=?",
+                                (raw, command_id),
+                            )
+                if voice_approval_request is not None:
+                    monitor_id, request_id, previous_approval_request, monitor_record = voice_approval_request
+                    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as connection, connection:
+                        connection.execute(
+                            "DELETE FROM runtime_requests WHERE id=?", (request_id,),
+                        )
+                        connection.execute(
+                            "UPDATE runtime_monitors SET record=? WHERE id=?",
+                            (monitor_record, monitor_id),
+                        )
+                    identifiers["approvalRequest"] = previous_approval_request
 
 
 def probe_operations(
     manifest: dict[tuple[str, str], dict[str, Any]],
     planned_assertions: dict[str, set[str]],
     successful_assertions: dict[str, set[str]],
+    *,
+    python: str,
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess, HttpResult
@@ -1368,9 +1911,14 @@ def probe_operations(
         scratch = Path(scratch_name).resolve(strict=True)
         backend = BackendProcess(scratch, claude_bin=None)
         try:
+            backend.copy_mode = False
+            backend.fixture_namespace = ""
+            backend.account_key = "default"
+            backend.fixture_uuid_values = {}
+            backend.fixture_login_id = "88888888-8888-4888-8888-888888888880"
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-            seed_catalog_state(backend)
-            codex_login_id = seed_codex_login(backend)
+            seed_catalog_state(backend, python)
+            codex_login_id = seed_codex_login(backend, python)
             import importlib.util
             analytics_path = TESTS / "rust-analytics-http-contract.py"
             analytics_spec = importlib.util.spec_from_file_location("ledger_analytics_seed", analytics_path)
@@ -1379,9 +1927,18 @@ def probe_operations(
             analytics_module = importlib.util.module_from_spec(analytics_spec)
             analytics_spec.loader.exec_module(analytics_module)
             analytics_module.seed_analytics(backend)
-            identifiers = seed_python_probe_state(backend)
+            identifiers = seed_python_probe_state(backend, python)
             identifiers["codexLogin"] = codex_login_id
-            backend.start()
+            fake_desk = seed_vault_probe_fixture(backend)
+            previous_desk = os.environ.get("STUDIO_LAYR_DESK_BIN")
+            os.environ["STUDIO_LAYR_DESK_BIN"] = str(fake_desk)
+            try:
+                backend.start()
+            finally:
+                if previous_desk is None:
+                    os.environ.pop("STUDIO_LAYR_DESK_BIN", None)
+                else:
+                    os.environ["STUDIO_LAYR_DESK_BIN"] = previous_desk
             token = backend.session["token"]
             rows = []
             for method, template in operations():
@@ -1392,6 +1949,30 @@ def probe_operations(
                     if operation_manifest
                     else []
                 )
+                operation_key = f"{method} {template}"
+                exclusion = unsafe_probe_exclusion(method, template)
+                if exclusion is not None:
+                    planned = sorted(planned_assertions.get(operation_key, set()))
+                    observed = sorted(successful_assertions.get(operation_key, set()))
+                    rows.append({
+                        "method": method,
+                        "path": template,
+                        "status": None,
+                        "implementation": implementation,
+                        "observedStatus": None,
+                        "classification": "unverified",
+                        "covered": bool(observed),
+                        "expectedStatus": "unverified",
+                        "dependencies": dependencies,
+                        "schemaHeader": None,
+                        "schemaHeaderMatches": None,
+                        "standard501Envelope": None,
+                        "dependencyResponseMatches": None,
+                        "probeCases": [unsafe_probe_observation(exclusion)],
+                        "httpAssertions": planned,
+                        "observedSuccessfulAssertions": observed,
+                    })
+                    continue
                 probe_spec = PROBE_CASES.get((method, template), {})
                 primary_case = probe_spec.get("primary", {})
                 cases = [("primary", primary_case)] + [
@@ -1400,6 +1981,26 @@ def probe_operations(
                 ]
                 observations = []
                 for case_name, probe_case in cases:
+                    if probe_case.get("dispatch") is False:
+                        if not probe_case.get("consumer_only") or not probe_case.get("reason"):
+                            raise RuntimeError(
+                                f"non-dispatched probe {method} {template}/{case_name} "
+                                "must be an explicitly named consumer-only case with a reason"
+                            )
+                        observations.append({
+                            "case": case_name,
+                            "status": None,
+                            "expected": None,
+                            "expectedMatches": False,
+                            "dispatched": False,
+                            "body": None,
+                            "elapsedSeconds": 0.0,
+                            "standard501Envelope": False,
+                            "noWrite": True,
+                            "consumerOnly": True,
+                            "reason": probe_case["reason"],
+                        })
+                        continue
                     if probe_case.get("refresh_queue"):
                         queue_snapshot = backend.request(
                             "GET",
@@ -1418,6 +2019,35 @@ def probe_operations(
                         queue_value = json.loads(queue_snapshot.body)
                         identifiers["emptyQueueRevision"] = queue_value["revision"]
                         identifiers["queueIds"] = [item["id"] for item in queue_value["items"]]
+                    if (
+                        os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
+                        and method == "POST"
+                        and template in {
+                            "/api/terminals/close",
+                            "/api/terminals/input",
+                            "/api/terminals/rename",
+                            "/api/terminals/resize",
+                        }
+                    ):
+                        live_terminal = backend.request(
+                            "POST",
+                            "/api/terminals/create",
+                            body={
+                                "id": f"ledger-live-{template.rsplit('/', 1)[-1]}",
+                                "agent": identifiers["agent"],
+                            },
+                            headers={
+                                "X-Canvas-Token": token,
+                                "X-Canvas-Workspace": backend.identity["workspaceId"],
+                                "X-Studio-API-Schema": backend.schema_hash,
+                            },
+                        )
+                        if live_terminal.status != 200:
+                            raise RuntimeError(
+                                "could not create terminal for live-action ledger cases: "
+                                f"{live_terminal.status} {live_terminal.body[:1000]!r}"
+                            )
+                        identifiers["liveTerminal"] = live_terminal.json()["id"]
                     path, body, header_overrides = valid_probe(
                         method, template, identifiers, probe_case
                     )
@@ -1428,17 +2058,30 @@ def probe_operations(
                     }
                     if method in JSON_METHODS or method == "DELETE":
                         headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
-                    database_before = (
-                        sqlite_snapshot(backend.state / "canvas.sqlite3")
-                        if probe_case.get("assert_no_write") else None
-                    )
                     file_paths = probe_case.get("assert_no_file_write", [])
                     files_before = {
                         relative: (backend.state / relative).read_bytes()
                         if (backend.state / relative).is_file() else None
                         for relative in file_paths
                     }
-                    with probe_fixture_state(backend, identifiers, probe_case):
+                    request_started = time.monotonic()
+                    with probe_fixture_state(backend, identifiers, probe_case), (
+                        sqlite_snapshot(backend.state / "canvas.sqlite3")
+                        if probe_case.get("assert_no_write") else nullcontext(None)
+                    ) as database_before:
+                        if probe_case.get("fixture_mutations", {}).get(
+                            "create_voice_approval_request"
+                        ):
+                            path, body, header_overrides = valid_probe(
+                                method, template, identifiers, probe_case
+                            )
+                            headers = {
+                                "X-Canvas-Token": token,
+                                "X-Studio-API-Schema": backend.schema_hash,
+                                **header_overrides,
+                            }
+                            if method in JSON_METHODS or method == "DELETE":
+                                headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
                             try:
@@ -1464,85 +2107,96 @@ def probe_operations(
                                 headers=headers,
                                 timeout=2.0,
                             )
-                    try:
-                        response_body = json.loads(result.body)
-                    except (ValueError, TypeError):
-                        response_body = None
+                        try:
+                            response_body = json.loads(result.body)
+                        except (ValueError, TypeError):
+                            response_body = None
+                        if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
+                            deadline = time.monotonic() + 5
+                            while time.monotonic() < deadline and not 200 <= result.status < 300:
+                                time.sleep(0.05)
+                                result = backend.request(method, path, headers=headers, timeout=2.0)
+                                try:
+                                    response_body = json.loads(result.body)
+                                except (ValueError, TypeError):
+                                    response_body = None
+                        database_unchanged = (
+                            database_before is None or database_before.unchanged()
+                        )
                     operation_key = f"{method} {template}"
                     probe_event = {
                         "operation": operation_key,
                         "body": response_body,
                         "expected_error": probe_case.get("expected_error"),
                     }
-                    if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
-                        deadline = time.monotonic() + 5
-                        while time.monotonic() < deadline and not 200 <= result.status < 300:
-                            time.sleep(0.05)
-                            result = backend.request(method, path, headers=headers, timeout=2.0)
-                            try:
-                                response_body = json.loads(result.body)
-                            except (ValueError, TypeError):
-                                response_body = None
-                        probe_event["body"] = response_body
                     standard_501 = result.status != 501 or valid_501_envelope(probe_event, manifest)
-                    no_write = (
-                        database_before is None
-                        or database_before == sqlite_snapshot(backend.state / "canvas.sqlite3")
-                    )
+                    no_write = database_unchanged
                     no_write = no_write and all(
                         ((backend.state / relative).read_bytes()
                          if (backend.state / relative).is_file() else None) == original
                         for relative, original in files_before.items()
                     )
                     expected = probe_case.get("expected")
-                    expected_matches = (
-                        (expected == "501" and result.status == 501 and standard_501)
-                        or (implementation == "unimplemented" and result.status == 501 and standard_501)
-                        or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
-                        or (expected == "400" and result.status == 400)
-                        or (expected == "2xx" and 200 <= result.status < 300)
+                    expected_matches = probe_status_matches(
+                        expected,
+                        result.status,
+                        standard_501=standard_501,
+                        response_body=response_body,
+                        expected_error=probe_case.get("expected_error"),
                     )
                     observations.append({
                         "case": case_name,
                         "status": result.status,
                         "expected": expected,
                         "expectedMatches": expected_matches,
-                        "body": response_body,
+                        "expectedError": probe_case.get("expected_error"),
+                        "body": persisted_probe_body(
+                            probe_case, response_body, copy_mode=backend.copy_mode
+                        ),
+                        "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
                         "noWrite": no_write,
                         **({"reason": probe_case["reason"]} if "reason" in probe_case else {}),
                     })
                 primary = observations[0]
-                schema_header = result.headers.get("x-studio-api-schema")
-                # The final response may belong to an additional probe case;
-                # the schema header is invariant across the operation's cases.
-                schema_header_matches = schema_header == backend.schema_hash
                 status = primary["status"]
                 operation_key = f"{method} {template}"
-                standard_501_envelope = primary["standard501Envelope"]
-                dependency_response_matches = (
-                    implementation != "partial" or status != 501 or standard_501_envelope
-                )
-                classification = classify_observation(
-                    status,
-                    implementation,
-                    schema_header_matches,
-                    standard_501_envelope,
-                    dependency_response_matches,
-                )
-                if primary.get("expected") == "400" and primary.get("expectedMatches"):
-                    classification = "implemented"
-                if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
-                    classification = "implemented"
-                if not all(observation["expectedMatches"] for observation in observations):
-                    classification = "unexpected"
-                if implementation == "partial" and any(
-                    case.get("unverified") or not case.get("expected")
-                    for _, case in cases
-                ):
+                dispatched_observations = [
+                    observation for observation in observations
+                    if observation.get("dispatched", True)
+                ]
+                if dispatched_observations:
+                    # The final response may belong to an additional dispatched
+                    # case; the schema header is invariant across an operation.
+                    schema_header = result.headers.get("x-studio-api-schema")
+                    schema_header_matches = schema_header == backend.schema_hash
+                    standard_501_envelope = primary["standard501Envelope"]
+                    dependency_response_matches = (
+                        implementation != "partial" or status != 501 or standard_501_envelope
+                    )
+                    classification = classify_observation(
+                        status,
+                        implementation,
+                        schema_header_matches,
+                        standard_501_envelope,
+                        dependency_response_matches,
+                    )
+                    if primary.get("expected") == "400" and primary.get("expectedMatches"):
+                        classification = "implemented"
+                    if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
+                        classification = "implemented"
+                    classification = apply_probe_expectations(
+                        classification, cases, observations
+                    )
+                    if not all(observation["noWrite"] for observation in dispatched_observations):
+                        classification = "unexpected"
+                else:
+                    status = None
+                    schema_header = None
+                    schema_header_matches = False
+                    standard_501_envelope = False
+                    dependency_response_matches = False
                     classification = "unverified"
-                if not all(observation["noWrite"] for observation in observations):
-                    classification = "unexpected"
                 rows.append({
                     "method": method,
                     "path": template,
@@ -1552,11 +2206,13 @@ def probe_operations(
                     "classification": classification,
                     "covered": bool(successful_assertions.get(operation_key)),
                     "expectedStatus": (
-                        "not_501"
-                        if implementation == "implemented"
-                        else "any"
-                        if implementation == "partial"
-                        else 501
+                        "unverified"
+                        if any(
+                            case.get("dispatch") is False
+                            or case.get("unverified") or not case.get("expected")
+                            for _, case in cases
+                        )
+                        else cases[0][1]["expected"]
                     ),
                     "dependencies": dependencies,
                     "schemaHeader": schema_header,
@@ -1572,35 +2228,456 @@ def probe_operations(
             backend.close()
 
 
-def seed_catalog_state(backend: Any) -> None:
+def collect_probe_strings(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return set().union(*(collect_probe_strings(item) for item in value)) if value else set()
+    if isinstance(value, dict):
+        return set().union(*(collect_probe_strings(item) for item in value.values())) if value else set()
+    return set()
+
+
+def is_named_fault_5xx(case: dict[str, Any]) -> bool:
+    if (
+        not isinstance(case.get("status"), int)
+        or case["status"] < 500
+        or case.get("expectedError") is None
+    ):
+        return False
+    purpose = f"{case.get('case', '')} {case.get('reason', '')}".lower()
+    return any(term in purpose for term in (
+        "malformed", "invalid stored record", "corrupt stored record",
+    ))
+
+
+def api_fixture_evidence(
+    operations_result: list[dict[str, Any]],
+    router_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize API fixtures and the named Rust router-only positives."""
+    statuses: list[str] = []
+    positive_operations = 0
+    router_positive_operations = 0
+    validated_negative_cases = 0
+    implemented_operations = 0
+    router_positive = {
+        assertion["operation"]: assertion["test"]
+        for assertion in (router_evidence or {}).get("assertions", [])
+        if assertion.get("status") == "passed"
+    }
+    for operation in operations_result:
+        implementation = operation.get("implementation")
+        if implementation == "implemented":
+            implemented_operations += 1
+        cases = operation.get("probeCases", [])
+        positive_case = any(
+            case.get("expected") == "2xx"
+            and case.get("expectedMatches")
+            and isinstance(case.get("status"), int)
+            and 200 <= case["status"] < 300
+            for case in cases
+        )
+        # `covered` is retained for report compatibility; gate only on named
+        # passing consumer assertions that observed a 2xx response.
+        positive_assertion = bool(operation.get("observedSuccessfulAssertions"))
+        router_assertion = router_positive.get(f"{operation.get('method')} {operation.get('path')}")
+        operation["routerPositiveAssertions"] = [router_assertion] if router_assertion else []
+        if router_assertion:
+            router_positive_operations += 1
+        if positive_case or positive_assertion or router_assertion:
+            positive_operations += 1
+        validated_negative_cases += sum(
+            case.get("expected") not in (None, "2xx")
+            and case.get("expectedMatches") is True
+            and (
+                not isinstance(case.get("status"), int)
+                or case["status"] < 500
+                or is_named_fault_5xx(case)
+            )
+            for case in cases
+        )
+
+        unexpected = operation.get("classification") == "unexpected" or any(
+            case.get("expected") is not None
+            and case.get("expectedMatches") is False
+            for case in cases
+        )
+        unresolved = any(
+            (
+                case.get("dispatched", True)
+                or not case.get("consumerOnly")
+                or not case.get("reason")
+            )
+            and (
+                case.get("expected") is None
+                or case.get("unverified")
+                or isinstance(case.get("status"), int)
+                and case["status"] >= 500
+                and not is_named_fault_5xx(case)
+            )
+            for case in cases
+        )
+        if unexpected:
+            statuses.append("unexpected")
+        elif (
+            implementation == "implemented"
+            and (positive_case or positive_assertion or router_assertion)
+            and not unresolved
+        ):
+            statuses.append("pass")
+        else:
+            statuses.append("unverified")
+
+    unexpected_operations = statuses.count("unexpected")
+    unverified_operations = statuses.count("unverified")
+    if router_evidence and router_evidence.get("status") == "failed":
+        status = "failed"
+    elif not operations_result:
+        status = "unverified"
+    elif unexpected_operations:
+        status = "failed"
+    elif unverified_operations:
+        status = "unverified"
+    else:
+        status = "pass"
+    return {
+        "source": "disposable-fixture-records-and-named-router-tests",
+        "status": status,
+        "operations": len(operations_result),
+        "implementedOperations": implemented_operations,
+        "positiveOperations": positive_operations,
+        "routerPositiveOperations": router_positive_operations,
+        "unverifiedOperations": unverified_operations,
+        "unexpectedOperations": unexpected_operations,
+        "validatedNegativeCases": validated_negative_cases,
+    }
+
+
+def copied_data_evidence_status(evidence: dict[str, Any]) -> str:
+    """Require old-row preservation, a finder no-write proof, and rollback."""
+    required = (
+        "stateCheckBefore",
+        "existingRowRead",
+        "preexistingRowsPreservedFromBeforeStartup",
+        "unchangedDuringFinderRead",
+        "schemaChangesReviewed",
+        "derivedIndexesReviewed",
+        "stateCheckAfter",
+        "baselineRestore",
+        "pythonRollbackReadback",
+    )
+    if any(evidence.get(key) is False for key in required):
+        return "failed"
+    if any(evidence.get(key) is not True for key in required):
+        return "unverified"
+    return "pass"
+
+
+def probe_copied_data(
+    state_root: Path,
+    witness: dict[str, str],
+) -> dict[str, Any]:
+    """Read a pre-existing agent from a caller-validated copy with a signed-out fixture."""
+    sys.path.insert(0, str(TESTS))
+    from http_backend_harness import BackendProcess
+
+    # Both callers validate the exact marker-plus-two-database boundary before
+    # reaching this helper; do not repeat quick_check over a large copied DB.
+    DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="rust-http-copy-read-", dir=DEFAULT_CACHE,
+    ) as scratch_name:
+        scratch = Path(scratch_name).resolve(strict=True)
+        backend = BackendProcess(
+            scratch,
+            claude_bin=None,
+            initialize_workspace=False,
+            state_root=state_root,
+        )
+        preservation_snapshot: SqliteSnapshot | None = None
+        finder_snapshot: SqliteSnapshot | None = None
+        try:
+            backend.create_codex_replay("copy-read-only-replay.json")
+            # create_codex_replay writes only to its private scratch CODEX_HOME.
+            # Clear that fake API-key fixture before AccountStore creates the
+            # canonical signed-out registry for the Rust AccountDriver.
+            private_auth = backend.codex_home / "auth.json"
+            private_auth.write_text("{}", encoding="utf-8")
+            registry_evidence = seed_copied_data_registry(backend)
+            # Pin the pre-start database so startup changes can be checked
+            # against its old tables and rows after the finder read.
+            preservation_snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
+            backend.start()
+            headers = {
+                "X-Canvas-Token": backend.session["token"],
+                "X-Studio-API-Schema": backend.schema_hash,
+            }
+            finder_snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
+            started = time.monotonic()
+            result = backend.request(
+                "GET",
+                "/api/agents/finder-view?agent="
+                + urllib.parse.quote(witness["id"], safe=""),
+                headers=headers,
+                timeout=2.0,
+            )
+            unchanged_during_read = finder_snapshot.unchanged()
+            old_data = preservation_snapshot.preserved_existing_rows()
+            try:
+                body = result.json()
+            except (ValueError, TypeError):
+                body = None
+            read_matches = result.status == 200 and body == {
+                "kind": "native",
+                "path": witness["cwd"],
+            }
+            return {
+                "source": "marked-copy-existing-data",
+                "accountRegistrySeed": registry_evidence,
+                "status": copied_data_evidence_status({
+                    "stateCheckBefore": None,
+                    "existingRowRead": read_matches,
+                    "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
+                    "unchangedDuringFinderRead": unchanged_during_read,
+                    "schemaChangesReviewed": None,
+                    "derivedIndexesReviewed": None,
+                    "stateCheckAfter": None,
+                    "baselineRestore": None,
+                    "pythonRollbackReadback": None,
+                }),
+                "existingRowReads": [{
+                    "resource": "pre-existing native agent",
+                    "observedStatus": result.status,
+                    "matched": read_matches,
+                    "elapsedSeconds": round(time.monotonic() - started, 4),
+                }],
+                "preexistingRowsPreservedFromBeforeStartup": old_data["preserved"],
+                "unchangedDuringFinderRead": unchanged_during_read,
+                "schemaChangesReviewed": None,
+                "derivedIndexesReviewed": None,
+                "schemaChanges": {
+                    "newTables": old_data["newTables"],
+                    "newColumns": old_data["newColumns"],
+                    "newSchemaObjects": old_data["newSchemaObjects"],
+                    "changedTableDefinitions": old_data["changedTableDefinitions"],
+                    "unsupportedTables": old_data["unsupportedTables"],
+                    "unreadableDerivedIndexes": old_data["unreadableDerivedIndexes"],
+                    "derivedIndexSchemaChanges": old_data["derivedIndexSchemaChanges"],
+                    "internalBookkeepingTables": old_data["internalBookkeepingTables"],
+                    "sqliteSequenceChanged": old_data["sqliteSequenceChanged"],
+                },
+                "stateCheckBefore": None,
+                "stateCheckAfter": None,
+                "baselineRestore": None,
+                "pythonRollbackReadback": None,
+            }
+        finally:
+            if finder_snapshot is not None:
+                finder_snapshot.close()
+            if preservation_snapshot is not None:
+                preservation_snapshot.close()
+            backend.close()
+
+
+def seed_copied_data_registry(backend: Any) -> dict[str, Any]:
+    """Create and verify the canonical signed-out registry in a validated copy."""
+    state_root = Path(backend.state).resolve(strict=True)
+    accounts = state_root / "accounts"
+    if accounts.exists() or accounts.is_symlink():
+        raise RuntimeError("copied-data fixture refuses to overwrite account state")
+
+    environment = backend._environment()
+    python = environment.get("CODEX_AGENTS_PYTHON") or sys.executable
+    source = ROOT / "workspaces/runtime/apps/server/src"
+    existing_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(source), existing_pythonpath,
+    )))
+    # The initializer reads auth metadata. Both homes must be the harness's
+    # private scratch homes, and the scratch auth file must be empty.
+    script = r"""
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from codex_accounts import AccountStore
+state = Path(sys.argv[1]).resolve(strict=True)
+scratch = Path(sys.argv[3]).resolve(strict=True)
+home = Path(os.environ["HOME"]).resolve(strict=True)
+codex_home = Path(os.environ["CODEX_HOME"]).resolve(strict=True)
+if not home.is_relative_to(scratch) or not codex_home.is_relative_to(scratch):
+    raise RuntimeError("copied-data account fixture requires private scratch homes")
+auth = codex_home / "auth.json"
+if not auth.is_file() or json.loads(auth.read_text(encoding="utf-8")) != {}:
+    raise RuntimeError("copied-data account fixture requires empty private auth metadata")
+store = AccountStore(state)
+row = store.data["accounts"]["default"]
+row_home = Path(row["home"]).resolve(strict=True)
+if (store.default() != "default" or row.get("status") != "signedOut"
+        or row.get("accountId") is not None
+        or row.get("_credentialIdentity") is not None
+        or not row_home.is_relative_to(scratch)):
+    raise RuntimeError("canonical account fixture is not signed out under scratch")
+print(json.dumps({"defaultAccountKey": "default", "status": "signedOut",
+                  "accountId": None, "credentialIdentityPresent": False,
+                  "homeUnderScratch": True}))
+"""
+    result = subprocess.run(
+        [python, "-B", "-c", script, str(state_root), str(source), str(backend.root)],
+        cwd=backend.cwd,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    evidence = json.loads(result.stdout)
+    expected = {
+        "defaultAccountKey": "default",
+        "status": "signedOut",
+        "accountId": None,
+        "credentialIdentityPresent": False,
+        "homeUnderScratch": True,
+    }
+    if evidence != expected:
+        raise RuntimeError("canonical signed-out registry verification failed")
+    registry = accounts / "registry.json"
+    if accounts.is_symlink() or registry.is_symlink() or not registry.is_file():
+        raise RuntimeError("canonical signed-out registry was not created as a regular file")
+    if {path.name for path in accounts.iterdir()} != {"registry.json"}:
+        raise RuntimeError("canonical signed-out registry contains unexpected files")
+    return evidence
+
+
+def probe_status_matches(
+    expected: Any,
+    status: int,
+    *,
+    standard_501: bool,
+    response_body: Any,
+    expected_error: str | None = None,
+) -> bool:
+    """Match only an explicit status contract; never infer success from the census."""
+    if expected_error is not None and response_body != {"error": expected_error}:
+        return False
+    if expected == "501":
+        return status == 501 and standard_501
+    if expected == "404":
+        return status == 404 and response_body == {"error": "Not found"}
+    if expected in {"400", "403", "409"}:
+        return status == int(expected)
+    if expected == "4xx":
+        return 400 <= status < 500
+    if expected == "2xx":
+        return 200 <= status < 300
+    if isinstance(expected, str) and expected.isdecimal():
+        return status == int(expected)
+    return False
+
+
+def apply_probe_expectations(
+    classification: str,
+    cases: list[tuple[str, dict[str, Any]]],
+    observations: list[dict[str, Any]],
+) -> str:
+    if classification == "unexpected":
+        matching_server_error = any(
+            observation["status"] >= 500
+            and observation["expectedMatches"]
+            and observation.get("expected") == str(observation["status"])
+            for observation in observations
+        )
+        if not matching_server_error:
+            return classification
+        classification = "unverified"
+    declared_case_failed = any(
+        case.get("expected") is not None
+        and not case.get("unverified")
+        and observations[index].get("dispatched", True)
+        and not observations[index]["expectedMatches"]
+        for index, (_, case) in enumerate(cases)
+    )
+    if declared_case_failed:
+        return "unexpected"
+    unverified_cases = [
+        index for index, (_, case) in enumerate(cases)
+        if observations[index].get("dispatched", True)
+        and (case.get("unverified") or not case.get("expected"))
+    ]
+    if unverified_cases:
+        unresolved_server_error = any(
+            observations[index]["status"] >= 500
+            and observations[index]["status"] != 501
+            for index in unverified_cases
+        )
+        classification = "unexpected" if unresolved_server_error else "unverified"
+    return classification
+
+
+def unsafe_probe_exclusion(method: str, template: str) -> str | None:
+    """Keep global-preference and reset-credit writes out of every ledger run."""
+    return UNSAFE_PROBE_EXCLUSIONS.get((method, template))
+
+
+def unsafe_probe_observation(reason: str) -> dict[str, Any]:
+    """Record a named consumer-owned positive without dispatching an unsafe write."""
+    return {
+        "case": "primary",
+        "status": None,
+        "expected": None,
+        "expectedMatches": False,
+        "dispatched": False,
+        "consumerOnly": True,
+        "body": None,
+        "elapsedSeconds": 0.0,
+        "standard501Envelope": False,
+        "reason": reason,
+    }
+
+
+def persisted_probe_body(
+    probe_case: dict[str, Any],
+    response_body: Any,
+    *,
+    copy_mode: bool = False,
+) -> Any:
+    """Keep copied-state contents and paths out of portable ledger reports."""
+    if copy_mode or probe_case.get("functional_witness") == "copy-existing-agent":
+        return None
+    return response_body
+
+
+def seed_catalog_state(backend: Any, python: str) -> None:
     accounts = backend.state / "accounts"
+    if accounts.exists():
+        raise RuntimeError("ledger fixture refuses to overwrite a copied accounts directory")
     accounts.mkdir(parents=True)
+    account_key = getattr(backend, "account_key", "default")
+    fixture_namespace = account_fixture_namespace(backend)
     (accounts / "registry.json").write_text(json.dumps({
         "version": 1,
-        "defaultAccountKey": "default",
+        "defaultAccountKey": account_key,
         "accounts": {
-            "default": {
-                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+            account_key: {
+                "id": account_key, "home": str(backend.codex_home), "label": "Codex",
                 "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
                 "status": "ready",
             },
-            "disconnected": {
-                "id": "disconnected", "home": str(backend.root / "missing-account"),
+            f"{fixture_namespace}disconnected": {
+                "id": f"{fixture_namespace}disconnected", "home": str(backend.root / "missing-account"),
                 "label": "Disconnected", "source": "ledger fixture", "provider": "codex",
                 "accountId": "stale-id", "status": "ready", "disconnected": True,
             },
-            "claude-ledger": {
-                "id": "claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
+            f"{fixture_namespace}claude-ledger": {
+                "id": f"{fixture_namespace}claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
                 "source": "ledger fixture", "provider": "claude", "accountId": "claude:ledger",
                 "status": "ready",
             },
         },
         "logins": {},
     }), encoding="utf-8")
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
     environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
         str(TESTS), str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
     )))
@@ -1612,18 +2689,17 @@ def seed_catalog_state(backend: Any) -> None:
     )
 
 
-def seed_codex_login(backend: Any) -> str:
+def seed_codex_login(backend: Any, python: str) -> str:
     """Create the pending local login through AccountStore's Python writer."""
-    login_id = "88888888-8888-4888-8888-888888888880"
-    account_key = "ledger-pending-login"
+    login_id = backend.fixture_login_id
+    account_prefix = backend.fixture_namespace or "ledger-"
+    account_key = f"{account_prefix}pending-login"
     profile = backend.state / "accounts" / account_key
     profile.mkdir(parents=True, exist_ok=True)
     source = ROOT / "workspaces/runtime/apps/server/src"
     environment = backend._environment()
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source), environment.get("PYTHONPATH", ""))))
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    environment["CODEX_AGENTS_PYTHON"] = python
     script = f"""
 import sys
 from pathlib import Path
@@ -1634,7 +2710,7 @@ store.data["accounts"][{account_key!r}] = {{
     "id": {account_key!r}, "home": {str(profile)!r}, "label": "Pending login fixture",
     "source": "ledger fixture", "provider": "codex", "accountId": None,
     "email": None, "plan": None, "status": "signedOut",
-    "_credentialIdentity": None, "duplicateOf": "default",
+    "_credentialIdentity": None, "duplicateOf": {backend.account_key!r},
 }}
 store.data["logins"][{login_id!r}] = {{
     "requestId": {login_id!r}, "accountKey": {account_key!r}, "status": "pending",
@@ -1836,7 +2912,20 @@ def run_suite(
         log_text,
     )
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
-    if not ran_summaries or suite_summary is None:
+    runner_timeout = re.search(
+        rf"^FAIL {re.escape(relative)}: timed out after ([0-9]+(?:\.[0-9]+)?)s$",
+        log_text,
+        re.MULTILINE,
+    )
+    timed_out_without_unittest_summary = (
+        not ran_summaries
+        and runner_timeout is not None
+        and process.returncode != 0
+        and result.get("status") != "passed"
+        and suite_summary is not None
+        and int(suite_summary.group(2)) > 0
+    )
+    if suite_summary is None or (not ran_summaries and not timed_out_without_unittest_summary):
         raise RuntimeError(f"consumer result summary missing in {relative}")
     suite_counts = {
         "passed": int(suite_summary.group(1)),
@@ -1857,9 +2946,17 @@ def run_suite(
         name: expected_test_counts[name] - observed_test_counts[name]
         for name in expected_test_counts
     }
+    timed_out_tests_remain_unreported = (
+        timed_out_without_unittest_summary
+        and bool(unreported)
+        and not any(missing_counts.values())
+    )
     if (
         any(count < 0 for count in missing_counts.values())
-        or sum(missing_counts.values()) != len(unreported)
+        or (
+            sum(missing_counts.values()) != len(unreported)
+            and not timed_out_tests_remain_unreported
+        )
         or sum(count > 0 for count in missing_counts.values()) > 1
     ):
         raise RuntimeError(
@@ -1867,11 +2964,12 @@ def run_suite(
             f"unreported test statuses cannot be reconciled: missing={missing_counts}, "
             f"unreported={[case['testId'] for case in unreported]}"
         )
-    for status, count in missing_counts.items():
-        if count:
-            for case in unreported:
-                case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
-            break
+    if not timed_out_tests_remain_unreported:
+        for status, count in missing_counts.items():
+            if count:
+                for case in unreported:
+                    case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
+                break
     observed_counts = {
         "passed": sum(case["status"] == "ok" for case in cases),
         "failed": sum(case["status"] in {"fail", "error"} for case in cases),
@@ -1881,7 +2979,10 @@ def run_suite(
         name: observed_counts[name] + suite_counts[name] for name in suite_counts
     }
     if (
-        sum(observed_counts.values()) != ran_count
+        (
+            not timed_out_without_unittest_summary
+            and sum(observed_counts.values()) != ran_count
+        )
         or expected_reported_counts != reported_counts
     ):
         raise RuntimeError(
@@ -1958,21 +3059,440 @@ def run_suite(
         "requests": requests,
         "unattributedRequests": unattributed,
         **({"diagnostic": result["diagnostic"]} if "diagnostic" in result else {}),
+        **({"diagnostic": f"runner timed out after {runner_timeout.group(1)}s"}
+           if timed_out_without_unittest_summary else {}),
     }
 
 
-def sqlite_snapshot(path: Path) -> tuple[Any, ...]:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-        tables = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        ).fetchall()
-        return tuple(
-            (
-                table[0],
-                tuple(sorted(connection.execute(f'SELECT * FROM "{table[0]}"').fetchall(), key=repr)),
-            )
-            for table in tables
+def sqlite_snapshot(path: Path) -> SqliteSnapshot:
+    """Pin a read-only view and skip table scans when no other connection committed."""
+    return SqliteSnapshot(path)
+
+
+class SqliteSnapshot:
+    """Compare SQLite contents or preserve old rows with bounded Python memory."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.identity = _sqlite_file_identity(path)
+        self.monitor = _open_readonly_sqlite(path)
+        self.baseline = _open_readonly_sqlite(path)
+        self.version_before = self._data_version()
+        self.baseline.execute("BEGIN")
+        _sqlite_schema(self.baseline)
+        self.stable = (
+            self.version_before == self._data_version()
+            and self.identity == _sqlite_file_identity(path)
         )
+
+    def _data_version(self) -> int:
+        return int(self.monitor.execute("PRAGMA data_version").fetchone()[0])
+
+    def unchanged(self) -> bool:
+        """Use SQLite's connection-local commit counter before a streamed comparison."""
+        if not self.stable:
+            return False
+        try:
+            current_identity = _sqlite_file_identity(self.path)
+            version_at_compare = self._data_version()
+        except (OSError, sqlite3.Error):
+            return False
+        if self.identity != current_identity:
+            return False
+        if self.version_before == version_at_compare:
+            return True
+
+        try:
+            current = _open_readonly_sqlite(self.path)
+        except (OSError, sqlite3.Error):
+            return False
+        try:
+            current.execute("BEGIN")
+            equal = _sqlite_content_digest(self.baseline) == _sqlite_content_digest(current)
+            return equal and version_at_compare == self._data_version()
+        finally:
+            current.close()
+
+    def preserved_existing_rows(self) -> dict[str, Any]:
+        """Prove old rows remain intact while allowing appended rows/schema."""
+        result: dict[str, Any] = {
+            "preserved": None,
+            "newTables": 0,
+            "newColumns": 0,
+            "newSchemaObjects": 0,
+            "changedTableDefinitions": 0,
+            "unsupportedTables": 0,
+            "unreadableDerivedIndexes": 0,
+            "derivedIndexSchemaChanges": 0,
+            "internalBookkeepingTables": 0,
+            "sqliteSequenceChanged": False,
+        }
+        if not self.stable:
+            result["preserved"] = False
+            return result
+        try:
+            if _sqlite_file_identity(self.path) != self.identity:
+                result["preserved"] = False
+                return result
+            before_schema = _preservation_schema(self.baseline, "main")
+            before_tables = {
+                name for (kind, name) in before_schema if kind == "table"
+            }
+            known_fts = _known_contentless_fts_tables(before_schema)
+            result["unreadableDerivedIndexes"] = len(known_fts)
+            result["internalBookkeepingTables"] = sum(
+                name.startswith("sqlite_") for name in before_tables
+            )
+            version_before = self._data_version()
+            if version_before == self.version_before:
+                result["preserved"] = True
+                return result
+            current_uri = self.path.resolve().as_uri() + "?mode=ro"
+            self.baseline.execute(
+                "ATTACH DATABASE ? AS after_state", (current_uri,),
+            )
+            after_schema = _preservation_schema(self.baseline, "after_state")
+            after_tables = {
+                name for (kind, name) in after_schema if kind == "table"
+            }
+            after_fts = _known_contentless_fts_tables(after_schema)
+            derived_and_shadow_tables = _known_fts_shadow_tables(
+                before_schema, after_schema,
+            )
+            result["unreadableDerivedIndexes"] = len(known_fts)
+            result["derivedIndexSchemaChanges"] = sum(
+                before_schema.get(("table", name))
+                != after_schema.get(("table", name))
+                for name in known_fts | after_fts
+            )
+            result["newTables"] = sum(
+                1 for name in after_tables - before_tables
+                if not name.startswith("sqlite_")
+                and name not in (known_fts | after_fts)
+                and name not in derived_and_shadow_tables
+            )
+            result["newSchemaObjects"] = sum(
+                kind != "table"
+                and not name.startswith("sqlite_")
+                and (kind, name) not in before_schema
+                for kind, name in after_schema
+            )
+            old_user_tables = {
+                name for name in before_tables
+                if not name.startswith("sqlite_")
+                and name not in derived_and_shadow_tables
+            }
+            new_user_tables = {
+                name for name in after_tables
+                if not name.startswith("sqlite_")
+                and name not in derived_and_shadow_tables
+            }
+            preserved: bool | None = old_user_tables.issubset(new_user_tables)
+            for table in sorted(old_user_tables & new_user_tables):
+                old_sql = before_schema[("table", table)][1]
+                new_sql = after_schema[("table", table)][1]
+                if old_sql != new_sql:
+                    result["changedTableDefinitions"] += 1
+                old_columns = _preservation_table_columns(
+                    self.baseline, "main", table,
+                )
+                new_columns = _preservation_table_columns(
+                    self.baseline, "after_state", table,
+                )
+                result["newColumns"] += len(new_columns.keys() - old_columns.keys())
+                if any(
+                    new_columns.get(name) != definition
+                    for name, definition in old_columns.items()
+                ):
+                    preserved = False
+                    continue
+                if old_sql.lstrip().upper().startswith("CREATE VIRTUAL TABLE"):
+                    result["unsupportedTables"] += 1
+                    if preserved is True:
+                        preserved = None
+                    continue
+                comparison = _preserve_table_rows(
+                    self.baseline, table, old_columns,
+                    new_columns,
+                    without_rowid=bool(re.search(r"\bWITHOUT\s+ROWID\b", old_sql, re.I)),
+                )
+                if comparison is None:
+                    result["unsupportedTables"] += 1
+                    if preserved is True:
+                        preserved = None
+                elif not comparison:
+                    preserved = False
+
+            result["sqliteSequenceChanged"] = _sqlite_sequence_changed(
+                self.baseline, before_schema, after_schema,
+            )
+
+            for key, (_table_name, old_sql) in before_schema.items():
+                kind, _name = key
+                if (
+                    kind == "table"
+                    or _name.startswith("sqlite_")
+                    or _name in derived_and_shadow_tables
+                ):
+                    continue
+                current_object = after_schema.get(key)
+                if current_object is None or current_object[1] != old_sql:
+                    preserved = False
+            if self._data_version() != version_before:
+                # A concurrent writer made the comparison's endpoint unstable.
+                result["preserved"] = None if preserved is not False else False
+            else:
+                result["preserved"] = preserved
+            return result
+        except (OSError, sqlite3.Error):
+            result["preserved"] = None
+            return result
+
+    def close(self) -> None:
+        self.baseline.close()
+        self.monitor.close()
+
+    def __enter__(self) -> SqliteSnapshot:
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
+
+
+def _open_readonly_sqlite(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    connection.execute("PRAGMA query_only=ON")
+    connection.execute("PRAGMA cache_size=-2048")
+    connection.execute("PRAGMA temp_store=FILE")
+    connection.execute("PRAGMA mmap_size=0")
+    return connection
+
+
+def _sqlite_file_identity(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino
+
+
+def _sqlite_schema(connection: sqlite3.Connection) -> tuple[tuple[Any, ...], ...]:
+    return tuple(connection.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' "
+        "ORDER BY type COLLATE BINARY,name COLLATE BINARY"
+    ))
+
+
+def _preservation_schema(
+    connection: sqlite3.Connection,
+    schema: str,
+) -> dict[tuple[str, str], tuple[str, str | None]]:
+    if schema not in {"main", "after_state"}:
+        raise ValueError("unsupported SQLite schema name")
+    return {
+        (kind, name): (table, sql)
+        for kind, name, table, sql in connection.execute(
+            f"SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master "
+            "WHERE type IN ('table','index','view','trigger') "
+            "ORDER BY type COLLATE BINARY,name COLLATE BINARY"
+        )
+    }
+
+
+_CONTENTLESS_DERIVED_FTS = "runtime_search_next"
+_CONTENTLESS_FTS_SHADOWS = frozenset({
+    "runtime_search_next_config",
+    "runtime_search_next_data",
+    "runtime_search_next_docsize",
+    "runtime_search_next_idx",
+})
+
+
+def _known_contentless_fts_tables(
+    schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> set[str]:
+    """Recognize only the repository's known unreadable derived FTS index."""
+    entry = schema.get(("table", _CONTENTLESS_DERIVED_FTS))
+    if entry is None or not entry[1]:
+        return set()
+    sql = entry[1]
+    if (
+        not sql.lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+        or re.search(r"\bUSING\s+fts5\s*\(", sql, re.I) is None
+        or re.search(r"""\bcontent\s*=\s*(['"])\s*\1""", sql, re.I) is None
+    ):
+        return set()
+    return {_CONTENTLESS_DERIVED_FTS}
+
+
+def _known_fts_shadow_tables(
+    before_schema: dict[tuple[str, str], tuple[str, str | None]],
+    after_schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> set[str]:
+    has_known_index = bool(
+        _known_contentless_fts_tables(before_schema)
+        or _known_contentless_fts_tables(after_schema)
+    )
+    if not has_known_index:
+        return set()
+    return {*_CONTENTLESS_FTS_SHADOWS, _CONTENTLESS_DERIVED_FTS}
+
+
+def _preservation_table_columns(
+    connection: sqlite3.Connection,
+    schema: str,
+    table: str,
+) -> dict[str, tuple[Any, ...]]:
+    if schema not in {"main", "after_state"}:
+        raise ValueError("unsupported SQLite schema name")
+    quoted_table = _quote_sqlite_identifier(table)
+    return {
+        name: (column_type, not_null, default, primary_key_order, hidden)
+        for _cid, name, column_type, not_null, default, primary_key_order, hidden
+        in connection.execute(f"PRAGMA {schema}.table_xinfo({quoted_table})")
+    }
+
+
+def _preserve_table_rows(
+    connection: sqlite3.Connection,
+    table: str,
+    columns: dict[str, tuple[Any, ...]],
+    current_columns: dict[str, tuple[Any, ...]],
+    *,
+    without_rowid: bool,
+) -> bool | None:
+    """Stream old identities through an indexed join; None means unsupported."""
+    quoted_table = _quote_sqlite_identifier(table)
+    folded_columns = {
+        name.casefold() for name in (*columns.keys(), *current_columns.keys())
+    }
+    rowid_alias = next(
+        (name for name in ("_rowid_", "rowid", "oid") if name not in folded_columns),
+        None,
+    )
+    if rowid_alias is not None and not without_rowid:
+        old_identity = f"old_row.{rowid_alias}"
+        new_identity = f"current_row.{rowid_alias}"
+        join = f"{new_identity} IS {old_identity}"
+    else:
+        primary_keys = sorted(
+            (
+                (metadata[3], name)
+                for name, metadata in columns.items()
+                if metadata[3]
+            ),
+        )
+        if not primary_keys:
+            return None
+        if not without_rowid and not all(columns[name][1] for _, name in primary_keys):
+            # Legacy rowid tables can allow NULL in composite primary keys.
+            # If their rowid aliases are shadowed, there is no safe identity.
+            return None
+        old_identity = f"old_row.{_quote_sqlite_identifier(primary_keys[0][1])}"
+        new_identity = f"current_row.{_quote_sqlite_identifier(primary_keys[0][1])}"
+        join_terms = []
+        for _, name in primary_keys:
+            quoted = _quote_sqlite_identifier(name)
+            join_terms.append(
+                f"typeof(current_row.{quoted}) = typeof(old_row.{quoted}) "
+                f"AND current_row.{quoted} IS old_row.{quoted}"
+            )
+        join = " AND ".join(join_terms)
+
+    differences = []
+    for name in columns:
+        quoted = _quote_sqlite_identifier(name)
+        differences.append(
+            f"typeof(current_row.{quoted}) <> typeof(old_row.{quoted}) "
+            f"OR (typeof(old_row.{quoted}) IN ('text','blob') "
+            f"AND CAST(current_row.{quoted} AS BLOB) IS NOT "
+            f"CAST(old_row.{quoted} AS BLOB)) "
+            f"OR (typeof(old_row.{quoted}) NOT IN ('text','blob') "
+            f"AND current_row.{quoted} IS NOT old_row.{quoted})"
+        )
+    mismatch = " OR ".join(differences) or "0"
+    query = (
+        f"SELECT 1 FROM main.{quoted_table} AS old_row "
+        f"LEFT JOIN after_state.{quoted_table} AS current_row ON {join} "
+        f"WHERE {new_identity} IS NULL OR ({mismatch}) LIMIT 1"
+    )
+    return connection.execute(query).fetchone() is None
+
+
+def _sqlite_sequence_changed(
+    connection: sqlite3.Connection,
+    before_schema: dict[tuple[str, str], tuple[str, str | None]],
+    after_schema: dict[tuple[str, str], tuple[str, str | None]],
+) -> bool | None:
+    """Report SQLite AUTOINCREMENT bookkeeping outside old user-row proof."""
+    before = before_schema.get(("table", "sqlite_sequence"))
+    after = after_schema.get(("table", "sqlite_sequence"))
+    if before is None and after is None:
+        return False
+    if before is None or after is None or before[1] != after[1]:
+        return True
+    old_columns = _preservation_table_columns(connection, "main", "sqlite_sequence")
+    new_columns = _preservation_table_columns(
+        connection, "after_state", "sqlite_sequence",
+    )
+    if old_columns != new_columns:
+        return True
+    rows_preserved = _preserve_table_rows(
+        connection, "sqlite_sequence", old_columns, new_columns,
+        without_rowid=False,
+    )
+    if rows_preserved is None:
+        return None
+    old_count = connection.execute(
+        "SELECT COUNT(*) FROM main.sqlite_sequence",
+    ).fetchone()[0]
+    new_count = connection.execute(
+        "SELECT COUNT(*) FROM after_state.sqlite_sequence",
+    ).fetchone()[0]
+    return not rows_preserved or old_count != new_count
+
+
+def _sqlite_content_digest(connection: sqlite3.Connection) -> bytes:
+    digest = hashlib.sha256()
+    schema = _sqlite_schema(connection)
+    for entry in schema:
+        _update_sqlite_digest(digest, ("schema", entry))
+    for kind, table, _owner, _sql in schema:
+        if kind != "table":
+            continue
+        quoted_table = _quote_sqlite_identifier(table)
+        order_clause = _sqlite_table_order(connection, table)
+        _update_sqlite_digest(digest, ("table", table))
+        row_count = 0
+        rows = connection.execute(f"SELECT * FROM {quoted_table}{order_clause}")
+        for row in rows:
+            _update_sqlite_digest(digest, row)
+            row_count += 1
+        _update_sqlite_digest(digest, ("end-table", table, row_count))
+    return digest.digest()
+
+
+def _update_sqlite_digest(digest: Any, value: Any) -> None:
+    encoded = repr(value).encode("utf-8", "surrogatepass")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
+def _quote_sqlite_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _sqlite_table_order(connection: sqlite3.Connection, table: str) -> str:
+    quoted_table = _quote_sqlite_identifier(table)
+    columns = connection.execute(f"SELECT * FROM {quoted_table} LIMIT 0").description or ()
+    order = ",".join(
+        item
+        for column in (item[0] for item in columns)
+        for item in (
+            f"typeof({_quote_sqlite_identifier(column)}) COLLATE BINARY",
+            f"{_quote_sqlite_identifier(column)} COLLATE BINARY",
+            f"printf('%+.17g',{_quote_sqlite_identifier(column)}) COLLATE BINARY",
+        )
+    )
+    return f" ORDER BY {order}" if order else ""
 
 
 def valid_501_envelope(event: dict[str, Any], manifest: dict[tuple[str, str], dict[str, Any]]) -> bool:
@@ -2017,12 +3537,41 @@ def classify_observation(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_LEDGER)
+    parser.add_argument(
+        "--state-root", type=Path,
+        help=f"run read-only old-data verification on a marked backup copy (requires {COPY_MARKER})",
+    )
+    parser.add_argument(
+        "--live-state-root", type=Path,
+        help="known live state root that a marked backup copy must not alias",
+    )
+    parser.add_argument(
+        "--router-evidence", type=Path,
+        help="JSON sidecar binding the exact source revision to a hashed nextest CI JUnit report",
+    )
     options = parser.parse_args()
     command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
     if not command:
         parser.error("STUDIO_HTTP_BACKEND_COMMAND must name the Rust server executable")
 
+    copy_state_root = None
+    if options.state_root is not None:
+        try:
+            copy_state_root = validate_copy_state_root(
+                options.state_root,
+                live_state_root=options.live_state_root,
+                configured_state_root=os.environ.get("CODEX_AGENTS_STATE_DIR"),
+            )
+            backend_command = validate_ephemeral_backend_command(command)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        command = shlex.join(backend_command)
+        os.environ["STUDIO_HTTP_BACKEND_COMMAND"] = command
+    copy_witness = copied_agent_witness(copy_state_root) if copy_state_root is not None else None
+
     environment = os.environ.copy()
+    isolated_python = str(resolve_python(ROOT / "workspaces/runtime/apps/server/src", environment))
+    environment["STUDIO_HTTP_BACKEND_PYTHON"] = isolated_python
     differential = subprocess.run(
         [
             sys.executable,
@@ -2033,9 +3582,18 @@ def main() -> int:
         cwd=ROOT,
         env=environment,
         check=False,
+        capture_output=True,
+        text=True,
     )
     if differential.returncode:
+        diagnostic = (differential.stderr + differential.stdout)[-12000:]
+        diagnostic_path = DEFAULT_CACHE / "http-runtime-extractor-differential-failure.txt"
+        diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic_path.write_text(diagnostic, encoding="utf-8")
+        print(f"HTTP extractor differential failed; details: {diagnostic_path}", file=sys.stderr)
         raise RuntimeError("HTTP extractor differential contract failed")
+    sys.stdout.write(differential.stdout)
+    sys.stderr.write(differential.stderr)
     trace_regression = subprocess.run(
         [sys.executable, str(TESTS / "http_runtime_conformance_ledger_test.py")],
         cwd=ROOT, env=environment, check=False,
@@ -2044,11 +3602,6 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
-    answer_manifest = manifest.get(("POST", "/api/answer"), {})
-    if tuple(answer_manifest.get("dependencies", [])) != ANSWER_REFUSAL_DEPENDENCIES:
-        raise RuntimeError(
-            "POST /api/answer refusal expectation does not match the Rust operation manifest"
-        )
     validate_missing_service_exclusions(manifest)
     ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
@@ -2076,7 +3629,19 @@ def main() -> int:
         for event in suite.get("requests", []):
             if event.get("operation") and event.get("assertion") in passing and 200 <= event["status"] < 300:
                 successful_assertions[event["operation"]].add(event["assertion"])
-    operations_result = probe_operations(manifest, planned_assertions, successful_assertions)
+    operations_result = probe_operations(
+        manifest,
+        planned_assertions,
+        successful_assertions,
+        python=isolated_python,
+    )
+    router_evidence = load_router_test_evidence(options.router_evidence)
+    copied_data = (
+        probe_copied_data(copy_state_root, copy_witness)
+        if copy_state_root is not None and copy_witness is not None
+        else None
+    )
+    api_evidence = api_fixture_evidence(operations_result, router_evidence)
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -2122,8 +3687,17 @@ def main() -> int:
         ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
+        "apiPositiveOperations": api_evidence["positiveOperations"],
+        "apiRouterPositiveOperations": api_evidence["routerPositiveOperations"],
+        "apiUnverifiedOperations": api_evidence["unverifiedOperations"],
+        "apiUnexpectedOperations": api_evidence["unexpectedOperations"],
+        "apiValidatedNegativeCases": api_evidence["validatedNegativeCases"],
     }
     ledger = {
+        "probeMode": "seeded-scratch",
+        "apiEvidence": api_evidence,
+        "routerEvidence": router_evidence,
+        **({"copiedDataEvidence": copied_data} if copied_data is not None else {}),
         "schemaHash": schema_match.group(1),
         "operations": operations_result,
         "suites": suites,

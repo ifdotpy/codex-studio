@@ -82,8 +82,15 @@ class MemoryRuntime:
     end_active = NativeVoice.end_active
 
     def capacity_reset(self, db, agent, reason):
-        assert not agent.get("capacityRetry")
+        retry = agent.get("capacityRetry")
+        if retry:
+            attempt = agent.get("startAttempt") or {}
+            if attempt.get("capacityRetryId") == retry["id"] and not attempt.get("submitted"):
+                agent.pop("startAttempt", None)
+                agent.update(inFlight=False, status="failed")
+            retry.update(status="finished", dueAt=None, reason=reason)
         agent.pop("capacityRetryCount", None)
+        agent.pop("capacityRetry", None)
 
     def usage_resume_cancel(self, db, agent, reason):
         assert not agent.get("usageResume")
@@ -199,6 +206,20 @@ def corpus():
     records = seed()
     records["tables"]["voice_sessions"] = [dict(id="ended-voice", agent="lead", state="ended", ended=NOW-10)]
     cases.append(run("stop-ended-voice", records, dict(action="stop", target="lead", descendants=True)))
+    records = seed()
+    records["tables"]["runtime_agents"][0].update(
+        status="starting", inFlight=True, capacityRetry={"id":"retry"},
+        startAttempt={"id":"attempt", "capacityRetryId":"retry", "submitted":False},
+    )
+    cases.append(run("stop-capacity-retry-unsubmitted", records,
+                     dict(action="stop", target="lead", descendants=False)))
+    records = seed()
+    records["tables"]["runtime_agents"][0].update(
+        status="starting", inFlight=True, capacityRetry={"id":"retry"},
+        startAttempt={"id":"attempt", "capacityRetryId":"retry"},
+    )
+    cases.append(run("stop-capacity-retry-submitted-missing", records,
+                     dict(action="stop", target="lead", descendants=False)))
     cases.append(run("delete-child", seed(), dict(action="delete", target="worker")))
     cases.append(run("delete", seed(), dict(action="delete", target="lead")))
     cases.append(run("delete-retry", cases[-1]["expected"]["records"], dict(action="delete", target="lead")))

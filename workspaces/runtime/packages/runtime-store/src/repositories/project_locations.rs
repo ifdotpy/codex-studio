@@ -131,7 +131,7 @@ impl ProjectLocationsRepository {
         Ok(())
     }
     pub fn alias_requests(db: &Connection, actor: &str, alias: &str) -> StoreResult<Vec<String>> {
-        let mut statement = db.prepare("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 1001")?;
+        let mut statement = db.prepare_cached("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 1001")?;
         Ok(statement
             .query_map(params![actor, alias], |r| r.get(0))?
             .collect::<Result<Vec<_>, _>>()?)

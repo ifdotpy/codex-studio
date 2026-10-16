@@ -2,7 +2,7 @@
 pub(crate) mod admission;
 pub(crate) mod lifecycle;
 use crate::event_write::truthy;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
@@ -13,6 +13,8 @@ pub enum ToolRequestError {
     InvalidRequest(&'static str),
     #[error("Not implemented: requires {0}")]
     RequiresDependency(&'static str),
+    #[error(transparent)]
+    Payload(#[from] crate::payload_blobs::PayloadBlobError),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -30,7 +32,6 @@ pub enum Action<'a> {
 }
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
-const MOVE: &str = "multi-server/move-receipt";
 
 pub fn execute(
     tx: &Transaction<'_>,
@@ -38,11 +39,29 @@ pub fn execute(
     action: Action<'_>,
     now: f64,
 ) -> Result<Value, ToolRequestError> {
-    if !records::exists(tx, TABLE)? {
-        return Err(ToolRequestError::RequiresDependency(
-            "store-bootstrap/tool-request-schema",
-        ));
-    }
+    execute_with_payload_recovery(tx, actor_id, action, now, false, None)
+}
+
+/// HTTP caller variant. Resolve the full durable payload before settling, then
+/// let the route restore references for the response after the transaction.
+pub fn execute_http(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+    state_root: &std::path::Path,
+) -> Result<Value, ToolRequestError> {
+    execute_with_payload_recovery(tx, actor_id, action, now, true, Some(state_root))
+}
+
+fn execute_with_payload_recovery(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+    payload_recovery: bool,
+    payload_root: Option<&std::path::Path>,
+) -> Result<Value, ToolRequestError> {
     let actor = crate::event_write::checked_agent(tx, actor_id).map_err(|e| match e {
         crate::event_write::EventWriteError::Store(e) => ToolRequestError::Store(e),
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
@@ -52,14 +71,22 @@ pub fn execute(
     })?;
     let actor = serde_json::to_value(actor).map_err(StoreError::from)?;
     if matches!(action, Action::List) {
-        let mut statement=tx.prepare("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")?;
+        let mut statement=tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")?;
         let mut requests = Vec::new();
         for row in statement.query_map([actor_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })? {
             let (id, raw) = row?;
             let mut record = records::decode(TABLE, &id, &raw)?;
-            refresh(tx, &mut record, &actor, now, false)?;
+            refresh(
+                tx,
+                &mut record,
+                &actor,
+                now,
+                false,
+                payload_recovery,
+                payload_root,
+            )?;
             strip(&mut record, &["result", "signature", "_payloadBlobs"]);
             requests.push(record);
         }
@@ -75,7 +102,19 @@ pub fn execute(
     }
     let Some(mut record) = resolve(tx, actor_id, id)? else {
         if !cancel && truthy(actor.get("movedFrom")) {
-            return Err(ToolRequestError::RequiresDependency(MOVE));
+            let local_server = studio_runtime_store::RuntimeStore::transaction_local_server_id(tx)?
+                .unwrap_or_default();
+            let move_status = crate::agent_move::status(tx, actor_id, id, &local_server)
+                .map_err(relocation_error)?;
+            if move_status
+                .get("acceptance")
+                .is_some_and(|value| !value.is_null())
+            {
+                let tool = session_tool_name(&actor);
+                return Ok(
+                    json!({"id":id,"stage":"complete","outcome":"applied","tool":tool,"operationResult":move_status["acceptance"],"move":move_status}),
+                );
+            }
         }
         return Ok(
             json!({"id":id,"stage":"not_found","outcome":"unknown","message":"No receipt found. This does not prove that the operation did not execute."}),
@@ -90,16 +129,35 @@ pub fn execute(
             "orchestration_move" | "orchestration_teleport"
         )
     {
-        return Err(ToolRequestError::RequiresDependency(MOVE));
+        let local_server = studio_runtime_store::RuntimeStore::transaction_local_server_id(tx)?
+            .unwrap_or_default();
+        record["move"] = crate::agent_move::status(
+            tx,
+            actor_id,
+            record
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or(id),
+            &local_server,
+        )
+        .map_err(relocation_error)?;
     }
-    refresh(tx, &mut record, &actor, now, true)?;
+    refresh(
+        tx,
+        &mut record,
+        &actor,
+        now,
+        true,
+        payload_recovery,
+        payload_root,
+    )?;
     if cancel && lifecycle::cancel(&mut record)? {
         record["updated"] = json!(now);
         if record["stage"] == "cancelled" {
             record["finished"] = json!(now);
             record["result"] = json!({"success":false,"contentItems":[{"type":"inputText","text":json!({"requestId":record["id"],"stage":"cancelled","outcome":"not_applied","cancelRequested":true,"message":"Cancelled before execution"}).to_string()}]});
         }
-        save(tx, &record, &actor)?;
+        save(tx, &record, &actor, payload_root)?;
     }
     if !cancel {
         if !terminal(&record)
@@ -122,10 +180,10 @@ pub fn execute(
             record["registryObservedAt"] = json!(now);
         }
     }
-    if let Some(result) = record.get_mut("result") {
+    if !payload_recovery && let Some(result) = record.get_mut("result") {
         expire(result, now);
     }
-    strip(&mut record, &["signature", "_payloadBlobs"]);
+    strip(&mut record, &["signature"]);
     Ok(record)
 }
 
@@ -133,7 +191,7 @@ fn resolve(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Option<Value>,
     if let Some(record) = records::get(tx, TABLE, id)?.filter(|r| r["agent"] == actor) {
         return Ok(Some(record));
     }
-    let mut statement = tx.prepare(
+    let mut statement = tx.prepare_cached(
         "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
     )?;
     let aliases = statement
@@ -165,73 +223,79 @@ fn refresh(
     actor: &Value,
     now: f64,
     specific: bool,
+    payload_recovery: bool,
+    payload_root: Option<&std::path::Path>,
 ) -> Result<(), ToolRequestError> {
+    let has_record_payload = truthy(record.get("_payloadBlobs"));
     if !specific && terminal(record) {
+        if payload_recovery
+            && has_record_payload
+            && matches!(
+                text(record, "tool"),
+                "orchestration_spawn" | "orchestration_review"
+            )
+            && record
+                .get("agentIds")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+            *record = crate::payload_blobs::resolve_record(root, record)?;
+        }
+        populate_spawned_agent_ids(record);
         return Ok(());
     }
-    if truthy(record.get("_payloadBlobs")) {
+    if !payload_recovery && has_record_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    if terminal(record) {
-        return Ok(());
-    }
-    if record["tool"] == "orchestration_servers"
-        && record["outcome"] == "unknown"
-        && records::exists(tx, "runtime_server_outbox")?
-    {
-        let key = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_URL,
-            format!(
-                "studio-cross-server:project-location:{}:{}",
-                text(record, "agent"),
-                text(record, "id")
-            )
-            .as_bytes(),
-        );
-        let raw: Option<String> = tx.query_row(
-            "SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",
-            [key.to_string()],
-            |r| r.get(0),
-        ).optional()?;
-        if let Some(raw) = raw {
-            // The storage boundary validates the complete delivery row. This
-            // consumer only needs its identity, regardless of envelope action.
-            #[derive(serde::Deserialize)]
-            struct LocationOutbox {
-                id: String,
-            }
-            let row: LocationOutbox = serde_json::from_value(records::decode(
-                "runtime_server_outbox",
-                &key.to_string(),
-                &raw,
-            )?)
-            .map_err(StoreError::from)?;
-            debug_assert_eq!(row.id, key.to_string());
-            return Err(ToolRequestError::RequiresDependency(
-                "multi-server/project-location-receipt",
-            ));
-        }
+    if payload_recovery && has_record_payload {
+        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        *record = crate::payload_blobs::resolve_record(root, record)?;
     }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
-    if saved
+    let has_saved_payload = saved
         .as_ref()
-        .is_some_and(|r| truthy(r.get("_payloadBlobs")))
-    {
+        .is_some_and(|result| truthy(result.get("_payloadBlobs")));
+    if !payload_recovery && has_saved_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    let Some(result) = saved
-        .map(|mut result| {
-            if specific {
-                expire(&mut result, now);
-            }
-            result
-        })
-        .or_else(|| record.get("result").filter(|r| r.is_object()).cloned())
-    else {
+    if !has_record_payload
+        && !has_saved_payload
+        && crate::project_locations::refresh_tool_receipt(tx, record, now)
+            .map_err(relocation_error)?
+    {
+        return Ok(());
+    }
+    if terminal(record) {
+        populate_spawned_agent_ids(record);
+        return Ok(());
+    }
+    let has_saved_result = saved.is_some();
+    let persisted_result =
+        saved.or_else(|| record.get("result").filter(|r| r.is_object()).cloned());
+    let Some(mut result) = persisted_result.clone() else {
         return Ok(());
     };
+    if truthy(result.get("_payloadBlobs")) {
+        if !payload_recovery {
+            return Err(ToolRequestError::RequiresDependency(PAYLOAD));
+        }
+        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        result = crate::payload_blobs::resolve_record(root, &result)?;
+    }
+    // Python's specific `tool_result` lookup expires saved results before it
+    // settles them. Inline results on the request row are settled as stored;
+    // their returned copy is expired by the HTTP route afterwards.
+    if specific && has_saved_result {
+        // Python resolves the durable payload and applies output expiry before
+        // it passes the result to finish_tool_request (codex_tool_requests.py:301-307, 512-520).
+        expire(&mut result, now);
+    }
     let committed = operation_result(tx, text(record, "id"))?.is_some();
     if lifecycle::settle(record, &result, committed)? {
+        // Store the same recovered value used for settlement. This keeps an
+        // unchanged externalized unknown result from comparing unequal on the
+        // next poll, and lets save() create a fresh reference for this value.
         record["result"] = result;
         record["updated"] = json!(now);
         if record.get("timing").is_none() {
@@ -246,51 +310,147 @@ fn refresh(
             text(record, "tool"),
             "orchestration_spawn" | "orchestration_review"
         ) {
-            let mut ids = Vec::new();
-            for value in record["result"]["contentItems"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|v| v["type"] == "inputText")
-                .filter_map(|v| serde_json::from_str::<Value>(v["text"].as_str()?).ok())
-            {
-                for id in value["agents"]
+            populate_spawned_agent_ids(record);
+        }
+        save(tx, record, actor, payload_root)?;
+    }
+    Ok(())
+}
+
+fn populate_spawned_agent_ids(record: &mut Value) {
+    if record
+        .get("agentIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty())
+    {
+        return;
+    }
+    let mut ids = Vec::new();
+    for value in record["result"]["contentItems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|value| value["type"] == "inputText")
+        .filter_map(|value| serde_json::from_str::<Value>(value["text"].as_str()?).ok())
+    {
+        for id in value["agents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|agent| agent["id"].as_str())
+            .chain(["agentIds", "agent_ids"].into_iter().flat_map(|key| {
+                value[key]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|v| v["id"].as_str())
-                    .chain(["agentIds", "agent_ids"].into_iter().flat_map(|key| {
-                        value[key]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                    }))
-                {
-                    if !ids.iter().any(|v| v == id) {
-                        ids.push(id.to_owned());
-                    }
-                }
-            }
-            if !ids.is_empty() {
-                record["agentIds"] = json!(ids);
+                    .filter_map(Value::as_str)
+            }))
+        {
+            if !ids.iter().any(|existing| existing == id) {
+                ids.push(id.to_owned());
             }
         }
-        save(tx, record, actor)?;
     }
-    Ok(())
+    if !ids.is_empty() {
+        record["agentIds"] = json!(ids);
+    }
+}
+
+fn session_tool_name(actor: &Value) -> &'static str {
+    const MOVE: &str = "orchestration_move";
+    const TELEPORT: &str = "orchestration_teleport";
+    if actor
+        .get("nativeTeleportTool")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name == MOVE || name == TELEPORT)
+    {
+        return if actor["nativeTeleportTool"] == MOVE {
+            MOVE
+        } else {
+            TELEPORT
+        };
+    }
+    if actor
+        .pointer("/frozenNativeParams/dynamicTools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name == MOVE || name == TELEPORT)
+            })
+        })
+    {
+        return if actor
+            .pointer("/frozenNativeParams/dynamicTools")
+            .and_then(Value::as_array)
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .find_map(|tool| tool.get("name").and_then(Value::as_str))
+            })
+            == Some(TELEPORT)
+        {
+            TELEPORT
+        } else {
+            MOVE
+        };
+    }
+    if actor.get("threadId").is_some_and(|value| !value.is_null()) {
+        MOVE
+    } else {
+        TELEPORT
+    }
+}
+
+fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestError {
+    match error {
+        crate::relocation::RelocationError::InvalidStored { object, pointer } => {
+            ToolRequestError::Store(StoreError::SchemaMismatch(format!(
+                "invalid stored {object} at {pointer}"
+            )))
+        }
+        crate::relocation::RelocationError::Refused(message) => {
+            ToolRequestError::InvalidRequest(message)
+        }
+        crate::relocation::RelocationError::Requires(name) => {
+            ToolRequestError::RequiresDependency(name)
+        }
+        crate::relocation::RelocationError::Store(error) => ToolRequestError::Store(error),
+        crate::relocation::RelocationError::Sqlite(error) => ToolRequestError::Store(error.into()),
+    }
 }
 
 fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {
     records::get(tx, "runtime_operation_receipts", id).map_err(Into::into)
 }
-fn save(tx: &Transaction<'_>, record: &Value, actor: &Value) -> Result<(), ToolRequestError> {
-    let id = text(record, "id");
-    records::validate(TABLE, id, record.clone())?;
-    reconcile_effect(tx, "tool_requests", record, actor)?;
+fn save(
+    tx: &Transaction<'_>,
+    record: &Value,
+    actor: &Value,
+    payload_root: Option<&std::path::Path>,
+) -> Result<(), ToolRequestError> {
+    let decision = payload_root
+        // decide_externalize uses logical table names; the physical SQLite
+        // table is runtime_tool_requests, but its payload contract is
+        // tool_requests.
+        .map(|root| {
+            crate::payload_blobs::decide_externalize("tool_requests", record).map(|d| (root, d))
+        })
+        .transpose()?;
+    let persisted = decision
+        .as_ref()
+        .map(|(_, decision)| &decision.record)
+        .unwrap_or(record);
+    let id = text(persisted, "id");
+    records::validate(TABLE, id, persisted.clone())?;
+    if let Some((root, decision)) = decision.as_ref() {
+        crate::payload_blobs::write_blobs(root, &decision.writes)?;
+    }
+    reconcile_effect(tx, "tool_requests", persisted, actor)?;
     tx.execute(
         "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
-        params![record.to_string(), id],
+        params![persisted.to_string(), id],
     )?;
     Ok(())
 }
@@ -317,7 +477,7 @@ pub(crate) fn reconcile_effect(
             .filter(|v| truthy(Some(v)))
             .or_else(|| actor.get("turnId"));
         let account = actor["accountKey"].as_str().unwrap_or("default");
-        let mut statement = tx.prepare(
+        let mut statement = tx.prepare_cached(
             "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2
              AND ((?6 AND thread IS ?3 AND turn=?4)
                OR (NOT ?6 AND epoch=?5 AND turn IS NULL AND ?4 IS NULL))
@@ -372,7 +532,7 @@ fn strip(value: &mut Value, keys: &[&str]) {
 fn text<'a>(record: &'a Value, key: &str) -> &'a str {
     record.get(key).and_then(Value::as_str).unwrap_or_default()
 }
-pub(crate) fn expire(result: &mut Value, now: f64) {
+pub fn expire(result: &mut Value, now: f64) {
     if result["serverOutputExpiresAt"]
         .as_f64()
         .is_some_and(|expiry| now >= expiry)

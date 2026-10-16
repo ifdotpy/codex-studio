@@ -188,6 +188,10 @@ finally:
     runtime.close()
 """
     python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON", sys.executable)
+    if getattr(backend, "copy_mode", False):
+        namespace = backend.fixture_namespace
+        for marker in ("analytics-", "population-", "chart-", "fallback", "ambiguous"):
+            script = script.replace(marker, namespace + marker)
     subprocess.run([python, "-B", "-c", script], cwd=backend.cwd,
                    env=backend._environment(), check=True, timeout=30)
 
@@ -317,8 +321,10 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             incomplete = json.loads(json.dumps(saved))
             incomplete["source"].pop("pricingSignature")
             cache_file.write_text(json.dumps(incomplete))
+            before_refusal = no_write_snapshot(self.backend.state)
             refused = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
             self.assertEqual(refused.status, 501, refused.body[:1000])
+            self.assertEqual(no_write_snapshot(self.backend.state), before_refusal)
         saved["source"]["usage"]["generation"] += 1
         cache_file.write_text(json.dumps(saved))
         stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)

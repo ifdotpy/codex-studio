@@ -283,6 +283,29 @@ fn oracle(root: &Path, mut request: Value) -> Value {
         .request(request)
 }
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn image_readiness_refuses_with_python_message_without_workspace_writes() {
+    let fixture = Fixture::new();
+    fixture.patch("workspaceMode", json!("image"));
+    fixture.patch("imageWorkspace", json!(true));
+    let before = std::fs::read_dir(fixture.root.path())
+        .expect("fixture contents")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let decision = prepare(&fixture.store, &fixture.id).expect("readiness decision");
+    assert!(matches!(decision, WorkspaceDecision::Refuse(refusal)
+        if refusal.to_string() == crate::image_workspace::PLATFORM_REFUSAL));
+
+    let after = std::fs::read_dir(fixture.root.path())
+        .expect("fixture contents after refusal")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(after, before);
+    assert!(!fixture.repo.join(".worktrees").exists());
+}
+
 #[test]
 fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
     let fixture = Fixture::new();
@@ -634,23 +657,36 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
         ],
     );
     fixture.patch("workerBaseCommit", json!(base));
-    for (key, value) in [
-        ("workspaceMode", json!("image")),
-        ("executionMode", json!("vm")),
-        ("environment", json!("linux")),
-    ] {
-        let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
-        fixture.patch(key, value);
-        let before = snapshot(&fixture.store, &fixture.id).expect("before");
-        assert!(matches!(
-            prepare(&fixture.store, &fixture.id).expect("unsupported"),
-            WorkspaceDecision::Refuse(_)
-        ));
-        assert_eq!(
-            snapshot(&fixture.store, &fixture.id).expect("after"),
-            before
+    let key = "workspaceMode";
+    let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
+    fixture.patch(key, json!("image"));
+    let before = snapshot(&fixture.store, &fixture.id).expect("before");
+    assert!(matches!(
+        prepare(&fixture.store, &fixture.id).expect("unsupported"),
+        WorkspaceDecision::Refuse(_)
+    ));
+    assert_eq!(
+        snapshot(&fixture.store, &fixture.id).expect("after"),
+        before
+    );
+    fixture.patch(key, original);
+    let original_vm_fields = fixture.actor();
+    fixture.patch("executionMode", json!("vm"));
+    fixture.patch("layrReady", json!(true));
+    fixture.patch("layrProjectId", json!("fake-project"));
+    fixture.patch("layrLine", json!("fake-line"));
+    fixture.patch("cwd", json!("/guest/project/lines/fake-line"));
+    assert!(matches!(
+        prepare(&fixture.store, &fixture.id).expect("ready VM workspace"),
+        WorkspaceDecision::Ready { .. }
+    ));
+    fixture.patch("executionMode", json!("native"));
+    fixture.patch("layrReady", json!(false));
+    for key in ["layrProjectId", "layrLine", "cwd"] {
+        fixture.patch(
+            key,
+            original_vm_fields.get(key).cloned().unwrap_or(Value::Null),
         );
-        fixture.patch(key, original);
     }
     fixture.store.transaction(|tx| {tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('restore:lost-marker',?1)", [json!({"id":"restore:lost-marker","kind":"restore","agent":fixture.id,"cwd":fixture.actor()["cwd"],"phase":"recovery_required"}).to_string()])?;Ok(())}).expect("orphan restore");
     let before = snapshot(&fixture.store, &fixture.id).expect("before");

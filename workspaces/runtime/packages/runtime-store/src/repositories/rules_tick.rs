@@ -23,7 +23,7 @@ pub struct RulesTickRepository;
 
 impl RulesTickRepository {
     pub fn page(connection: &Connection, after_rowid: i64) -> StoreResult<Vec<RuleRow>> {
-        let mut query = connection.prepare(
+        let mut query = connection.prepare_cached(
             "SELECT rowid,id,record FROM runtime_rules WHERE rowid>?1 ORDER BY rowid LIMIT ?2",
         )?;
         let mut rows = query.query(params![after_rowid, RULE_BATCH as i64])?;
@@ -72,7 +72,7 @@ fn read_activity(
     root_id: &str,
     object: &'static str,
 ) -> StoreResult<Vec<Value>> {
-    let mut query = connection.prepare(sql)?;
+    let mut query = connection.prepare_cached(sql)?;
     let mut rows = query.query(params![root_id, MAX_TEAM_RECORDS as i64 + 1])?;
     let mut result = Vec::new();
     while let Some(row) = rows.next()? {

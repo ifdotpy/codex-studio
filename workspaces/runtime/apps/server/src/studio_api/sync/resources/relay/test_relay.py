@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,40 @@ class RelayRouteTests(unittest.TestCase):
         })
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(self.context.hub._revision, 1)
+
+    def test_multi_server_notify_is_published_to_a_typed_subscriber(self) -> None:
+        loop = asyncio.new_event_loop()
+        resource = ResourceRef.model_validate({"kind": "multi-server"})
+        subscription = self.context.hub.subscribe([resource], loop=loop)
+        request_id = f"multi-server-notify-{id(self)}"
+        body = {"requestId": request_id, "resources": [{"kind": "multi-server"}]}
+        try:
+            self.assertEqual(
+                subscription.initial.model_dump(mode="json", by_alias=True)["resources"],
+                [{"kind": "multi-server"}],
+            )
+            first = _post(self.client, body)
+            replay = _post(self.client, body)
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(first.json(), {"requestId": request_id, "accepted": True})
+            self.assertEqual(replay.json(), first.json())
+
+            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.resources, [resource])
+            self.assertEqual(event.resourceVersions[0].revision, 1)
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.05)))
+
+            unknown = _post(self.client, {
+                "requestId": f"unknown-notify-{id(self)}",
+                "resources": [{"kind": "future-resource"}],
+            })
+            self.assertEqual(unknown.status_code, 400)
+            self.assertEqual(self.context.hub._revision, 1)
+        finally:
+            subscription.close()
+            loop.close()
 
     def test_unauthenticated_or_invalid_payload_never_publishes(self) -> None:
         body = {"requestId": "stable-notify-2", "resources": [{"kind": "state"}]}

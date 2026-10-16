@@ -11,6 +11,8 @@ use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
 
+pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -126,7 +128,7 @@ mod tests {
         }
     }
     fn database() -> Connection {
-        let connection = Connection::open_in_memory().expect("memory database opens");
+        let mut connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
@@ -137,6 +139,8 @@ mod tests {
                  CREATE TABLE runtime_events(
                    id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                    created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+                 CREATE TABLE runtime_operation_receipts(
+                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
@@ -144,6 +148,14 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER);",
             )
             .expect("scheduler tables create");
+        let transaction = connection
+            .transaction()
+            .expect("candidate-index transaction begins");
+        SchedulerRepository::prepare_account_wake_index(&transaction)
+            .expect("account wake candidate index prepares");
+        transaction
+            .commit()
+            .expect("candidate-index transaction commits");
         let mut extra = BTreeMap::new();
         extra.insert("threadId".into(), json!("thread"));
         extra.insert("autoWake".to_owned(), json!(true));
@@ -272,6 +284,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("revoked claim cannot submit")
@@ -368,6 +381,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("submitted marker persists")
@@ -385,7 +399,7 @@ mod tests {
 
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent is queued with unresolved attempt");
@@ -422,7 +436,7 @@ mod tests {
             .expect("claim executes");
         transaction
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent epoch advances");
@@ -522,6 +536,29 @@ mod tests {
     }
 
     #[test]
+    fn invalid_agent_hold_receipt_excludes_agent_from_wake_page() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    r#"{"held":true}"#,
+                ],
+            )
+            .expect("invalid agent hold receipt writes");
+
+        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8)
+            .expect("wake page skips held agent");
+
+        assert!(
+            page.is_empty(),
+            "held agent must not be eligible for wake selection"
+        );
+    }
+
+    #[test]
     fn native_failure_hold_added_after_claim_blocks_submission() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");
@@ -547,6 +584,7 @@ mod tests {
                 "ticket-held",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("hold refuses submission")
@@ -648,7 +686,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false'))",
                 [],
             )
             .expect("disabled autowake writes");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unchanged entity reads do not require SQLite's sole WAL writer."""
+"""Committed entity reads never require SQLite's sole WAL writer."""
 
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
@@ -64,7 +64,7 @@ class EntityReadLockContract(unittest.TestCase):
         class CanvasView:
             root = Path(self.path).parent
 
-            def threads(_self, runtime_agents=None):
+            def threads(_self, runtime_agents=None, **_unused):
                 return []
 
             def chats(_self, db=None):
@@ -122,7 +122,7 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(self.writes(), [])
         prune.assert_not_called()
 
-    def test_changed_monitor_requires_maintenance_and_publishes_the_exact_source(self):
+    def test_startup_repairs_changed_monitor_before_readers_run(self):
         changed = {**self.monitor, 'status': 'completed', 'tail': 'The final output'}
         with self.connect() as db:
             db.execute('UPDATE runtime_monitors SET record=? WHERE id=?', (json.dumps(changed), 'monitor'))
@@ -131,10 +131,11 @@ class EntityReadLockContract(unittest.TestCase):
         self.store = SyncStore(self.connect, lambda _key: {},
                                runtime=self.runtime_view, canvas=self.canvas_view)
         self.statements.clear()
-        with self.writer(), self.assertRaisesRegex(sqlite3.OperationalError, 'database is locked'):
-            self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
-        self.assertIn('BEGIN IMMEDIATE', self.writes())
-        refreshed = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        with self.writer():
+            refreshed = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+            fresh = self.store.pull('state:entities:v1', fresh=True)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.values(fresh)['entity:monitor:monitor']['tail'], 'The final output')
         self.assertEqual(self.values(refreshed)['entity:monitor:monitor']['tail'], 'The final output')
         self.assertEqual(self.values(refreshed)['entity:monitor:monitor']['status'], 'completed')
         self.statements.clear()
@@ -179,8 +180,8 @@ class EntityReadLockContract(unittest.TestCase):
     def test_event_window_retires_stale_rows_and_uses_the_global_sequence(self):
         with self.connect() as db:
             db.execute("INSERT INTO sync_documents(seq,scope,id,payload,deleted) VALUES(5000,'drafts','draft','{}',0)")
-            put(db, 'event', 'stale', {'id': 'stale', 'agent': 'owner', 'kind': 'user',
-                                       'status': 'delivered', 'created': 9})
+            db.execute("INSERT INTO runtime_events VALUES ('stale','owner','user','delivered',9,NULL)")
+            db.execute("DELETE FROM runtime_events WHERE id='stale'")
             db.execute("INSERT INTO runtime_events VALUES ('new-event','owner','user','pending',10,NULL)")
         response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         rows = {row['id']: row for row in response['documents']}
@@ -192,67 +193,194 @@ class EntityReadLockContract(unittest.TestCase):
             self.assertEqual(self.store.pull('state:entities:v1', response['checkpoint']['seq'])['documents'], [])
         self.assertEqual(self.writes(), [])
 
-    def test_event_window_projects_the_whole_window_once_per_store(self):
+    def test_event_window_writer_projects_only_the_changed_or_backfilled_rows(self):
         import codex_entity_contracts
         import codex_sync_entities
         projected = []
-        original_put = codex_sync_entities.put
-
-        def counted_put(db, collection, key, record, deleted=False):
+        original_project = codex_sync_entities.project
+        def counted_project(collection, record):
             if collection == 'event':
-                projected.append((key, deleted))
-            return original_put(db, collection, key, record, deleted)
-
+                projected.append(record['id'])
+            return original_project(collection, record)
         def add(key, created):
             with self.connect() as db:
                 db.execute("INSERT INTO runtime_events VALUES (?,'owner','user','pending',?,NULL)",
                            (key, created))
-
-        def live_events():
+        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3):
             with self.connect() as db:
-                return {key: json.loads(payload)['value'] for key, payload in db.execute(
-                    "SELECT id,payload FROM sync_entities WHERE collection='event' AND deleted=0")}
-
-        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3), \
-             patch.object(codex_sync_entities, 'put', counted_put):
+                install_bypass_triggers(db)
             for index in range(3):
                 add(f'event-{index}', index)
-            # A restarted store checks every window row once.
-            self.store = SyncStore(self.connect, lambda _key: {},
-                                   runtime=self.runtime_view, canvas=self.canvas_view)
-            first = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
-            self.assertEqual(len([row for row in projected if not row[1]]), 3)
-            projected.clear()
-            # The trigger projects the new event; the pull only retires the displaced one.
-            add('event-3', 3)
-            moved = self.store.pull('state:entities:v1', first['checkpoint']['seq'])
-            self.assertEqual(projected, [('event-0', True)])
+            first = self.store.pull('state:entities:v1', fresh=True)
+            with patch.object(codex_sync_entities, 'project', counted_project):
+                add('event-3', 3)
+            # The existing trigger hashes and stores its source payload. Window
+            # reconciliation must not reproject any already-live row.
+            self.assertEqual(projected, ['event-3', 'event-3'])
+            self.statements.clear()
+            with self.writer():
+                moved = self.store.pull('state:entities:v1', first['checkpoint']['seq'])
+                fresh = self.store.pull('state:entities:v1', fresh=True)
+            self.assertEqual(self.writes(), [])
+            self.assertEqual({key for key in self.values(fresh) if key.startswith('entity:event:')},
+                             {'entity:event:event-1', 'entity:event:event-2', 'entity:event:event-3'})
             rows = {row['id']: row for row in moved['documents']}
             self.assertTrue(rows['entity:event:event-0']['_deleted'])
-            self.assertEqual(set(live_events()), {'event-1', 'event-2', 'event-3'})
             projected.clear()
-            # A deleted event lets an older event back into the window.
-            with self.connect() as db:
+            with patch.object(codex_sync_entities, 'project', counted_project), self.connect() as db:
                 db.execute("DELETE FROM runtime_events WHERE id='event-3'")
-            self.store.pull('state:entities:v1', moved['checkpoint']['seq'])
-            self.assertEqual(projected, [('event-0', False)])
+            self.assertEqual(projected, ['event-0', 'event-0'])
             with self.connect() as db:
                 expected = {record['id']: codex_sync_entities.project('event', record)
                             for record in codex_entity_contracts.event_records(db)}
-            self.assertEqual(live_events(), expected)
+                actual = {key: json.loads(payload)['value'] for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='event' AND deleted=0")}
+            self.assertEqual(actual, expected)
 
-    def test_boot_markers_still_require_seed_and_window_repairs(self):
+    def test_generated_rust_event_trigger_sql_matches_its_python_owner(self):
+        from studio_api.generate_sync_schema import SCHEMA_PATH, generated_schema
+        source = SCHEMA_PATH.read_text()
+        self.assertEqual(source, generated_schema(source),
+                         'codex_sync_entities.event_trigger_sql owns generated Rust event trigger SQL')
+
+    def test_noop_and_startup_repair_do_not_advance_event_sequences(self):
+        with self.connect() as db:
+            db.execute("INSERT INTO runtime_events VALUES ('event','owner','user','pending',1,NULL)")
+        before = self.store.pull('state:entities:v1', fresh=True)
+        with self.connect() as db:
+            db.execute("UPDATE runtime_events SET status=status WHERE id='event'")
+        self.store.prepare_entities()
+        after = self.store.pull('state:entities:v1', before['checkpoint']['seq'])
+        self.assertEqual(after['documents'], [])
+        self.assertEqual(after['checkpoint'], before['checkpoint'])
+
+    def test_payload_only_event_update_skips_window_projection(self):
+        import codex_sync_entities
+        with self.connect() as db:
+            for index in range(3):
+                db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?)",
+                           (f'event-{index}', 'owner', 'user', 'pending', index + 1, None))
+        with self.connect() as db:
+            original = db.execute(
+                "SELECT seq FROM sync_entities WHERE collection='event' AND id='event-2'").fetchone()[0]
+        self.statements.clear()
+        projected = []
+        original_project = codex_sync_entities.project
+
+        def count_projection(collection, record):
+            projected.append((collection, record.get('id')))
+            return original_project(collection, record)
+
+        with patch.object(codex_sync_entities, 'project', count_projection), self.connect() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id='event-2'")
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT seq,hash,payload,deleted FROM sync_entities "
+                "WHERE collection='event' AND id='event-2'").fetchone()
+        self.assertGreater(row[0], original)
+        self.assertEqual(row[3], 0)
+        self.assertEqual(projected, [('event', 'event-2')] * 2)
+        self.assertFalse(any(
+            'ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id)' in sql
+            or "s.id NOT IN (SELECT id FROM (SELECT id,agent,kind,status,created,error FROM runtime_events" in sql
+            for sql in self.statements
+        ))
+
+    def test_created_change_with_stable_window_membership_skips_window_recompute(self):
+        import codex_entity_contracts
+        import codex_sync_entities
+        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3):
+            with self.connect() as db:
+                install_bypass_triggers(db)
+                db.executemany("INSERT INTO runtime_events VALUES (?,'owner','user','pending',?,NULL)",
+                               [(f'event-{index}', index + 1) for index in range(4)])
+            self.statements.clear()
+            projected = []
+            original_project = codex_sync_entities.project
+
+            def count_projection(collection, record):
+                projected.append((collection, record.get('id')))
+                return original_project(collection, record)
+
+            with patch.object(codex_sync_entities, 'project', count_projection), self.connect() as db:
+                db.execute("UPDATE runtime_events SET created=2.5 WHERE id='event-2'")
+            self.assertEqual(projected, [('event', 'event-2')] * 2)
+            self.assertFalse(any(
+                'ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id)' in sql
+                for sql in self.statements
+            ))
+            with self.connect() as db:
+                live = {row[0] for row in db.execute(
+                    "SELECT id FROM sync_entities WHERE collection='event' AND deleted=0")}
+            self.assertEqual(live, {'event-1', 'event-2', 'event-3'})
+
+    def test_boot_markers_are_repaired_before_pulls(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
-                self.store.runtime = self.runtime_view
                 with self.connect() as db:
                     db.execute('DELETE FROM sync_entity_meta WHERE key=?', (marker,))
-                with self.writer(), self.assertRaisesRegex(sqlite3.OperationalError, 'database is locked'):
-                    self.store.pull('state:entities:v1', fresh=True)
-                response = self.store.pull('state:entities:v1', fresh=True)
+                self.store = SyncStore(self.connect, lambda _key: {},
+                                       runtime=self.runtime_view, canvas=self.canvas_view)
+                self.statements.clear()
+                with self.writer():
+                    response = self.store.pull('state:entities:v1', fresh=True)
                 self.assertTrue(response['documents'])
+                self.assertEqual(self.writes(), [])
                 with self.connect() as db:
                     self.assertIsNotNone(db.execute('SELECT value FROM sync_entity_meta WHERE key=?', (marker,)).fetchone())
+
+    def test_partial_runtime_uses_stored_dtos_and_attach_prepares_once(self):
+        from types import SimpleNamespace
+        partial = SimpleNamespace(lock=object())
+        store = SyncStore(self.connect, lambda _key: {}, runtime=partial, canvas=self.canvas_view)
+        response = store.pull('state:entities:v1', fresh=True)
+        self.assertEqual(self.values(response)['entity:agent:owner']['name'], 'Owner')
+        # Listener startup sees the same attachment from two shared contexts.
+        # Once a full Runtime arrives, only the first listener repairs its views.
+        store.runtime = self.runtime_view
+        with patch.object(store, 'prepare_entities', wraps=store.prepare_entities) as prepare:
+            store.prepare_runtime()
+            store.prepare_runtime()
+        self.assertEqual(prepare.call_count, 1)
+        self.assertIs(store._prepared_runtime, self.runtime_view)
+
+    def test_attach_prepares_revision_triggers_for_new_runtime_tables(self):
+        path = Path(self.temp.name) / 'brand-new.sqlite3'
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(path)
+            register_functions(db)
+            try:
+                with db:
+                    yield db
+            finally:
+                db.close()
+        store = SyncStore(connect, lambda _key: {})
+        with connect() as db:
+            db.executescript("""CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT);
+                CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);""")
+        store.runtime = self.runtime_view
+        store.prepare_entities()
+        with connect() as db:
+            db.execute('INSERT INTO runtime_agents VALUES (?,?)', ('owner', json.dumps(self.agent)))
+        self.assertEqual(store.transcript_revision('owner'), 1)
+
+    def test_boot_drains_all_legacy_task_window_batches(self):
+        with self.connect() as db:
+            db.execute("DELETE FROM sync_entity_meta WHERE key='task_window_migrated'")
+            for index in range(205):
+                put(db, 'task', f'legacy-{index}', {'id': f'legacy-{index}', 'agent': 'owner',
+                                                  'status': 'completed', 'created': index})
+        store = SyncStore(self.connect, lambda _key: {},
+                          runtime=self.runtime_view, canvas=self.canvas_view)
+        self.statements.clear()
+        with self.writer():
+            fresh = store.pull('state:entities:v1', fresh=True)
+        self.assertFalse(any(key.startswith('entity:task:') for key in self.values(fresh)))
+        self.assertEqual(self.writes(), [])
+        with self.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sync_entities WHERE collection='task' AND deleted=1").fetchone()[0], 205)
 
     def test_current_markers_allow_pull_without_runtime_or_writer_lock(self):
         self.store.runtime = None
@@ -280,15 +408,15 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(self.writes(), [])
 
     def test_concurrent_commit_cannot_move_a_read_cursor_past_unseen_changes(self):
-        original = self.store.entity_maintenance_needed
-        def check(db):
-            needed = original(db)
-            self.assertFalse(needed)
+        import codex_sync_entities
+        original = codex_sync_entities.max_seq
+        def high_watermark(db):
+            high = original(db)
             with self.connect() as writer:
                 writer.execute('BEGIN IMMEDIATE')
                 put(writer, 'agent', 'owner', {}, deleted=True)
-            return needed
-        with patch.object(self.store, 'entity_maintenance_needed', side_effect=check):
+            return high
+        with patch.object(codex_sync_entities, 'max_seq', side_effect=high_watermark):
             before = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         self.assertEqual(before['documents'], [])
         self.assertEqual(before['checkpoint'], self.initial['checkpoint'])
@@ -298,23 +426,33 @@ class EntityReadLockContract(unittest.TestCase):
         fresh = self.store.pull('state:entities:v1', fresh=True, initial_high=before['maxSeq'])
         self.assertTrue(next(row for row in fresh['documents'] if row['id'] == 'entity:agent:owner')['_deleted'])
 
-    def test_maintenance_reads_again_after_the_writer_is_acquired(self):
-        with self.connect() as db:
-            db.execute('UPDATE runtime_monitors SET record=? WHERE id=?',
-                       (json.dumps({**self.monitor, 'tail': 'Earlier output'}), 'monitor'))
-        self.store = SyncStore(self.connect, lambda _key: {},
-                               runtime=self.runtime_view, canvas=self.canvas_view)
-        original = self.store.entity_maintenance_needed
-        def check(db):
-            needed = original(db)
-            self.assertTrue(needed)
-            with self.connect() as writer:
-                writer.execute('UPDATE runtime_monitors SET record=? WHERE id=?',
-                               (json.dumps({**self.monitor, 'tail': 'Newer output'}), 'monitor'))
-            return needed
-        with patch.object(self.store, 'entity_maintenance_needed', side_effect=check):
-            response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
-        self.assertEqual(self.values(response)['entity:monitor:monitor']['tail'], 'Newer output')
+    def test_event_window_moves_atomically_for_multiple_changes_and_rollback(self):
+        import codex_entity_contracts
+        import codex_sync_entities
+        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3):
+            with self.connect() as db:
+                install_bypass_triggers(db)
+                db.executemany("INSERT INTO runtime_events VALUES (?,'owner','user','pending',?,NULL)",
+                               [(f'event-{index}', index) for index in range(7)])
+                expected = {record['id'] for record in codex_entity_contracts.event_records(db)}
+                actual = {row[0] for row in db.execute(
+                    "SELECT id FROM sync_entities WHERE collection='event' AND deleted=0")}
+                self.assertEqual(actual, expected)
+            self.statements.clear()
+            with self.writer() as writer:
+                register_functions(writer)
+                writer.execute("INSERT INTO runtime_events VALUES ('rolled-back','owner','user','pending',99,NULL)")
+                delta = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+                fresh = self.store.pull('state:entities:v1', fresh=True)
+            rows = {row['id']: row for row in delta['documents']}
+            self.assertTrue(all(rows[f'entity:event:event-{index}']['_deleted'] for index in range(4)))
+            self.assertEqual({key for key in self.values(fresh) if key.startswith('entity:event:')},
+                             {'entity:event:event-4', 'entity:event:event-5', 'entity:event:event-6'})
+            self.assertNotIn('entity:event:rolled-back', rows)
+            # The fixture writer is intentionally outside the observed provider.
+            self.assertEqual(self.writes(), [])
+            with self.connect() as db:
+                self.assertIsNone(db.execute("SELECT 1 FROM runtime_events WHERE id='rolled-back'").fetchone())
 
     def test_pruner_runs_only_when_its_durable_count_requires_a_batch(self):
         # Each new tombstone at the limit must not start a one-row prune.
@@ -324,6 +462,7 @@ class EntityReadLockContract(unittest.TestCase):
                     db.execute("UPDATE sync_entity_meta SET value=? WHERE key='entity_tombstone_count'", (count,))
                 self.statements.clear()
                 with patch.object(self.store, '_schedule_entity_pruning') as prune, self.writer():
+                    self.store.maintain_entities()
                     response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
                 self.assertEqual(response['documents'], [])
                 self.assertEqual(self.writes(), [])

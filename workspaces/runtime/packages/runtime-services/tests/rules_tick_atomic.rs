@@ -218,6 +218,7 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "recovered"
                 },
                 NOW + 180.0
@@ -231,6 +232,7 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "duplicate"
                 },
                 NOW + 180.0
@@ -307,6 +309,7 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "forged"
                 },
                 NOW
@@ -324,6 +327,7 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
             CheckResult {
                 code: Some(0),
                 error: None,
+                cancelled: false,
                 output: "ok"
             },
             NOW
@@ -340,6 +344,7 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
             CheckResult {
                 code: Some(0),
                 error: None,
+                cancelled: false,
                 output: "ok"
             },
             NOW
@@ -353,6 +358,7 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
             CheckResult {
                 code: Some(0),
                 error: None,
+                cancelled: false,
                 output: "again"
             },
             NOW
@@ -383,6 +389,125 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
         .expect("replay");
     assert_eq!(report.changed, 0);
     assert_eq!(events(&store).len(), count);
+}
+
+#[test]
+fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
+    let template = Template::new();
+    let state = template.clone_state();
+    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    change(
+        &store,
+        json!({
+            "kind":"interval",
+            "status":"active",
+            "inFlight":false,
+            "checks":0,
+            "intervalSeconds":60,
+            "nextAt":NOW,
+            "command":"printf fake-runner"
+        }),
+    );
+    let monitor = CapturingMonitor {
+        store: &store,
+        calls: RefCell::new(Vec::new()),
+        unknown: false,
+    };
+
+    let report = tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+        .expect("schedule and submit the due check");
+    assert_eq!(report.launched, 1);
+    let check = monitor.calls.borrow()[0].clone();
+    assert_eq!(check.command, "printf fake-runner");
+    assert_eq!(check.check_number, 1);
+    assert_eq!(rule(&store)["inFlight"], true);
+
+    assert!(
+        finish(
+            &store,
+            &check,
+            CheckResult {
+                code: Some(0),
+                error: None,
+                cancelled: false,
+                output: "fake output",
+            },
+            NOW + 2.0,
+        )
+        .expect("persist fake runner result")
+    );
+    let completed = rule(&store);
+    assert_eq!(completed["inFlight"], false);
+    assert_eq!(completed["lastExitCode"], 0);
+    assert_eq!(completed["lastOutput"], "fake output");
+    assert_eq!(completed["lastFinished"], NOW + 2.0);
+    assert_eq!(events(&store).len(), 1);
+}
+
+#[test]
+fn cancelled_paused_check_settles_its_durable_launch_intent() {
+    let template = Template::new();
+    let state = template.clone_state();
+    let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
+    change(
+        &store,
+        json!({
+            "kind":"interval",
+            "status":"active",
+            "inFlight":false,
+            "checks":0,
+            "intervalSeconds":60,
+            "nextAt":NOW,
+            "command":"printf fixture"
+        }),
+    );
+    let monitor = CapturingMonitor {
+        store: &store,
+        calls: RefCell::new(Vec::new()),
+        unknown: false,
+    };
+    assert_eq!(
+        tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+            .expect("reserve a rule check")
+            .launched,
+        1
+    );
+
+    // The monitor callback must consume its exact durable reservation even if the
+    // current rule snapshot derives a different timeout from the persisted request.
+    store
+        .transaction(|tx| {
+            let mut value = RulesRepository::get(tx, "rule")?
+                .expect("rule exists")
+                .value()
+                .clone();
+            value["status"] = json!("paused");
+            value["inFlight"] = json!(false);
+            value["launchIntent"]["timeoutMs"] = json!(30_000);
+            RulesRepository::put(tx, &RuleRecord::from_value(value)?)
+        })
+        .expect("pause with the pending intent retained");
+    let intent = rule(&store)["launchIntent"].clone();
+    let check: RuleCheck = serde_json::from_value(intent).expect("persisted monitor intent");
+    assert!(
+        finish(
+            &store,
+            &check,
+            CheckResult {
+                code: None,
+                error: Some("Monitor cancelled"),
+                cancelled: true,
+                output: "",
+            },
+            NOW + 1.0,
+        )
+        .expect("settle the cancelled monitor")
+    );
+    let settled = rule(&store);
+    assert_eq!(settled["status"], "paused");
+    assert_eq!(settled["inFlight"], false);
+    assert_eq!(settled["error"], "Monitor cancelled");
+    assert!(settled.get("launchIntent").is_none());
 }
 
 #[test]
@@ -572,6 +697,7 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                     CheckResult {
                         code: Some(0),
                         error: None,
+                        cancelled: false,
                         output: "done"
                     },
                     NOW + 3.0

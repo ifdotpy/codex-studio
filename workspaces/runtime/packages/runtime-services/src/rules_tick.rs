@@ -112,9 +112,9 @@ pub fn tick_batch(
     after_rowid: i64,
     now: f64,
     files: &impl RuleFiles,
-    monitor: &impl RuleMonitor,
+    monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&store.read()?, after_rowid)?;
+    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -122,7 +122,7 @@ pub fn tick_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&store.read()?, row.rule)?;
+        let sampled = load_snapshot(&*store.read()?, row.rule)?;
         let fingerprint = sampled
             .fingerprint_path(now)
             .map(|path| files.fingerprint(path))
@@ -171,9 +171,9 @@ pub fn recover_batch(
     store: &RuntimeStore,
     after_rowid: i64,
     now: f64,
-    monitor: &impl RuleMonitor,
+    monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&store.read()?, after_rowid)?;
+    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -181,7 +181,7 @@ pub fn recover_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&store.read()?, row.rule)?;
+        let sampled = load_snapshot(&*store.read()?, row.rule)?;
         let intent = launch_intent(&sampled)?;
         let state = match &intent {
             Some(check) if sampled.launch_allowed(check) && monitor.available() => {
@@ -224,7 +224,7 @@ pub fn submit_check(
     store: &RuntimeStore,
     check: &RuleCheck,
     now: f64,
-    monitor: &impl RuleMonitor,
+    monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<bool, RulesTickError> {
     if !monitor.available() {
         return Err(RulesTickError::MonitorUnavailable);
@@ -248,6 +248,7 @@ pub fn submit_check(
                 CheckResult {
                     code: None,
                     error: Some(&error),
+                    cancelled: false,
                     output: "",
                 },
                 now,
@@ -431,4 +432,66 @@ fn apply(
         )?;
     }
     Ok(true)
+}
+
+/// Complete the rule in the same transaction as the monitor's definitive result.
+/// The stored check is the authority; a foreign/stale monitor cannot finish it.
+pub struct MonitorRuleFinish;
+impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
+    fn finish(
+        &self,
+        tx: &Transaction<'_>,
+        before: &serde_json::Value,
+        after: &serde_json::Value,
+        now: f64,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        use crate::monitor_policy::MonitorError;
+        use serde_json::Value;
+        // Replayed terminal receipts have already committed the rule alongside it.
+        if matches!(
+            before["status"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            return Ok(());
+        }
+        let rule_id = before["ruleId"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Missing monitor rule identity"))?;
+        // Python's rule_finished is a no-op after the rule row has been deleted.
+        // Commit the monitor so its durable result receipt can be acknowledged.
+        let Some(rule) = RulesRepository::get(tx, rule_id)? else {
+            return Ok(());
+        };
+        let snapshot = load_snapshot(tx, rule)?;
+        let check = launch_intent(&snapshot)?.unwrap_or_else(|| snapshot.check());
+        if before["id"].as_str() != Some(&check.monitor_id)
+            || before["agent"].as_str() != Some(&check.agent_id)
+            || before["epoch"].as_u64() != Some(check.epoch)
+            || before["command"].as_str() != Some(&check.command)
+            || before
+                .pointer("/operation/accountKey")
+                .and_then(Value::as_str)
+                .is_some_and(|account| account != check.account_key.as_deref().unwrap_or("default"))
+        {
+            return Err(MonitorError::Refused("Monitor rule identity changed"));
+        }
+        if !finish_in_transaction(
+            tx,
+            &check,
+            CheckResult {
+                code: after["exitCode"].as_i64(),
+                error: if after["status"] == "cancelled" {
+                    Some("Monitor cancelled")
+                } else {
+                    after["error"].as_str()
+                },
+                cancelled: after["status"] == "cancelled",
+                output: after["tail"].as_str().unwrap_or_default(),
+            },
+            now,
+        )? {
+            return Err(MonitorError::Refused("Monitor rule check is stale"));
+        }
+        Ok(())
+    }
 }

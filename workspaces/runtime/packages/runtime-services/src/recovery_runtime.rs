@@ -53,11 +53,7 @@ impl<'a> RetainedRecoveryReader<'a> {
         port: &'a mut dyn RetainedHistory,
         observation: &'a ObservationSource<'a>,
     ) -> Result<Self, HistoryError> {
-        if scope.account.is_empty()
-            || scope.connection.is_empty()
-            || scope.generation == 0
-            || thread.is_empty()
-        {
+        if scope.account.is_empty() || scope.connection.is_empty() || scope.generation == 0 {
             return Err(HistoryError::Identity);
         }
         Ok(Self {
@@ -97,7 +93,8 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
         deadline: Instant,
     ) -> Result<HistoryReceipt, HistoryError> {
         self.ready(scope, deadline)?;
-        if params["threadId"] != self.thread
+        if self.thread.is_empty()
+            || params["threadId"] != self.thread
             || (method == HistoryMethod::Thread && params["includeTurns"] != false)
         {
             return Err(HistoryError::Identity);
@@ -110,9 +107,8 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
         self.ready(scope, deadline)?;
         self.port.barrier(scope, deadline)?;
         self.ready(scope, deadline)?;
-        if !self.current(scope)?.journal_drained {
-            return Err(HistoryError::Unavailable);
-        }
+        // The retained-session barrier is the authoritative proof that earlier
+        // notifications have committed; the cached observation may predate it.
         Ok(())
     }
 }
@@ -154,7 +150,7 @@ impl RecoveryJob {
                 a["accountKey"],
                 a["threadId"],
                 a["turnId"],
-                a["startAttempt"]["id"],
+                self.agent().start_attempt()["id"],
                 a["disconnectRecovery"]["connectionId"],
                 a["disconnectRecovery"]["at"],
                 a["restartRecovery"]["at"],
@@ -188,7 +184,7 @@ pub fn load_recovery_jobs(
     // A located row refusal must not pin either table's disposable scan state.
     cursor.task_page = !task_page;
     if task_page {
-        let mut stmt=db.prepare("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.tasks, MAX_SCAN_JOBS as i64],
@@ -223,7 +219,7 @@ pub fn load_recovery_jobs(
             cursor.tasks.clear();
         }
     } else {
-        let mut stmt=db.prepare("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.agents, MAX_SCAN_JOBS as i64],
@@ -430,6 +426,12 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
             if !e.unconfirmed_start && (a["inFlight"] != true || a["deletedAt"].is_string()) {
                 return false;
             }
+            if e.unconfirmed_start
+                && a["restartRecovery"]["stage"] == "held"
+                && a.get("contextRepairWait").is_some_and(|v| !v.is_null())
+            {
+                return true;
+            }
             let mut activity = a["activity"]["at"]
                 .as_f64()
                 .filter(|v| *v != 0.)
@@ -442,7 +444,9 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
                 activity = activity.max(last.timestamp_millis() as f64 / 1000.);
             }
             if e.unconfirmed_start {
-                activity = a["startAttempt"]["created"].as_f64().unwrap_or(activity);
+                activity = job.agent().start_attempt()["created"]
+                    .as_f64()
+                    .unwrap_or(activity);
             }
             at - activity
                 >= if e.unconfirmed_start {

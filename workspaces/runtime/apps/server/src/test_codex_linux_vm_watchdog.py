@@ -540,5 +540,42 @@ class WatchdogTests(unittest.TestCase):
         self.assertFalse(service.thread.is_alive())
 
 
+class UpgradeSpace(unittest.TestCase):
+    """The upgrade backup is an APFS clone, so its allocated size needs no free space."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='vm-upgrade-')
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        (self.directory / 'config.json').write_text('{}')
+        (self.directory / 'helper').touch(mode=0o700)
+        # 8 MiB of allocated blocks: the old rule wanted this much above the reserve.
+        (self.directory / 'data.raw').write_bytes(b'x' * 8 * 1024 * 1024)
+        (self.directory / 'system.raw').write_bytes(b'x')
+        path = Path(vm.__file__).with_name('upgrade-linux-vm-layr.py')
+        spec = importlib.util.spec_from_file_location('upgrade_linux_vm_layr', path)
+        assert spec is not None and spec.loader is not None
+        self.upgrade = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.upgrade)
+
+    def run_with_free(self, free: int) -> Mock:
+        usage = SimpleNamespace(total=free * 2, used=free, free=free)
+        copy = Mock(side_effect=RuntimeError('clone reached'))
+        with patch.object(vm.Client, 'call', return_value={'providers': []}), \
+                patch.object(self.upgrade.shutil, 'disk_usage', return_value=usage), \
+                patch.object(self.upgrade.subprocess, 'run', copy):
+            self.upgrade.upgrade(self.directory, self.directory / 'helper', self.directory, 'space-1')
+        return copy
+
+    def test_the_reserve_alone_admits_the_clone_backup(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, 'clone reached'):
+            self.run_with_free(self.upgrade.BACKUP_RESERVE_BYTES + 1024 * 1024)
+
+    def test_less_than_the_reserve_stops_before_the_backup(self) -> None:
+        with self.assertRaisesRegex(vm.LinuxVMError, 'must exceed 20 GiB'):
+            self.run_with_free(self.upgrade.BACKUP_RESERVE_BYTES - 1)
+        self.assertFalse((self.directory / 'updates/space-1/receipt.json').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

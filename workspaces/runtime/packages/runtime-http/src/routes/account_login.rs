@@ -2,21 +2,22 @@
 
 use super::accounts_response;
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_services::account_driver::{
-    AccountDriver, AccountDriverError, SystemProviderAuthReader,
+    AccountDriver, AccountDriverError, AuthProfile, ProviderAuthReader, SystemProviderAuthReader,
+};
+use studio_runtime_services::account_session_runtime::{
+    AccountSessionError, LoginRequest, ProfileRequest,
 };
 
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const CLAUDE_DISCOVERY: [Dependency; 1] = [Dependency::new("provider-session/claude-discovery")];
 const CODEX_LOGIN: [Dependency; 1] = [Dependency::new("provider-session/codex-login")];
 const CLAUDE_PROFILE: [Dependency; 1] = [Dependency::new("provider-session/claude-profile-auth")];
 
@@ -35,17 +36,17 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/accounts/discover",
-            OperationStatus::partial(&CLAUDE_DISCOVERY),
+            OperationStatus::Implemented,
             discover,
         ),
         post(
             "/api/accounts/login",
-            OperationStatus::partial(&CODEX_LOGIN),
+            OperationStatus::Implemented,
             codex_login,
         ),
         post(
             "/api/accounts/login/cancel",
-            OperationStatus::partial(&CODEX_LOGIN),
+            OperationStatus::Implemented,
             codex_login_cancel,
         ),
         post("/api/accounts/name", OperationStatus::Implemented, set_name),
@@ -61,7 +62,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/claude/profiles",
-            OperationStatus::partial(&CLAUDE_PROFILE),
+            OperationStatus::Implemented,
             claude_profile,
         ),
     ])
@@ -162,10 +163,7 @@ async fn run_mutation(
     + 'static,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
+        return Err(runtime_availability("account-driver/runtime"));
     };
     accounts_response(run_account_operation(&state, driver, mutation).await?)
 }
@@ -181,9 +179,12 @@ where
 {
     let before = driver.revision().map_err(account_error)?;
     let operation_driver = driver.clone();
-    let result = tokio::task::spawn_blocking(move || operation(&operation_driver))
-        .await
-        .map_err(|_| ApiError::internal())?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || operation(&operation_driver),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     if driver.revision().map_err(account_error)? != before {
         state.event_wake.notify_one();
     }
@@ -228,9 +229,7 @@ fn account_error(error: AccountDriverError) -> ApiError {
         AccountDriverError::UnknownLogin => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown sign-in request")
         }
-        AccountDriverError::LoginCancellationUnavailable => {
-            unavailable("POST", "/api/accounts/login/cancel", &CODEX_LOGIN)
-        }
+        AccountDriverError::LoginCancellationUnavailable => unavailable(CODEX_LOGIN[0]),
         AccountDriverError::ReadRegistry
         | AccountDriverError::InvalidRegistry
         | AccountDriverError::WriteRegistry
@@ -242,36 +241,89 @@ fn account_error(error: AccountDriverError) -> ApiError {
 async fn discover(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
-    };
-    if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
-        return Err(unavailable(
-            "POST",
-            "/api/accounts/discover",
-            &CLAUDE_DISCOVERY,
-        ));
+    if let Some(port) = state.account_session.clone() {
+        let response = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/account_login",
+            move || port.discover(),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
+        state.event_wake.notify_one();
+        return serde_json::from_value(response)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
     }
-    let snapshot = run_account_operation(&state, driver, |driver| driver.discover_codex()).await?;
+    let Some(driver) = state.account_driver.clone() else {
+        return Err(runtime_availability("account-driver/runtime"));
+    };
+    let snapshot = run_account_operation(&state, driver, |driver| {
+        driver.discover_codex()?;
+        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default()
+                .join(".claude");
+            let metadata = SystemProviderAuthReader.read(&AuthProfile {
+                provider: "claude".into(),
+                home: home.clone(),
+                claude_options: None,
+            });
+            driver
+                .discover_claude_verified(&home, &metadata)
+                .map_err(|error| match error {
+                    studio_runtime_services::account_driver::AccountMutationError::Driver(
+                        error,
+                    ) => error,
+                    studio_runtime_services::account_driver::AccountMutationError::Refused(_) => {
+                        AccountDriverError::InvalidRegistry
+                    }
+                })?;
+        }
+        driver.snapshot()
+    })
+    .await?;
     accounts_response(snapshot)
 }
 
-async fn codex_login() -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/accounts/login", &CODEX_LOGIN))
+async fn codex_login(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<LoginRequest>,
+) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
+    let port = state
+        .account_session
+        .clone()
+        .ok_or_else(|| unavailable(CODEX_LOGIN[0]))?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || port.login(body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(session_error)?;
+    state.event_wake.notify_one();
+    super::generated_json::<crate::generated::AccountLoginResponse>(result).map(Json)
 }
 
 async fn codex_login_cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<CancelLoginBody>,
 ) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
+    if let Some(port) = state.account_session.clone() {
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/account_login",
+            move || port.cancel_login(&body.login_id),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
+        state.event_wake.notify_one();
+        return serde_json::from_value(result)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
+    }
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
+        return Err(runtime_availability("account-driver/runtime"));
     };
     let receipt = run_account_operation(&state, driver, move |driver| {
         driver.terminal_login_receipt(&body.login_id)
@@ -282,17 +334,91 @@ async fn codex_login_cancel(
         .map_err(|_| ApiError::internal())
 }
 
-async fn claude_profile() -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/claude/profiles", &CLAUDE_PROFILE))
+async fn claude_profile(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<ProfileRequest>,
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    if let Some(account) = body.account_key.as_deref() {
+        let driver = state
+            .account_driver
+            .as_ref()
+            .ok_or_else(|| runtime_availability("account-driver/runtime"))?;
+        let current = driver
+            .claude_profile(account)
+            .map_err(|error| match error {
+                studio_runtime_services::account_driver::claude::ClaudeAccountError::Account(
+                    error,
+                ) => account_error(error),
+                error => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+            })?;
+        let home = current
+            .get("home")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let normalize = |options| {
+            studio_runtime_services::account_session_runtime::normalize_profile(options, &home)
+                .map_err(session_error)
+        };
+        let previous = normalize(
+            current
+                .get("claudeOptions")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        )?;
+        let requested = normalize(body.options.clone().unwrap_or_default())?;
+        if ["binaryPath", "configDir"]
+            .iter()
+            .any(|field| previous.get(*field) != requested.get(*field))
+        {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Add a separate Claude profile to change the executable or config directory",
+            ));
+        }
+    }
+    let port = state
+        .account_session
+        .clone()
+        .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || port.profile(body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(session_error)?;
+    state.event_wake.notify_one();
+    super::generated_json::<crate::generated::AccountsResponse>(result).map(Json)
 }
 
-fn unavailable(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
+pub(super) fn session_error(error: AccountSessionError) -> ApiError {
+    let status = match error {
+        AccountSessionError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
+        AccountSessionError::Refused(_) => StatusCode::BAD_REQUEST,
+        AccountSessionError::Persistence => StatusCode::SERVICE_UNAVAILABLE,
+        AccountSessionError::InvalidResponse(_) | AccountSessionError::Unknown => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+    ApiError::new(status, error.to_string())
+}
+
+fn unavailable(dependency: Dependency) -> ApiError {
+    ApiError::dependency(dependency.name())
+}
+
+fn runtime_availability(name: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!("Runtime unavailable: {name}"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{run_account_operation, run_mutation};
+    use super::{routes, run_account_operation, run_mutation};
     use crate::router::HttpState;
     use axum::body::to_bytes;
     use axum::http::StatusCode;
@@ -302,13 +428,36 @@ mod tests {
     use std::task::{Context, Poll, Waker};
     use studio_runtime_services::account_driver::AccountDriver;
 
+    #[test]
+    fn provider_backed_account_routes_are_registered_as_implemented() {
+        let routes = routes();
+        for path in [
+            "/api/accounts/discover",
+            "/api/accounts/login",
+            "/api/accounts/login/cancel",
+            "/api/claude/profiles",
+        ] {
+            let route = routes
+                .registrations()
+                .iter()
+                .find(|route| route.operation().path() == path)
+                .unwrap_or_else(|| panic!("missing route {path}"));
+            assert_eq!(
+                route.operation().status(),
+                super::super::manifest::OperationStatus::Implemented,
+                "{path}"
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn missing_account_driver_has_named_501() {
+    async fn missing_account_driver_is_named_runtime_unavailability() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = HttpState::new(
             String::new(),
             String::new(),
             None,
-            String::new(),
+            state_dir.path().to_string_lossy().into_owned(),
             0,
             None,
             None,
@@ -316,7 +465,80 @@ mod tests {
         );
         let error = run_mutation(state, |_| unreachable!())
             .await
-            .expect_err("missing driver is a partial operation");
+            .expect_err("missing driver is a composition error");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
+            "Runtime unavailable: account-driver/runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_profile_requires_the_runtime_account_driver() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
+        let state = HttpState::new(
+            String::new(),
+            String::new(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            0,
+            None,
+            None,
+            None,
+        );
+        let result = super::claude_profile(
+            axum::extract::State(state),
+            super::ApiJson(super::ProfileRequest {
+                account_key: Some("account".into()),
+                options: None,
+                label: None,
+            }),
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("missing account driver is unavailable");
+        };
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
+            "Runtime unavailable: account-driver/runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_account_session_adapter_has_named_501() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
+        let state = HttpState::new(
+            String::new(),
+            String::new(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            0,
+            None,
+            None,
+            None,
+        );
+        let result = super::codex_login(
+            axum::extract::State(state),
+            super::ApiJson(super::LoginRequest {
+                login_id: "9b06d4c4-0b71-49b5-b984-927d6fdcde01".into(),
+                account_key: None,
+                email: None,
+                label: None,
+            }),
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("missing adapter is not implemented");
+        };
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
         let body = to_bytes(response.into_body(), 4096)
@@ -324,7 +546,7 @@ mod tests {
             .expect("error body");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
-            "Not implemented: requires account-driver/unavailable"
+            "Not implemented: requires provider-session/codex-login"
         );
     }
 
@@ -357,7 +579,7 @@ mod tests {
             String::new(),
             String::new(),
             None,
-            String::new(),
+            directory.to_string_lossy().into_owned(),
             0,
             None,
             None,
@@ -398,7 +620,6 @@ inventory::submit! {
         name: "account_login",
         routes: Some(routes),
         dependencies: &[
-        "provider-session/claude-discovery",
         "provider-session/claude-profile-auth",
         "provider-session/codex-login",
         ],

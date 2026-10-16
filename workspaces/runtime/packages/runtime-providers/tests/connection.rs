@@ -1036,10 +1036,22 @@ fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
     assert_eq!(session.next_deadline_ms(), None);
     assert!(
         session
-            .receive(reply_for_test(ticket.id))
+            .receive(reply_for_test(ticket.id.clone()))
             .expect("orphan")
             .is_empty()
     );
+    let (retried, _) = session
+        .submit_with_id(
+            ticket.id.clone(),
+            ticket.method,
+            json!({}),
+            10,
+            10,
+            None,
+            false,
+        )
+        .expect("proven-unsent identity can be retried");
+    assert_eq!(retried, ticket);
 }
 
 #[test]

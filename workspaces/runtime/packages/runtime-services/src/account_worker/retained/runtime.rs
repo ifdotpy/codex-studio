@@ -1,10 +1,10 @@
-use super::storage::{replay, submitted};
+use super::storage::{Replay, replay, submitted};
 use super::*;
 impl Worker {
     fn retained_scope(&self) -> ConnectionScope {
         ConnectionScope {
             account: self.account.clone(),
-            connection: self.generation.0.to_string(),
+            connection: self.connection_id.clone(),
             generation: self.generation.0,
         }
     }
@@ -13,7 +13,8 @@ impl Worker {
         command: RequestCommand,
     ) -> Result<(), WorkerError> {
         let RequestCommand { request, reply } = command;
-        if request.scope != self.retained_scope() {
+        let stale_scope = request.scope != self.retained_scope();
+        if request.scope.account != self.account {
             let _ignored = reply.send(Err(PortError::Identity));
             return Ok(());
         }
@@ -31,10 +32,13 @@ impl Worker {
             let _ignored = reply.send(Err(PortError::Capacity));
             return Ok(());
         }
+        let deferred_request = request.clone();
         let call = Call {
             scope: request.scope,
             operation: request.operation,
             actor: request.actor,
+            transfer: request.transfer,
+            deleted_actor_session: request.deleted_actor_session,
             method: request.method.as_str().into(),
             params: request.params,
         };
@@ -43,18 +47,86 @@ impl Worker {
         let prior = self
             .db("retained_replay", move |s| replay(s, &check))
             .await?;
-        match prior {
+        let retry_ticket = match prior {
             Err(error) => {
                 let _ignored = reply.send(Err(error));
                 return Ok(());
             }
-            Ok(Some(receipt)) => {
+            Ok(Replay::Return(receipt)) => {
                 let _ignored = reply.send(Ok(receipt));
                 return Ok(());
             }
-            Ok(None) => {}
+            Ok(Replay::Miss) if stale_scope => {
+                // The recorded connection is gone. Without a durable submitted
+                // receipt, never send its request through a replacement worker.
+                let _ignored = reply.send(Err(PortError::Unknown));
+                return Ok(());
+            }
+            Ok(Replay::Miss) => None,
+            Ok(Replay::Retry(ticket)) if stale_scope => {
+                // Retry is permitted only on the connection that proved the
+                // prior attempt NotSent. Preserve that certainty across restart.
+                let mut receipt = call.receipt(ticket, RequestResult::NotSent);
+                receipt.replayed = true;
+                let _ignored = reply.send(Ok(receipt));
+                return Ok(());
+            }
+            Ok(Replay::Retry(ticket)) => Some(ticket),
+        };
+        let actor_id = call.actor.as_ref().map(|actor| actor.agent.clone());
+        let actor_lookup = actor_id.clone();
+        let is_vm_actor = if let Some(actor) = actor_lookup {
+            self.db("retained_actor_mode", move |store| {
+                let connection = store.read()?;
+                let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
+                Ok(record.is_some_and(|record| {
+                    record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                }))
+            })
+            .await?
+        } else {
+            false
+        };
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && !self.vm_sessions.contains_key(actor)
+            && self.resolving_vm_actors.contains(actor)
+        {
+            if self.queued_commands.len() >= COMMAND_CAPACITY {
+                let _ignored = reply.send(Err(PortError::Capacity));
+            } else {
+                self.queued_commands
+                    .push_back(AccountCommand::RetainedRequest(Box::new(RequestCommand {
+                        request: deferred_request,
+                        reply,
+                    })));
+            }
+            return Ok(());
         }
-        let control = self.control.clone();
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && let Some(actor_identity) = call.actor.as_ref()
+            && !self
+                .vm_session_matches_actor(actor, &call.scope.account, actor_identity.epoch)
+                .await?
+        {
+            let _ignored = reply.send(Err(PortError::NotSent));
+            return Ok(());
+        }
+        let control = if is_vm_actor {
+            let Some(control) = actor_id
+                .as_deref()
+                .and_then(|actor| self.vm_sessions.get(actor))
+                .map(|session| session.control.clone())
+            else {
+                let _ignored = reply.send(Err(PortError::NotSent));
+                return Ok(());
+            };
+            control
+        } else {
+            self.control.clone()
+        };
+        let journal_actor_id = if is_vm_actor { actor_id.clone() } else { None };
         let remaining = tokio::time::Instant::from_std(request.deadline)
             .saturating_duration_since(tokio::time::Instant::now());
         let deadline = tokio::time::Instant::from_std(request.deadline);
@@ -93,7 +165,7 @@ impl Worker {
         let save_call = call.clone();
         let authorized = self
             .db("retained_submitted", move |s| {
-                submitted(s, &save_call, &recovery)
+                submitted(s, &save_call, &recovery, retry_ticket.as_ref())
             })
             .await?;
         if let Err(error) = authorized {
@@ -105,6 +177,7 @@ impl Worker {
             PendingRequest {
                 call,
                 ticket: ticket.clone(),
+                actor_id: journal_actor_id.clone(),
                 reply: Some(reply),
                 result: None,
                 result_cursor: 0,
@@ -122,11 +195,11 @@ impl Worker {
                     recovery: None,
                 },
                 0,
+                journal_actor_id.as_deref(),
             )
             .await?;
             return self.complete_retained().await;
         }
-        let control = self.control.clone();
         if let Err(error) = self
             .drive(async {
                 tokio::time::timeout_at(deadline, control.submit(prepared))
@@ -148,6 +221,7 @@ impl Worker {
                     recovery: None,
                 },
                 0,
+                journal_actor_id.as_deref(),
             )
             .await?;
             self.complete_retained().await?;
@@ -158,6 +232,7 @@ impl Worker {
         &mut self,
         outcome: &SessionOutcome,
         cursor: u64,
+        actor_id: Option<&str>,
     ) -> Result<bool, WorkerError> {
         let ticket = match outcome {
             SessionOutcome::Write {
@@ -169,6 +244,9 @@ impl Worker {
         let Some(pending) = self.retained_requests.get(&ticket.id) else {
             return Ok(false);
         };
+        if pending.actor_id.as_deref() != actor_id {
+            return Ok(false);
+        }
         if &pending.ticket != ticket {
             return Err(WorkerError::PreparationRefused(
                 "retained-session/ticket-mismatch".into(),
@@ -253,17 +331,91 @@ impl Worker {
         if self.retained_requests.is_empty() && self.retained_barriers.is_empty() {
             return Ok(());
         }
-        // Called only after the containing journal has committed. Keep Unknown
-        // correlations for a late positive response; terminal replies retire.
+        // Only a live managed callback can make the checkpoint wait cyclically:
+        // its provider reply is later in the journal, while the earlier callback
+        // cursor cannot be acknowledged until the callback writes its response.
+        // Verify each candidate reply event was committed before returning it.
+        // Keep its correlation until checkpoint; after a crash, replay still
+        // reports Unknown for this beyond-checkpoint result and never resends.
         let account = self.account.clone();
+        let retained_account = account.clone();
         let generation = self.generation.0;
-        let checkpoint = self
+        let mut scopes: BTreeSet<String> = self
+            .retained_requests
+            .values()
+            .map(|pending| self.journal_scope(pending.actor_id.as_deref()))
+            .collect();
+        // A journal barrier always belongs to the host session, including when
+        // no retained requests are currently waiting.
+        scopes.insert(account.clone());
+        let request_scopes: BTreeMap<_, _> = self
+            .retained_requests
+            .iter()
+            .map(|(id, pending)| (id.clone(), self.journal_scope(pending.actor_id.as_deref())))
+            .collect();
+        let candidates: BTreeSet<(String, u64)> =
+            self.retained_requests
+                .values()
+                .filter(|pending| {
+                    pending.result_cursor > 0
+                        && self.managed_callback_cursors.iter().any(
+                            |(actor, actor_epoch, callback_cursor)| {
+                                // Callback ownership follows the transport lane.
+                                // Host requests can still carry an authorized actor,
+                                // but their replies are journaled on the host session.
+                                let transport_epoch = pending.actor_id.as_ref().and_then(|_| {
+                                    pending.call.actor.as_ref().map(|owner| owner.epoch)
+                                });
+                                actor == &pending.actor_id
+                                    && *actor_epoch == transport_epoch
+                                    && *callback_cursor < pending.result_cursor
+                            },
+                        )
+                })
+                .map(|pending| {
+                    (
+                        self.journal_scope(pending.actor_id.as_deref()),
+                        pending.result_cursor,
+                    )
+                })
+                .collect();
+        let (checkpoints, committed_replies) = self
             .db("retained_barrier", move |s| {
-                s.transaction_with(|tx| store::checkpoint(tx, &account, generation))
+                s.transaction_with(|tx| {
+                    let mut checkpoints = BTreeMap::new();
+                    for scope in scopes {
+                        checkpoints
+                            .insert(scope.clone(), store::checkpoint(tx, &scope, generation)?);
+                    }
+                    let committed = candidates
+                        .into_iter()
+                        .filter_map(|(scope, cursor)| {
+                            match store::journal_committed(tx, &scope, generation, cursor) {
+                                Ok(true) => Some(Ok((scope, cursor))),
+                                Ok(false) => None,
+                                Err(error) => Some(Err(error)),
+                            }
+                        })
+                        .collect::<Result<BTreeSet<_>, _>>()?;
+                    Ok((checkpoints, committed))
+                })
             })
             .await?;
-        self.retained_requests.retain(|_, pending| {
+        self.retained_requests.retain(|id, pending| {
+            let scope = request_scopes
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| retained_account.clone());
+            let checkpoint = checkpoints.get(&scope).copied().unwrap_or(0);
             if pending.result_cursor > checkpoint {
+                if let Some(result @ (RequestResult::Reply(_) | RequestResult::Rejected(_))) =
+                    pending.result.clone()
+                    && committed_replies.contains(&(scope, pending.result_cursor))
+                    && let Some(reply) = pending.reply.take()
+                {
+                    let _ignored =
+                        reply.send(Ok(pending.call.receipt(pending.ticket.clone(), result)));
+                }
                 return true;
             }
             if let Some(result) = pending.result.take() {
@@ -280,7 +432,7 @@ impl Worker {
             return Ok(());
         }
         self.retained_barriers.retain_mut(|pending| {
-            let result = if pending.cursor <= checkpoint {
+            let result = if pending.cursor <= checkpoints.get(&account).copied().unwrap_or(0) {
                 Some(Ok(()))
             } else if tokio::time::Instant::from_std(pending.command.deadline)
                 <= tokio::time::Instant::now()

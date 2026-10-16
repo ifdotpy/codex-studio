@@ -8,6 +8,7 @@ import time
 import json
 import sqlite3
 import sys
+import uuid
 import importlib.util
 import unittest
 from contextlib import closing
@@ -20,7 +21,12 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_stored_data_unavailable,
+    assert_read_succeeds_unchanged_under_writer,
+    start_contract_backend,
+)
 
 
 def database_snapshot(state: Path):
@@ -123,7 +129,12 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
             if service:
                 for record in records:
                     key=identity("project-location",record["agent"],record["id"])
-                    service.queue(database,"remote-fixture","add_location",{"project":"deleted-project","path":"/fixture","signature":"fixture"},key)
+                    request={"action":"add_location","project":"deleted-project","server":"remote-fixture","path":"/fixture"}
+                    signature,_=runtime.operation_receipt(database,key,request)
+                    service.queue(database,"remote-fixture","add_location",{
+                        "project":"deleted-project","name":"Deleted fixture project","path":"/fixture",
+                        "request":request,"signature":signature,
+                    },key)
             if settlement_oracle:
                 database.execute("SAVEPOINT reference_settlement")
                 for record in records:
@@ -211,6 +222,18 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-API-Schema": cls.backend.schema_hash,
         }
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_list_and_get_reads_succeed_unchanged_while_writer_is_held(self):
+        request_id = "held-writer-read"
+        write_receipts(self.backend, [receipt(request_id, self.lead_id)])
+        headers = self.headers()
+        paths = (
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": request_id}),
+        )
+        for path in paths:
+            assert_read_succeeds_unchanged_under_writer(self, self.backend, path, headers)
+
     def test_terminal_metadata_list_reads_python_state_and_strips_payload_fields(self):
         write_receipts(self.backend, [receipt("terminal-receipt", self.lead_id)])
         before = database_snapshot(self.backend.state)
@@ -252,25 +275,22 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(deleted.status, 400, deleted.body[:1000])
 
-    def test_payload_backed_pending_receipt_is_a_narrow_capability_gap_without_writes(self):
+    def test_payload_backed_pending_receipt_is_recovered_on_list(self):
         write_receipts(self.backend, [receipt(
             "pending-payload", self.lead_id, stage="queued", outcome="pending",
             result={"success": True, "contentItems": [
                 {"type": "inputText", "text": "payload-" * 20_000},
             ]},
         )])
-        before = database_snapshot(self.backend.state)
         response = self.backend.request(
             "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("payload-store/tool-request-recovery", response.json()["error"])
-        else:
-            self.assertEqual(response.status, 200, response.body[:1000])
-        if self.rust_backend:
-            self.assertEqual(database_snapshot(self.backend.state), before)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        recovered = next(
+            item for item in response.json()["requests"] if item["id"] == "pending-payload"
+        )
+        self.assertNotIn("_payloadBlobs", recovered)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM runtime_tool_requests WHERE id='pending-payload'")
 
@@ -332,16 +352,51 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body={"agent":self.lead_id,"request_id":key}
                 url="/api/tool-requests/cancel" if method=="POST" else "/api/tool-requests?"+urlencode(body)
                 response=self.backend.request(method,url,body=body if method=="POST" else None,headers=self.headers())
-                self.assertEqual(response.status,501 if self.rust_backend else 200,response.body[:500])
-                if self.rust_backend:
-                    self.assertIn("payload-store/tool-request-recovery",response.json()["error"])
-                    self.assertEqual(database_snapshot(self.backend.state),before)
-                else:self.assertEqual(response.json()["id"],identity)
+                self.assertEqual(response.status, 200, response.body[:500])
+                self.assertEqual(response.json()["id"], identity)
+                self.assertTrue(response.json()["result"]["contentItems"][0]["text"].startswith("cached-"))
+                self.assertNotIn("_payloadBlobs", response.body.decode())
         finally:
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_tool_requests WHERE id=?",(identity,))
                 db.execute("DELETE FROM runtime_tool_results WHERE id=?",(identity,))
                 db.execute("DELETE FROM runtime_tool_request_aliases WHERE request=?",(identity,))
+
+    def test_expired_saved_payload_result_is_redacted_after_recovery(self):
+        from codex_payloads import externalize_result, release_db_writer_lock
+        identity = "saved-payload-expired"
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="running", outcome="pending", result=None,
+        )])
+        database = sqlite3.connect(self.backend.state / "canvas.sqlite3")
+        try:
+            result = externalize_result(self.backend.state, database, {
+                "success": True,
+                "serverOutputExpiresAt": 1,
+                "contentItems": [{"type": "inputText", "text": "expired payload " * 20_000}],
+            })
+            database.execute(
+                "INSERT INTO runtime_tool_results(id,result) VALUES(?,?)",
+                (identity, json.dumps(result)),
+            )
+            database.commit()
+        finally:
+            release_db_writer_lock(database)
+            database.close()
+        try:
+            for method, path, body in (
+                ("GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}), None),
+                ("POST", "/api/tool-requests/cancel", {"agent": self.lead_id, "request_id": identity}),
+            ):
+                response = self.backend.request(method, path, body=body, headers=self.headers())
+                self.assertEqual(response.status, 200, response.body[:500])
+                text = response.json()["result"]["contentItems"][0]["text"]
+                self.assertTrue(json.loads(text)["expired"])
+                self.assertNotIn("expired payload", response.body.decode())
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                db.execute("DELETE FROM runtime_tool_requests WHERE id=?", (identity,))
+                db.execute("DELETE FROM runtime_tool_results WHERE id=?", (identity,))
 
     def test_alias_ambiguity_is_preserved_for_get_and_cancel(self):
         write_receipts(
@@ -391,6 +446,151 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             if "True" in identity and action!="list":
                 self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
 
+    def test_large_server_outcomes_are_restored_before_settlement(self):
+        identities = []
+        try:
+            for outcome in ("unknown", "not_applied"):
+                identity = f"large-server-{outcome}"
+                identities.append(identity)
+                details = "x" * 70_000
+                text = json.dumps(
+                    {"detail": details, "outcome": outcome, "requestId": identity},
+                    separators=(",", ":"),
+                )
+                record = receipt(
+                    identity,
+                    self.lead_id,
+                    stage="queued",
+                    outcome="pending",
+                    tool="orchestration_servers",
+                    result=None,
+                )
+                result = {"success": True, "contentItems": [{"type": "inputText", "text": text}]}
+                if outcome == "unknown":
+                    write_receipts(self.backend, [record], saved_results={identity: result})
+                else:
+                    record["result"] = result
+                    write_receipts(self.backend, [record])
+
+                response = self.backend.request(
+                    "GET",
+                    "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+                    headers=self.headers(),
+                )
+
+                self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertEqual(response.json()["outcome"], outcome)
+                self.assertEqual(response.json()["result"]["contentItems"][0]["text"], text)
+                with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                    stored = json.loads(
+                        database.execute(
+                            "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,)
+                        ).fetchone()[0]
+                    )
+                self.assertEqual(stored["outcome"], outcome)
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                for identity in identities:
+                    database.execute("DELETE FROM runtime_tool_requests WHERE id=?", (identity,))
+                    database.execute("DELETE FROM runtime_tool_results WHERE id=?", (identity,))
+                    database.execute(
+                        "DELETE FROM runtime_payload_refs WHERE record_id=? AND table_name IN (?,?)",
+                        (identity, "runtime_tool_requests", "runtime_tool_results"),
+                    )
+
+    def test_adopting_saved_result_replaces_stale_payload_reference(self):
+        identity = "saved-result-replaces-payload"
+        old_result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps({"outcome": "unknown", "detail": "old-" * 20_000})},
+        ]}
+        new_result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps({"outcome": "unknown", "detail": "new-result"})},
+        ]}
+        write_receipts(
+            self.backend,
+            [receipt(identity, self.lead_id, stage="queued", outcome="pending",
+                     tool="orchestration_servers", result=old_result)],
+            saved_results={identity: new_result},
+        )
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+            headers=self.headers(),
+        )
+
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["result"], new_result)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            raw = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+        from codex_payloads import resolve_record
+        stored = json.loads(raw)
+        resolved = resolve_record(self.backend.state, stored)
+        self.assertEqual(resolved["result"], new_result)
+        self.assertNotIn("result", stored.get("_payloadBlobs", {}))
+
+    def test_spawned_ids_are_extracted_from_full_externalized_result(self):
+        identity = "spawned-ids-full-payload"
+        child_id = str(uuid.uuid4())
+        result = {"success": True, "contentItems": [{
+            "type": "inputText",
+            "text": json.dumps({"agents": [{"id": child_id}], "detail": "large-" * 20_000}),
+        }]}
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="queued", outcome="pending",
+            tool="orchestration_spawn", result=result,
+        )])
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+            headers=self.headers(),
+        )
+
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertIn(child_id, response.json()["agentIds"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = json.loads(database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0])
+        self.assertIn(child_id, stored["agentIds"])
+
+    def test_unchanged_externalized_unknown_result_does_not_rewrite_receipt(self):
+        identity = "stable-externalized-unknown"
+        result = {"success": True, "contentItems": [{
+            "type": "inputText",
+            "text": json.dumps({"outcome": "unknown", "detail": "large-" * 20_000}),
+        }]}
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="failed", outcome="unknown",
+            tool="orchestration_servers", result=result,
+        )])
+        path = "/api/tool-requests?" + urlencode({"agent": self.lead_id})
+
+        first = self.backend.request("GET", path, headers=self.headers())
+        self.assertEqual(first.status, 200, first.body[:1000])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            before = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+            refs_before = database.execute(
+                "SELECT table_name,record_id,field,sha256 FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+
+        second = self.backend.request("GET", path, headers=self.headers())
+        self.assertEqual(second.status, 200, second.body[:1000])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            after = database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0]
+            refs_after = database.execute(
+                "SELECT table_name,record_id,field,sha256 FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+        self.assertEqual(after, before)
+        self.assertEqual(refs_after, refs_before)
+
     def test_saved_expired_result_list_settles_original_applied_evidence(self):
         record=receipt("saved-expired-list",self.lead_id,stage="queued",outcome="pending",
                        tool="orchestration_servers",result=None)
@@ -407,6 +607,37 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             actual=json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",(record["id"],)).fetchone()[0])
         self.assertEqual(normalized(actual),normalized(expected[record["id"]]))
 
+    def test_saved_large_result_settlement_keeps_request_payload_externalized(self):
+        identity = "saved-large-list"
+        record = receipt(identity, self.lead_id, stage="queued", outcome="pending",
+                         tool="orchestration_servers", result=None)
+        evidence = {"outcome": "applied", "padding": "large-" * 20_000}
+        result = {"success": True, "contentItems": [
+            {"type": "inputText", "text": json.dumps(evidence)},
+        ]}
+        self.assertGreater(len(json.dumps(result).encode()), 64 * 1024)
+        write_receipts(self.backend, [record], saved_results={identity: result})
+
+        response = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        listed = next(row for row in response.json()["requests"] if row["id"] == identity)
+        self.assertEqual((listed["stage"], listed["outcome"]), ("completed", "applied"))
+
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = json.loads(database.execute(
+                "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,),
+            ).fetchone()[0])
+            refs = database.execute(
+                "SELECT table_name,record_id,field FROM runtime_payload_refs "
+                "WHERE table_name='runtime_tool_requests' AND record_id=?", (identity,),
+            ).fetchall()
+        self.assertEqual(refs, [("runtime_tool_requests", identity, "result")])
+        self.assertGreater(stored["_payloadBlobs"]["result"]["size"], 64 * 1024)
+        self.assertLess(len(json.dumps(stored["result"])), 64 * 1024)
+
     def test_project_location_outbox_evidence_never_returns_stale_receipt(self):
         from codex_multi_server_orchestration import identity
         key=identity("project-location",self.lead_id,"location-evidence")
@@ -415,15 +646,15 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         write_receipts(self.backend,[record],location_outbox=True)
         try:
             for action in ("get","list","cancel"):
-                before=database_snapshot(self.backend.state)
                 query={"agent":self.lead_id}
                 if action!="list": query["request_id"]=record["id"]
                 response=self.backend.request("POST" if action=="cancel" else "GET", "/api/tool-requests/cancel" if action=="cancel" else "/api/tool-requests?"+urlencode(query),body=query if action=="cancel" else None,headers=self.headers())
-                self.assertEqual(response.status,501 if self.rust_backend else 200,response.body)
-                if self.rust_backend:
-                    self.assertIn("multi-server/project-location-receipt",response.json()["error"])
-                    self.assertEqual(database_snapshot(self.backend.state),before)
-                elif action!="list": self.assertEqual(response.json()["outcome"],"applied")
+                self.assertEqual(response.status,200,response.body)
+                if action == "list":
+                    recovered=next(row for row in response.json()["requests"] if row["id"]==record["id"])
+                    self.assertEqual(recovered["outcome"],"applied")
+                else:
+                    self.assertEqual(response.json()["outcome"],"applied")
         finally:
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_tool_requests WHERE id=?",(record["id"],))
@@ -448,14 +679,16 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertNotIn(b"expired output still visible",response.body)
             self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
 
-    def test_payload_alias_and_canonical_gate_and_terminal_list_fast_path(self):
+    def test_payload_alias_and_canonical_recovery_and_terminal_list_fast_path(self):
         large={"success":True,"contentItems":[{"type":"inputText","text":"large-"*20000}]}
         write_receipts(self.backend,[receipt("canonical-payload",self.lead_id,result=large)],[(self.lead_id,"payload-alias","canonical-payload")])
-        before=database_snapshot(self.backend.state)
         for identity in ("canonical-payload","payload-alias"):
             response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":identity}),headers=self.headers())
-            self.assertEqual(response.status,501 if self.rust_backend else 200,response.body)
-            if self.rust_backend:self.assertIn("payload-store/tool-request-recovery",response.json()["error"])
+            self.assertEqual(response.status, 200, response.body)
+            self.assertEqual(response.json()["id"], "canonical-payload")
+            self.assertTrue(response.json()["result"]["contentItems"][0]["text"].startswith("large-"))
+            self.assertNotIn("_payloadBlobs", response.body.decode())
+        before=database_snapshot(self.backend.state)
         response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":""}),headers=self.headers())
         self.assertEqual(response.status,200,response.body)
         self.assertIn("requests",response.json())
@@ -490,7 +723,7 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:db.execute("UPDATE runtime_tool_requests SET record=? WHERE id='invalid-cancel'",(json.dumps(record),))
             before=database_snapshot(self.backend.state)
             response=self.backend.request("POST","/api/tool-requests/cancel",body={"agent":self.lead_id,"request_id":"invalid-cancel"},headers=self.headers())
-            self.assertEqual(response.status,500,response.body)
+            self.assertEqual(response.status,503,response.body)
             self.assertIn("runtime_tool_requests/invalid-cancel",response.json()["error"])
             self.assertEqual(database_snapshot(self.backend.state),before)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:db.execute("DELETE FROM runtime_tool_requests WHERE id='invalid-cancel'")
@@ -535,22 +768,23 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(actual.get(key),expected.get(key),key)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),"named dependency and stored-state refusal")
-    def test_move_dependencies_and_invalid_actors_do_not_write(self):
+    def test_move_receipts_and_invalid_actors_do_not_write(self):
         write_receipts(self.backend,[receipt("move-receipt",self.lead_id,tool="orchestration_move")])
         path=self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(path) as db:
             original=db.execute("SELECT record FROM runtime_agents WHERE id=?",(self.lead_id,)).fetchone()[0]
-        cases=[(original,"move-receipt",501,"multi-server/move-receipt"),
-               (json.dumps({**json.loads(original),"movedFrom":{"serverId":"remote"}}),"missing",501,"multi-server/move-receipt"),
-               ("[]","missing",500,"runtime_agents/"+self.lead_id),
-               (json.dumps({**json.loads(original),"id":"mismatched"}),"missing",500,"runtime_agents/"+self.lead_id)]
+        cases=[(original,"move-receipt",200,None),
+               (json.dumps({**json.loads(original),"movedFrom":{"serverId":"remote"}}),"missing",200,None),
+               ("[]","missing",503,"runtime_agents/"+self.lead_id),
+               (json.dumps({**json.loads(original),"id":"mismatched"}),"missing",503,"runtime_agents/"+self.lead_id)]
         try:
             for raw,identity,status,error in cases:
                 with sqlite3.connect(path) as db:db.execute("UPDATE runtime_agents SET record=? WHERE id=?",(raw,self.lead_id))
                 before=database_snapshot(self.backend.state)
                 response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":identity}),headers=self.headers())
                 self.assertEqual(response.status,status,response.body)
-                self.assertIn(error,response.json()["error"])
+                if error:
+                    assert_stored_data_unavailable(self, response, error)
                 self.assertEqual(database_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(path) as db:
@@ -563,7 +797,26 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         import subprocess
         write_receipts(self.backend,[receipt("state-check",self.lead_id)])
         before=database_snapshot(self.backend.state)
-        command=shlex.split(os.environ["STUDIO_HTTP_BACKEND_COMMAND"])+["state-check",str(self.backend.state)]
+        command = shlex.split(os.environ["STUDIO_HTTP_BACKEND_COMMAND"])
+        # The runtime server accepts state-check only as argv[1]. The HTTP
+        # harness allows its command to include the ephemeral serving port, so
+        # remove that listener option before invoking the diagnostic mode.
+        runnable = []
+        index = 0
+        while index < len(command):
+            argument = command[index]
+            if argument == "--port":
+                self.assertLess(index + 1, len(command), "--port needs a value")
+                self.assertEqual(command[index + 1], "0")
+                index += 2
+                continue
+            if argument.startswith("--port="):
+                self.assertEqual(argument.partition("=")[2], "0")
+                index += 1
+                continue
+            runnable.append(argument)
+            index += 1
+        command = [*runnable, "state-check", str(self.backend.state)]
         result=subprocess.run(command,capture_output=True,text=True,check=True)
         report=json.loads(result.stdout)
         tables={r["table"]:r for r in report["tables"]}

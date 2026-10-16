@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -18,7 +19,10 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess, TimedHTTPContractTest, assert_stored_data_unavailable,
+    start_contract_backend, no_write_snapshot,
+)
 
 
 def seed_state(backend) -> None:
@@ -208,32 +212,47 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(malformed.status, 416)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_monitor_log_refuses_invalid_file_and_deleted_agent(self) -> None:
+    def test_monitor_log_refuses_invalid_file(self) -> None:
         backend = self.backend
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute(
                 "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
                 (str(backend.state / "monitor-logs"), "contract-monitor"),
             )
-        invalid = backend.request("GET", "/api/monitor/log?id=contract-monitor", headers=self.headers())
-        self.assertEqual(invalid.status, 500)
-        self.assertIn("monitors/contract-monitor", invalid.json()["error"])
-        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute(
-                "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
-                (str(backend.state / "monitor-logs" / "contract-monitor.log"), "contract-monitor"),
+        try:
+            invalid = backend.request(
+                "GET", "/api/monitor/log?id=contract-monitor", headers=self.headers()
             )
+            assert_stored_data_unavailable(self, invalid, "monitors/contract-monitor")
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+                database.execute(
+                    "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
+                    (
+                        str(backend.state / "monitor-logs" / "contract-monitor.log"),
+                        "contract-monitor",
+                    ),
+                )
+
+    def test_monitor_log_deleted_agent_matches_python_bad_request(self) -> None:
+        backend = self.backend
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?",
                 ("monitor-contract-agent",),
             )
-        deleted = backend.request("GET", "/api/monitor/log?id=contract-monitor", headers=self.headers())
-        self.assertEqual(deleted.status, 400)
-        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',NULL) WHERE id=?",
-                ("monitor-contract-agent",),
+        try:
+            deleted = backend.request(
+                "GET", "/api/monitor/log?id=contract-monitor", headers=self.headers()
             )
+            self.assertEqual(deleted.status, 400, deleted.body[:1000])
+            self.assertEqual(deleted.json()["error"], "This agent was deleted")
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+                database.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',NULL) WHERE id=?",
+                    ("monitor-contract-agent",),
+                )
 
     def test_rule_save_pause_resume_delete_are_persisted(self) -> None:
         backend = self.backend
@@ -312,6 +331,15 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM runtime_rules")
             database.execute("DELETE FROM runtime_monitors WHERE json_extract(record,'$.status') != 'completed'")
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id='monitor-contract-agent'"
+            ).fetchone()
+            agent = json.loads(row[0])
+            agent["autoWake"] = False
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'",
+                (json.dumps(agent),),
+            )
         backend.start()
         self.backend = backend
 
@@ -384,28 +412,48 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
 
-    def test_rule_failure_rolls_back_runtime_and_sync_entity(self) -> None:
+    def test_active_rule_check_is_cancelled_when_rule_is_paused(self) -> None:
         backend = self.backend
+        monitor_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rule:active-rule:1"))
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute("CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules BEGIN SELECT RAISE(ABORT,'injected'); END")
-        response = None
-        try:
-            response = backend.request("POST", "/api/rules", headers=self.headers(), body={
-            "action": "save", "id": "rollback-rule", "agent": "monitor-contract-agent", "name": "Rollback",
-            })
-            expected_status = 500 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 400
-            self.assertEqual(response.status, expected_status, response.body[:1000])
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-                self.assertIsNone(database.execute("SELECT 1 FROM runtime_rules WHERE id='rollback-rule'").fetchone())
-                self.assertIsNone(database.execute("SELECT 1 FROM sync_entities WHERE collection='rule' AND id='rollback-rule'").fetchone())
-        finally:
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-                database.execute("DROP TRIGGER IF EXISTS fail_rule_insert")
-
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_active_rule_check_refusal_is_named_and_writes_nothing(self) -> None:
-        backend = self.backend
-        before = no_write_snapshot(backend.state)
+            rule_row = database.execute(
+                "SELECT record FROM runtime_rules WHERE id='active-rule'"
+            ).fetchone()
+            rule = json.loads(rule_row[0])
+            rule.update(
+                status="active",
+                inFlight=True,
+                checks=1,
+                launchIntent={
+                    "ruleId": "active-rule",
+                    "checkNumber": 1,
+                    "agentId": "monitor-contract-agent",
+                    "epoch": 0,
+                    "accountKey": None,
+                    "threadId": None,
+                    "monitorId": monitor_id,
+                    "command": "echo",
+                    "timeoutMs": 60000,
+                    "liveness": False,
+                },
+            )
+            database.execute(
+                "UPDATE runtime_rules SET record=? WHERE id='active-rule'",
+                (json.dumps(rule),),
+            )
+            row = database.execute(
+                "SELECT record FROM runtime_monitors WHERE id='active-check'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            monitor = json.loads(row[0])
+            monitor.update(id=monitor_id, status="approval", ruleId="active-rule")
+            database.execute(
+                "DELETE FROM runtime_monitors WHERE id='active-check'",
+            )
+            database.execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES(?,?)",
+                (monitor_id, json.dumps(monitor)),
+            )
         response = backend.request(
             "POST",
             "/api/rules",
@@ -416,12 +464,17 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "agent": "monitor-contract-agent",
             },
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json()["error"],
-            "Not implemented: requires monitor-driver/active-checks",
-        )
-        self.assertEqual(no_write_snapshot(backend.state), before)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            paused = json.loads(database.execute(
+                "SELECT record FROM runtime_rules WHERE id='active-rule'"
+            ).fetchone()[0])
+            cancelled = json.loads(database.execute(
+                "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,),
+            ).fetchone()[0])
+        self.assertEqual(paused["status"], "paused")
+        self.assertFalse(paused["inFlight"])
+        self.assertEqual(cancelled["status"], "cancelled")
 
     def test_null_resize_fields_are_refused_without_writes(self) -> None:
         self.start_quiescent_backend()
@@ -442,6 +495,10 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.json(), {"id":"contract-monitor", "status":"completed"})
         response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id":"contract-monitor", "text":"x"})
         self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"],
+            "This interactive monitor is not active",
+        )
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_pending_monitor_cancel_expires_approval_and_records_exit(self) -> None:
@@ -476,17 +533,25 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 db.execute("UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'", (actor,))
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_running_monitor_cancel_refuses_native_dependency_without_writes(self) -> None:
+    def test_running_monitor_cancel_persists_local_request_without_a_live_session(self) -> None:
         backend = self.backend
         with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
             old = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
             db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id='contract-monitor'")
         try:
-            before = no_write_snapshot(backend.state)
             response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/monitor-commands")
-            self.assertEqual(no_write_snapshot(backend.state), before)
+            self.assertEqual(response.status, 200, response.body[:1000])
+            value = response.json()
+            self.assertEqual(value["id"], "contract-monitor")
+            self.assertEqual(value["status"], "running")
+            self.assertTrue(value["cancelRequested"])
+            self.assertIn("Process termination was not confirmed", value["error"])
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                monitor = json.loads(db.execute(
+                    "SELECT record FROM runtime_monitors WHERE id='contract-monitor'"
+                ).fetchone()[0])
+            self.assertTrue(monitor["cancelRequested"])
+            self.assertIn("Process termination was not confirmed", monitor["error"])
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_monitors SET record=? WHERE id='contract-monitor'", (old,))

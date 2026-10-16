@@ -178,6 +178,10 @@ pub fn run_as(argv: Vec<String>, caller: Caller, cwd: PathBuf, env: HashMap<Stri
     }
 }
 
+/// The time of the last periodic check of each line that found no change, in the project's meta
+/// folder. It is local to this machine and is never sent to other machines.
+const PERIODIC_CHECKS: &str = "periodic-checks.json";
+
 /// Periodic work: automatic states of busy lines, access to the git store, retention, backups.
 fn periodic(root: &Path, hourly: bool) {
     let now = crate::ids::now_ms();
@@ -205,17 +209,33 @@ fn periodic(root: &Path, hourly: bool) {
             Err(_) => continue,
         };
         let interval = repo.p.config_u64("snapshot.interval", 600) as i64 * 1000;
+        // A check that found no change saves no state, so the time of the last automatic state
+        // stays old. The time of the check keeps an idle line from a snapshot and a comparison
+        // on every tick.
+        let checks_path = repo.p.meta_dir().join(PERIODIC_CHECKS);
+        let mut checks: HashMap<String, i64> =
+            std::fs::read(&checks_path).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
+        let before = checks.clone();
         if let Ok(lines) = repo.lines() {
+            checks.retain(|id, _| lines.iter().any(|l| &l.id == id));
             for l in lines {
                 if l.machine != repo.p.store.machine.id || !repo.working(&l).exists() {
                     continue;
                 }
-                let last = repo.last_auto(&l).ok().flatten().map(|s| s.time).unwrap_or(0);
+                let saved = repo.last_auto(&l).ok().flatten().map(|s| s.time).unwrap_or(0);
+                let last = saved.max(checks.get(&l.id).copied().unwrap_or(0));
                 if now - last >= interval {
                     if let Ok(_lock) = repo.p.lock() {
-                        let _ = repo.save(&ctx, &l, "periodic", true, false);
+                        if let Ok(None) = repo.save(&ctx, &l, "periodic", true, false) {
+                            checks.insert(l.id.clone(), now);
+                        }
                     }
                 }
+            }
+        }
+        if checks != before {
+            if let Ok(data) = serde_json::to_vec(&checks) {
+                let _ = crate::fsutil::atomic_write(&checks_path, &data, 0o600);
             }
         }
         if hourly {
@@ -278,11 +298,17 @@ pub fn daemon(args: &[String]) -> Result<i32> {
     let mut next = std::time::Instant::now() + std::time::Duration::from_secs(tick);
     // Running request processes, by caller: limits keep one user from exhausting the service.
     let mut children: HashMap<i32, u32> = HashMap::new();
+    // One periodic pass at a time: a pass longer than the tick must not start another.
+    let mut periodic_child: Option<i32> = None;
     let (max_total, max_per_user) = (limit("LAYR_MAX_REQUESTS", 256), limit("LAYR_MAX_REQUESTS_PER_USER", 32));
     loop {
         // Reap finished children.
         while let Ok(Some((pid, _))) = rustix::process::waitpid(None, rustix::process::WaitOptions::NOHANG) {
-            children.remove(&pid.as_raw_nonzero().get());
+            let pid = pid.as_raw_nonzero().get();
+            children.remove(&pid);
+            if periodic_child == Some(pid) {
+                periodic_child = None;
+            }
         }
         let wait = next.saturating_duration_since(std::time::Instant::now()).min(std::time::Duration::from_secs(1));
         let timeout = rustix::event::Timespec { tv_sec: wait.as_secs() as _, tv_nsec: wait.subsec_nanos() as _ };
@@ -313,16 +339,25 @@ pub fn daemon(args: &[String]) -> Result<i32> {
         }
         if std::time::Instant::now() >= next {
             next = std::time::Instant::now() + std::time::Duration::from_secs(tick);
+            if periodic_child.is_some() {
+                continue;
+            }
             // Periodic work in a child, so the service stays responsive and single threaded.
             let now = crate::ids::now_ms();
             let hourly = now - last_hourly >= 3_600_000;
-            if hourly {
-                last_hourly = now;
-            }
-            if let Ok(crate::sys::Fork::Child) = crate::sys::fork() {
-                drop(listener);
-                periodic(&root, hourly);
-                std::process::exit(0);
+            match crate::sys::fork() {
+                Ok(crate::sys::Fork::Child) => {
+                    drop(listener);
+                    periodic(&root, hourly);
+                    std::process::exit(0);
+                }
+                Ok(crate::sys::Fork::Parent(pid)) => {
+                    periodic_child = Some(pid);
+                    if hourly {
+                        last_hourly = now;
+                    }
+                }
+                Err(e) => eprintln!("layr service: fork failed: {e}"),
             }
         }
     }

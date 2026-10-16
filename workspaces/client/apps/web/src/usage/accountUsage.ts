@@ -2,6 +2,7 @@ import { serverLocalStorage } from "../servers/storage";
 import type { JsonValue } from "../types";
 import type { ApiError, GetResult } from "../api";
 import type { components } from "../generated/api";
+import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "../generated/sharedValues";
 import { providerLimitData, providerRateLimitsDataDto } from "./providerLimits";
 
 export type JsonObject = { [key: string]: JsonValue };
@@ -119,7 +120,7 @@ export function limitsSnapshotIsFresh(
     limitsReadSucceeded(snapshot) &&
     typeof snapshot.at === "number" &&
     Number.isFinite(snapshot.at) &&
-    now - snapshot.at < 60
+    now - snapshot.at < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS
   );
 }
 

@@ -71,7 +71,7 @@ def rust_observations(corpus_path: Path) -> list[dict[str, Any]]:
     environment["STUDIO_HTTP_REQUEST_CORPUS"] = str(corpus_path)
     process = subprocess.run(
         [
-            "cargo", "test", "--locked", "-p", "studio-runtime-http",
+            "cargo", "test", "--locked", "-p", "studio-runtime-http", "--lib",
             "print_generated_openapi_request_corpus", "--", "--ignored", "--nocapture",
         ],
         cwd=ROOT, env=environment, check=False, capture_output=True, text=True,

@@ -1,4 +1,9 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  spawnFixture as spawn,
+  test,
+  expect,
+} from "../playwright.mjs";
 import {
   setupControl,
   setupToggle,
@@ -337,6 +342,26 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Subagent defaults",
       exact: true,
     });
+    await dialog
+      .getByRole("group", { name: "Agent role", exact: true })
+      .getByRole("button", { name: "Review", exact: true })
+      .click();
+    const reviewDialog = page.getByRole("dialog", {
+      name: "Review settings",
+      exact: true,
+    });
+    await expect(reviewDialog).toBeVisible();
+    await expect(
+      reviewDialog.getByRole("listbox", {
+        name: "Default review model",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await reviewDialog
+      .getByRole("group", { name: "Agent role", exact: true })
+      .getByRole("button", { name: "Worker", exact: true })
+      .click();
+    await dialog.waitFor({ state: "visible" });
     const delegationDepth = dialog.getByRole("combobox", {
       name: "Delegation depth",
     });

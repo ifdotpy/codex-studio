@@ -151,6 +151,16 @@ pub fn api_schema_hash() -> &'static str {
 }
 
 /// Return all method/path pairs from the committed OpenAPI authority.
+pub(crate) fn methods_for_path(path: &str) -> Option<Vec<String>> {
+    let operations = operations().ok()?;
+    let methods = operations
+        .iter()
+        .filter(|(_, template)| path_matches(template, path))
+        .map(|(method, _)| method.clone())
+        .collect::<BTreeSet<_>>();
+    (!methods.is_empty()).then(|| methods.into_iter().collect())
+}
+
 pub fn operations() -> Result<&'static BTreeSet<(String, String)>, &'static serde_json::Error> {
     match OPERATIONS.get_or_init(|| {
         let mut operations = BTreeSet::new();

@@ -1,5 +1,29 @@
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
+const UNCERTAIN_RESPONSE_CODES = new Set([
+  "remote_timeout",
+  "remote_unavailable",
+  "remote_response",
+  "response_size",
+  "access_unavailable",
+  "outcome_unknown",
+  "request_pending",
+  "receipt_expired",
+  "request_conflict",
+]);
+
+export function serverMutationResponseIsUncertain(
+  status: number,
+  body: unknown,
+) {
+  if (status >= 500 || status === 408 || status === 429) return true;
+  const code =
+    body && typeof body === "object"
+      ? String((body as Record<string, unknown>).code || "")
+      : "";
+  return UNCERTAIN_RESPONSE_CODES.has(code);
+}
+
 // Only unresolved writes retain this identity. Explicit operation identities
 // remain the caller's source of truth, including sends, uploads and creation.
 export function createMutationJournal(
@@ -70,22 +94,7 @@ export function createMutationJournal(
         save();
       },
       reject(status: number, body: unknown) {
-        const code =
-          body && typeof body === "object"
-            ? String((body as Record<string, unknown>).code || "")
-            : "";
-        const uncertain = new Set([
-          "remote_timeout",
-          "remote_unavailable",
-          "remote_response",
-          "response_size",
-          "access_unavailable",
-          "outcome_unknown",
-          "request_pending",
-          "receipt_expired",
-          "request_conflict",
-        ]);
-        if (status >= 500 || uncertain.has(code)) {
+        if (serverMutationResponseIsUncertain(status, body)) {
           entry.uncertain = true;
           save();
         } else if (!entry.uncertain) finish();

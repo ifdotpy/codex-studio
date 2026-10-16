@@ -42,6 +42,10 @@ const CHANGED_ERROR: &str =
 const UNVERIFIED_ERROR: &str =
     "Cannot verify this profile's account. Sign in to its original account again.";
 
+fn truthy_value(value: &Value) -> bool {
+    studio_runtime_store::truthy(Some(value))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountStatus {
     Ready,
@@ -166,11 +170,11 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let token = tokens.and_then(|tokens| {
         tokens
             .get("id_token")
-            .filter(|value| python_truthy(value))
+            .filter(|value| studio_runtime_store::truthy(Some(value)))
             .or_else(|| {
                 tokens
                     .get("access_token")
-                    .filter(|value| python_truthy(value))
+                    .filter(|value| studio_runtime_store::truthy(Some(value)))
             })
     });
     let claims = match token.and_then(Value::as_str) {
@@ -188,27 +192,27 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let profile = object_if_truthy(claims.get("https://api.openai.com/profile"))?;
     let account_id = tokens
         .and_then(|tokens| tokens.get("account_id"))
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .or_else(|| {
             details
                 .and_then(|details| details.get("chatgpt_account_id"))
-                .filter(|value| python_truthy(value))
+                .filter(|value| studio_runtime_store::truthy(Some(value)))
         })
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?;
     let email = claims
         .get("email")
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .or_else(|| {
             profile
                 .and_then(|profile| profile.get("email"))
-                .filter(|value| python_truthy(value))
+                .filter(|value| studio_runtime_store::truthy(Some(value)))
         })
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?;
     let api_key = auth
         .get("OPENAI_API_KEY")
-        .filter(|value| python_truthy(value));
+        .filter(|value| studio_runtime_store::truthy(Some(value)));
     if api_key.is_some_and(|value| value.as_str().is_none()) {
         return Err(());
     }
@@ -216,7 +220,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let ready = (account_id.as_ref().is_some_and(|value| !value.is_empty())
         && tokens
             .and_then(|tokens| tokens.get("access_token"))
-            .is_some_and(python_truthy))
+            .is_some_and(truthy_value))
         || api_key.is_some();
     let credential_identity = account_id
         .as_ref()
@@ -225,7 +229,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
         .or_else(|| api_key.map(|value| format!("api:{}", hex_sha256(value.as_bytes()))));
     let plan = details
         .and_then(|details| details.get("chatgpt_plan_type"))
-        .filter(|value| python_truthy(value))
+        .filter(|value| studio_runtime_store::truthy(Some(value)))
         .map(|value| value.as_str().map(str::to_owned).ok_or(()))
         .transpose()?
         .or_else(|| api_key.map(|_| "API key".to_owned()));
@@ -245,20 +249,9 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
 }
 
 fn object_if_truthy(value: Option<&Value>) -> Result<Option<&serde_json::Map<String, Value>>, ()> {
-    match value.filter(|value| python_truthy(value)) {
+    match value.filter(|value| studio_runtime_store::truthy(Some(value))) {
         None => Ok(None),
         Some(value) => value.as_object().map(Some).ok_or(()),
-    }
-}
-
-fn python_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_none_or(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 
@@ -594,6 +587,537 @@ struct RegistryState {
     revision: u64,
 }
 
+#[derive(Clone, serde::Deserialize)]
+pub struct CodexLoginRequest {
+    pub login_id: String,
+    pub account_key: Option<String>,
+    pub email: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum AccountMutationError {
+    #[error(transparent)]
+    Driver(#[from] AccountDriverError),
+    #[error("{0}")]
+    Refused(&'static str),
+}
+
+pub enum LoginReservation {
+    Dispatch(Value),
+    Replay(Value),
+}
+
+fn login_terminal(receipt: &Value) -> bool {
+    matches!(
+        receipt["status"].as_str(),
+        Some("ready" | "duplicate" | "cancelled" | "error")
+    )
+}
+
+fn existing_login(
+    value: &Value,
+    request: &CodexLoginRequest,
+) -> Result<Option<Value>, AccountMutationError> {
+    let Some(receipt) = value
+        .get("logins")
+        .and_then(|logins| logins.get(&request.login_id))
+    else {
+        return Ok(None);
+    };
+    for (field, expected) in [
+        ("reauthAccountKey", &request.account_key),
+        ("emailHint", &request.email),
+        ("requestedLabel", &request.label),
+    ] {
+        if receipt.get(field).and_then(Value::as_str) != expected.as_deref() {
+            return Err(AccountMutationError::Refused(
+                "This sign-in request belongs to a different account",
+            ));
+        }
+    }
+    Ok(Some(receipt.clone()))
+}
+
+impl<R: ProviderAuthReader> AccountDriver<R> {
+    /// Inspect before preparing an isolated login home. Reserving below repeats
+    /// the identity check under the registry lock, so concurrent callers send once.
+    pub fn codex_login_receipt(
+        &self,
+        request: &CodexLoginRequest,
+    ) -> Result<Option<Value>, AccountMutationError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        existing_login(&state.value, request)
+    }
+
+    /// Reconcile local Codex auth without sending a request. A still-pending
+    /// receipt writes nothing, including when the retained session is absent.
+    pub fn reconcile_codex_login(
+        &self,
+        request: &str,
+    ) -> Result<Option<Value>, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let Some(receipt) = state.value.get("logins").and_then(|rows| rows.get(request)) else {
+            return Ok(None);
+        };
+        if login_terminal(receipt) {
+            return Ok(Some(receipt.clone()));
+        }
+        let account = receipt["accountKey"]
+            .as_str()
+            .ok_or(AccountDriverError::InvalidRegistry)?
+            .to_owned();
+        if registry_account(&state.value, &account)?
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            != "codex"
+        {
+            return Err(AccountMutationError::Refused(
+                "Select a Codex sign-in request",
+            ));
+        }
+        let mut value = state.value.clone();
+        if self.refresh_value(&mut value, &account, true)? != AccountStatus::Ready {
+            return Ok(None);
+        }
+        reconcile_local_login(&mut value, &state.order, request, &account)?;
+        let result = value["logins"][request].clone();
+        if !login_terminal(&result) {
+            return Ok(None);
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(Some(result))
+    }
+
+    /// `home` is prepared by the caller without holding this registry lock or a
+    /// store transaction. A successful return is the durable intent commit point.
+    pub fn reserve_codex_login(
+        &self,
+        request: &CodexLoginRequest,
+        home: &Path,
+        now: f64,
+    ) -> Result<LoginReservation, AccountMutationError> {
+        if uuid::Uuid::parse_str(&request.login_id).is_err() || !now.is_finite() {
+            return Err(AccountMutationError::Refused("Supply a UUID request_id"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        if let Some(receipt) = existing_login(&state.value, request)? {
+            return Ok(LoginReservation::Replay(receipt));
+        }
+        let mut value = state.value.clone();
+        let mut order = state.order.clone();
+        let key = request
+            .account_key
+            .clone()
+            .unwrap_or_else(|| format!("login-{}", request.login_id));
+        let mut receipt = serde_json::json!({"requestId":request.login_id,"accountKey":key,"status":"starting","createdAt":now});
+        if let Some(account) = &request.account_key {
+            let row = registry_account(&value, account)?;
+            if row
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex")
+                != "codex"
+                || !row.get("accountId").is_some_and(truthy_value)
+                || row.get("duplicateOf").is_some_and(truthy_value)
+            {
+                return Err(AccountMutationError::Refused(
+                    "Select a saved Codex subscription account",
+                ));
+            }
+            if value
+                .get("logins")
+                .and_then(Value::as_object)
+                .is_some_and(|logins| {
+                    logins.values().any(|receipt| {
+                        receipt["accountKey"] == *account
+                            && matches!(
+                                receipt["status"].as_str(),
+                                Some("starting" | "pending" | "uncertain")
+                            )
+                    })
+                })
+            {
+                return Err(AccountMutationError::Refused(
+                    "Sign-in is already active for this account. Check its status first.",
+                ));
+            }
+            receipt["reauthAccountKey"] = serde_json::json!(account);
+            receipt["expectedAccountId"] = row["accountId"].clone();
+            receipt["email"] = row.get("email").cloned().unwrap_or(Value::Null);
+        } else {
+            value["accounts"][&key] = serde_json::json!({"id":key,"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
+            order.accounts.push(key);
+            receipt["emailHint"] = serde_json::json!(request.email);
+            receipt["requestedLabel"] = serde_json::json!(request.label);
+        }
+        if value.get("logins").is_none() {
+            value["logins"] = serde_json::json!({});
+        }
+        value["logins"][&request.login_id] = receipt.clone();
+        order.logins.push(request.login_id.clone());
+        persist_registry(&self.path, &mut state, value, &order)?;
+        Ok(LoginReservation::Dispatch(receipt))
+    }
+
+    pub fn finish_codex_login(
+        &self,
+        request: &str,
+        account: &str,
+        response: Option<&Value>,
+        sent: bool,
+        now: f64,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt)
+            || receipt["status"] == "pending"
+            || (receipt["status"] == "uncertain"
+                && receipt.get("loginId").is_some_and(truthy_value))
+        {
+            return Ok(receipt.clone());
+        }
+        if let Some(response) = response.filter(|response| {
+            response["type"] == "chatgptDeviceCode"
+                && ["loginId", "verificationUrl", "userCode"]
+                    .iter()
+                    .all(|key| {
+                        response
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.is_empty() && value.len() <= 8192)
+                    })
+        }) {
+            receipt["status"] = serde_json::json!("pending");
+            if let Some(object) = receipt.as_object_mut() {
+                object.remove("error");
+            }
+            for key in ["loginId", "verificationUrl", "userCode"] {
+                receipt[key] = response[key].clone();
+            }
+            let expiry = response
+                .get("expiresAt")
+                .and_then(Value::as_f64)
+                .or_else(|| {
+                    response
+                        .get("expiresIn")
+                        .and_then(Value::as_f64)
+                        .filter(|seconds| *seconds > 0.0)
+                        .map(|seconds| now + seconds)
+                });
+            if let Some(expiry) = expiry.filter(|expiry| expiry.is_finite() && *expiry > now) {
+                receipt["expiresAt"] = serde_json::json!(expiry);
+            }
+        } else {
+            receipt["status"] = serde_json::json!(if sent { "uncertain" } else { "error" });
+            receipt["error"] = serde_json::json!(if sent {
+                "Sign-in response is unconfirmed. Check its status before starting again."
+            } else {
+                "Could not start sign-in. Try again."
+            });
+        }
+        let result = receipt.clone();
+        if !sent && result.get("reauthAccountKey").is_none() {
+            value["accounts"][account]["status"] = serde_json::json!("error");
+            value["accounts"][account]["error"] = result["error"].clone();
+        }
+        self.persist(&mut state, value)?;
+        Ok(result)
+    }
+
+    /// Latch cancellation before hand-off. Uncertain cancellation is inspected,
+    /// never automatically sent again, including after restarting the process.
+    pub fn reserve_codex_cancel(
+        &self,
+        request: &str,
+    ) -> Result<LoginReservation, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if login_terminal(receipt) {
+            return Ok(LoginReservation::Replay(receipt.clone()));
+        }
+        if !receipt.get("loginId").is_some_and(truthy_value) {
+            return Err(AccountDriverError::LoginResponseUnknown.into());
+        }
+        if receipt["status"] == "uncertain" {
+            return Ok(LoginReservation::Replay(receipt.clone()));
+        }
+        receipt["status"] = serde_json::json!("uncertain");
+        receipt["error"] = serde_json::json!(
+            "Cancellation is pending confirmation. Check status for a late receipt or completed sign-in."
+        );
+        let result = receipt.clone();
+        self.persist(&mut state, value)?;
+        Ok(LoginReservation::Dispatch(result))
+    }
+
+    pub fn finish_codex_cancel(
+        &self,
+        request: &str,
+        account: &str,
+        confirmed: bool,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt) || !confirmed {
+            return Ok(receipt.clone());
+        }
+        receipt["status"] = serde_json::json!("cancelled");
+        if let Some(object) = receipt.as_object_mut() {
+            for field in ["error", "userCode", "verificationUrl"] {
+                object.remove(field);
+            }
+        }
+        let result = receipt.clone();
+        if result.get("reauthAccountKey").is_none() {
+            value["accounts"][account]["status"] = serde_json::json!("signedOut");
+        }
+        self.persist(&mut state, value)?;
+        Ok(result)
+    }
+
+    /// Restore a cancellation whose retained-session request is known not to
+    /// have been sent. The pending receipt may safely be retried; Unknown stays
+    /// latched by `finish_codex_cancel` and is never dispatched again.
+    pub(crate) fn finish_codex_cancel_not_sent(
+        &self,
+        request: &str,
+        account: &str,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt) {
+            return Ok(receipt.clone());
+        }
+        if receipt["status"] == "uncertain" {
+            receipt["status"] = serde_json::json!("pending");
+            receipt["error"] = serde_json::json!(
+                "Cancellation is unconfirmed. Check status or retry cancellation."
+            );
+        }
+        let result = receipt.clone();
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(result)
+    }
+
+    pub fn recover_codex_logins(&self) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        if let Some(logins) = value.get_mut("logins").and_then(Value::as_object_mut) {
+            for receipt in logins
+                .values_mut()
+                .filter(|receipt| receipt["status"] == "starting")
+            {
+                receipt["status"] = serde_json::json!("uncertain");
+                receipt["error"] = serde_json::json!(
+                    "Sign-in response is unconfirmed. Check status or start a separate attempt."
+                );
+            }
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(())
+    }
+
+    /// The retained-session notification adapter supplies the exact operation
+    /// and verified metadata obtained outside any store/registry transaction.
+    pub fn complete_codex_login(
+        &self,
+        request: &str,
+        account: &str,
+        native_id: &str,
+        success: bool,
+        metadata: Option<&AuthMetadata>,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if native_id.is_empty()
+            || receipt["accountKey"] != account
+            || receipt
+                .get("loginId")
+                .and_then(Value::as_str)
+                .is_some_and(|saved| saved != native_id)
+        {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another native request",
+            ));
+        }
+        if matches!(
+            receipt["status"].as_str(),
+            Some("ready" | "duplicate" | "cancelled")
+        ) {
+            return Ok(receipt.clone());
+        }
+        receipt["loginId"] = serde_json::json!(native_id);
+        if success {
+            if receipt.get("reauthAccountKey").is_some() {
+                receipt["nativeCompleted"] = serde_json::json!(true);
+            }
+            if let Some(metadata) = metadata {
+                let row = registry_account_mut(&mut value, account)?
+                    .as_object_mut()
+                    .ok_or(AccountDriverError::InvalidRegistry)?;
+                apply_metadata(row, metadata);
+                if metadata.status == AuthStatus::Ready {
+                    reconcile_local_login(&mut value, &state.order, request, account)?;
+                }
+            }
+        } else {
+            receipt["status"] = serde_json::json!("error");
+            receipt["error"] = serde_json::json!("Sign-in failed or expired. Try again.");
+            if let Some(object) = receipt.as_object_mut() {
+                object.remove("userCode");
+                object.remove("verificationUrl");
+            }
+            if receipt.get("reauthAccountKey").is_none() {
+                value["accounts"][account]["status"] = serde_json::json!("error");
+                value["accounts"][account]["error"] =
+                    serde_json::json!("Sign-in failed or expired. Try again.");
+            }
+        }
+        let result = value["logins"][request].clone();
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(result)
+    }
+
+    pub fn update_claude_settings(
+        &self,
+        key: &str,
+        options: Value,
+        label: Option<&str>,
+    ) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let row = registry_account_mut(&mut value, key)?;
+        if row["provider"] != "claude" {
+            return Err(AccountMutationError::Refused(
+                "Select a Claude Code profile",
+            ));
+        }
+        if ["binaryPath", "configDir"]
+            .iter()
+            .any(|field| row["claudeOptions"].get(*field) != options.get(*field))
+        {
+            return Err(AccountMutationError::Refused(
+                "Add a separate Claude profile to change the executable or config directory",
+            ));
+        }
+        if label.is_some_and(|label| python_strip(label).is_empty() || label.chars().count() > 200)
+        {
+            return Err(AccountMutationError::Refused(
+                "Invalid Claude profile label",
+            ));
+        }
+        row["claudeOptions"] = options;
+        if let Some(label) = label {
+            row["label"] = serde_json::json!(python_strip(label));
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(())
+    }
+
+    pub fn discover_claude_verified(
+        &self,
+        home: &Path,
+        metadata: &AuthMetadata,
+    ) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        if state.value["accounts"].get("claude-local").is_some() {
+            return Ok(());
+        }
+        let mut value = state.value.clone();
+        let mut row = serde_json::json!({"id":"claude-local","provider":"claude","home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
+        apply_metadata(
+            row.as_object_mut()
+                .ok_or(AccountDriverError::InvalidRegistry)?,
+            metadata,
+        );
+        value["accounts"]["claude-local"] = row;
+        let mut order = state.order.clone();
+        order.accounts.push("claude-local".into());
+        persist_registry(&self.path, &mut state, value, &order)?;
+        Ok(())
+    }
+}
+
 impl AccountDriver<SystemProviderAuthReader> {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AccountDriverError> {
         Self::open_with_reader(path, SystemProviderAuthReader)
@@ -643,6 +1167,53 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(status)
     }
 
+    /// Commit the read-only native Claude proof against the exact profile snapshot
+    /// used to issue `account/read`. This mirrors Python's confirm_native_auth.
+    pub fn confirm_native_claude_auth(
+        &self,
+        account: &str,
+        observed: &Value,
+        proof: &Value,
+    ) -> Result<Value, AccountDriverError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let current = registry_account(&state.value, account)?;
+        if crate::claude_auth_wait::account_pin(current)
+            != crate::claude_auth_wait::account_pin(observed)
+        {
+            return Err(AccountDriverError::InvalidRegistry);
+        }
+        let retryable = (current.get("status").and_then(Value::as_str) == Some("error")
+            && current.get("_authErrorKind").and_then(Value::as_str) == Some("keychain"))
+            || (current.get("status").and_then(Value::as_str) == Some("ready")
+                && observed.get("canAttemptNativeProof") == Some(&Value::Bool(true)));
+        let pinned = current.get("provider").and_then(Value::as_str) == Some("claude")
+            && !["deleted", "disconnected", "duplicateOf"]
+                .iter()
+                .any(|field| crate::event_write::truthy(current.get(*field)));
+        if !retryable || !pinned {
+            return Err(AccountDriverError::InvalidRegistry);
+        }
+        let confirmed = crate::claude_auth_runtime::confirm_account_read(observed, proof)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?;
+        let mut updated = state.value.clone();
+        let row = registry_account_mut(&mut updated, account)?
+            .as_object_mut()
+            .ok_or(AccountDriverError::InvalidRegistry)?;
+        row.insert("status".into(), Value::String("ready".into()));
+        row.insert("plan".into(), confirmed["plan"].clone());
+        row.remove("error");
+        row.remove("_authErrorKind");
+        self.persist(&mut state, updated)?;
+        let mut public = registry_account(&state.value, account)?.clone();
+        if let Some(object) = public.as_object_mut() {
+            object.retain(|key, _| !key.starts_with('_'));
+        }
+        Ok(public)
+    }
+
     /// Inspect auth state without persisting metadata when the caller may refuse the write.
     pub fn inspect(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
         let state = self
@@ -661,6 +1232,22 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         project_snapshot(&state.value, &state.order)
+    }
+
+    /// Internal selected-account record, including the non-secret identity pin.
+    pub(crate) fn internal_record(&self, account: &str) -> Result<Value, AccountDriverError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        Ok(registry_account(&state.value, account)?.clone())
+    }
+
+    /// Stable, non-secret identity selected for a retained account session.
+    pub fn auth_pin(&self, account: &str) -> Result<Value, AccountDriverError> {
+        Ok(crate::claude_auth_wait::account_pin(
+            &self.internal_record(account)?,
+        ))
     }
 
     /// Refresh the response projection from credentials without persisting it.
@@ -997,7 +1584,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             {
                 return Ok(AccountStatus::Unavailable);
             }
-            if row.get("duplicateOf").is_some_and(python_truthy) {
+            if row.get("duplicateOf").is_some_and(truthy_value) {
                 return Ok(status_from_value(row.get("status")));
             }
             AuthProfile {
@@ -1341,7 +1928,7 @@ fn ready_replacement<'a>(
             && row.get("status").and_then(Value::as_str) == Some("ready")
             && row.get("deleted") != Some(&Value::Bool(true))
             && row.get("disconnected") != Some(&Value::Bool(true))
-            && !row.get("duplicateOf").is_some_and(python_truthy))
+            && !row.get("duplicateOf").is_some_and(truthy_value))
         .then_some(key.as_str())
     })
 }
@@ -1542,15 +2129,26 @@ fn atomic_replace_with(
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), ReplaceError> {
     let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
-    let permissions = fs::metadata(path)
-        .map_err(|_| ReplaceError::NotReplaced)?
-        .permissions();
+    // Registry rows may contain login codes and verification URLs. Unix
+    // permissions must be private even when the previous file or directory was
+    // created with broader permissions. Other platforms rely on their default
+    // temporary-file ACLs; this code does not explicitly rewrite those ACLs.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| ReplaceError::NotReplaced)?;
+    }
     let mut temp =
         tempfile::NamedTempFile::new_in(parent).map_err(|_| ReplaceError::NotReplaced)?;
     (|| {
-        temp.as_file()
-            .set_permissions(permissions)
-            .map_err(|_| ReplaceError::NotReplaced)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|_| ReplaceError::NotReplaced)?;
+        }
         temp.write_all(bytes)
             .map_err(|_| ReplaceError::NotReplaced)?;
         temp.as_file()
@@ -1576,6 +2174,33 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_profile_binary_path_precedes_environment_override() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("isolated Claude binary fixture");
+        let profile_binary = directory.path().join("profile-claude");
+        let override_binary = directory.path().join("override-claude");
+        for binary in [&profile_binary, &override_binary] {
+            fs::write(binary, "#!/bin/sh\nexit 0\n").expect("write fake executable");
+            fs::set_permissions(binary, fs::Permissions::from_mode(0o700))
+                .expect("make fake executable runnable");
+        }
+        let environment = BTreeMap::from([(
+            OsStr::new(CLAUDE_BIN_OVERRIDE).to_owned(),
+            override_binary.as_os_str().to_owned(),
+        )]);
+        let profile = serde_json::json!({
+            "claudeOptions": {"binaryPath": profile_binary.to_string_lossy()}
+        });
+
+        assert_eq!(
+            claude::resolve_claude_binary_with_environment(&profile, &environment),
+            Some(profile_binary.to_string_lossy().into_owned()),
+        );
+    }
 
     #[test]
     fn codex_metadata_requires_strict_unpadded_base64url_jwt_payloads() {
@@ -1661,12 +2286,11 @@ sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], tex
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
             .expect("make Claude command executable");
 
-        let started = Instant::now();
         assert!(matches!(
             run_claude_status_with_timeout(
                 command.to_str().expect("fixture path is UTF-8"),
                 None,
-                Duration::from_secs(2),
+                Duration::from_millis(500),
             ),
             Err("timeout")
         ));
@@ -1679,16 +2303,21 @@ sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], tex
             .trim()
             .parse()
             .expect("valid descendant pid");
-        assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "timeout cleanup is bounded"
-        );
         let pid = rustix::process::Pid::from_raw(descendant_pid).expect("valid pid");
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while process_is_running(pid) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(!process_is_running(pid), "group descendant terminated");
+        let exited = match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+            Ok(pidfd) => {
+                let timeout = rustix::event::Timespec::try_from(Duration::from_secs(2))
+                    .expect("two second pidfd wait fits timespec");
+                let mut poll_fd = rustix::event::PollFd::new(&pidfd, rustix::event::PollFlags::IN);
+                rustix::event::poll(std::slice::from_mut(&mut poll_fd), Some(&timeout))
+                    .expect("wait for descendant pidfd")
+                    == 1
+                    && poll_fd.revents().contains(rustix::event::PollFlags::IN)
+            }
+            Err(rustix::io::Errno::SRCH) => true,
+            Err(error) => panic!("open descendant pidfd: {error}"),
+        };
+        assert!(exited, "group descendant exited after timeout cleanup");
     }
 
     #[cfg(target_os = "linux")]
@@ -1877,6 +2506,53 @@ exit 0
         assert_eq!(
             snapshot.default_account_key,
             Value::String("default".into())
+        );
+    }
+
+    #[test]
+    fn retained_account_read_confirms_only_the_same_keychain_profile() {
+        let fixture = TestDir::new();
+        let home = fixture.path.join("claude-home");
+        fs::create_dir_all(&home).expect("create disposable Claude home");
+        let mut value: Value = serde_json::from_slice(&registry(&home)).expect("fixture registry");
+        value["accounts"]["default"].as_object_mut().expect("account object").extend(serde_json::json!({
+            "provider":"claude", "source":"Claude Code", "status":"error",
+            "email":"fixture@example.invalid", "accountId":"claude:fixture@example.invalid",
+            "_credentialIdentity":"claude:fixture@example.invalid", "_authErrorKind":"keychain"
+        }).as_object().expect("fixture fields").clone());
+        let path = fixture.path.join("state/accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize registry"),
+        )
+        .expect("write registry");
+        let reader = FakeReader(AuthMetadata::error(Some("keychain")));
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open fixture");
+        let observed = value["accounts"]["default"].clone();
+        let proof = serde_json::json!({"account":{"type":"claude","email":"fixture@example.invalid","planType":"max"},
+            "requiresOpenaiAuth":false});
+
+        let confirmed = driver
+            .confirm_native_claude_auth("default", &observed, &proof)
+            .expect("confirm retained proof");
+        assert_eq!(confirmed["status"], "ready");
+        assert_eq!(confirmed["plan"], "max");
+        let persisted: Value = serde_json::from_slice(&fs::read(path).expect("read registry"))
+            .expect("parse updated registry");
+        assert_eq!(persisted["accounts"]["default"]["status"], "ready");
+        assert!(
+            persisted["accounts"]["default"]
+                .get("_authErrorKind")
+                .is_none()
+        );
+
+        let changed = serde_json::json!({"account":{"type":"claude","email":"other@example.invalid","planType":"max"}});
+        assert!(
+            driver
+                .confirm_native_claude_auth("default", &observed, &changed)
+                .is_err()
         );
     }
 
@@ -2127,26 +2803,29 @@ print(store.path)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o640))
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
                 .expect("set original file permissions");
-            fs::set_permissions(&fixture.path, fs::Permissions::from_mode(0o750))
+            fs::set_permissions(&fixture.path, fs::Permissions::from_mode(0o755))
                 .expect("set parent directory permissions");
         }
-        let parent_permissions = fs::metadata(&fixture.path)
-            .expect("read parent metadata")
-            .permissions();
         let fail = |_: &Path, _: &Path| Err(std::io::Error::other("refused"));
         assert!(matches!(
             atomic_replace_with(&path, b"after", fail, |_| Ok(())),
             Err(ReplaceError::NotReplaced)
         ));
         assert_eq!(fs::read(&path).expect("read unchanged registry"), b"before");
-        assert_eq!(
-            fs::metadata(&fixture.path)
-                .expect("read parent after failed replacement")
-                .permissions(),
-            parent_permissions
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&fixture.path)
+                    .expect("read parent after failed replacement")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
         assert!(matches!(atomic_replace(&path, b"after"), Ok(())));
         assert_eq!(fs::read(&path).expect("read replaced registry"), b"after");
         assert!(matches!(
@@ -2168,7 +2847,15 @@ print(store.path)
                     .permissions()
                     .mode()
                     & 0o777,
-                0o640
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&fixture.path)
+                    .expect("read directory permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
             );
         }
     }

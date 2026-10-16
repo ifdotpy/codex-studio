@@ -12,16 +12,21 @@ use thiserror::Error;
 
 use crate::event_write::{self, EventWriteError};
 
-#[path = "voice/policy.rs"]
-pub mod policy;
+#[path = "voice/account_session.rs"]
+pub mod account_session;
 
 #[path = "voice/audio.rs"]
 mod audio;
 
 pub use audio::{VoiceAudioError, save_audio};
 
+#[path = "voice/policy.rs"]
+pub mod policy;
+
 #[path = "voice/provider.rs"]
 pub mod provider;
+
+pub use crate::voice_runtime as runtime;
 
 const MAX_RECORD_TEXT: usize = 100_000;
 const MAX_IDENTITY: usize = 240;
@@ -255,7 +260,7 @@ pub fn submit(
         ));
     }
 
-    let admission = crate::message_admission::PreparedAdmission::load(&store.read()?, agent_id)?;
+    let admission = crate::message_admission::PreparedAdmission::load(&*store.read()?, agent_id)?;
     #[cfg(test)]
     ingress_tests::support::after_preparation(agent_id);
     store.transaction_with_error(|transaction| {
@@ -458,9 +463,8 @@ pub fn approval_speech(
         .ok_or(VoiceError::InvalidRequest(
             "The approval request is no longer pending",
         ))?;
-    let fingerprint =
-        studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes());
-    let params = serde_json::to_string(request.get("params").unwrap_or(&Value::Null))?;
+    let fingerprint = approval_fingerprint(request);
+    let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
         return Err(VoiceError::InvalidRequest(
@@ -481,6 +485,10 @@ pub fn approval_speech(
             internal: true,
         },
     )
+}
+
+pub(super) fn approval_fingerprint(request: &Value) -> String {
+    studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes())
 }
 
 fn checked_agent(

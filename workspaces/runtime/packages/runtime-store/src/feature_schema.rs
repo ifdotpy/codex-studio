@@ -10,6 +10,9 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_work_owner_status
                 ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
+            CREATE INDEX IF NOT EXISTS runtime_work_owner_root_status_id ON runtime_work(
+                json_extract(record,'$.owner'),json_extract(record,'$.rootId'),
+                json_extract(record,'$.status'),id);
             CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(
                 COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id)
                 WHERE json_extract(record,'$.archiveIntent.status')='pending';
@@ -221,15 +224,22 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default')) WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND (json_extract(record,'$.contextRepair.phase') IN ('preparing','submitted','unknown','ready') OR COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='');
+            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context ON runtime_agents(
+                COALESCE(json_extract(record,'$.accountKey'),'default'),
+                json_extract(record,'$.startAttempt.connectionGeneration'),
+                json_extract(record,'$.threadId'), json_extract(record,'$.turnId'))
+                WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.autoWake')=1;
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup ON runtime_agents(json_extract(record,'$.contextRepair.sourceCleanup.accountKey'),json_extract(record,'$.contextRepair.sourceCleanup.threadId')) WHERE json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted');
             CREATE TABLE IF NOT EXISTS runtime_native_action_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL, outcome TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'));
+            CREATE TABLE IF NOT EXISTS runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_limit_reset_attempts (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_limit_reset_requests (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_server_outbox (
                     id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
                     state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,

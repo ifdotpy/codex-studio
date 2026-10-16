@@ -59,10 +59,19 @@ describe("UI preference projection bridge", () => {
     const bridge = createUiPreferenceBridge(storage);
     const stop = bridge.start();
     const projection = {
-      user: { fields: { a: { value: "remote", timestamp: 1, writer: "w" } } },
+      user: {
+        fields: {
+          z: { value: "last", timestamp: 2, writer: "w" },
+          a: { value: "first", timestamp: 1, writer: "w" },
+        },
+      },
     };
     bridge.receiveProjection(projection);
-    bridge.receiveProjection(projection);
+    bridge.receiveProjection({
+      user: {
+        fields: { a: projection.user.fields.a, z: projection.user.fields.z },
+      },
+    });
     expect(mocks.receive).toHaveBeenCalledOnce();
     expect(mocks.receive).toHaveBeenCalledWith(
       "user",
@@ -103,6 +112,42 @@ describe("UI preference projection bridge", () => {
     expect(mocks.sessionRead).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
     expect(EventSource).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("does not resend acknowledged fields when the server reorders keys", async () => {
+    let changed = () => {};
+    const local = {
+      z: { value: "last", timestamp: 2, writer: "w" },
+      a: { value: "first", timestamp: 1, writer: "w" },
+    };
+    const serverOrder = {
+      a: local.a,
+      z: local.z,
+    };
+    mocks.watch.mockImplementation((listener) => {
+      changed = listener;
+      return () => {};
+    });
+    mocks.read.mockImplementation((scope) => (scope === "user" ? local : {}));
+    mocks.acknowledge.mockImplementation(() => changed());
+    let posts = 0;
+    mocks.syncPost.mockImplementation(async () => {
+      posts += 1;
+      if (posts > 3) throw new Error("bounded repeated preference write");
+      return { fields: serverOrder };
+    });
+    vi.stubGlobal("crypto", {
+      subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
+    });
+    const bridge = createUiPreferenceBridge(storage);
+    const stop = bridge.start();
+    bridge.receiveProjection({});
+    changed();
+
+    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.syncPost).toHaveBeenCalledOnce();
     stop();
   });
 

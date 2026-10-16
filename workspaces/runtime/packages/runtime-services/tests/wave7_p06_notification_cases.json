@@ -2332,5 +2332,30 @@
       }
     ],
     "analytics_semantics": true
+  },
+  {
+    "id": "p06-command-exec-output-written",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "command/exec/outputDelta",
+          "params": {
+            "threadId": "thread",
+            "processId": "missing-monitor",
+            "deltaBase64": "aGVsbG8="
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
   }
 ]

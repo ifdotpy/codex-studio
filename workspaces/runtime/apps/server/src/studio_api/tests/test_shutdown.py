@@ -22,6 +22,8 @@ from unittest.mock import patch
 import httpx
 from server_test_waits import HANG_GUARD_SECONDS
 
+READY_FD_ENV = "STUDIO_SHUTDOWN_TEST_READY_FD"
+
 
 def run_fixture(mode: str) -> None:
     """Run the real main and listeners without native workers or model calls."""
@@ -38,23 +40,37 @@ def run_fixture(mode: str) -> None:
 
     runtime_module = ModuleType("codex_runtime")
     updates_module = ModuleType("codex_live_updates")
+    peer_link_module = ModuleType("codex_peer_link")
     listeners: list[Any] = []
+
+    def publish_ready(port: int) -> None:
+        with os.fdopen(int(os.environ[READY_FD_ENV]), "w") as ready:
+            print(json.dumps({"ready": port}), file=ready, flush=True)
 
     def make_runtime(_root: object) -> Any:
         if mode == "startup":
-            print(json.dumps({"ready": listeners[0].server_port}), flush=True)
+            publish_ready(listeners[0].server_port)
             os.kill(os.getpid(), signal.SIGTERM)
             threading.Event().wait()
         return SimpleNamespace(close=close_runtime, lock=threading.RLock())
 
     setattr(runtime_module, "Runtime", make_runtime)
+    setattr(peer_link_module, "start", lambda _runtime, _port: None)
 
     def start_updates(_runtime: object) -> None:
-        print(json.dumps({"ready": listeners[0].server_port}), flush=True)
+        return None
 
     setattr(updates_module, "start", start_updates)
     original_factory = cast(Callable[..., Any], codex_canvas.make_server)
     original_send = cast(Callable[..., Any], RequestResponseCycle.send)
+    original_startup = cast(Callable[..., Any], studio_api.server._StudioUvicornServer.startup)
+
+    async def startup(server: Any, sockets: Any = None) -> None:
+        await original_startup(server, sockets=sockets)
+        # The bound TCP socket can accept connections before Uvicorn's event
+        # loop is serving them. Publish readiness only after Uvicorn startup.
+        if listeners and server is listeners[0].server:
+            publish_ready(listeners[0].server_port)
 
     def make_server(*args: Any, **kwargs: Any) -> Any:
         server = original_factory(*args, **kwargs)
@@ -81,11 +97,13 @@ def run_fixture(mode: str) -> None:
 
     with patch.dict(sys.modules, {"codex_runtime": runtime_module, "codex_live_updates": updates_module}), \
             patch.object(codex_canvas, "make_server", make_server), \
+            patch.object(studio_api.server._StudioUvicornServer, "startup", startup), \
             patch.object(codex_canvas, "SHUTDOWN_TIMEOUT_SECONDS", 1.5, create=True), \
             patch.object(studio_api.server, "GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS", 0.3, create=True), \
             patch.object(RequestResponseCycle, "send", send_response), \
             patch.object(sys, "argv", ["codex-canvas", "--port", "0"]):
-        codex_canvas.main()
+        with patch.dict(sys.modules, {"codex_peer_link": peer_link_module}):
+            codex_canvas.main()
 
 
 class BackendShutdownTests(unittest.TestCase):
@@ -109,22 +127,24 @@ class BackendShutdownTests(unittest.TestCase):
             command = [sys.executable, "-B", "-c",
                        "from studio_api.tests.test_shutdown import run_fixture; "
                        "import sys; run_fixture(sys.argv[1])", mode]
-            process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=True)
+            ready_read, ready_write = os.pipe()
+            environment[READY_FD_ENV] = str(ready_write)
             try:
-                assert process.stdout is not None
-                deadline = time.monotonic() + HANG_GUARD_SECONDS
-                port = None
-                while time.monotonic() < deadline:
-                    readable, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
-                    if not readable:
-                        break
-                    line = process.stdout.readline()
-                    if not line:
-                        break
-                    if line.startswith('{"ready":'):
-                        port = json.loads(line)["ready"]
-                        break
+                process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True,
+                                           pass_fds=(ready_write,))
+            except BaseException:
+                os.close(ready_read)
+                raise
+            finally:
+                os.close(ready_write)
+            try:
+                # A dedicated one-message pipe avoids mixing select() with a
+                # text wrapper that may have already buffered the ready line.
+                with os.fdopen(ready_read) as ready:
+                    readable, _, _ = select.select([ready], [], [], HANG_GUARD_SECONDS)
+                    line = ready.readline() if readable else ""
+                port = json.loads(line)["ready"] if line else None
                 if port is None:
                     if process.poll() is None:
                         process.kill()
@@ -201,6 +221,55 @@ class BackendShutdownTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 3)
                 if mode == "thread":
                     self.assertIn("runtime-closed", stdout)
+
+    def test_blocked_shutdown_logging_cannot_delay_the_deadline_watchdog(self) -> None:
+        from codex_canvas import BackendShutdown
+
+        entered, release = threading.Event(), threading.Event()
+        shutdown = BackendShutdown()
+        shutdown.timeout_seconds = 0
+        shutdown.terminate(signal.SIGTERM, None)
+        failures: list[BaseException] = []
+        writes: list[str] = []
+
+        class BlockedLog:
+            def write(self, value: str) -> int:
+                writes.append(value)
+                entered.set()
+                if not release.wait(HANG_GUARD_SECONDS):
+                    raise RuntimeError("The fixture did not release shutdown logging")
+                return len(value)
+
+            def flush(self) -> None:
+                pass
+
+        def observe() -> None:
+            try:
+                shutdown.observe_request()
+            except BaseException as error:
+                failures.append(error)
+
+        with patch("sys.stderr", BlockedLog()):
+            observer = threading.Thread(target=observe, daemon=True)
+            observer.start()
+            try:
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+                # The record has been claimed, so a concurrent caller neither
+                # emits a second record nor waits for the blocked stderr write.
+                self.assertTrue(shutdown.requested())
+                with patch("codex_canvas.os._exit", side_effect=SystemExit(1)) as exit_process:
+                    with self.assertRaises(SystemExit):
+                        shutdown.watch()
+                exit_process.assert_called_once_with(1)
+                self.assertFalse(release.is_set())
+            finally:
+                release.set()
+                observer.join(timeout=HANG_GUARD_SECONDS)
+        self.assertFalse(observer.is_alive())
+        self.assertEqual(failures, [])
+        records = [json.loads(line) for line in ''.join(writes).splitlines()]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["signal"], signal.SIGTERM)
 
     def test_sigterm_during_runtime_startup_obeys_hard_deadline(self) -> None:
         with self.backend("startup") as (process, _state, _port):

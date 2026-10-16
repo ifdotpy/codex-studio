@@ -1,13 +1,13 @@
-//! One bounded actor per native sign-in; account writes and receipt fsync happen
-//! off the executor, and no provider I/O occurs inside an account/store lock.
+//! Per-login locks keep sign-ins ordered without blocking unrelated jobs;
+//! account writes and receipt fsync happen off the executor.
 use super::{ports::*, receipts::MAX_JOBS, *};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     fs::{File, OpenOptions},
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -40,6 +40,136 @@ struct Job {
     url: Option<String>,
     commands: Option<mpsc::Sender<Command>>,
 }
+struct Admission {
+    active: bool,
+    unknown: bool,
+    account: String,
+}
+impl From<&Job> for Admission {
+    fn from(job: &Job) -> Self {
+        Self {
+            active: job.snapshot.active(),
+            unknown: unknown(&job.snapshot),
+            account: job.snapshot.account_key().to_owned(),
+        }
+    }
+}
+#[derive(Default)]
+struct RegistryState {
+    jobs: BTreeMap<String, Arc<Mutex<Job>>>,
+    admission: HashMap<String, Admission>,
+    starting: HashMap<String, Option<String>>,
+}
+#[derive(Clone, Default)]
+struct JobRegistry(Arc<StdMutex<RegistryState>>);
+struct StartReservation {
+    id: String,
+    account: Option<String>,
+    registry: JobRegistry,
+}
+type ReservationResult = Result<(Option<Arc<Mutex<Job>>>, Option<StartReservation>), LoginError>;
+impl JobRegistry {
+    fn entry(&self, id: &str) -> Result<Arc<Mutex<Job>>, LoginError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .jobs
+            .get(id)
+            .cloned()
+            .ok_or(LoginError::Unknown)
+    }
+    fn insert(&self, id: String, job: Job) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.admission.insert(id.clone(), Admission::from(&job));
+        state.jobs.insert(id, Arc::new(Mutex::new(job)));
+    }
+    fn refresh(&self, id: &str, job: &Job) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.admission.insert(id.to_owned(), Admission::from(job));
+    }
+    fn snapshot(&self) -> Vec<(String, Arc<Mutex<Job>>)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .jobs
+            .iter()
+            .map(|(id, job)| (id.clone(), Arc::clone(job)))
+            .collect()
+    }
+    fn reserve(&self, id: &str, account: Option<String>) -> ReservationResult {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let existing = state.jobs.get(id).cloned();
+        if existing.is_some() {
+            return Ok((existing, None));
+        }
+        let active = state.admission.values().filter(|job| job.active).count();
+        let duplicate = account.as_ref().is_some_and(|account| {
+            state.admission.values().any(|admission| {
+                (admission.active || admission.unknown) && &admission.account == account
+            }) || state
+                .starting
+                .values()
+                .any(|reserved| reserved.as_ref() == Some(account))
+        });
+        if state.jobs.len() + state.starting.len() >= MAX_JOBS
+            || active + state.starting.len() >= MAX_ACTIVE
+            || state.starting.contains_key(id)
+            || duplicate
+        {
+            return Err(LoginError::Busy);
+        }
+        state.starting.insert(id.to_owned(), account.clone());
+        Ok((
+            None,
+            Some(StartReservation {
+                id: id.to_owned(),
+                account,
+                registry: self.clone(),
+            }),
+        ))
+    }
+}
+impl StartReservation {
+    fn finish(self, job: Job) -> Result<(), LoginError> {
+        let mut state = self
+            .registry
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.starting.get(&self.id) != Some(&self.account) {
+            return Err(LoginError::Unavailable);
+        }
+        state.starting.remove(&self.id);
+        state
+            .admission
+            .insert(self.id.clone(), Admission::from(&job));
+        state
+            .jobs
+            .insert(self.id.clone(), Arc::new(Mutex::new(job)));
+        Ok(())
+    }
+}
+impl Drop for StartReservation {
+    fn drop(&mut self) {
+        let mut state = self
+            .registry
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.starting.get(&self.id) == Some(&self.account) {
+            state.starting.remove(&self.id);
+        }
+    }
+}
 enum Command {
     Code(Vec<u8>, oneshot::Sender<Result<(), LoginError>>),
     Cancel,
@@ -48,7 +178,7 @@ struct Launch {
     program: PathBuf,
     config: PathBuf,
     profile: Option<Value>,
-    lease: File,
+    lease: Option<File>,
 }
 pub struct LoginService {
     config: LoginConfig,
@@ -56,7 +186,7 @@ pub struct LoginService {
     launcher: Arc<dyn LoginLauncher>,
     receipts: Arc<dyn LoginReceipts>,
     chats: Arc<dyn LoginChats>,
-    jobs: Mutex<BTreeMap<String, Job>>,
+    jobs: JobRegistry,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     failed: AtomicBool,
     on_change: Arc<dyn Fn() + Send + Sync>,
@@ -78,7 +208,7 @@ impl LoginService {
             launcher,
             receipts,
             chats,
-            jobs: Mutex::new(BTreeMap::new()),
+            jobs: JobRegistry::default(),
             tasks: Mutex::new(Vec::new()),
             failed: AtomicBool::new(false),
             on_change,
@@ -111,7 +241,7 @@ impl LoginService {
                 service.save(&restored).await?;
             }
             let restored = service.cleanup(&restored).await?;
-            service.jobs.lock().await.insert(
+            service.jobs.insert(
                 restored.request_id().into(),
                 Job {
                     snapshot: restored,
@@ -143,9 +273,8 @@ impl LoginService {
         request_id(id)?;
         self.settle_unknowns().await?;
         self.refresh_chats(id).await?;
-        let jobs = self.jobs.lock().await;
-        let job = jobs.get(id).ok_or(LoginError::Unknown)?;
-        Ok(public(job))
+        let entry = self.jobs.entry(id)?;
+        Ok(public(&*entry.lock().await))
     }
     pub async fn start(
         self: &Arc<Self>,
@@ -164,22 +293,12 @@ impl LoginService {
         let signature = account
             .is_none()
             .then(|| crate::event_write::request_signature(&json!({"email":email,"label":label})));
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.get(&id) {
+        let (existing, reservation) = self.jobs.reserve(&id, account.clone())?;
+        if let Some(entry) = existing {
+            let job = entry.lock().await;
             job.snapshot
                 .replay(account.as_deref(), signature.as_deref())?;
-            return Ok(public(job));
-        }
-        if jobs.len() >= MAX_JOBS
-            || jobs.values().filter(|j| j.snapshot.active()).count() >= MAX_ACTIVE
-        {
-            return Err(LoginError::Busy);
-        }
-        if jobs.values().any(|j| {
-            (j.snapshot.active() || unknown(&j.snapshot))
-                && account.as_deref() == Some(j.snapshot.account_key())
-        }) {
-            return Err(LoginError::Busy);
+            return Ok(public(&job));
         }
         let profile = if let Some(key) = &account {
             let accounts = self.accounts.clone();
@@ -268,22 +387,18 @@ impl LoginService {
         new_config.0 = None;
         let (sender, receiver) = mpsc::channel(4);
         let result = snapshot.receipt();
-        jobs.insert(
-            id.clone(),
-            Job {
-                snapshot,
-                verified: false,
-                url: None,
-                commands: Some(sender),
-            },
-        );
-        drop(jobs);
+        reservation.ok_or(LoginError::Unavailable)?.finish(Job {
+            snapshot,
+            verified: false,
+            url: None,
+            commands: Some(sender),
+        })?;
         let service = self.clone();
         let launch = Launch {
             program,
             config,
             profile,
-            lease,
+            lease: Some(lease),
         };
         let task = tokio::spawn(async move {
             service.run(id, launch, receiver).await;
@@ -298,16 +413,17 @@ impl LoginService {
         self.available()?;
         request_id(id)?;
         validate_code(&code)?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         let (next, write) = job
             .snapshot
             .code_intent(job.url.is_some() && job.commands.is_some())?;
         if !write {
-            return Ok(public(job));
+            return Ok(public(&job));
         }
         self.save(&next).await?;
         job.snapshot = next;
+        self.jobs.refresh(id, &job);
         let sender = job.commands.clone().ok_or(LoginError::WaitForLink)?;
         let (reply, receipt) = oneshot::channel();
         let bytes = (code + "\n").into_bytes();
@@ -318,9 +434,10 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
-            return Ok(public(job));
+            self.jobs.refresh(id, &job);
+            return Ok(public(&job));
         }
-        drop(jobs);
+        drop(job);
         if !matches!(
             tokio::time::timeout(COMMAND_DEADLINE, receipt).await,
             Ok(Ok(Ok(())))
@@ -340,8 +457,8 @@ impl LoginService {
     pub async fn cancel(&self, id: &str) -> Result<Value, LoginError> {
         self.available()?;
         request_id(id)?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         if unknown(&job.snapshot) && job.commands.is_none() {
             // Explicit cancellation acknowledges only this receipt. It does not prove
             // the old child exited, delete its config, or resend any input.
@@ -355,6 +472,7 @@ impl LoginService {
             let next = LoginSnapshot::from_record(record)?;
             self.save(&next).await?;
             job.snapshot = next;
+            self.jobs.refresh(id, &job);
             (self.on_change)();
         }
         if job.snapshot.active() {
@@ -368,9 +486,10 @@ impl LoginService {
                 self.failed.store(true, Ordering::Release);
                 return Err(LoginError::Unavailable);
             }
+            self.jobs.refresh(id, &job);
             (self.on_change)();
         }
-        Ok(public(job))
+        Ok(public(&job))
     }
     async fn finish(
         &self,
@@ -378,13 +497,14 @@ impl LoginService {
         status: LoginStatus,
         error: Option<&str>,
     ) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         if job.snapshot.active() {
             let next = job.snapshot.finish(status, error)?;
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
+            self.jobs.refresh(id, &job);
             (self.on_change)();
         }
         Ok(())
@@ -410,6 +530,8 @@ impl LoginService {
             inherited_lease: Some(
                 launch
                     .lease
+                    .as_ref()
+                    .ok_or(LoginError::Unavailable)?
                     .try_clone()
                     .map_err(|_| LoginError::Unavailable)?,
             ),
@@ -418,10 +540,10 @@ impl LoginService {
     async fn run(
         self: Arc<Self>,
         id: String,
-        launch: Launch,
+        mut launch: Launch,
         mut commands: mpsc::Receiver<Command>,
     ) {
-        let result = self.run_inner(&id, &launch, &mut commands).await;
+        let result = self.run_inner(&id, &mut launch, &mut commands).await;
         if result.is_err()
             && self
                 .finish(&id, LoginStatus::Error, Some(FAILED))
@@ -430,8 +552,9 @@ impl LoginService {
         {
             self.failed.store(true, Ordering::Release);
         }
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.get_mut(&id) {
+        let state = async {
+            let entry = self.jobs.entry(&id)?;
+            let mut job = entry.lock().await;
             if result.is_err() {
                 let mut record = job.snapshot.record().clone();
                 record["metadata"]["outcomeUnknown"] = json!(true);
@@ -447,9 +570,14 @@ impl LoginService {
                 Ok(next) => job.snapshot = next,
                 Err(_) => self.failed.store(true, Ordering::Release),
             }
+            self.jobs.refresh(&id, &job);
+            Ok::<(), LoginError>(())
         }
-        drop(launch.lease);
-        drop(jobs);
+        .await;
+        if state.is_err() {
+            self.failed.store(true, Ordering::Release);
+        }
+        drop(launch.lease.take());
         // A final receipt write may fail after Ready was installed in memory.
         // Wake readers even when finish() correctly leaves that terminal state intact.
         (self.on_change)();
@@ -457,12 +585,12 @@ impl LoginService {
     async fn run_inner(
         &self,
         id: &str,
-        launch: &Launch,
+        launch: &mut Launch,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<(), LoginError> {
         let snapshot = {
-            let jobs = self.jobs.lock().await;
-            let job = jobs.get(id).ok_or(LoginError::Unknown)?;
+            let entry = self.jobs.entry(id)?;
+            let job = entry.lock().await;
             if !job.snapshot.active() {
                 return Ok(());
             }
@@ -501,8 +629,16 @@ impl LoginService {
                 event=child.next_event()=>match event?{
                     Some(LoginEvent::Output(bytes)|LoginEvent::Diagnostic(bytes))=>{
                         append_tail(&mut output,&bytes);
-                        if let Some(url)=find_url(&output){let mut jobs=self.jobs.lock().await;let job=jobs.get_mut(id).ok_or(LoginError::Unknown)?;
-                            if job.snapshot.active() && job.url.as_deref()!=Some(&url){job.snapshot=job.snapshot.finish(LoginStatus::Pending,None)?;job.url=Some(url);(self.on_change)();}}
+                        if let Some(url)=find_url(&output){
+                            let entry = self.jobs.entry(id)?;
+                            let mut job = entry.lock().await;
+                            if job.snapshot.active() && job.url.as_deref()!=Some(&url){
+                                job.snapshot=job.snapshot.finish(LoginStatus::Pending,None)?;
+                                job.url=Some(url);
+                                self.jobs.refresh(id, &job);
+                                (self.on_change)();
+                            }
+                        }
                     },
                     Some(LoginEvent::Exited(success))=>break Some(success),None=>break None,
                 }
@@ -515,8 +651,8 @@ impl LoginService {
             return Ok(());
         };
         let metadata = self.probe(id, launch, commands).await?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         if !job.snapshot.active() {
             return Ok(());
         }
@@ -529,6 +665,7 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
+            self.jobs.refresh(id, &job);
             (self.on_change)();
             return Ok(());
         }
@@ -560,16 +697,21 @@ impl LoginService {
         let next = job.snapshot.ready(&account, job.snapshot.adding())?;
         job.verified = true;
         self.save(&next).await?;
+        // The provider child and status probe are both closed, the account
+        // publication is durable, and the Ready receipt is durable. Release
+        // the cross-process config lease before exposing Ready to readers.
+        drop(launch.lease.take());
         job.snapshot = next;
         job.url = None;
-        drop(jobs);
+        self.jobs.refresh(id, &job);
+        drop(job);
         self.refresh_chats(id).await?;
         (self.on_change)();
         Ok(())
     }
     async fn refresh_chats(&self, id: &str) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         if job.snapshot.record().pointer("/receipt/status") != Some(&json!("ready"))
             || job.snapshot.record().pointer("/receipt/chatsRefreshed") == Some(&json!(true))
         {
@@ -605,6 +747,7 @@ impl LoginService {
         let next = LoginSnapshot::from_record(record)?;
         self.save(&next).await?;
         job.snapshot = next;
+        self.jobs.refresh(id, &job);
         Ok(())
     }
     async fn probe(
@@ -651,20 +794,25 @@ impl LoginService {
         id: &str,
         identity: Option<ChildIdentity>,
     ) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let entry = self.jobs.entry(id)?;
+        let mut job = entry.lock().await;
         let mut record = job.snapshot.record().clone();
         record["metadata"]["child"] =
             serde_json::to_value(identity).map_err(|_| LoginError::Unavailable)?;
         let next = LoginSnapshot::from_record(record)?;
         self.save(&next).await?;
         job.snapshot = next;
+        self.jobs.refresh(id, &job);
         Ok(())
     }
     async fn settle_unknowns(&self) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        for job in jobs.values_mut().filter(|job| unknown(&job.snapshot)) {
-            let metadata = &job.snapshot.record()["metadata"];
+        let candidates = self.jobs.snapshot();
+        for (id, entry) in candidates {
+            let mut job = entry.lock().await;
+            if !unknown(&job.snapshot) {
+                continue;
+            }
+            let metadata = job.snapshot.record()["metadata"].clone();
             if let Some(value) = metadata.get("child").filter(|v| !v.is_null()) {
                 let identity: ChildIdentity =
                     serde_json::from_value(value.clone()).map_err(|_| LoginError::Unavailable)?;
@@ -708,7 +856,7 @@ impl LoginService {
                 "{}.lock",
                 studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
             ));
-            let lease = blocking(move || {
+            let config_lease = blocking(move || {
                 let file = OpenOptions::new()
                     .create(true)
                     .truncate(false)
@@ -720,7 +868,7 @@ impl LoginService {
                 Ok(file)
             })
             .await;
-            let Ok(_lease) = lease else {
+            let Ok(_config_lease) = config_lease else {
                 continue;
             };
             let mut record = job.snapshot.record().clone();
@@ -730,6 +878,7 @@ impl LoginService {
             let next = LoginSnapshot::from_record(record)?;
             self.save(&next).await?;
             job.snapshot = self.cleanup(&next).await?;
+            self.jobs.refresh(&id, &job);
         }
         Ok(())
     }
@@ -835,15 +984,15 @@ impl LoginService {
         Ok(next)
     }
     pub async fn shutdown(&self) -> Result<(), LoginError> {
-        let jobs = self.jobs.lock().await;
-        for job in jobs.values() {
+        let jobs = self.jobs.snapshot();
+        for (_, entry) in jobs {
+            let job = entry.lock().await;
             if let Some(sender) = &job.commands
                 && sender.try_send(Command::Cancel).is_err()
             {
                 self.failed.store(true, Ordering::Release);
             }
         }
-        drop(jobs);
         for task in self.tasks.lock().await.drain(..) {
             tokio::time::timeout(COMMAND_DEADLINE, task)
                 .await
@@ -864,9 +1013,12 @@ fn public(job: &Job) -> Value {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, LoginError> + Send + 'static,
 ) -> Result<T, LoginError> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| LoginError::Unavailable)?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_login/service",
+        f,
+    )
+    .await
+    .map_err(|_| LoginError::Unavailable)?
 }
 fn append_tail(output: &mut Vec<u8>, bytes: &[u8]) {
     output.extend_from_slice(bytes);
@@ -894,4 +1046,76 @@ fn find_url(output: &[u8]) -> Option<String> {
 
 fn unknown(snapshot: &LoginSnapshot) -> bool {
     snapshot.record().pointer("/metadata/outcomeUnknown") == Some(&json!(true))
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn per_login_mutexes_preserve_admission_and_survive_shutdown() {
+        fn job(id: usize, account: &str) -> Job {
+            let id = format!("00000000-0000-0000-0000-{id:012x}");
+            Job {
+                snapshot: start_record(&id, account, None, Map::new()).expect("valid test job"),
+                verified: false,
+                url: None,
+                commands: None,
+            }
+        }
+
+        let registry = JobRegistry::default();
+        registry.insert("first".into(), job(1, "first-account"));
+        registry.insert("other".into(), job(2, "other-account"));
+        let first = registry.entry("first").expect("first job exists");
+        let other = registry.entry("other").expect("other job exists");
+        let held = first.lock().await;
+        let (started, waiting) = oneshot::channel();
+        let waiting_entry = Arc::clone(&first);
+        let waiter = tokio::spawn(async move {
+            assert!(started.send(()).is_ok(), "test waits for waiter start");
+            let job = waiting_entry.lock().await;
+            job.snapshot.request_id().to_owned()
+        });
+        waiting.await.expect("same-login waiter started");
+        assert!(other.try_lock().is_ok(), "another login is independent");
+        assert!(first.try_lock().is_err(), "same-login work is ordered");
+
+        // Dropping the service registry cannot strand an in-flight per-job lock.
+        drop(registry);
+        drop(held);
+        assert_eq!(
+            waiter.await.expect("waiter completes"),
+            "00000000-0000-0000-0000-000000000001"
+        );
+
+        let admission = JobRegistry::default();
+        let reserved_id = "00000000-0000-0000-0000-000000000020";
+        let duplicate_id = "00000000-0000-0000-0000-000000000021";
+        let (_, reservation) = admission
+            .reserve(reserved_id, Some("shared-account".into()))
+            .expect("first reservation fits");
+        assert!(matches!(
+            admission.reserve(duplicate_id, Some("shared-account".into())),
+            Err(LoginError::Busy)
+        ));
+        drop(reservation);
+        let (_, reservation) = admission
+            .reserve(duplicate_id, Some("shared-account".into()))
+            .expect("cancelled reservation releases admission");
+        reservation
+            .expect("new request owns a reservation")
+            .finish(job(21, "shared-account"))
+            .expect("reservation commits atomically");
+        for id in 4..MAX_ACTIVE + 3 {
+            admission.insert(format!("login-{id}"), job(id, &format!("account-{id}")));
+        }
+        assert!(matches!(
+            admission.reserve(
+                "00000000-0000-0000-0000-000000000099",
+                Some("new-account".into())
+            ),
+            Err(LoginError::Busy)
+        ));
+    }
 }

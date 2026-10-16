@@ -21,6 +21,13 @@ HISTORY_LIMIT = 1024 * 1024
 ARCHIVE_CHUNK = 65536
 
 
+def terminal_environment_overlay():
+    """Return the exact environment overlay submitted for a terminal shell."""
+    env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
+    env.update(TERM="xterm-256color", COLORTERM="truecolor")
+    return env
+
+
 class TerminalManager:
     def __init__(self, root):
         self.root = Path(root)
@@ -193,8 +200,7 @@ class TerminalManager:
         self._publish(ResourceRef(TerminalsResource(kind="terminals")))
         # Native handles belong to this dedicated connection, independent of
         # account switches. Restore the user's environment inside the shell.
-        env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
-        env.update(TERM="xterm-256color", COLORTERM="truecolor")
+        env = terminal_environment_overlay()
         params = {
             "processHandle": key, "cwd": str(cwd), "tty": True,
             "command": [sys.executable, "-B", str(Path(__file__).with_name("codex_terminal_child.py")), str(pid_path), shell],
@@ -635,7 +641,6 @@ class TerminalManager:
                     ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
                 )
         return record
-
     def stop_process(self, key, owned):
         with self.lock:
             guard = owned.get("spawn_lock")

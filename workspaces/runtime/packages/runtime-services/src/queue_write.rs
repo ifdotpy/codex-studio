@@ -43,8 +43,7 @@ pub fn action(
     signature: &str,
     snapshot: impl Fn(&Transaction<'_>, &AgentRecord) -> Result<QueueSnapshot, QueueWriteError>,
 ) -> Result<Value, QueueWriteError> {
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))
-        .map_err(|_| invalid_stored("runtime_agents", agent_id))?
+    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
         .ok_or(QueueWriteError::InvalidRequest("Invalid request"))?;
     if agent.id.0 != agent_id {
         return Err(invalid_stored("runtime_agents", agent_id));
@@ -79,8 +78,7 @@ pub fn action(
     }
     let receipt_id = request_id.map(|id| format!("queue:{agent_id}:{id}"));
     if let Some(receipt_id) = receipt_id.as_deref() {
-        let receipt = EventWriteRepository::receipt(transaction, receipt_id)
-            .map_err(|_| invalid_stored("runtime_operation_receipts", receipt_id))?;
+        let receipt = EventWriteRepository::receipt(transaction, receipt_id)?;
         if let Some(receipt) = receipt {
             if receipt.signature != signature {
                 return Err(QueueWriteError::Conflict(
@@ -291,8 +289,7 @@ fn reorder(
 }
 
 fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, QueueWriteError> {
-    let record = QueueWriteRepository::metadata(transaction, id)
-        .map_err(|_| invalid_stored("runtime_event_meta", id))?;
+    let record = QueueWriteRepository::metadata(transaction, id)?;
     match record {
         None => Ok(json!({})),
         Some(value) => Ok(value),

@@ -15,6 +15,7 @@ import {
   pruneLogs,
   serverRunDiagnostics,
   serverShardRunOptions,
+  unsafeRustFindings,
 } from "../facade.mjs";
 import {
   mkdtempSync,
@@ -29,6 +30,55 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+
+test("unsafe Rust is limited to the purpose-listed modules", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-unsafe-rust-policy-"));
+  const exception = path.join(
+    root,
+    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
+  );
+  const violation = path.join(root, "workspaces/runtime/src/unsafe_probe.rs");
+  const quotedViolation = path.join(
+    root,
+    "workspaces/runtime/src/quoted_unsafe_probe.rs",
+  );
+  const attributeViolation = path.join(
+    root,
+    "workspaces/runtime/src/attribute_unsafe_probe.rs",
+  );
+  const safeProbe = path.join(root, "workspaces/runtime/src/safe_probe.rs");
+  mkdirSync(path.dirname(exception), { recursive: true });
+  mkdirSync(path.dirname(violation), { recursive: true });
+  writeFileSync(exception, "#![allow(unsafe_code)]\nunsafe { example(); }\n");
+  writeFileSync(violation, "fn probe() { unsafe { example(); } }\n");
+  writeFileSync(
+    quotedViolation,
+    String.raw`let quote = '"';
+fn probe() { unsafe { example(); } }
+`,
+  );
+  writeFileSync(attributeViolation, "#![allow(unsafe_code)]\n");
+  writeFileSync(safeProbe, '// "unsafe" in comments and strings is not code\n');
+
+  try {
+    assert.deepEqual(
+      unsafeRustFindings(root, [
+        exception,
+        violation,
+        quotedViolation,
+        attributeViolation,
+        safeProbe,
+      ]).map((finding) => finding.file),
+      [
+        "workspaces/runtime/src/unsafe_probe.rs",
+        "workspaces/runtime/src/quoted_unsafe_probe.rs",
+        "workspaces/runtime/src/attribute_unsafe_probe.rs",
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("pnpm Vitest positional selection is a file path substring; --name is a native name filter", () => {
   const item = {

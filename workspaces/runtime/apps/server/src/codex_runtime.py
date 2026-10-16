@@ -44,6 +44,12 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
+from codex_shared_values import (
+    ACCOUNT_LIMITS_ERROR_RETRY_SECONDS,
+    ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
+    ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
+    MAX_MANAGED_MESSAGE_CODEPOINTS,
+)
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
@@ -61,6 +67,12 @@ from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_messag
 from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEUE_LIMIT
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
+
+# Bounds for the shared writer admission path; SQLite uses milliseconds.
+_WRITE_ADMISSION_TIMEOUT_SECONDS = 60
+_WRITE_ADMISSION_BUSY_TIMEOUT_MS = 50
+_WRITE_ADMISSION_INITIAL_BACKOFF_SECONDS = .05
+_WRITE_ADMISSION_MAX_BACKOFF_SECONDS = .5
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -444,6 +456,17 @@ class SubmissionUnknown(ResponseTimeout):
         self.submitted = submitted
 
 
+def app_server_launch_environment(*, home=None, isolated=False):
+    """Build the exact ambient environment used to launch a Codex AppServer."""
+    env = os.environ.copy()
+    if home is not None:
+        env["CODEX_HOME"] = str(home)
+    if isolated:
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_API_KEY", None)
+    return env
+
+
 class AppServer:
     WRITE_TIMEOUT = 5
     CALLBACK_QUEUE_LIMIT = PROVIDER_CALLBACK_QUEUE_LIMIT
@@ -500,12 +523,8 @@ class AppServer:
         from codex_log_rotation import RotatingLog
         self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
         command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
-        env = os.environ.copy()
-        if home is not None:
-            env["CODEX_HOME"] = str(home)
+        env = app_server_launch_environment(home=home, isolated=isolated)
         if isolated:
-            env.pop("OPENAI_API_KEY", None)
-            env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
         self.provider_options = (provider_options or {}).get("claudeOptions", {})
         if provider == "claude" and process_factory is None:
@@ -1703,6 +1722,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
+                CREATE INDEX IF NOT EXISTS runtime_events_agent_epoch_status_created
+                  ON runtime_events(agent,epoch,status,created,id);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
@@ -2077,7 +2098,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # old implementation; registering only when opening a connection
         # leaves that connection without the functions used by budget writes
         # and runtime_events triggers.
-        from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers
+        from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers, ENTITY_EVENT_INSERT_TRIGGER
         register_functions(db)
         schema_state = None
         if getattr(local, "scheduler", False):
@@ -2094,7 +2115,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             has_items = bool(db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_items'").fetchone())
             if (has_events and not db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (ENTITY_EVENT_INSERT_TRIGGER,)).fetchone()):
                 install_bypass_triggers(db)
             if getattr(local, "scheduler", False):
                 db._studio_runtime_schema = (
@@ -2668,16 +2689,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             idle.set()
 
     @contextmanager
-    def notification_db(self, supervisor_cursor=None):
-        """Wait for the main writer before running lifecycle effects.
+    def write_db(self):
+        """Claim the SQLite writer before Runtime.lock, then commit under both.
 
-        `supervisor_cursor` is the (handle, sequence) of the journal event that
-        this transaction applies. Its cursor then commits with the effects, so a
-        replayed event is never applied twice and needs no second commit.
+        Only admission may retry. A body or commit error retains its original
+        uncertainty and is never rerun by this context manager. Existing lock
+        owners fail on writer contention instead of retaining the lock in a
+        retry loop that prevents the writer owner from completing.
         """
         outer_owner = self.lock._is_owned()
-        deadline = time.monotonic() + 60
-        delay = .05
+        deadline = time.monotonic() + _WRITE_ADMISSION_TIMEOUT_SECONDS
+        delay = _WRITE_ADMISSION_INITIAL_BACKOFF_SECONDS
         while True:
             entered = False
             retry = False
@@ -2688,14 +2710,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # Claim the SQLite writer before Runtime.lock. If another
                     # transaction owns the writer, this wait must not block
                     # unrelated runtime state access.
-                    with self.db(busy_timeout=50) as db:
-                        # Either statement takes the writer lock first.
-                        if supervisor_cursor is None:
-                            db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
-                        else:
-                            db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
-                                       "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
-                                       supervisor_cursor)
+                    with self.db(busy_timeout=_WRITE_ADMISSION_BUSY_TIMEOUT_MS) as db:
+                        # Reusable callback connections attach analytics. A
+                        # BEGIN IMMEDIATE would reserve every attached writer;
+                        # this zero-row UPDATE claims only the main writer.
+                        db.execute("UPDATE main.runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
                         lock_acquired = self.lock.acquire(blocking=False)
                         if not lock_acquired:
                             # No callback work has run, so this transaction is
@@ -2718,23 +2737,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 retry = True
             if retry:
                 if self.closed or time.monotonic() >= deadline:
-                    raise TimeoutError("Timed out waiting to enter the notification transaction")
+                    raise TimeoutError("Timed out waiting to enter the write transaction")
                 if wait_for_lock_turnover:
                     # The writer has been released. It is now safe to wait for
                     # the current state-lock owner, then retry the writer-first
                     # claim without an arbitrary backoff floor.
                     remaining = max(0, deadline - time.monotonic())
                     if not self.lock.acquire(timeout=remaining):
-                        raise TimeoutError("Timed out waiting for Runtime.lock before notification transaction")
+                        raise TimeoutError("Timed out waiting for Runtime.lock before write transaction")
                     self.lock.release()
                 else:
                     # SQLite writer contention has its own bounded backoff.
                     time.sleep(min(delay, max(0, deadline - time.monotonic())))
-                    delay = min(.5, delay * 2)
+                    delay = min(_WRITE_ADMISSION_MAX_BACKOFF_SECONDS, delay * 2)
                 continue
-            if supervisor_cursor is not None:
-                _SUPERVISOR_EVENT.committed = supervisor_cursor
             return
+
+    @contextmanager
+    def notification_db(self, supervisor_cursor=None):
+        """Commit a journal cursor with its lifecycle effects exactly once."""
+        with self.write_db() as db:
+            if supervisor_cursor is not None:
+                db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
+                           "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                           supervisor_cursor)
+            yield db
+        if supervisor_cursor is not None:
+            _SUPERVISOR_EVENT.committed = supervisor_cursor
 
     def close_notification_database(self):
         """Close the dispatcher-owned reused connection on its owner thread."""
@@ -5581,11 +5610,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         assets = assets or []
         if (
             not isinstance(text, str)
-            or len(text) > 32000
+            or len(text) > MAX_MANAGED_MESSAGE_CODEPOINTS
             or (not text.strip() and not assets)
         ):
             raise ValueError(
-                "Message must have text or attachments, at most 32000 characters"
+                f"Message must have text or attachments, at most {MAX_MANAGED_MESSAGE_CODEPOINTS} characters"
             )
         if delivery not in {"queue", "steer", "after_tool", "after_turn"}:
             raise ValueError("Choose queue, steer, after_tool or after_turn")
@@ -6717,6 +6746,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return self.dispatch_candidates(agent_id)
 
     def runtime_maintenance_tick(self):
+        sync_store = getattr(self, "sync_store", None)
+        if sync_store is not None:
+            sync_store.maintain_entities()
         from codex_task_recovery import queue_task_recovery
         queue_task_recovery(self)
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
@@ -9129,7 +9161,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # an unknown binding must never authorize the operation.
                 self.wait_for_tool_turn_binding(
                     account_key, connection_id, p.get("threadId"), p.get("turnId"))
-            with self.lock, self.db() as db:
+            with self.write_db() as db:
+                # Admit the writer before checking and claiming under Runtime.lock.
+                # Reuse this transaction so a nested claim cannot wait for another
+                # writer while retaining the state lock.
                 # Another callback can claim this request after reservation returns.
                 # Only the current receipt can prove that execution has not started.
                 record = self.tool_request(key, db)
@@ -9158,7 +9193,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             {"type": "inputText", "text": error}]}, time.time())
                         self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 elif result is None:
-                    claimed = self.begin_tool_request(key)
+                    claimed = self.begin_tool_request(key, db=db)
             if result is None:
                 if not claimed:
                     receipt = self.tool_request(key)
@@ -9630,10 +9665,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # credits, so a full read is still due after ten minutes.
                 read_at = cached.get("readAt")
                 if not force and (
-                        (not cached.get("error") and cached["at"] and now - cached["at"] < 60
-                         and read_at and now - read_at < 600)
+                        (not cached.get("error") and cached["at"]
+                         and now - cached["at"] < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS
+                         and read_at and now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS)
                         or (cached.get("error") and cached.get("checkedAt")
-                            and now - cached["checkedAt"] < 30)):
+                            and now - cached["checkedAt"] < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS)):
                     return cached
             for attempt in range(2):
                 error = None

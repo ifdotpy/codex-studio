@@ -12,7 +12,20 @@ use crate::multi_server_auth::{
 use crate::multi_server_pairing::read_record;
 
 pub const MAX_CANDIDATES: usize = 64;
+pub const DISCOVERY_PORTS: [Option<u16>; 2] = [None, Some(8443)];
 const MAX_DISCOVERED: i64 = 256;
+
+/// Host-owned discovery adapter. The HTTP and service layers pass the
+/// persisted server identity and public Serve origin; tests inject a fake
+/// adapter and never consult the machine's Tailscale installation.
+pub trait ServerDiscoveryPort: Send + Sync {
+    fn discover(
+        &self,
+        store: &RuntimeStore,
+        identity: &Value,
+        public_origin: &str,
+    ) -> Result<Value, AccessError>;
+}
 
 pub struct DiscoverySnapshot {
     owner: String,
@@ -73,8 +86,10 @@ impl DiscoverySnapshot {
                 continue;
             }
             let hostname = text(peer, "DNSName").trim_end_matches('.').to_lowercase();
-            for suffix in ["", ":8443"] {
-                let origin = format!("https://{hostname}{suffix}");
+            for port in DISCOVERY_PORTS {
+                let authority =
+                    port.map_or_else(|| hostname.clone(), |port| format!("{hostname}:{port}"));
+                let origin = format!("https://{authority}");
                 if origin != local_origin && origin_host(&origin).is_ok() {
                     candidates.insert(origin);
                 }
@@ -92,6 +107,9 @@ impl DiscoverySnapshot {
             .take(MAX_CANDIDATES)
             .map(String::as_str)
             .collect()
+    }
+    pub fn has_candidate(&self, origin: &str) -> bool {
+        self.candidates.contains(origin)
     }
     pub fn owner(&self) -> &str {
         &self.owner

@@ -42,7 +42,7 @@ const {
   get: vi.fn(),
   post: vi.fn(),
   syncPost: vi.fn(),
-  reconcile: vi.fn(async () => {}),
+  reconcile: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -255,11 +255,82 @@ describe("resource read callers", () => {
       "lead",
       [receipt],
       "workspace",
+      get.mock.calls[1]?.[1]?.signal,
     );
     const value = states[0]!.value as { receipts: Map<string, unknown> };
     expect(value.receipts.get("message-one")).toEqual(receipt);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts an unmounted receipt read before it can start another batch", async () => {
+    let resolveRead:
+      | ((value: {
+          agent: string;
+          workspaceId: string;
+          items: Array<{ id: string; status: string }>;
+        }) => void)
+      | undefined;
+    get.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const ids = Array.from({ length: 101 }, (_, index) => `message-${index}`);
+    mount(() => useMessageReceipts("lead", "scope", "workspace", ids));
+    notify({ kind: "receipts", agentId: "lead" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(get).toHaveBeenCalledTimes(1);
+    const signal = get.mock.calls[0]?.[1]?.signal as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+    const previous = states[0]!.value;
+    cleanups.pop()?.();
+    expect(signal.aborted).toBe(true);
+
+    resolveRead?.({
+      agent: "lead",
+      workspaceId: "workspace",
+      items: [{ id: ids[0]!, status: "delivered" }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(states[0]!.value).toBe(previous);
+  });
+
+  it("aborts reconciliation when receipt readers unmount", async () => {
+    const receipt = { id: "message-one", status: "delivered" };
+    get.mockResolvedValue({
+      agent: "lead",
+      workspaceId: "workspace",
+      items: [receipt],
+    });
+    reconcile.mockImplementationOnce(
+      (_room, _receipts, _workspaceId, value) => {
+        const signal = value as AbortSignal;
+        return new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      },
+    );
+    mount(() =>
+      useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
+    );
+    notify({ kind: "receipts", agentId: "lead" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    const signal = reconcile.mock.calls[0]?.[3] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    cleanups.pop()?.();
+
+    expect(signal.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("waits for the workspace identity before it reads message receipts", async () => {

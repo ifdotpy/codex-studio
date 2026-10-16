@@ -52,6 +52,12 @@ pub struct HistoryReceipt {
     pub scope: ConnectionScope,
     pub body: Value,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExactStart {
+    Delivered(Value),
+    NotApplied,
+    Missing,
+}
 pub trait RecoveryReader {
     /// Return cached worker state and the injected clock; must perform no I/O or waiting.
     fn observation(
@@ -162,6 +168,9 @@ impl<'a> HistoryRead<'a> {
         Ok(response.body)
     }
     pub fn thread_state(&mut self, thread: &str) -> Result<Value, HistoryError> {
+        Ok(self.thread_document(thread)?["status"].clone())
+    }
+    pub fn thread_document(&mut self, thread: &str) -> Result<Value, HistoryError> {
         let result = self.call(
             HistoryMethod::Thread,
             json!({"threadId":thread,"includeTurns":false}),
@@ -169,7 +178,7 @@ impl<'a> HistoryRead<'a> {
         if result["thread"]["id"] != thread {
             return Err(HistoryError::Identity);
         }
-        Ok(result["thread"]["status"].clone())
+        Ok(result["thread"].clone())
     }
     pub fn exact_turn(&mut self, thread: &str, turn: &str) -> Result<Option<Value>, HistoryError> {
         let mut cursor: Option<String> = None;
@@ -327,6 +336,82 @@ impl<'a> HistoryRead<'a> {
             cursor = next_cursor(&page, &mut seen)?;
             if cursor.is_none() {
                 return Ok(found);
+            }
+        }
+    }
+    /// Return a negative receipt only when native history explicitly names this
+    /// client input as not applied. A missing turn remains inconclusive.
+    pub fn exact_start_outcome(
+        &mut self,
+        thread: &str,
+        message: &str,
+    ) -> Result<ExactStart, HistoryError> {
+        let mut cursor: Option<String> = None;
+        let mut seen = BTreeSet::new();
+        let mut found: Option<Value> = None;
+        let mut not_applied = false;
+        loop {
+            let mut params =
+                json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":"full"});
+            if let Some(cursor) = &cursor {
+                params["cursor"] = json!(cursor);
+            }
+            let page = self.call(HistoryMethod::Turns, params)?;
+            let mut page_match = false;
+            for turn in data(&page)? {
+                let matches = turn["clientUserMessageId"] == message
+                    || turn["items"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item["type"] == "userMessage"
+                                && item["clientId"] == message
+                                && !matches!(
+                                    item["deliveryStatus"].as_str(),
+                                    Some("preparing" | "not_applied")
+                                )
+                        })
+                    });
+                if matches {
+                    if turn["startOutcome"] == "preparing"
+                        || turn["items"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item["type"] == "userMessage"
+                                    && item["clientId"] == message
+                                    && item["deliveryStatus"] == "preparing"
+                            })
+                        })
+                    {
+                        return Err(HistoryError::Unavailable);
+                    }
+                    if turn["startOutcome"] == "not_applied" {
+                        if found.is_some() || not_applied {
+                            return Err(HistoryError::Identity);
+                        }
+                        not_applied = true;
+                        continue;
+                    }
+                    nonempty(&turn["id"])?;
+                    if turn.get("threadId").is_some_and(|v| v != thread) || page_match {
+                        return Err(HistoryError::Identity);
+                    }
+                    page_match = true;
+                    if not_applied || found.as_ref().is_some_and(|previous| previous != turn) {
+                        return Err(HistoryError::Identity);
+                    }
+                    found = Some(turn.clone());
+                }
+            }
+            cursor = next_cursor(&page, &mut seen)?;
+            if cursor.is_none() {
+                return Ok(found.map_or_else(
+                    || {
+                        if not_applied {
+                            ExactStart::NotApplied
+                        } else {
+                            ExactStart::Missing
+                        }
+                    },
+                    ExactStart::Delivered,
+                ));
             }
         }
     }

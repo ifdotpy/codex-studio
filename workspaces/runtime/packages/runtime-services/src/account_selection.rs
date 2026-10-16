@@ -95,15 +95,6 @@ impl SelectionSnapshot {
             )?;
         }
         if source != target {
-            // A continuation cancellation needs the usage-resume service's atomic write.
-            if matches!(
-                agent.pointer("/usageResume/status").and_then(Value::as_str),
-                Some("scheduled" | "started")
-            ) {
-                return Err(TransferError::Requires(
-                    "account-transfer/usage-resume-cancellation",
-                ));
-            }
             if agent.get("executionSettingsAccountKey").is_none() {
                 agent["executionSettingsAccountKey"] = json!(source);
             }
@@ -140,6 +131,23 @@ pub fn select(
         .map(crate::agents_create::project_directory)
         .transpose()
         .map_err(|_| TransferError::Refused("Select an existing project directory"))?;
+    let checked_directory = match &directory {
+        Some(directory) => directory.clone(),
+        None => {
+            let raw = AccountTransferRepository::agent(&*store.read()?, id)?
+                .ok_or(TransferError::Refused("Unknown managed agent"))?;
+            SelectionSnapshot::read(&raw)?.agent["cwd"]
+                .as_str()
+                .ok_or(TransferError::Refused(
+                    "Select an existing project directory",
+                ))?
+                .to_owned()
+        }
+    };
+    // Filesystem work precedes the writer lock; the transaction rechecks that it
+    // still acts on this exact directory before using the result.
+    let directory_exists = std::path::Path::new(&checked_directory).is_dir();
+    let now = now();
     store.transaction_with_error(|tx| {
         // This port reads the in-memory registry only; no auth refresh or provider I/O.
         let accounts = accounts()?;
@@ -158,9 +166,45 @@ pub fn select(
                 "Select an existing project directory",
             ))?;
         let context = crate::sync_entity_context::agent_view_context(tx, &snapshot.agent, None)?;
-        let value = snapshot.decide(target, account, directory, context.empty_lead)?;
+        let mut value = snapshot.decide(target, account, directory, context.empty_lead)?;
+        if source_account(&snapshot.agent) != target
+            && let Some(resume_id) = value
+                .pointer("/usageResume/id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            && matches!(
+                value.pointer("/usageResume/status").and_then(Value::as_str),
+                Some("scheduled" | "started")
+            )
+        {
+            let resume = studio_runtime_store::cancel_usage_resume(
+                tx,
+                id,
+                &resume_id,
+                "The chat moved to another account.",
+                now,
+            )
+            .map_err(|error| match error {
+                studio_runtime_store::UsageRepositoryError::Store(error) => {
+                    TransferError::Store(error)
+                }
+                studio_runtime_store::UsageRepositoryError::InvalidStoredObject { .. } => {
+                    TransferError::Stored {
+                        object: "usage resume",
+                        pointer: "/".into(),
+                    }
+                }
+                _ => TransferError::Refused("Could not cancel automatic resume"),
+            })?;
+            value["usageResume"] = resume;
+        }
         if value != snapshot.agent {
-            if !std::path::Path::new(directory).is_dir() {
+            if directory != checked_directory {
+                return Err(TransferError::Refused(
+                    "Project directory changed during account selection",
+                ));
+            }
+            if !directory_exists {
                 return Err(TransferError::Refused(
                     "Select an existing project directory",
                 ));
@@ -178,4 +222,18 @@ pub fn select(
         crate::sync_views::agent_entity_view(&view, &context)
             .ok_or(TransferError::Refused("Invalid selection agent"))
     })
+}
+
+fn source_account(agent: &Value) -> &str {
+    agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs_f64())
+        .unwrap_or_default()
 }

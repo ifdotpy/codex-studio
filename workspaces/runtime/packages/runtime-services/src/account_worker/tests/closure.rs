@@ -231,16 +231,21 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, receipts) = state.bridge.run(|store| {
+        let (text, receipts, checkpoints) = state.bridge.run(|store| {
             let db=store.read()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
             let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?;
-            Ok((text,receipts))
+            let checkpoints=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",[],|r|r.get::<_,i64>(0))?;
+            Ok((text,receipts,checkpoints))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
         assert!(
             receipts <= 4,
             "generation churn retained {receipts} worker receipts"
+        );
+        assert!(
+            checkpoints <= 1,
+            "generation churn retained {checkpoints} cursor checkpoints"
         );
     }
 }
@@ -357,7 +362,7 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
 }
 
 #[tokio::test]
-async fn invalid_publication_identity_refuses_before_entering_writer() {
+async fn publication_uses_the_identity_snapshot_loaded_before_serving() {
     let state = State::new().await;
     state
         .bridge
@@ -371,17 +376,14 @@ async fn invalid_publication_identity_refuses_before_entering_writer() {
                     .unwrap();
             }
             std::fs::write(directory.join("identity.json"), b"invalid identity").unwrap();
+            assert!(crate::notification_dispatch::PublicationContext::load(store).is_ok());
             let entered = std::cell::Cell::new(false);
-            let result = scheduler::lifecycle_transaction(store, |_| {
+            scheduler::lifecycle_transaction(store, |_| {
                 entered.set(true);
                 Ok(())
-            });
-            assert!(result.is_err());
-            assert!(
-                !entered.get(),
-                "identity must be resolved before the writer begins"
-            );
-            assert!(crate::notification_dispatch::PublicationContext::load(store.root()).is_err());
+            })
+            .expect("projection keeps the cached absent identity");
+            assert!(entered.get(), "the cached absent identity remains usable");
             Ok(())
         })
         .await
@@ -606,9 +608,14 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     state.wake(&worker).await;
     worker_barrier(&worker).await;
     assert_eq!(
-        state.record().await["preparationWake"]["reason"],
+        state.record().await["startAttempt"]["prepareError"],
         "workspace-readiness/pending"
     );
+    assert_eq!(
+        state.record().await["lastWorkspaceWait"]["attemptId"],
+        state.record().await["startAttempt"]["id"]
+    );
+    assert!(state.record().await.get("preparationWake").is_none());
     worker.task.abort();
     assert!(worker.completion().await.is_err());
     state
@@ -634,7 +641,12 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     let turn = peer.write("turn/start").await;
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
-    assert!(state.record().await.get("preparationWake").is_none());
+    assert!(
+        state.record().await["startAttempt"]
+            .get("prepareError")
+            .is_none()
+    );
+    assert!(state.record().await.get("lastWorkspaceWait").is_none());
     replacement.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]

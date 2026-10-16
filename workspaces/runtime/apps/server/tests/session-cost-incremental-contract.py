@@ -13,6 +13,7 @@ isolate_supervisor_environment()
 from contextlib import closing
 import json
 from pathlib import Path
+import re
 import random
 import statistics
 import sqlite3
@@ -52,6 +53,28 @@ class Prices:
 
 
 class IncrementalCosts(unittest.TestCase):
+    def test_rust_session_discovery_bounds_match_python_owner(self):
+        source = (ROOT / "workspaces/runtime/packages/runtime-services/src/costs.rs").read_text()
+        owner = (SERVER_SOURCE_ROOT / "codex_session_costs.py").read_text()
+        python_id_pattern = re.search(r'^SESSION_COST_ID_PATTERN = r"([^"]+)"$', owner, re.M)
+        rust_id_limit = re.search(r"const MAX_SESSION_ID_BYTES: usize = (\d+);", source)
+        self.assertIsNotNone(python_id_pattern)
+        self.assertIsNotNone(rust_id_limit)
+        python_limit = re.search(r"\{1,(\d+)\}", python_id_pattern.group(1))
+        self.assertIsNotNone(python_limit)
+        self.assertEqual(int(python_limit.group(1)), int(rust_id_limit.group(1)))
+        self.assertEqual(owner.count("re.fullmatch(SESSION_COST_ID_PATTERN,"), 6)
+        self.assertIn("byte.is_ascii_alphanumeric() || byte == b'-'", source)
+        rust_size = re.search(
+            r"const MAX_SESSION_STATE_BYTES: u64 = (\d+) \* (\d+) \* (\d+);", source)
+        python_size = re.search(r"^MAX_SESSION_STATE_FILE_BYTES = (\d+) \* (\d+) \* (\d+)$", owner, re.M)
+        self.assertIsNotNone(rust_size)
+        self.assertIsNotNone(python_size)
+        self.assertIn("state_file.stat().st_size <= MAX_SESSION_STATE_FILE_BYTES", owner)
+        self.assertEqual(
+            int(rust_size.group(1)) * int(rust_size.group(2)) * int(rust_size.group(3)),
+            int(python_size.group(1)) * int(python_size.group(2)) * int(python_size.group(3)))
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory(prefix="studio-incremental-cost-")
         self.addCleanup(self.folder.cleanup)

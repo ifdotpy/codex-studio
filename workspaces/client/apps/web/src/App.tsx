@@ -28,6 +28,7 @@ import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
 import { localServer, viewServer } from "./servers/registry";
 import { serverLocalStorage as localStorage } from "./servers/storage";
+import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "./generated/sharedValues";
 import SearchOverlay from "./components/shell/SearchOverlay";
 import { SettingsRow } from "./components/ui/primitives";
 import { modalSizes } from "./theme";
@@ -35,6 +36,15 @@ import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
+import {
+  beginConversationDelete,
+  claimConversationDeletePost,
+  confirmedConversationDeleteIds,
+  conversationDeleteReadback,
+  definiteDeleteRejection,
+  withoutAgentDeleteScope,
+  type PendingConversationDelete,
+} from "./chatDeleteScope";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
@@ -618,6 +628,19 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const [pendingConversationDelete, setPendingConversationDelete] =
+    useState<PendingConversationDelete | null>(null);
+  const pendingConversationDeleteRef = useRef<PendingConversationDelete | null>(
+    null,
+  );
+  const conversationDeleteLock = useRef(false);
+  const startedConversationDeletes = useRef(
+    new WeakSet<PendingConversationDelete>(),
+  );
+  const openedRef = useRef(opened);
+  openedRef.current = opened;
   if (data?.stateDir) configureLimitsCache(data.stateDir);
   const limitsByAccount = useSyncExternalStore(
     subscribeLimitsCache,
@@ -653,7 +676,17 @@ export default function App({ active = true }: { active?: boolean }) {
       new Map((data?.runtime?.events || []).map((event) => [event.id, event])),
     [data?.runtime?.events],
   );
-  const prepareChat = useChatPrefetch(data, opened, workspaceId);
+  const prefetchData = useMemo(() => {
+    if (!data || !pendingConversationDelete?.scope.size) return data;
+    return {
+      ...data,
+      threads: withoutAgentDeleteScope(
+        data.threads,
+        pendingConversationDelete.scope,
+      ),
+    };
+  }, [data, pendingConversationDelete]);
+  const prepareChat = useChatPrefetch(prefetchData, opened, workspaceId);
   useEffect(() => {
     if (tasksOpen) setTasksRendered(true);
     if (workspaceOpen) setWorkspaceRendered(true);
@@ -818,7 +851,11 @@ export default function App({ active = true }: { active?: boolean }) {
   const workers = (lead && catalog.workers(lead.id)) || emptyAgents;
   useTeamTokenRateStream(
     lead?.id,
-    Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
+    Boolean(
+      workers.length &&
+      !team.some((member) => pendingConversationDelete?.scope.has(member.id)) &&
+      (narrowTeam ? teamOpen : wideTeamOpen),
+    ),
   );
   const readState = useChatReadState(
     data,
@@ -914,6 +951,21 @@ export default function App({ active = true }: { active?: boolean }) {
         return next;
       }),
     [opened, setDrafts],
+  );
+  const finishConversationDelete = useCallback(
+    (deleted: string[]) => {
+      forgetCreated(deleted);
+      if (openedRef.current && deleted.includes(openedRef.current)) {
+        navigationIntent.current++;
+        setOpened(null);
+      }
+      setDrafts((old) => {
+        const next = { ...old };
+        for (const key of deleted) delete next[key];
+        return next;
+      });
+    },
+    [forgetCreated, setDrafts],
   );
   const open = useCommittedCallback((id: string, messageId?: string) => {
     prepareChat(id);
@@ -1049,7 +1101,8 @@ export default function App({ active = true }: { active?: boolean }) {
         !force &&
         cached?.data &&
         !cached.error &&
-        Date.now() / 1000 - (cached.at || 0) < 60
+        Date.now() / 1000 - (cached.at || 0) <
+          ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS
       )
         return Promise.resolve(true);
       const requestStartedAt = Date.now() / 1000;
@@ -1903,7 +1956,159 @@ export default function App({ active = true }: { active?: boolean }) {
       throw e;
     }
   };
-  const remove = (id: string, isRoom: boolean, isWorker = false) =>
+  const checkConversationDelete = useCallback(
+    (targetId: string) => {
+      const current = pendingConversationDeleteRef.current;
+      if (
+        !current ||
+        current.targetId !== targetId ||
+        current.phase === "checking"
+      )
+        return;
+      const checking = {
+        ...current,
+        phase: "checking" as const,
+      };
+      pendingConversationDeleteRef.current = checking;
+      setPendingConversationDelete(checking);
+      setModal({
+        title: "Delete result unconfirmed",
+        body: (
+          <p role="status">
+            Checking current chat state. Studio will not resend this delete.
+          </p>
+        ),
+      });
+      const keepUnconfirmed = () => {
+        const latest = pendingConversationDeleteRef.current;
+        if (latest?.targetId !== targetId || latest.phase !== "checking")
+          return;
+        const readback = { ...latest, phase: "readback" as const };
+        pendingConversationDeleteRef.current = readback;
+        setPendingConversationDelete(readback);
+        setModal({
+          title: "Delete result unconfirmed",
+          body: (
+            <>
+              <p role="status">
+                Delete result unconfirmed. Check server state before trying
+                again.
+              </p>
+              <Button onClick={() => checkConversationDelete(targetId)}>
+                Check server state
+              </Button>
+            </>
+          ),
+        });
+      };
+      void refresh(false, (projection, projectionWorkspaceId) => {
+        const latest = pendingConversationDeleteRef.current;
+        if (latest?.targetId !== targetId || latest.phase !== "checking")
+          return;
+        const result = conversationDeleteReadback(
+          projection.threads,
+          latest.scope,
+          latest,
+          projection.stateDir,
+          projectionWorkspaceId,
+        );
+        if (result === "confirmed") {
+          pendingConversationDeleteRef.current = null;
+          conversationDeleteLock.current = false;
+          setPendingConversationDelete(null);
+          setModal(null);
+          finishConversationDelete([...latest.scope]);
+          notify(
+            "The delete completed. Studio confirmed it from the refreshed chat list.",
+          );
+          return;
+        }
+        keepUnconfirmed();
+      }).finally(keepUnconfirmed);
+    },
+    [finishConversationDelete, notify, refresh],
+  );
+  useEffect(() => {
+    const pending = pendingConversationDelete;
+    if (!pending || pending.phase !== "submitting") return;
+    if (
+      !claimConversationDeletePost(pending, startedConversationDeletes.current)
+    )
+      return;
+    // This effect runs after the pending render commits and React has cleaned
+    // up the selected conversation's resource readers.
+    void (async () => {
+      try {
+        const result = await post("/api/conversation/delete", {
+          id: pending.targetId,
+        });
+        const confirmed = confirmedConversationDeleteIds(
+          result.deleted,
+          pending.targetId,
+          pending.scope,
+        );
+        if (!confirmed) {
+          notify(
+            "Delete result unconfirmed. Checking server state without resending.",
+          );
+          checkConversationDelete(pending.targetId);
+          return;
+        }
+        finishConversationDelete(confirmed);
+        pendingConversationDeleteRef.current = null;
+        conversationDeleteLock.current = false;
+        setPendingConversationDelete(null);
+        setModal(null);
+        void refresh().catch((error) => notify(errorText(error)));
+      } catch (error) {
+        if (definiteDeleteRejection(error)) {
+          prepareChat.resume(pending.scope);
+          pendingConversationDeleteRef.current = null;
+          conversationDeleteLock.current = false;
+          setPendingConversationDelete(null);
+          setModal(null);
+          notify(errorText(error));
+          return;
+        }
+        notify(
+          "Delete result unconfirmed. Checking server state without resending.",
+        );
+        checkConversationDelete(pending.targetId);
+      }
+    })();
+  }, [
+    checkConversationDelete,
+    finishConversationDelete,
+    notify,
+    pendingConversationDelete,
+    prepareChat,
+    refresh,
+  ]);
+  const remove = (id: string, isRoom: boolean, isWorker = false) => {
+    const uncertain = pendingConversationDeleteRef.current;
+    if (uncertain) {
+      setModal({
+        title: "Delete result unconfirmed",
+        body: (
+          <>
+            <p role="status">
+              Another chat delete is in progress or unconfirmed. Studio will not
+              send a second delete.
+            </p>
+            <Button
+              disabled={
+                uncertain.phase === "submitting" ||
+                uncertain.phase === "checking"
+              }
+              onClick={() => checkConversationDelete(uncertain.targetId)}
+            >
+              Check server state
+            </Button>
+          </>
+        ),
+      });
+      return;
+    }
     setModal({
       title: isWorker ? "Delete?" : "Delete chat?",
       body: (
@@ -1917,37 +2122,52 @@ export default function App({ active = true }: { active?: boolean }) {
             color="red"
             variant="filled"
             data-delete-chat={id}
-            onClick={() =>
-              void run(async () => {
-                const r = await post(
-                  isRoom ? "/api/room/delete" : "/api/conversation/delete",
-                  { id },
-                );
-                const deleted =
-                  typeof r.deleted === "string"
-                    ? [r.deleted]
-                    : (r.deleted || []).filter(
-                        (value): value is string => typeof value === "string",
-                      );
-                setModal(null);
-                if (!isRoom) forgetCreated(deleted);
-                if (opened && deleted.includes(opened)) {
-                  navigationIntent.current++;
-                  setOpened(null);
-                }
-                setDrafts((old) => {
-                  const next = { ...old };
-                  for (const key of deleted) delete next[key];
-                  return next;
+            onClick={() => {
+              if (isRoom) {
+                void run(async () => {
+                  const r = await post("/api/room/delete", { id });
+                  const deleted =
+                    typeof r.deleted === "string"
+                      ? [r.deleted]
+                      : (r.deleted || []).filter(
+                          (value): value is string => typeof value === "string",
+                        );
+                  setModal(null);
+                  if (opened && deleted.includes(opened)) {
+                    navigationIntent.current++;
+                    setOpened(null);
+                  }
+                  setDrafts((old) => {
+                    const next = { ...old };
+                    for (const key of deleted) delete next[key];
+                    return next;
+                  });
                 });
-              })
-            }
+                return;
+              }
+              if (conversationDeleteLock.current) return;
+              conversationDeleteLock.current = true;
+              const pending = beginConversationDelete(
+                id,
+                dataRef.current?.threads || [],
+                dataRef.current?.stateDir || "",
+                workspaceId,
+                prepareChat.suspend,
+              );
+              pendingConversationDeleteRef.current = pending;
+              setPendingConversationDelete(pending);
+              setModal({
+                title: "Deleting chat",
+                body: <p role="status">Deleting chat…</p>,
+              });
+            }}
           >
             {isWorker ? "Delete" : "Delete chat"}
           </Button>
         </>
       ),
     });
+  };
   const openAddProject = () => {
     setSidebar(false);
     setModal({
@@ -2881,7 +3101,13 @@ export default function App({ active = true }: { active?: boolean }) {
           )}
         </div>
         <UIErrorBoundary label="this conversation" resetKey={opened}>
-          {room?.radio ? (
+          {opened && pendingConversationDelete?.scope.has(opened) ? (
+            <div className="chat-empty-state" role="status">
+              {pendingConversationDelete.phase === "submitting"
+                ? "Deleting chat…"
+                : "Delete result unconfirmed. Check server state."}
+            </div>
+          ) : room?.radio ? (
             <RadioChat
               key={room.id}
               room={room}

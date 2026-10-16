@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -15,10 +16,13 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    no_write_snapshot,
+    start_contract_backend,
+)
 from sync_http_contract_support import prepare_sync_store_for_rust_contract
-
-
 
 
 class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -30,6 +34,26 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             prepare_sync_store_for_rust_contract(cls.backend, seed_python_rows=True)
         cls._prepare_python_entity_tombstone()
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_entity_and_transcript_pull_read_under_a_held_writer(self):
+        headers = self._common_headers()
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            entity_high = database.execute(
+                "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'"
+            ).fetchone()[0]
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            f"/api/sync/pull?scope=state:entities:v1&after={entity_high}",
+            headers,
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            "/api/sync/pull?scope=transcript:agent-a&after=0",
+            headers,
+        )
+
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust storage validation")
     def test_sync_and_chat_refuse_agent_missing_epoch_without_projection_writes(self):
         import sqlite3
@@ -38,18 +62,36 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         actor={"id":"invalid-epoch-agent","rootId":"invalid-epoch-agent","status":"idle",
                "isLead":True,"name":"Malformed agent","cwd":str(self.backend.cwd)}
         room={"id":"invalid-epoch-room","kind":"private","members":[actor["id"]]}
+        warmup=self.backend.request(
+            "GET",
+            "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+            headers=self._common_headers(),
+        )
+        self.assertEqual(warmup.status,200,warmup.body)
         with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
             register_functions(db)
             for table, row in (("runtime_agents",actor),("runtime_rooms",room)):
                 db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(row["id"],json.dumps(row)))
         before=no_write_snapshot(self.backend.state)
         try:
-            for path in ("/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
-                         "/api/agent-chat?room="+room["id"]):
-                response=self.backend.request("GET",path,headers=self._common_headers())
-                self.assertEqual(response.status,500,response.body)
-                self.assertIn("runtime_agents/"+actor["id"],response.json()["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state),before)
+            sync_response=self.backend.request(
+                "GET",
+                "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+                headers=self._common_headers(),
+            )
+            self.assertEqual(sync_response.status,200,sync_response.body)
+            sync_body=sync_response.json()
+            document_ids={document["id"] for document in sync_body["documents"]}
+            self.assertIn("entity:workspace:current",document_ids)
+            self.assertNotIn("entity:agent:"+actor["id"],document_ids)
+            self.assertEqual(sync_body["checkpoint"]["seq"],sync_body["maxSeq"])
+
+            chat_response=self.backend.request(
+                "GET","/api/agent-chat?room="+room["id"],headers=self._common_headers(),
+            )
+            self.assertEqual(chat_response.status,503,chat_response.body)
+            self.assertIn("runtime_agents/"+actor["id"],chat_response.json()["error"])
+            self.assertEqual(no_write_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
                 register_functions(db)
@@ -93,17 +135,21 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         message_id = f"sync-diff-{suffix}-message"
         identity_path = backend.state / "multi-server" / "identity.json"
         identity_preexisting = identity_path.exists()
+        # Match Python's restart-normalized fixture state: Runtime.__init__
+        # writes inFlight=False for every local agent before seeding entities.
         fixtures = {
             "records": {
                 "runtime_agents": [
                     [agent_a, {"id": agent_a, "kind": "agent", "isLead": True, "parentId": None,
                      "rootId": agent_a, "epoch": 1, "name": "First lead", "cwd": project_path, "status": "idle",
+                     "inFlight": False,
                      "overview": {"task": "stale lead overview"}}],
                     [agent_b, {"id": agent_b, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_b, "epoch": 1, "name": None, "cwd": project_path + "/.", "status": "idle"}],
+                     "rootId": agent_b, "epoch": 1, "name": None, "cwd": project_path + "/.", "status": "idle",
+                     "inFlight": False}],
                     [worker_id, {"id": worker_id, "kind": "agent", "isLead": False,
                      "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Worker", "cwd": project_path,
-                     "status": "completed", "prompt": "Python view task", "lastAnswer": "done",
+                     "status": "completed", "inFlight": False, "prompt": "Python view task", "lastAnswer": "done",
                      "lastCompletedTurn": "turn-view", "turnId": "", "threadId": "thread-view",
                      "nativeRelease": {"id": "release-request", "phase": "released",
                                        "resetPending": False, "threadId": "thread-view",
@@ -112,7 +158,7 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                      "nativeThreadBlock": {"threadId": "thread-view", "error": {"message": "blocked"}}}],
                     [turn_error_id, {"id": turn_error_id, "kind": "agent", "isLead": False,
                      "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Turn error worker",
-                     "status": "idle", "threadId": "thread-error", "turnId": "",
+                     "status": "idle", "inFlight": False, "threadId": "thread-error", "turnId": "",
                      "nativeTurnError": {"turnId": "", "error": {
                          "codexErrorInfo": "misalignmentPolicyViolation", "message": "blocked"}}}],
                 ],
@@ -135,7 +181,9 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                                    "members": [agent_a, agent_b]}],
                     "peerTeamsRevision": 7,
                 }]],
-                "runtime_requests": [[request_id, {"id": request_id, "status": "pending"}]],
+                # Python Runtime.__init__ expires pending native requests that
+                # lack a live agent/asyncQuestion owner before entity seeding.
+                "runtime_requests": [[request_id, {"id": request_id, "status": "expired"}]],
                 "runtime_rules": [[rule_id, {"id": rule_id}]],
                 "runtime_work": [[work_id, {"id": work_id, "owner": worker_id,
                     "results": [{"agent": worker_id, "resultFile": "results/view.md", "created": 10}]}],
@@ -489,7 +537,7 @@ with canvas.connect() as db:
                 ]},
                 headers=headers,
             )
-            self.assertEqual(refusal.status, 500, refusal.body[:1000])
+            self.assertEqual(refusal.status, 503, refusal.body[:1000])
             self.assertIn(f"drafts/{invalid_master_id}", refusal.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_refusal)
         finally:
@@ -498,74 +546,250 @@ with canvas.connect() as db:
                     "DELETE FROM sync_documents WHERE scope='drafts' AND id=?", (invalid_master_id,),
                 )
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_entity_refusals_roll_back_projection_maintenance(self) -> None:
+    def test_invalid_preference_extra_is_stripped_without_refusing_sync_pull(self) -> None:
         import sqlite3
 
         backend = self.backend
         database_path = backend.state / "canvas.sqlite3"
         headers = self._common_headers()
+        synthetic_preference = False
         with sqlite3.connect(database_path) as database:
-            original_preference = database.execute(
+            row = database.execute(
                 "SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
-            ).fetchone()[0]
-            database.execute(
-                "INSERT INTO runtime_rules(id,record) VALUES('sync-pull-rollback-rule',?)",
-                (json.dumps({"id": "sync-pull-rollback-rule"}),),
-            )
+            ).fetchone()
+            synthetic_preference = row is None
+            original_preference = row[0] if row else None
+            if row is None:
+                database.execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                    "VALUES('uiPreferences','user',(SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities),?,?,0)",
+                    ("test-fixture", '{"collection":"uiPreferences","id":"user","value":{"fields":{}}}'),
+                )
             database.execute(
                 "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
                 ('{"collection":"uiPreferences","id":"user",'
                  '"value":{"fields":{},"unexpectedSecret":true}}',),
             )
-        before = no_write_snapshot(backend.state)
         try:
             response = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                 headers=headers,
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
-            self.assertEqual(
-                response.json()["error"],
-                "Invalid stored sync object uiPreferences/user",
-            )
-            self.assertEqual(no_write_snapshot(backend.state), before)
-            with sqlite3.connect(database_path) as database:
-                self.assertIsNone(database.execute(
-                    "SELECT 1 FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
-                ).fetchone())
-                database.execute(
-                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
-                    (original_preference,),
-                )
-                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
+            self.assertEqual(response.status, 200, response.body[:1000])
+            documents = {
+                document["id"]: json.loads(document["payload"])
+                for document in response.json()["documents"]
+            }
+            preference = documents["entity:uiPreferences:user"]
+            self.assertNotIn("unexpectedSecret", preference["value"])
+            self.assertIn("fields", preference["value"])
         finally:
             with sqlite3.connect(database_path) as database:
-                database.execute(
-                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
-                    (original_preference,),
-                )
-                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
-                database.execute(
-                    "DELETE FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
-                )
+                if synthetic_preference:
+                    database.execute(
+                        "DELETE FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+                    )
+                else:
+                    database.execute(
+                        "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                        (original_preference,),
+                    )
 
-        broken_id = "sync-pull-broken-record"
+    def test_unreadable_sync_entity_is_skipped_and_checkpoint_advances(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        rust_backend_configured = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
+        synthetic_preference = False
+        inserted_ids = [f"invalid-page-fill-{index:03d}" for index in range(501)]
         with sqlite3.connect(database_path) as database:
-            database.execute("INSERT INTO runtime_rules(id,record) VALUES(?, '[]')", (broken_id,))
-        before_broken = no_write_snapshot(backend.state)
+            row = database.execute(
+                "SELECT seq,payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+            ).fetchone()
+            synthetic_preference = row is None
+            original_sequence, original_preference = row if row else (None, None)
+            if row is None:
+                database.execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                    "VALUES('uiPreferences','user',(SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities),?,?,0)",
+                    ("test-fixture", '{"collection":"uiPreferences","id":"user","value":{"fields":{}}}'),
+                )
+            maximum_sequence = database.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_entities"
+            ).fetchone()[0]
+            broken_sequence = maximum_sequence + 1
+            database.execute(
+                "UPDATE sync_entities SET seq=?,payload='[]' "
+                "WHERE collection='uiPreferences' AND id='user'",
+                (broken_sequence,),
+            )
+            database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,0)",
+                [
+                    (
+                        "workspace",
+                        entity_id,
+                        broken_sequence + offset + 1,
+                        "test-fixture",
+                        json.dumps({"collection": "workspace", "id": entity_id, "value": {}}),
+                    )
+                    for offset, entity_id in enumerate(inserted_ids)
+                ],
+            )
         try:
             broken = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                 headers=headers,
             )
-            self.assertEqual(broken.status, 500, broken.body[:1000])
-            self.assertIn(f"runtime_rules/{broken_id}", broken.json()["error"])
-            self.assertEqual(no_write_snapshot(backend.state), before_broken)
+            self.assertEqual(broken.status, 200, broken.body[:1000])
+            self.assertNotIn(
+                "entity:uiPreferences:user",
+                {document["id"] for document in broken.json()["documents"]},
+            )
+            self.assertGreaterEqual(broken.json()["checkpoint"]["seq"], broken_sequence)
+            if rust_backend_configured:
+                documents = broken.json()["documents"]
+                self.assertEqual(len(documents), 500)
+                self.assertTrue(
+                    any(item["id"].startswith("entity:workspace:invalid-page-fill-") for item in documents),
+                    "the page is filled from the rows after the unreadable entity",
+                )
         finally:
             with sqlite3.connect(database_path) as database:
-                database.execute("DELETE FROM runtime_rules WHERE id=?", (broken_id,))
+                database.execute(
+                    "DELETE FROM sync_entities WHERE collection='workspace' AND id LIKE 'invalid-page-fill-%'"
+                )
+                if synthetic_preference:
+                    database.execute(
+                        "DELETE FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+                    )
+                else:
+                    database.execute(
+                        "UPDATE sync_entities SET seq=?,payload=? "
+                        "WHERE collection='uiPreferences' AND id='user'",
+                        (original_sequence, original_preference),
+                    )
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_collection_schema_invalid_entity_is_skipped_and_tombstone_is_retained(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        invalid_id = "sync-invalid-agent-root"
+        tombstone_id = "sync-valid-agent-tombstone"
+        with sqlite3.connect(database_path) as database:
+            actor = {
+                "id": invalid_id,
+                "rootId": 42,
+                "epoch": 1,
+                "status": "idle",
+            }
+            sequence = database.execute(
+                "SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities",
+            ).fetchone()[0]
+            database.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES('agent',?,?,?, ?,0)",
+                (invalid_id, sequence, "test-fixture", json.dumps({
+                    "collection": "agent", "id": invalid_id, "value": actor,
+                })),
+            )
+            database.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES('agent',?,?,?, ?,1)",
+                (tombstone_id, sequence + 1, "test-fixture", json.dumps({
+                    "collection": "agent", "id": tombstone_id, "value": {},
+                })),
+            )
+        before = no_write_snapshot(backend.state)
+        try:
+            response = backend.request(
+                "GET",
+                f"/api/sync/pull?scope=state:entities:v1&after={sequence - 1}&limit=2",
+                headers=self._common_headers(),
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            documents = response.json()["documents"]
+            self.assertNotIn(
+                f"entity:agent:{invalid_id}",
+                {document["id"] for document in documents},
+            )
+            tombstone = next(
+                document for document in documents
+                if document["id"] == f"entity:agent:{tombstone_id}"
+            )
+            self.assertTrue(tombstone["_deleted"])
+            self.assertEqual(response.json()["checkpoint"]["seq"], sequence + 1)
+            self.assertEqual(no_write_snapshot(backend.state), before)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "DELETE FROM sync_entities WHERE collection='agent' AND id IN (?,?)",
+                    (invalid_id, tombstone_id),
+                )
+
+    def test_fresh_refill_preserves_rows_below_tombstone_floor(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("fresh tombstone-floor refill is a Rust backend contract")
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
+        with sqlite3.connect(database_path) as database:
+            original_rows = database.execute(
+                "SELECT collection,id,seq,hash,payload,deleted FROM sync_entities"
+            ).fetchall()
+            original_floor = database.execute(
+                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
+            ).fetchone()
+            database.execute("DELETE FROM sync_entities")
+            database.execute(
+                "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',10) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,0)",
+                [
+                    ("workspace", "floor-valid-1", 1, "fixture", json.dumps({"collection": "workspace", "id": "floor-valid-1", "value": {}})),
+                    ("workspace", "floor-invalid", 2, "fixture", "[]"),
+                    ("workspace", "floor-valid-3", 3, "fixture", json.dumps({"collection": "workspace", "id": "floor-valid-3", "value": {}})),
+                ],
+            )
+        try:
+            response = backend.request(
+                "GET",
+                "/api/sync/pull?scope=state:entities:v1&after=0&limit=2&fresh=1&reset=1",
+                headers=headers,
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            body = response.json()
+            self.assertEqual(
+                [document["id"] for document in body["documents"]],
+                ["entity:workspace:floor-valid-1", "entity:workspace:floor-valid-3"],
+            )
+            self.assertEqual(body["checkpoint"]["seq"], 3)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute("DELETE FROM sync_entities")
+                database.executemany(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES(?,?,?,?,?,?)",
+                    original_rows,
+                )
+                database.execute("DELETE FROM sync_entity_meta WHERE key='entity_tombstone_floor'")
+                if original_floor:
+                    database.execute(
+                        "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor',?)",
+                        original_floor,
+                    )
+
+    def test_invalid_agent_source_projection_is_skipped(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
         invalid_projection_id = "sync-pull-invalid-unreturned-agent"
         with sqlite3.connect(database_path) as database:
             database.execute(
@@ -582,11 +806,7 @@ with canvas.connect() as db:
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
                 headers=headers,
             )
-            self.assertEqual(invalid_projection.status, 500, invalid_projection.body[:1000])
-            self.assertIn(
-                f"agent/{invalid_projection_id}",
-                invalid_projection.json()["error"],
-            )
+            self.assertEqual(invalid_projection.status, 200, invalid_projection.body[:1000])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_projection)
             with sqlite3.connect(database_path) as database:
                 self.assertIsNone(database.execute(
@@ -718,10 +938,10 @@ with canvas.connect() as db:
             body={"scope": "user", "fields": {}},
             headers=self._common_headers(),
         )
-        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertEqual(response.status, 503, response.body[:1000])
         self.assertEqual(
             response.json()["error"],
-            "invalid stored sync object uiPreferences/user",
+            "Stored data uiPreferences/user is unavailable",
         )
         self.assertEqual(no_write_snapshot(backend.state), before)
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
@@ -760,11 +980,8 @@ with canvas.connect() as db:
                 response = backend.request(
                     "GET", "/api/sync/pull?scope=drafts&after=0", headers=headers,
                 )
-                self.assertEqual(response.status, 500, response.body[:1000])
-                self.assertEqual(
-                    response.json()["error"],
-                    f"Invalid stored sync object drafts/{draft_id}",
-                )
+                self.assertEqual(response.status, 503, response.body[:1000])
+                self.assertIn(f"drafts/{draft_id}",response.json()["error"])
                 self.assertEqual(no_write_snapshot(backend.state), before)
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM sync_documents WHERE scope='drafts'")
@@ -1018,7 +1235,7 @@ with canvas.connect() as db:
                 "POST", "/api/sync/preferences", body={"scope": "user", "fields": {}},
                 headers=common,
             )
-            self.assertEqual(invalid_stored_preference.status, 500)
+            self.assertEqual(invalid_stored_preference.status, 503)
             self.assertIn("uiPreferences/user", invalid_stored_preference.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_preference)
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
@@ -1106,7 +1323,7 @@ with canvas.connect() as db:
             invalid_stored_draft = backend.request(
                 "GET", "/api/sync/pull?scope=drafts&after=0", headers=common,
             )
-            self.assertEqual(invalid_stored_draft.status, 500)
+            self.assertEqual(invalid_stored_draft.status, 503)
             self.assertIn("drafts/bad-json", invalid_stored_draft.json()["error"])
             self.assertNotIn("not-json", invalid_stored_draft.json()["error"])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_draft)

@@ -408,6 +408,7 @@ class RuntimeLockOperation(ContractModel):
 class LockMetricSummary(ContractModel):
     p50: float
     p95: float
+    p99: float
     max: float
     samples: SafeInt
 
@@ -442,6 +443,7 @@ class SqliteMetric(ContractModel):
     longestTransactionMs: float
     p50TransactionMs: float | None = None
     p95TransactionMs: float | None = None
+    p99TransactionMs: float | None = None
     sites: dict[str, SqliteMetric] = Field(default_factory=dict)
 
 
@@ -552,6 +554,47 @@ class SqliteActiveScan(ContractModel):
     truncated: bool
 
 
+class WalCheckpoint(ContractModel):
+    walSizeBytes: SafeInt
+    busy: SafeInt
+    logFrames: SafeInt
+    checkpointedFrames: SafeInt
+
+
+class WalTelemetry(ContractModel):
+    canvas: WalCheckpoint | None
+    analytics: WalCheckpoint | None
+
+
+class SqliteWaitQuantiles(ContractModel):
+    samples: SafeInt
+    p50Ms: float | None
+    p95Ms: float | None
+    p99Ms: float | None
+    maxMs: float
+
+
+class SqliteAdmissionMetric(ContractModel):
+    operations: SafeInt
+    waits: SafeInt
+    activeWaiters: SafeInt
+    peakWaiters: SafeInt
+    openedConnections: SafeInt
+    waitMs: SqliteWaitQuantiles
+
+
+class SqliteStoreAdmission(ContractModel):
+    reads: SqliteAdmissionMetric
+    writes: SqliteAdmissionMetric
+
+
+class SqliteProfileMetric(ContractModel):
+    count: SafeInt
+    p50Ms: float | None
+    p95Ms: float | None
+    p99Ms: float | None
+
+
 class SqliteContention(ContractModel):
     transaction: SqliteMetric | None = None
     writeWait: SqliteMetric | None = None
@@ -559,6 +602,10 @@ class SqliteContention(ContractModel):
     activeTransactions: list[SqliteActiveTransaction]
     activeTransactionScan: SqliteActiveScan
     slowTransactions: SqliteHistory
+    walTelemetry: WalTelemetry | None = None
+    storeAdmission: SqliteStoreAdmission
+    sqlProfile: dict[str, SqliteProfileMetric]
+    commitProfile: dict[str, SqliteProfileMetric]
 
 
 class NativeCodexAccount(ContractModel):
@@ -810,7 +857,7 @@ class ExecutionEffect(ContractModel):
     referenceId: str
     attemptId: str | None = None
     requestId: str | None = None
-    status: ExecutionStatus | Literal["answered", "expired", "lost"] | None = None
+    status: ExecutionStatus | Literal["answered", "expired", "lost", "approved"] | None = None
     outcome: str | None = None
     resultReference: str | None = None
     taskId: str | None = None
@@ -905,6 +952,27 @@ class SupervisorDiagnostics(ContractModel):
     health: SupervisorHealth | SupervisorError | None = None
 
 
+class BlockingPoolGroupMetrics(ContractModel):
+    group: str
+    count: SafeInt
+    queueWaitAvgMs: float
+    queueWaitMaxMs: float
+    queueWaitP95Ms: float
+    queueWaitP99Ms: float
+    closureAvgMs: float
+    closureMaxMs: float
+    closureP95Ms: float
+    closureP99Ms: float
+
+
+class BlockingPoolMetrics(ContractModel):
+    enabled: bool
+    queued: SafeInt
+    running: SafeInt
+    peakOccupancy: SafeInt
+    groups: list[BlockingPoolGroupMetrics]
+
+
 class DiagnosticsResponse(ResponseModel):
     at: str
     processTree: ProcessTree
@@ -922,6 +990,7 @@ class DiagnosticsResponse(ResponseModel):
     searchMigrationError: str | None
     runtimeLockOperations: list[RuntimeLockOperation]
     supervisor: SupervisorDiagnostics
+    blockingPoolMetrics: BlockingPoolMetrics | None = None
 
 
 class DirectoryEntry(ContractModel):

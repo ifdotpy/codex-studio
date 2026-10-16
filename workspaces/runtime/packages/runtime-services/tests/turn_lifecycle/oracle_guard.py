@@ -4,9 +4,11 @@ Lexical checks precede all canonicalization and metadata access, including each
 recursive stat/lstat performed while resolving symlinks. Self-tests touch only a
 synthetic forbidden directory beneath the caller's disposable temporary root.
 """
+import ipaddress
 import os
 from pathlib import Path
 import pwd
+import socket
 import shutil
 import sys
 import tempfile
@@ -31,20 +33,35 @@ def _validate_provider_home_isolation():
 
 
 class OracleGuard:
-    def __init__(self, *, block_processes=False):
+    def __init__(self, *, block_processes=False, allow_loopback=False):
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         self.forbidden = {real_home / name for name in (".codex", ".claude")}
         self.block_processes = block_processes
+        self.allow_loopback = allow_loopback
         self.local = threading.local()
         self.stat, self.lstat = os.stat, os.lstat
 
     def reject_lexical(self, path):
         if isinstance(path, (str, bytes, os.PathLike)):
-            absolute = Path(os.path.abspath(os.fsdecode(path)))
-            if any(absolute == root or root in absolute.parents for root in self.forbidden):
-                raise IsolationViolation("oracle refused access to a forbidden provider home")
+            absolute = os.path.abspath(os.fsdecode(path))
+            # POSIX Path ancestry is exact equality or a separator-bounded prefix.
+            # Avoid allocating every ancestor for every recursive metadata probe.
+            for root in self.forbidden:
+                prefix = os.fspath(root)
+                if absolute == prefix or absolute.startswith(prefix + os.sep):
+                    raise IsolationViolation("oracle refused access to a forbidden provider home")
 
     def audit(self, event, args):
+        if event in {"socket.connect", "socket.bind"} and self.allow_loopback:
+            connection, address = args
+            if connection.family in {socket.AF_INET, socket.AF_INET6}:
+                host = address[0]
+                try:
+                    loopback = ipaddress.ip_address(host).is_loopback
+                except (TypeError, ValueError):
+                    loopback = False
+                if loopback:
+                    return
         if event in {"socket.connect", "socket.bind"}:
             raise IsolationViolation("network is forbidden in oracle")
         if self.block_processes and event in {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn"}:
@@ -75,6 +92,16 @@ class OracleGuard:
             alias.symlink_to(forbidden, target_is_directory=True)
             self.forbidden.add(forbidden)
             try:
+                # A sibling sharing the name prefix is outside the forbidden tree.
+                self.reject_lexical(root / "synthetic-provider-home-neighbor" / "test")
+                for lexical in (forbidden, forbidden / "test", os.fsencode(forbidden / "test"),
+                                root / "neighbor" / ".." / forbidden.name / "test"):
+                    try:
+                        self.reject_lexical(lexical)
+                    except IsolationViolation:
+                        pass
+                    else:
+                        raise AssertionError("synthetic lexical boundary guard failed")
                 for path in (forbidden / "test", alias / "test"):
                     for operation in (open, os.stat, os.lstat, os.listdir, os.scandir):
                         try:
@@ -85,13 +112,26 @@ class OracleGuard:
                             raise AssertionError("synthetic provider-home guard failed")
             finally:
                 self.forbidden.remove(forbidden)
+        if self.allow_loopback:
+            class LoopbackSocket:
+                family = socket.AF_INET
+
+            self.audit("socket.connect", (LoopbackSocket(), ("127.0.0.1", 1)))
+            self.audit("socket.bind", (LoopbackSocket(), ("127.0.0.1", 0)))
+            try:
+                self.audit("socket.connect", (LoopbackSocket(), ("203.0.113.1", 1)))
+            except IsolationViolation:
+                pass
+            else:
+                raise AssertionError("oracle guard allowed a non-loopback connection")
         print("guard refused synthetic provider-home content and metadata access")
 
 
-def install_guard(*, block_processes=False):
+def install_guard(*, block_processes=False, allow_loopback=False):
     # Give every oracle process private provider homes and scratch space even
     # when the CI parent intentionally supplies no application environment.
-    isolated = tempfile.TemporaryDirectory(prefix="runtime-oracle-")
+    # Keep nested HTTP fixture sockets within the macOS AF_UNIX path limit.
+    isolated = tempfile.TemporaryDirectory(prefix="o-")
     root = Path(isolated.name)
     os.environ["STUDIO_TEST_ISOLATION_ROOT"] = str(root)
     for variable, directory in (
@@ -116,14 +156,16 @@ def install_guard(*, block_processes=False):
     # Retain the TemporaryDirectory for the full lifetime of this oracle.
     global _ISOLATED_ORACLE_ENV
     _ISOLATED_ORACLE_ENV = isolated
-
     # Initialize the runtime guard's physical forbidden roots before the oracle
     # rejects even metadata resolution beneath those roots. Later imports reuse it.
     tests = Path(__file__).resolve().parents[4] / "apps/server/tests"
     sys.path.insert(0, str(tests))
     from runtime_home_guard import install_home_guard
     install_home_guard()
-    guard = OracleGuard(block_processes=block_processes)
+    guard = OracleGuard(
+        block_processes=block_processes,
+        allow_loopback=allow_loopback,
+    )
     # Executable discovery must not probe provider homes in the inherited PATH.
     os.environ["PATH"] = os.pathsep.join(
         entry for entry in os.environ.get("PATH", "").split(os.pathsep)

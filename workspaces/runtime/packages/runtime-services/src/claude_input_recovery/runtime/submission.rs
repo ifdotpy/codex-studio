@@ -66,6 +66,7 @@ fn original_submission(
             .get("assets")
             .cloned()
             .ok_or_else(|| invalid(agent))?,
+        radio_authorized: false,
     })
 }
 
@@ -117,7 +118,14 @@ pub fn commit_start(
         params,
         &submission.text,
     )?;
-    if !commit_prepared_turn(tx, intent, request_id, binding.generation, submission)? {
+    if !commit_prepared_turn(
+        tx,
+        intent,
+        request_id,
+        binding.generation,
+        &binding.transport.connection_id,
+        submission,
+    )? {
         return Err(invalid(&intent.agent_id).into());
     }
     bind_submitted(tx, &intent.agent_id, &intent.attempt_id, binding)?;

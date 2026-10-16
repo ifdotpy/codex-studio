@@ -59,7 +59,8 @@ class YoloHTTPContract(unittest.TestCase):
                 "scope": "state:entities:v1", "after": 0, "limit": 500,
             }),
         )
-        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.status, 200,
+                         f"{response.body[:1000]!r}; server stderr: {self.backend.stderr}")
         return response.json()["documents"]
 
     def wait_for_idle_entities(self, *identifiers: str) -> None:
@@ -337,7 +338,8 @@ class YoloWorkerMessageOrderingCase(unittest.TestCase):
         response = self.backend.request("GET", "/api/sync/pull?" + urlencode({
             "scope": "state:entities:v1", "after": 0, "limit": 500,
         }))
-        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.status, 200,
+                         f"{response.body[:1000]!r}; server stderr: {self.backend.stderr}")
         return next((json.loads(row["payload"])["value"]
                      for row in response.json()["documents"]
                      if row["id"] == f"entity:agent:{identifier}"), None)

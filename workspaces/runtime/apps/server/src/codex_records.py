@@ -164,6 +164,10 @@ class ConnectionRecoveryRecord(TypedDict):
     eventIds: NotRequired[list[str]]
     completionDelivered: NotRequired[bool]
     holdOperations: NotRequired[list[str]]
+    requestId: NotRequired[str]
+    requestState: NotRequired[Literal["pending", "result"]]
+    requestBasis: NotRequired[JsonValue]
+    requestReceipt: NotRequired[JsonValue]
 
 
 class ContextRepairSourceRecord(TypedDict):

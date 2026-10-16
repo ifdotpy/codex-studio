@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, StoreError};
 
 struct Oracle {
     child: Child,
@@ -91,7 +91,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext,
         dispatch_notification_with_effects as dispatch_notification,
     };
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     if case["submission"] == true {
         use studio_runtime_services::notification_dispatch::{
             PreparedSubmission, SubmittedInput, record_user_submission,
@@ -114,6 +114,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     assets: i["assets"].clone(),
                 })
                 .collect(),
+            radio_authorized: false,
         };
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
@@ -221,7 +222,11 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 let error = dispatch_notification(
                     tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects,
                 ).expect_err("missing service must refuse before acknowledgement");
-                assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
+                assert!(
+                    matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service),
+                    "{}: expected dependency {service}, got {error:?}",
+                    case["id"]
+                );
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
                 Ok::<_,studio_runtime_store::StoreError>(error.to_string())
             }).map_err(|e|e.to_string()).and_then(Err);
@@ -290,7 +295,28 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     effects,
                 )
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                if let Some(refusal) = case.get("expect_refusal_detail") {
+                    let table = refusal["table"].as_str().expect("refusal table");
+                    let stored_id = refusal["id"].as_str().expect("refusal ID");
+                    let pointer = refusal["pointer"].as_str().expect("refusal pointer");
+                    assert!(
+                        matches!(
+                            &error,
+                            studio_runtime_services::notification_dispatch::NotificationDispatchError::Store(
+                                StoreError::InvalidSyncObjectField { scope, id, pointer: actual_pointer, reason }
+                            ) if scope == table
+                                && id == stored_id
+                                && actual_pointer == pointer
+                                && !reason.contains("SECRET_STORED_SENTINEL")
+                                && !reason.contains("CORPUS_PRIVATE_PAYLOAD")
+                        ),
+                        "{}: expected typed refusal for {table}/{stored_id} at {pointer}, got {error:?}",
+                        case["id"]
+                    );
+                }
+                error.to_string()
+            })?;
         assert_eq!(
             rolled.as_ref(),
             Some(&result),
@@ -424,9 +450,16 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .expect("Python post-commit captures");
         let selected: Vec<_> = handoff
             .iter()
+            .filter(|effect| effect["kind"] != "tokenRateUsage")
             .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
             .cloned()
+            .map(normalize_observation_agent)
             .collect();
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(normalize_observation_agent)
+            .collect::<Vec<_>>();
         let mut diff = vec![];
         differences(
             Some(&json!(expected)),
@@ -479,7 +512,9 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
+            NotificationPostCommit::Recovered { .. } => return Ok(()),
         };
         let identity = &observation.delivery;
         let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
@@ -525,6 +560,20 @@ fn post_commit_value(
     effect: &studio_runtime_services::notification_dispatch::NotificationPostCommit,
 ) -> Value {
     use studio_runtime_services::notification_dispatch::NotificationPostCommit;
+    if let NotificationPostCommit::Recovered {
+        identity,
+        observation,
+    } = effect
+    {
+        return json!({
+            "kind":"recovered",
+            "identity":identity,
+            "agent":observation.agent,
+            "method":observation.method,
+            "params":observation.params,
+            "at":observation.observed_at
+        });
+    }
     let (kind, observation, captured) = match effect {
         NotificationPostCommit::Analytics {
             observation,
@@ -537,8 +586,25 @@ fn post_commit_value(
         NotificationPostCommit::TokenRateAssociation(observation) => {
             ("association", observation, None)
         }
+        NotificationPostCommit::TokenRateUsage(observation) => {
+            ("tokenRateUsage", observation, None)
+        }
+        NotificationPostCommit::Recovered { .. } => unreachable!("handled above"),
     };
-    let mut value = json!({"kind":kind, "agent":observation.agent, "method":observation.method, "params":observation.params,
+    // Python's stream callback intentionally resolves an agent through its
+    // account/connection/thread index and carries no agent payload. Rust keeps
+    // the frozen agent on its internal effect for snapshot projection; omit
+    // that implementation context from the cross-language corpus shape.
+    let agent = if kind == "stream" {
+        Value::Null
+    } else {
+        observation
+            .agent
+            .as_ref()
+            .map(|agent| (**agent).clone())
+            .unwrap_or(Value::Null)
+    };
+    let mut value = json!({"kind":kind, "agent":agent, "method":observation.method, "params":observation.params,
         "account":observation.delivery.provider_handle.strip_prefix("account:"),
         "connection":format!("connection-{}", observation.delivery.generation),
         "at":if kind=="analytics" { observation.observed_at } else { observation.provider_at },
@@ -547,6 +613,38 @@ fn post_commit_value(
         value["stream_metrics"] = serde_json::to_value(metrics).expect("metrics");
     }
     value
+}
+
+fn normalize_observation_agent(mut effect: Value) -> Value {
+    if effect["kind"] == "stream" || !effect["agent"].is_object() {
+        return effect;
+    }
+    const FIELDS: &[&str] = &[
+        "id",
+        "name",
+        "rootId",
+        "parentId",
+        "accountKey",
+        "accountHistory",
+        "provider",
+        "threadId",
+        "epoch",
+        "turnId",
+        "inFlight",
+        "events",
+        "tokensUsed",
+        "tokenUsageAccounting",
+        "model",
+        "effort",
+        "fastMode",
+        "daybreakEnabled",
+        "cyberAccessProgram",
+        "cwd",
+        "deletedAt",
+    ];
+    let agent = effect["agent"].as_object_mut().expect("checked object");
+    agent.retain(|field, _| FIELDS.contains(&field.as_str()));
+    effect
 }
 
 /// Fail immediately before and after each transactional effect, then let the
@@ -562,7 +660,7 @@ fn effect_failpoints(
     };
     use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
     use studio_runtime_store::{StoreError, Transaction};
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     struct Failure(u8);
     impl NotificationEffects for Failure {
         fn capture_usage(
@@ -720,7 +818,7 @@ fn flush(
     use studio_runtime_services::notification_dispatch::{
         NotificationDispatchError, PublicationContext, flush_notification_streams,
     };
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     let mut rolled = None;
     let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
         rolled = Some(flush_notification_streams(
@@ -1087,13 +1185,21 @@ fn corpus(full: bool, runtime_effects: bool) {
                 expected["pythonRoot"].as_str().expect("Python root"),
             )
         });
-        let error_matches = match expected_error {
-            Some(message) => error.as_deref().is_some_and(|error| {
-                error == message.as_str()
+        let error_matches = if case.get("expect_refusal_detail").is_some() {
+            error.as_deref().is_some_and(|error| {
+                error.starts_with("invalid stored sync object runtime_agents/agent at ")
                     && !error.contains("SECRET_STORED_SENTINEL")
                     && !error.contains("CORPUS_PRIVATE_PAYLOAD")
-            }),
-            None => error.is_none(),
+            })
+        } else {
+            match expected_error {
+                Some(message) => error.as_deref().is_some_and(|error| {
+                    error == message.as_str()
+                        && !error.contains("SECRET_STORED_SENTINEL")
+                        && !error.contains("CORPUS_PRIVATE_PAYLOAD")
+                }),
+                None => error.is_none(),
+            }
         };
         if diff.is_empty() && error_matches {
             green += 1;

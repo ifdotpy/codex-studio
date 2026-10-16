@@ -256,8 +256,9 @@ fn provider_callbacks_stale_and_worker_authority() {
 }
 
 fn provider_callbacks_transaction_failpoint_matrix() {
-    // Abort before and after each durable write family. The second transaction
-    // retains admission but rolls back effects/result/outbox together.
+    // Admission and claim failpoints leave no committed running claim, so retry
+    // may execute. Execution failpoints happen after claim commit: they roll
+    // back effects/result/outbox, and replay must not execute the call again.
     for timing in ["BEFORE", "AFTER"] {
         for (table, operation, predicate) in [
             ("runtime_tool_requests", "INSERT", "1"),
@@ -303,18 +304,25 @@ fn provider_callbacks_transaction_failpoint_matrix() {
                 "orchestration_task",
                 json!({"action":"create","title":"Atomic task"}),
             );
-            assert!(
-                dispatch(&store, &context, &frame, 10.0).is_err(),
-                "{timing} {table} {operation}"
-            );
+            let dispatch_result = dispatch(&store, &context, &frame, 10.0);
+            assert!(dispatch_result.is_err(), "{timing} {table} {operation}");
+            let work_ids = store
+                .read()
+                .unwrap()
+                .prepare("SELECT id FROM runtime_work ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let reply_save_failed = timing == "AFTER"
+                && table == "runtime_operation_receipts"
+                && predicate == "NEW.id LIKE 'provider-callback:%'";
+            let has_committed_result = reply_save_failed;
             assert_eq!(
-                store
-                    .read()
-                    .unwrap()
-                    .query_row("SELECT count(*) FROM runtime_work", [], |r| r
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                0
+                work_ids.len(),
+                usize::from(has_committed_result),
+                "{timing} {table} {operation}; dispatch={dispatch_result:?}"
             );
             store
                 .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
@@ -325,7 +333,60 @@ fn provider_callbacks_transaction_failpoint_matrix() {
             drop(store);
             let store = RuntimeStore::open(Some(dir.path())).unwrap();
             let result = reply(dispatch(&store, &context, &frame, 11.0).unwrap());
-            assert_eq!(body(&result)["success"], true);
+            let failed_before_claim = table == "runtime_tool_requests"
+                && (operation == "INSERT"
+                    || predicate == "json_extract(NEW.record,'$.stage')='running'");
+            if failed_before_claim {
+                assert_eq!(body(&result)["success"], true);
+                assert_eq!(
+                    store
+                        .read()
+                        .unwrap()
+                        .query_row("SELECT count(*) FROM runtime_work", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+            } else if reply_save_failed {
+                // The operation result committed before the separate provider
+                // reply receipt failed. Replay returns that exact result and
+                // must not execute the work creation again.
+                assert_eq!(body(&result)["success"], true);
+                assert!(tool_value(&result)["id"].as_str().is_some());
+                assert_eq!(
+                    store
+                        .read()
+                        .unwrap()
+                        .query_row("SELECT count(*) FROM runtime_work", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+            } else {
+                // The durable claim makes the execution outcome unknown, but
+                // the protocol response itself succeeds with recovery data.
+                assert_eq!(body(&result)["success"], true);
+                let recovery = tool_value(&result);
+                assert_eq!(recovery["stage"], "running");
+                assert_eq!(recovery["outcome"], "pending");
+                assert!(recovery["recovery"].as_str().is_some());
+                assert_eq!(
+                    store
+                        .read()
+                        .unwrap()
+                        .query_row("SELECT count(*) FROM runtime_work", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0,
+                    "an execution failure after claim must remain unknown and not repeat"
+                );
+            }
+            drop(store);
+            let store = RuntimeStore::open(Some(dir.path())).unwrap();
+            assert_eq!(
+                reply(dispatch(&store, &context, &frame, 12.0).unwrap()),
+                result
+            );
             assert_eq!(
                 store
                     .read()
@@ -333,13 +394,12 @@ fn provider_callbacks_transaction_failpoint_matrix() {
                     .query_row("SELECT count(*) FROM runtime_work", [], |r| r
                         .get::<_, i64>(0))
                     .unwrap(),
-                1
-            );
-            drop(store);
-            let store = RuntimeStore::open(Some(dir.path())).unwrap();
-            assert_eq!(
-                reply(dispatch(&store, &context, &frame, 12.0).unwrap()),
-                result
+                if failed_before_claim || reply_save_failed {
+                    1
+                } else {
+                    0
+                },
+                "replaying the saved callback response must not alter execution state"
             );
         }
     }

@@ -73,7 +73,7 @@ impl FederationCredentialsRepository {
     }
 
     pub fn pending_names(tx: &Transaction<'_>) -> StoreResult<Vec<(String, String, String)>> {
-        let mut statement = tx.prepare("SELECT id,label,actor FROM runtime_access_name_requests WHERE applied=0 ORDER BY rowid")?;
+        let mut statement = tx.prepare_cached("SELECT id,label,actor FROM runtime_access_name_requests WHERE applied=0 ORDER BY rowid")?;
         Ok(statement
             .query_map([], |r| {
                 Ok((

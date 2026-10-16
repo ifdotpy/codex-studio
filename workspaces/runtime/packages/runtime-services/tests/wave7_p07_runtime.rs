@@ -379,10 +379,13 @@ impl RetainedHistory for Port<'_> {
         })
     }
     fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-        if let Some(drained) = self.drained {
-            drained.set(true);
+        match self.drained {
+            Some(drained) => {
+                drained.set(true);
+                Ok(())
+            }
+            None => Err(HistoryError::Unavailable),
         }
-        Ok(())
     }
 }
 fn retained_reads_enforce_deadline_thread_generation_and_stop() {

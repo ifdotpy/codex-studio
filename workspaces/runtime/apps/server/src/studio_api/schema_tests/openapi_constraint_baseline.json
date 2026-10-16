@@ -1,6 +1,742 @@
 {
-  "sourceCommit": "a3024407",
+  "sourceCommit": "51d376b7",
   "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json",
+  "acceptedOperationRemovals": [
+    "GET /api/federation",
+    "GET /api/federation/v1/message",
+    "GET /api/federation/v1/pair",
+    "GET /api/federation/v1/pull",
+    "GET /api/federation/v1/status",
+    "GET /api/multi-server/v1/pair"
+  ],
+  "acceptedLoosenings": [
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/queueWaitP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/queueWaitP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/closureP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/closureP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/queueWaitP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/queueWaitP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionEffect/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionLedger/properties/runs/items/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionRun/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/LockMetricSummary/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/ResourceChangeEvent/properties/resources/items",
+      "constraint": "@oneOf",
+      "baseline": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"multi-server\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"MultiServerResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ResourceNotifyRequest/properties/resources/items",
+      "constraint": "@oneOf",
+      "baseline": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"multi-server\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"MultiServerResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ResourceRef",
+      "constraint": "@oneOf",
+      "baseline": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"multi-server\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"MultiServerResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']"
+    },
+    {
+      "pointer": "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/RuntimeLockOperation/properties/waitMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/analytics",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/analytics",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/canvas",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/WalTelemetry/properties/canvas",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
+    },
+    {
+      "pointer": "/paths/~1api~1sync~1notify/post/requestBody/content/application~1json/schema/properties/resources/items",
+      "constraint": "@oneOf",
+      "baseline": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"multi-server\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"MultiServerResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']"
+    }
+  ],
   "document": {
     "components": {
       "headers": {
@@ -679,6 +1415,57 @@
             }
           },
           "description": "Internal server error",
+          "headers": {
+            "Access-Control-Allow-Origin": {
+              "$ref": "#/components/headers/AccessControlAllowOrigin"
+            },
+            "Access-Control-Expose-Headers": {
+              "$ref": "#/components/headers/AccessControlExposeHeaders"
+            },
+            "Cache-Control": {
+              "$ref": "#/components/headers/CacheControl"
+            },
+            "Content-Encoding": {
+              "$ref": "#/components/headers/ContentEncoding"
+            },
+            "Content-Length": {
+              "$ref": "#/components/headers/ContentLength"
+            },
+            "Content-Security-Policy": {
+              "$ref": "#/components/headers/ContentSecurityPolicy"
+            },
+            "Content-Type": {
+              "$ref": "#/components/headers/ContentType"
+            },
+            "Referrer-Policy": {
+              "$ref": "#/components/headers/ReferrerPolicy"
+            },
+            "Server-Timing": {
+              "$ref": "#/components/headers/ServerTiming"
+            },
+            "Vary": {
+              "$ref": "#/components/headers/Vary"
+            },
+            "X-Content-Type-Options": {
+              "$ref": "#/components/headers/XContentTypeOptions"
+            },
+            "X-Studio-API-Schema": {
+              "$ref": "#/components/headers/StudioApiSchema"
+            },
+            "X-Studio-Server": {
+              "$ref": "#/components/headers/StudioServer"
+            }
+          }
+        },
+        "ApiError501": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErrorResponse"
+              }
+            }
+          },
+          "description": "Not implemented: a named dependency is unavailable",
           "headers": {
             "Access-Control-Allow-Origin": {
               "$ref": "#/components/headers/AccessControlAllowOrigin"
@@ -14477,6 +15264,90 @@
           "title": "AutoPairRequest",
           "type": "object"
         },
+        "BlockingPoolGroupMetrics": {
+          "additionalProperties": false,
+          "properties": {
+            "closureAvgMs": {
+              "title": "Closureavgms",
+              "type": "number"
+            },
+            "closureMaxMs": {
+              "title": "Closuremaxms",
+              "type": "number"
+            },
+            "count": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "title": "Count",
+              "type": "integer"
+            },
+            "group": {
+              "title": "Group",
+              "type": "string"
+            },
+            "queueWaitAvgMs": {
+              "title": "Queuewaitavgms",
+              "type": "number"
+            },
+            "queueWaitMaxMs": {
+              "title": "Queuewaitmaxms",
+              "type": "number"
+            }
+          },
+          "required": [
+            "group",
+            "count",
+            "queueWaitAvgMs",
+            "queueWaitMaxMs",
+            "closureAvgMs",
+            "closureMaxMs"
+          ],
+          "title": "BlockingPoolGroupMetrics",
+          "type": "object"
+        },
+        "BlockingPoolMetrics": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "groups": {
+              "items": {
+                "$ref": "#/components/schemas/BlockingPoolGroupMetrics"
+              },
+              "title": "Groups",
+              "type": "array"
+            },
+            "peakOccupancy": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "title": "Peakoccupancy",
+              "type": "integer"
+            },
+            "queued": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "title": "Queued",
+              "type": "integer"
+            },
+            "running": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "title": "Running",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "enabled",
+            "queued",
+            "running",
+            "peakOccupancy",
+            "groups"
+          ],
+          "title": "BlockingPoolMetrics",
+          "type": "object"
+        },
         "BranchDraft": {
           "additionalProperties": false,
           "properties": {
@@ -20982,6 +21853,23 @@
               "title": "Queuedinputpreserved",
               "type": "boolean"
             },
+            "requestBasis": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "requestId": {
+              "default": null,
+              "title": "Requestid",
+              "type": "string"
+            },
+            "requestReceipt": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "requestState": {
+              "default": null,
+              "enum": ["pending", "result"],
+              "title": "Requeststate",
+              "type": "string"
+            },
             "source": {
               "default": null,
               "title": "Source",
@@ -23166,6 +24054,17 @@
             "at": {
               "title": "At",
               "type": "string"
+            },
+            "blockingPoolMetrics": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BlockingPoolMetrics"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "executions": {
               "$ref": "#/components/schemas/ExecutionLedger"
@@ -64075,6 +64974,10 @@
             "500": {
               "$ref": "#/components/responses/ApiError500",
               "description": "Internal Server Error"
+            },
+            "501": {
+              "$ref": "#/components/responses/ApiError501",
+              "description": "Not Implemented"
             },
             "503": {
               "$ref": "#/components/responses/ApiError503",

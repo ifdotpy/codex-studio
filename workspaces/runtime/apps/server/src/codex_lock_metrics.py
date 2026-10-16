@@ -176,8 +176,8 @@ class MeasuredRLock:
                 "count": count,
                 "totalWaitMs": round(total_wait / 1_000_000, 3),
                 "totalHoldMs": round(total_hold / 1_000_000, 3),
-                "waitMs": percentile_summary(samples["wait"]),
-                "holdMs": percentile_summary(samples["hold"]),
+                "waitMs": percentile_summary(samples["wait"], include_p99=True),
+                "holdMs": percentile_summary(samples["hold"], include_p99=True),
             })
         return result
 

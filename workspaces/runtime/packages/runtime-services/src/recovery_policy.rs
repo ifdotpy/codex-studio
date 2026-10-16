@@ -3,6 +3,8 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+static NULL_VALUE: Value = Value::Null;
+
 pub const MAX_EVENTS: usize = 32;
 pub const UNKNOWN_START_HOLD_SECONDS: f64 = 600.0;
 const DISCONNECTED: &str = "Codex disconnected. Review the transcript before resuming.";
@@ -40,9 +42,60 @@ impl RecoverySnapshot {
     pub fn record(&self) -> &Value {
         &self.agent
     }
+    pub fn start_attempt(&self) -> &Value {
+        self.agent
+            .get("startAttempt")
+            .filter(|attempt| !attempt.is_null())
+            .or_else(|| {
+                self.agent
+                    .get("restartRecovery")
+                    .and_then(|r| r.get("startAttempt"))
+            })
+            .unwrap_or(&NULL_VALUE)
+    }
     pub fn eligibility(&self) -> Eligibility {
         eligibility(&self.agent)
     }
+
+    /// Stable identity for one persisted disconnect/restart recovery. A later
+    /// transport receipt changes the identity even when the agent turn is the
+    /// same, so an older saved result cannot answer a new recovery.
+    pub fn connection_recovery_id(&self) -> String {
+        connection_recovery_id(&self.agent)
+    }
+}
+
+pub fn connection_recovery_id(agent: &Value) -> String {
+    studio_runtime_store::sha256_hex(connection_recovery_basis(agent).to_string().as_bytes())
+}
+
+pub fn connection_recovery_basis(agent: &Value) -> Value {
+    let disconnect = &agent["disconnectRecovery"];
+    let restart = &agent["restartRecovery"];
+    json!([
+        agent["id"],
+        agent["epoch"],
+        agent.get("accountKey").cloned().unwrap_or(json!("default")),
+        agent["threadId"],
+        agent["turnId"],
+        disconnect
+            .get("connectionId")
+            .cloned()
+            .unwrap_or(Value::Null),
+        disconnect.get("at").cloned().unwrap_or(Value::Null),
+        disconnect["startAttempt"]
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null),
+        disconnect.get("turnId").cloned().unwrap_or(Value::Null),
+        restart.get("connectionId").cloned().unwrap_or(Value::Null),
+        restart.get("at").cloned().unwrap_or(Value::Null),
+        restart.get("turnId").cloned().unwrap_or(Value::Null),
+        restart["startAttempt"]
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null),
+    ])
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -122,9 +175,12 @@ fn scope(a: &Value) -> Value {
     json!({"id":a["id"],"accountKey":a["accountKey"],"epoch":a["epoch"],"threadId":a["threadId"]})
 }
 fn eligibility(a: &Value) -> Eligibility {
-    let t = &a["startAttempt"];
-    let d = &a["disconnectRecovery"];
     let r = &a["restartRecovery"];
+    let t = a
+        .get("startAttempt")
+        .filter(|v| !v.is_null())
+        .unwrap_or(&r["startAttempt"]);
+    let d = &a["disconnectRecovery"];
     let w = &a["contextRepairWait"];
     let repair = &a["contextRepair"];
     let c = &a["connectionRecovery"];
@@ -136,29 +192,31 @@ fn eligibility(a: &Value) -> Eligibility {
         && !has(a, "startAttempt")
         && has(a, "threadId")
         && !has(a, "deletedAt");
-    let unconfirmed_start = (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held")
-        && has(a, "autoWake")
-        && !has(a, "turnId")
-        && has(a, "threadId")
-        && ![
-            "deletedAt",
-            "nativeFailureHold",
-            "accountTransferId",
-            "workspaceOperation",
-        ]
-        .iter()
-        .any(|k| has(a, k))
-        && !has(t, "action")
-        && has(t, "id")
-        && t["submitted"] == true
-        && (t["executionOutcome"] == "unknown"
-            || a["error"] == "turn/start response timed out; outcome unknown")
-        && t["epoch"] == a["epoch"]
-        && account_equal(t, a)
-        && t["threadId"] == a["threadId"]
-        && has(t, "events")
-        && !has(t, "turnId")
-        && !has(t, "observedTurnId");
+    let restart_input_wait = r["stage"] == "held" && has(a, "contextRepairWait");
+    let unconfirmed_start =
+        (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held" || restart_input_wait)
+            && has(a, "autoWake")
+            && !has(a, "turnId")
+            && has(a, "threadId")
+            && ![
+                "deletedAt",
+                "nativeFailureHold",
+                "accountTransferId",
+                "workspaceOperation",
+            ]
+            .iter()
+            .any(|k| has(a, k))
+            && !has(t, "action")
+            && has(t, "id")
+            && t["submitted"] == true
+            && (t["executionOutcome"] == "unknown"
+                || a["error"] == "turn/start response timed out; outcome unknown")
+            && t["epoch"] == a["epoch"]
+            && account_equal(t, a)
+            && t["threadId"] == a["threadId"]
+            && has(t, "events")
+            && !has(t, "turnId")
+            && !has(t, "observedTurnId");
     let busy_claude = a["provider"] == "claude"
         && has(a, "threadId")
         && a["error"]
@@ -367,4 +425,26 @@ pub fn native_operations_settled(turn: &Value) -> bool {
                 _ => true,
             })
         })
+}
+
+#[cfg(test)]
+mod connection_recovery_identity_tests {
+    use super::connection_recovery_id;
+    use serde_json::json;
+
+    #[test]
+    fn a_new_disconnect_cannot_reuse_an_old_connection_recovery_receipt() {
+        let first = json!({
+            "id":"agent-1", "epoch":4, "accountKey":"acct", "threadId":"thread-1",
+            "turnId":"turn-1", "disconnectRecovery":{"connectionId":"conn-1","at":10.0}
+        });
+        let second = json!({
+            "id":"agent-1", "epoch":4, "accountKey":"acct", "threadId":"thread-1",
+            "turnId":"turn-1", "disconnectRecovery":{"connectionId":"conn-2","at":11.0}
+        });
+        assert_ne!(
+            connection_recovery_id(&first),
+            connection_recovery_id(&second)
+        );
+    }
 }

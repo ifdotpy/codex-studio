@@ -200,7 +200,7 @@ pub fn ui_summary(
     if !records::exists(connection, "sync_entities")? {
         return Ok(result);
     }
-    let mut statement=connection.prepare("SELECT collection,id,payload FROM sync_entities WHERE deleted=0 AND collection IN ('agent','project','room','request','complaint') ORDER BY collection,id")?;
+    let mut statement=connection.prepare_cached("SELECT collection,id,payload FROM sync_entities WHERE deleted=0 AND collection IN ('agent','project','room','request','complaint') ORDER BY collection,id")?;
     let mut values = std::collections::BTreeMap::<String, Vec<Value>>::new();
     for row in statement.query_map([], |row| {
         Ok((

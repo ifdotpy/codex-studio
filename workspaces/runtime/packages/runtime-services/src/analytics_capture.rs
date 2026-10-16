@@ -3,6 +3,7 @@
 //! Prepared payload measurements happen before the writer is held. A checked
 //! snapshot selects only the affected rows; no unbounded history is loaded.
 use crate::analytics_measurements::{item_sizes, payload_size};
+use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
@@ -66,6 +67,27 @@ impl PreparedCapture {
         source: CaptureSource,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(agent)?;
+        Self::event_validated(agent, method, params, at, recorded_at, source)
+    }
+
+    pub(crate) fn notification_event(
+        agent: &Value,
+        method: &str,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+    ) -> Result<Self, CaptureError> {
+        Self::event_validated(agent, method, params, at, recorded_at, CaptureSource::Live)
+    }
+
+    fn event_validated(
+        agent: &Value,
+        method: &str,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, CaptureError> {
         if !params.is_object() {
             return Err(CaptureError::Invalid("/params"));
         }
@@ -201,7 +223,7 @@ impl PreparedCapture {
         if self.model {
             let p = &self.params;
             let call = first(&[&p["call_id"], &p["callId"], &p["id"], &p["_analyticsId"]]);
-            if !truthy(&call) {
+            if !studio_runtime_store::truthy(Some(&call)) {
                 return None;
             }
             let category = model_category(p);
@@ -220,7 +242,7 @@ impl PreparedCapture {
             ))
         } else {
             let id = first(&[&self.params["item"]["id"], &self.params["itemId"]]);
-            truthy(&id).then(|| key(meta, &id))
+            studio_runtime_store::truthy(Some(&id)).then(|| key(meta, &id))
         }
     }
 }
@@ -286,7 +308,7 @@ impl CaptureSnapshot {
     }
     pub fn load(db: &Connection, prepared: PreparedCapture) -> Result<Self, CaptureError> {
         let meta = prepared.meta();
-        let turn = truthy(&meta["turnId"])
+        let turn = studio_runtime_store::truthy(Some(&meta["turnId"]))
             .then(|| Repo::read(db, CaptureTable::Turns, &key(&meta, &meta["turnId"])))
             .transpose()?
             .flatten();
@@ -324,13 +346,15 @@ impl CaptureSnapshot {
                 }
             }
             let response = &prepared.params["responseId"];
-            if truthy(response) {
+            if studio_runtime_store::truthy(Some(response)) {
                 rows.exact_response =
                     Repo::usage_response(db, text(&meta["agentId"]), &meta["threadId"], response)?;
             }
             if rows.exact_response.is_none()
                 && rows.usage.as_ref().is_some_and(|v| {
-                    truthy(response) && truthy(&v["responseId"]) && v["responseId"] != *response
+                    studio_runtime_store::truthy(Some(response))
+                        && studio_runtime_store::truthy(Some(&v["responseId"]))
+                        && v["responseId"] != *response
                 })
             {
                 rows.collision_usage =
@@ -372,7 +396,7 @@ impl CaptureDecision {
             Repo::write(tx, *table, row)?;
         }
         for n in &self.notifications {
-            tx.execute("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["bytes"].as_i64()])?;
+            tx.execute("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["count"].as_i64().unwrap_or(1),n["bytes"].as_i64()])?;
         }
         if let Some(n) = &self.limit {
             tx.execute(
@@ -401,6 +425,232 @@ pub fn capture(
         Ok(decision)
     })
 }
+
+/// Apply an analytics publication exactly once, even if the account worker
+/// crashes after this transaction commits but before deleting its receipt.
+/// The receipt marker and all analytics rows commit together in analytics.sqlite3.
+pub fn capture_notification_effect(
+    store: &RuntimeStore,
+    provider_handle: &str,
+    generation: u64,
+    cursor: u64,
+    capture_kind: &str,
+    prepared: &PreparedCapture,
+    stream: Option<&NotificationStreamMetrics>,
+) -> Result<bool, CaptureError> {
+    if provider_handle.is_empty()
+        || provider_handle.len() > 256
+        || !matches!(capture_kind, "analytics" | "analyticsStream")
+    {
+        return Err(CaptureError::Invalid("/captureIdentity"));
+    }
+    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
+    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    let effect_bit = if capture_kind == "analytics" {
+        1_i64
+    } else {
+        2_i64
+    };
+    store.analytics_transaction(|tx, canvas| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
+            [],
+        )?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
+             CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
+        )?;
+        let migrated: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !migrated {
+            let legacy_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
+                [],
+                |row| row.get(0),
+            )?;
+            if legacy_exists {
+                tx.execute(
+                    "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
+                    [],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
+                [],
+            )?;
+        }
+        let legacy: Option<(i64, i64, i64)> = tx
+            .query_row(
+                "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
+                [provider_handle],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
+            generation < saved_generation
+                || generation == saved_generation
+                    && (cursor < saved_cursor
+                        || cursor == saved_cursor && effects & effect_bit != 0)
+        }) {
+            return Ok(false);
+        }
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
+            params![provider_handle, generation, cursor, capture_kind],
+        )?;
+        if inserted == 0 {
+            return Ok(false);
+        }
+        check_identity(canvas, prepared.agent())?;
+        let mut decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
+        if let Some(metrics) = stream {
+            apply_stream_metrics(&mut decision, prepared, metrics);
+        }
+        decision.apply(tx)?;
+        Ok(true)
+    })
+}
+
+/// Retain the legacy process-scoped receipt tables while volatile token-rate
+/// publication is owned by `TokenRateHub`.
+pub fn start_token_rate_process(
+    store: &RuntimeStore,
+    process_id: &str,
+) -> Result<(), CaptureError> {
+    if process_id.is_empty() || process_id.len() > 128 {
+        return Err(CaptureError::Invalid("/processId"));
+    }
+    store.analytics_transaction(|tx, _| {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS token_rate_receipt_process (id INTEGER PRIMARY KEY CHECK(id=1),process_id TEXT NOT NULL);\
+             CREATE TABLE IF NOT EXISTS token_rate_publication_receipts (process_id TEXT NOT NULL,provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL,PRIMARY KEY(process_id,provider));",
+        )?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT process_id FROM token_rate_receipt_process WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(process_id) {
+            tx.execute("DELETE FROM token_rate_publication_receipts", [])?;
+            tx.execute(
+                "INSERT INTO token_rate_receipt_process(id,process_id) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET process_id=excluded.process_id",
+                [process_id],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// Preserve the lossy queue's overflow count in analytics coverage metadata.
+/// Python's Runtime.schedule_analytics_captures records queueOverflow instead
+/// of failing the already committed provider notification.
+pub fn record_publication_overflow(
+    store: &RuntimeStore,
+    receipt_id: &str,
+    analytics_overflow: u64,
+    publication_overflow: u64,
+) -> Result<(), CaptureError> {
+    let dropped = analytics_overflow.saturating_add(publication_overflow);
+    if dropped == 0 {
+        return Ok(());
+    }
+    if receipt_id.is_empty() || receipt_id.len() > 1024 {
+        return Err(CaptureError::Invalid("/receiptId"));
+    }
+    store.analytics_transaction(|tx, _| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
+            [],
+        )?;
+        let prior: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT analytics_overflow,publication_overflow FROM analytics_publication_overflow_receipts WHERE receipt_id=?1",
+                [receipt_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let analytics_overflow = analytics_overflow.min(i64::MAX as u64) as i64;
+        let publication_overflow = publication_overflow.min(i64::MAX as u64) as i64;
+        let additional_analytics = analytics_overflow.saturating_sub(prior.map_or(0, |row| row.0));
+        let additional_publications =
+            publication_overflow.saturating_sub(prior.map_or(0, |row| row.1));
+        let additional = additional_analytics.saturating_add(additional_publications);
+        if additional == 0 {
+            return Ok(());
+        }
+        tx.execute(
+            "INSERT INTO analytics_publication_overflow_receipts(receipt_id,analytics_overflow,publication_overflow) VALUES (?1,?2,?3) ON CONFLICT(receipt_id) DO UPDATE SET analytics_overflow=MAX(analytics_publication_overflow_receipts.analytics_overflow,excluded.analytics_overflow),publication_overflow=MAX(analytics_publication_overflow_receipts.publication_overflow,excluded.publication_overflow)",
+            params![receipt_id, analytics_overflow, publication_overflow],
+        )?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))",
+            [additional],
+        )?;
+        Ok(())
+    })
+}
+
+fn apply_stream_metrics(
+    decision: &mut CaptureDecision,
+    prepared: &PreparedCapture,
+    metrics: &NotificationStreamMetrics,
+) {
+    let meta = prepared.meta();
+    decision.notifications = metrics
+        .hours
+        .iter()
+        .map(|hour| {
+            json!({
+                "id": python_json_compact(&json!([meta["agentId"], prepared.method, hour.hour])),
+                "agent": meta["agentId"],
+                "root": meta["rootId"],
+                "method": prepared.method,
+                "hour": hour.hour,
+                "count": hour.count,
+                "bytes": hour.encoded_bytes,
+            })
+        })
+        .collect();
+
+    let synthetic_delta = prepared.params["delta"].as_str().unwrap_or_default();
+    let total_deltas = metrics.hours.iter().map(|hour| hour.count).sum::<u64>();
+    let extra = [
+        total_deltas.saturating_sub(1),
+        metrics.bytes.saturating_sub(synthetic_delta.len() as u64),
+        metrics
+            .characters
+            .saturating_sub(synthetic_delta.chars().count() as u64),
+        metrics.lines.saturating_sub(
+            synthetic_delta
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count() as u64,
+        ),
+    ];
+    for (table, row) in &mut decision.rows {
+        if *table != CaptureTable::Items || !row["stream"].is_object() {
+            continue;
+        }
+        for (field, addition) in ["deltas", "bytes", "chars", "lines"].into_iter().zip(extra) {
+            row["stream"][field] = json!(
+                row["stream"][field]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .saturating_add(addition)
+            );
+        }
+    }
+}
+
 pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), CaptureError> {
     let raw: Option<String> = canvas
         .query_row(
@@ -458,7 +708,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
     if q.source == CaptureSource::Live && !q.model {
         let hour = (at / 3600.).floor() as i64 * 3600;
         result.notifications.push(
-            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"bytes":python_json_compact(p).len()}),
+            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"count":1,"bytes":python_json_compact(p).len()}),
         );
     }
     if method == "thread/tokenUsage/updated" {
@@ -469,7 +719,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
         model_item(&q, &meta, rows.item, &mut result);
         return Ok(result);
     }
-    if truthy(&meta["turnId"])
+    if studio_runtime_store::truthy(Some(&meta["turnId"]))
         && matches!(
             method,
             "turn/started"
@@ -493,16 +743,17 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             }
             "turn/completed" => {
                 let error = &p["turn"]["error"];
-                let status = if truthy(error) {
+                let status = if studio_runtime_store::truthy(Some(error)) {
                     json!("failed")
                 } else {
                     p["turn"].get("status").cloned().unwrap_or(json!("unknown"))
                 };
-                let previous = truthy(&row["error"]) || row["status"] == "failed";
-                let incoming = truthy(error) || status == "failed";
+                let previous =
+                    studio_runtime_store::truthy(Some(&row["error"])) || row["status"] == "failed";
+                let incoming = studio_runtime_store::truthy(Some(error)) || status == "failed";
                 if !previous
                     || incoming
-                        && (!truthy(&row["error"])
+                        && (!studio_runtime_store::truthy(Some(&row["error"]))
                             || q.source == CaptureSource::Live
                             || row.get("terminalSource").unwrap_or(&row["source"]) != "live")
                 {
@@ -525,8 +776,10 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
                 }
             }
             _ => {
-                if (method == "item/agentMessage/delta" && truthy(&p["delta"])
-                    || p["item"]["type"] == "agentMessage" && truthy(&p["item"]["text"]))
+                if (method == "item/agentMessage/delta"
+                    && studio_runtime_store::truthy(Some(&p["delta"]))
+                    || p["item"]["type"] == "agentMessage"
+                        && studio_runtime_store::truthy(Some(&p["item"]["text"])))
                     && row["firstOutputAt"].is_null()
                 {
                     row["firstOutputAt"] = json!(at)
@@ -645,7 +898,7 @@ fn protocol_item(
             row["status"] = json!(if method != "item/completed" {
                 "running"
             } else if item["success"] == false
-                || truthy(&item["error"])
+                || studio_runtime_store::truthy(Some(&item["error"]))
                 || matches!(item["status"].as_str(), Some("failed" | "declined"))
                 || !item["exitCode"].is_null() && item["exitCode"] != 0
             {
@@ -658,10 +911,10 @@ fn protocol_item(
                     row[k] = v.clone()
                 }
             }
-            if truthy(&item["compactionMetadata"]) {
+            if studio_runtime_store::truthy(Some(&item["compactionMetadata"])) {
                 row["compactionMetadata"] = item["compactionMetadata"].clone();
             }
-            if truthy(&item["error"]) {
+            if studio_runtime_store::truthy(Some(&item["error"])) {
                 let s = item["error"]
                     .as_str()
                     .map(str::to_owned)
@@ -724,7 +977,7 @@ fn model_item(
         .get("_analyticsTimestampSource")
         .cloned()
         .unwrap_or(json!("record"));
-    if truthy(&p["name"]) {
+    if studio_runtime_store::truthy(Some(&p["name"])) {
         row["name"] = json!(format!(
             "{}{}",
             p["namespace"]
@@ -845,7 +1098,7 @@ pub(crate) fn text(v: &Value) -> &str {
 pub(crate) fn first(values: &[&Value]) -> Value {
     values
         .iter()
-        .find(|v| truthy(v))
+        .find(|v| studio_runtime_store::truthy(Some(v)))
         .map(|v| (*v).clone())
         .unwrap_or_default()
 }
@@ -881,7 +1134,7 @@ fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
 fn domain(p: &Value) -> &str {
-    if truthy(&p["rawTokenUsageRecord"]) {
+    if studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
         "response"
     } else {
         "nativeNotice"
@@ -951,8 +1204,11 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         meta["daybreakEnabled"] = turn["daybreakEnabled"].clone();
         meta["cyberAccessProgram"] = turn["cyberAccessProgram"].clone();
     }
-    if q.source == CaptureSource::Rollout && truthy(response) {
-        let usage = p.get("requestUsage").filter(|v| truthy(v)).unwrap_or(&last);
+    if q.source == CaptureSource::Rollout && studio_runtime_store::truthy(Some(response)) {
+        let usage = p
+            .get("requestUsage")
+            .filter(|v| studio_runtime_store::truthy(Some(v)))
+            .unwrap_or(&last);
         if let Some(n) = number(&usage["outputTokens"]) {
             out.response_rate = Some(ResponseRateAssociation {
                 agent: text(&meta["agentId"]).into(),
@@ -971,7 +1227,9 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
     let mut existing = rows.usage.clone();
     if rows.exact_response.is_none()
         && existing.as_ref().is_some_and(|r| {
-            truthy(response) && truthy(&r["responseId"]) && r["responseId"] != *response
+            studio_runtime_store::truthy(Some(response))
+                && studio_runtime_store::truthy(Some(&r["responseId"]))
+                && r["responseId"] != *response
         })
     {
         id.push(':');
@@ -979,7 +1237,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         existing = rows.collision_usage.clone();
     }
     if p["usageSource"] == "claudeResponse" {
-        if !truthy(response) || !p["requestUsage"].is_object() {
+        if !studio_runtime_store::truthy(Some(response)) || !p["requestUsage"].is_object() {
             return;
         }
         let usage = &p["requestUsage"];
@@ -1019,7 +1277,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         return;
     }
     if let Some(exact) = rows.exact_response.as_ref() {
-        if !truthy(&p["rawTokenUsageRecord"]) {
+        if !studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
             let mut row = exact.clone();
             row["noticeTotal"] = total;
             row["noticeLast"] = last;
@@ -1034,9 +1292,10 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         id = text(&exact["id"]).into();
     }
     if let Some(mut row) = existing {
-        if truthy(response)
-            && (!truthy(&row["responseId"])
-                || truthy(&p["rawTokenUsageRecord"]) && !truthy(&row["rawTokenUsageRecord"]))
+        if studio_runtime_store::truthy(Some(response))
+            && (!studio_runtime_store::truthy(Some(&row["responseId"]))
+                || studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"]))
+                    && !studio_runtime_store::truthy(Some(&row["rawTokenUsageRecord"])))
         {
             let extra = json!({"responseId":response,"source":q.source.name(),"at":q.at,"recordedAt":q.recorded_at,"rawTokenUsageRecord":p["rawTokenUsageRecord"],"turnUsage":p["turnUsage"],"requestUsage":p["requestUsage"],"model":first(&[&p["model"],&meta["model"]]),"last":last,"total":total,"delta":token_numbers(&last),"counterDomain":domain(p),"cumulativeDelta":token_numbers(&Value::Null),"reset":null,"baselineMissing":true});
             row = merge(&row, extra);
@@ -1045,7 +1304,10 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         }
         return;
     }
-    if truthy(response) && rows.usage.is_none() && rows.exact_response.is_none() { /* key collision checked by the indexed response lookup in load */
+    if studio_runtime_store::truthy(Some(response))
+        && rows.usage.is_none()
+        && rows.exact_response.is_none()
+    { /* key collision checked by the indexed response lookup in load */
     }
     let prior = rows.prior_usage.as_ref();
     let reset = prior.is_some_and(|r| {
@@ -1108,10 +1370,6 @@ fn response_content(v: &Value) -> Value {
         }
     }
     value
-}
-
-pub(crate) fn truthy(v: &Value) -> bool {
-    studio_runtime_store::truthy(Some(v))
 }
 
 /// The notification dispatcher can commit one bounded delta batch. Preparation

@@ -12,10 +12,7 @@ pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
 pub const AUTH_WAIT_NOTICE_SECONDS: f64 = 1800.0;
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     conditional_tables: &[],
-    tables: &[TableRequirement {
-        name: "runtime_usage_resumes",
-        columns: &["id", "agent", "record"],
-    }],
+    tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],

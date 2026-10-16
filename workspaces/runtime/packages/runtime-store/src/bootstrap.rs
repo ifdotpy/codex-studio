@@ -54,6 +54,16 @@ pub(crate) fn prepare_sync_schema(transaction: &Transaction<'_>) -> StoreResult<
     Ok(())
 }
 
+pub(crate) fn prepare_runtime_event_indexes(transaction: &Transaction<'_>) -> StoreResult<()> {
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS runtime_events_agent_epoch_status_created \
+         ON runtime_events(agent,epoch,status,created,id)",
+    )?;
+    crate::SchedulerRepository::prepare_account_wake_index(transaction)?;
+    crate::repositories::reviewer_archive::ReviewerArchiveRepository::prepare_indexes(transaction)?;
+    Ok(())
+}
+
 fn parse_sections(source: &str) -> StoreResult<[&str; 4]> {
     let mut sections = source.split("-- section: ").skip(1);
     let mut bodies = [""; 4];
@@ -86,7 +96,7 @@ fn parse_sections(source: &str) -> StoreResult<[&str; 4]> {
 
 fn drop_legacy_watch_triggers(transaction: &Transaction<'_>) -> StoreResult<()> {
     let mut statement = transaction.prepare(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_watch_*'",
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'sync_watch_*' OR name GLOB 'sync_entity_event_window_v2_*')",
     )?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(0))?

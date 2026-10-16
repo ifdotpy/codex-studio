@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::BufRead as _;
+use std::io::{self, BufRead, Read, Write};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,78 @@ use studio_runtime_process::{
 };
 mod support;
 use support::*;
+
+struct DropOpenResponse {
+    stream: std::os::unix::net::UnixStream,
+    outgoing: Vec<u8>,
+    drop_next_open_response: bool,
+}
+
+impl DropOpenResponse {
+    fn new(stream: std::os::unix::net::UnixStream) -> Self {
+        Self {
+            stream,
+            outgoing: Vec::new(),
+            drop_next_open_response: false,
+        }
+    }
+}
+
+impl Read for DropOpenResponse {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.drop_next_open_response {
+            let mut byte = [0];
+            loop {
+                match self.stream.read(&mut byte)? {
+                    0 => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "supervisor closed before the Open response",
+                        ));
+                    }
+                    _ if byte[0] == b'\n' => {
+                        self.drop_next_open_response = false;
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionReset,
+                            "test transport dropped the committed Open response",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.stream.read(buffer)
+    }
+}
+
+impl Write for DropOpenResponse {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.stream.write(buffer)?;
+        for byte in &buffer[..written] {
+            self.outgoing.push(*byte);
+            if *byte == b'\n' {
+                let is_open = serde_json::from_slice::<Value>(&self.outgoing)
+                    .ok()
+                    .and_then(|request| {
+                        request
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|action| action == "open");
+                if is_open {
+                    self.drop_next_open_response = true;
+                }
+                self.outgoing.clear();
+            }
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
 
 #[test]
 fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
@@ -46,12 +118,43 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         health.durability,
         studio_runtime_process::Durability::SqliteFullSyncPerRequest
     );
+    drop(client);
 
+    // Force a response loss after the supervisor commits Open, so this test
+    // always covers production's stable-handle recovery path.
+    let socket = std::os::unix::net::UnixStream::connect(safe_socket_path(&state)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut lost_response =
+        SupervisorClient::from_transport(DropOpenResponse::new(socket), state.identity()).unwrap();
+    assert!(matches!(
+        lost_response.open(open_request(&handle.0, command.clone(), &workspace)),
+        Err(SupervisorError::UnknownOutcome {
+            action: studio_runtime_process::SupervisorAction::Open,
+            ..
+        })
+    ));
+    drop(lost_response);
+
+    // Reattach to the same child instead of using another handle or spawning twice.
+    let mut client = connect_client(&state);
     let opened = client
         .open(open_request(&handle.0, command.clone(), &workspace))
-        .unwrap();
+        .expect("stable-handle Open recovery");
+    assert!(
+        opened.resumed,
+        "unknown Open must reattach the active child"
+    );
     supervisor.own_child(opened.pid);
-    assert!(!opened.resumed);
+    assert_eq!(
+        opened.generation,
+        studio_runtime_process::Generation(1),
+        "the child must be spawned exactly once"
+    );
     let generation = opened.generation;
     let ready = poll_event(
         &mut client,

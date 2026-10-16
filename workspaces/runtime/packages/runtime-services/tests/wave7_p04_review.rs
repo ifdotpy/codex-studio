@@ -10,6 +10,48 @@ use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::RuntimeStore;
 
 #[test]
+fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
+    let (_root, store, context) = fixture();
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_complaint_event BEFORE INSERT ON runtime_events
+                 WHEN NEW.id LIKE 'complaint:%'
+                 BEGIN SELECT RAISE(ABORT,'injected complaint event failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("arm complaint event failure");
+    let count = |table: &str| {
+        store
+            .read()
+            .expect("read counts")
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("row count")
+    };
+    let before = (count("runtime_complaints"), count("runtime_events"));
+    let result = store.transaction_with_error(|tx| {
+        studio_runtime_services::questions_write::submit_complaint(
+            tx,
+            &context.agent,
+            "rollback-event-failure",
+            "Injected event failure",
+            |_| true,
+        )
+    });
+    assert!(
+        result.is_err(),
+        "failed enqueue must reach the service caller"
+    );
+    assert_eq!(
+        (count("runtime_complaints"), count("runtime_events")),
+        before
+    );
+}
+
+#[test]
 fn resolved_before_admission_or_before_deletion_survives_restart() {
     for before_admission in [true, false] {
         let (root, mut store, context) = fixture();
@@ -223,6 +265,10 @@ fn late_written_settles_card_without_reviving_completed_failed_or_replaced_turn(
 fn every_foreign_receipt_dimension_is_held_unknown() {
     struct Foreign(usize);
     impl CallbackReplyPort for Foreign {
+        fn has_live_session(&self, _: &CallbackContext) -> bool {
+            true
+        }
+
         fn deliver(
             &self,
             reply: &Reply,

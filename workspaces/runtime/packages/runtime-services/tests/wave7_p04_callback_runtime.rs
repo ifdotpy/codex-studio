@@ -164,6 +164,31 @@ fn mailbox_timeout_is_unknown_and_closed_queue_proves_not_sent() {
 }
 
 #[test]
+fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
+    let (_root, store, context) = fixture();
+    let (id, _) = pending(&store, &context);
+    let reply = prepare_user_answer(&store, &id, &json!({"answers":{}}), 20.0, false)
+        .unwrap()
+        .unwrap();
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
+            tx.execute(
+                "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+                [&id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(stored(&store, &id)["status"], "answered");
+
+    let port = Arc::new(Port::default());
+    let runtime = CallbackRuntime::new(store.clone(), port.clone());
+    assert!(!runtime.deliver(&reply).unwrap());
+    assert!(port.calls.lock().unwrap().is_empty());
+    assert_eq!(stored(&store, &id)["status"], "answered");
+}
+
+#[test]
 fn binding_after_http_commit_still_retires_payload_and_preserves_attempt() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let (_root, store, context) = fixture();

@@ -634,6 +634,48 @@ class NativeChats(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(tool.codes), 1)
 
+    def test_private_control_socket_answers_a_host_browser_request(self) -> None:
+        tool, result = self.launch(self.agent_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.bridge.poll(0)
+        [card] = self.runtime.cards()
+        control = self.root / "browser-host" / "control.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(control))
+            client.sendall(json.dumps({
+                "id": "host-browser-answer-test",
+                "method": "browser.answer",
+                "params": {"id": card["params"]["bridgeId"], "decision": "approve"},
+            }).encode() + b"\n")
+            with client.makefile("rb") as response:
+                answer = json.loads(response.readline())
+        self.assertEqual(answer["id"], "host-browser-answer-test")
+        self.assertEqual(answer["result"]["state"], "approved")
+        parts = urlsplit(provider_redirect(card["params"]["url"]))
+        status, _headers, _body = browser_get(tool.port, (parts.path or "/") + "?" + parts.query)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(tool.codes), 1)
+
+    def test_close_cancels_a_pending_control_socket_long_poll(self) -> None:
+        errors: list[Exception] = []
+
+        def wait_for_browser() -> None:
+            try:
+                self.guest.call("browser.wait", {"after": 0, "waitSeconds": 20}, timeout=35)
+            except Exception as error:
+                errors.append(error)
+
+        client = threading.Thread(target=wait_for_browser, daemon=True)
+        client.start()
+        wait_until(lambda: bool(self.guest.control_tasks))
+        started = time.monotonic()
+        self.guest.close()
+        self.assertLess(time.monotonic() - started, 2)
+        client.join(timeout=2)
+        self.assertFalse(client.is_alive(), "closing the host bridge must release its control RPC")
+        self.assertTrue(errors)
+
     def test_a_window_on_another_mac_relays_through_its_own_server(self) -> None:
         tool, result = self.launch(self.agent_id)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -671,7 +713,12 @@ class NativeChats(unittest.TestCase):
         self.assertEqual(self.runtime.cards(), [])
 
     def test_the_bridge_file_names_the_launcher_and_the_socket(self) -> None:
-        from codex_browser_host import SESSION_FILE, publish
+        from codex_browser_host import (
+            FOLDER,
+            HOST_BROWSER_CONTROL_SOCKET_NAME,
+            SESSION_FILE,
+            publish,
+        )
         account = self.root / "account-servers" / "claude-local"
         account.mkdir(parents=True)
         publish(account, self.root)
@@ -680,6 +727,21 @@ class NativeChats(unittest.TestCase):
                                  "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock")})
         self.assertEqual((account / SESSION_FILE).stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / "browser-host").stat().st_mode & 0o777, 0o700)
+        repository = Path(__file__).resolve().parents[5]
+        rust_router = repository / "workspaces/runtime/packages/runtime-http/src/router.rs"
+        rust_routes = repository / "workspaces/runtime/packages/runtime-http/src/routes/questions_write.rs"
+        router_source = rust_router.read_text(encoding="utf-8")
+        route_source = rust_routes.read_text(encoding="utf-8")
+        self.assertIn(f'BROWSER_HOST_FOLDER_NAME: &str = "{FOLDER}"', router_source)
+        self.assertIn(
+            f'BROWSER_HOST_CONTROL_SOCKET_NAME: &str = "{HOST_BROWSER_CONTROL_SOCKET_NAME}"',
+            router_source,
+        )
+        self.assertIn(".join(BROWSER_HOST_FOLDER_NAME)", router_source)
+        self.assertIn(".join(crate::router::BROWSER_HOST_FOLDER_NAME)", route_source)
+        self.assertIn(
+            ".join(crate::router::BROWSER_HOST_CONTROL_SOCKET_NAME)", route_source
+        )
 
 
 class HostParts(unittest.TestCase):

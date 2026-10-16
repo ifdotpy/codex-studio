@@ -39,6 +39,7 @@ import codex_sync_entities
 from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
 from studio_api.testing import read_test_state
+from http_backend_harness import BackendProcess
 
 recovery_spec = importlib.util.spec_from_file_location("recover_backend", DESKTOP_ROOT / "recover_backend.py")
 recover_backend = importlib.util.module_from_spec(recovery_spec)
@@ -125,6 +126,11 @@ def seed_with_revision(revision: str, state: Path) -> None:
                    (epoch, rootpage, target, target, scanned, time.time()))
         db.execute(f"INSERT INTO {codex_turn_item_links.LINKS} "
                    "SELECT id,agent,json_extract(record,'$.turnId'),created,? FROM runtime_items", (epoch,))
+    # The fixture drops legacy analytics tables because their separate-file
+    # migration has its own contract. Keep the modern two-file state layout.
+    with sqlite3.connect(state / "analytics.sqlite3") as analytics:
+        analytics.execute("PRAGMA journal_mode=WAL")
+        analytics.execute("PRAGMA synchronous=FULL")
 
 
 class IdleServer:
@@ -257,9 +263,9 @@ class UpgradeContract(unittest.TestCase):
                     self.assertEqual(diagnostics["migrations"]["payloads"]["tasks"]["status"], "pending")
                     runtime.search_migration_error = "fixture migration failure"
                     failure_diagnostics = get("/api/diagnostics")
-                    self.assertEqual(failure_diagnostics["searchMigrationError"], "fixture migration failure")
+                    self.assertIsNone(failure_diagnostics["searchMigrationError"])
                     self.assertEqual(failure_diagnostics["migrations"]["search"]["error"],
-                                     "fixture migration failure")
+                                     "Details redacted")
                     runtime.search_migration_error = None
                     upgrade_process = subprocess.run(
                         [sys.executable, str(SERVER_SOURCE_ROOT / "codex-upgrade-check"), "--repo", str(ROOT),
@@ -305,6 +311,70 @@ class UpgradeContract(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     runtime.close()
+
+
+class RustUpgradeContract(unittest.TestCase):
+    def test_rust_backend_serves_records_after_legacy_upgrade(self):
+        started = time.perf_counter()
+        target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
+        binary = Path(os.environ.get(
+            "STUDIO_RUST_SERVER_BINARY", target / "release/studio-runtime-server"
+        )).resolve()
+        self.assertTrue(binary.is_file(), f"fast-tier Rust server build missing: {binary}")
+
+        with patch.dict(os.environ, {
+            "STUDIO_HTTP_BACKEND_COMMAND": str(binary),
+            "STUDIO_HTTP_BACKEND_PYTHON": sys.executable,
+        }):
+            for revision in LEGACY_REVISIONS:
+                with self.subTest(revision=revision), tempfile.TemporaryDirectory(
+                    prefix="rust-upgrade-contract-", dir=os.environ["TMPDIR"]
+                ) as scratch:
+                    backend = BackendProcess(Path(scratch), initialize_workspace=False)
+                    try:
+                        seed_with_revision(revision, backend.state)
+                        # The historical Python schema predates Rust's current
+                        # two-file layout. Apply the supported startup upgrade
+                        # before the Rust backend takes ownership of the state.
+                        upgraded = make_runtime(Runtime, backend.state, IdleServer)
+                        upgraded.close()
+                        backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+                        backend.start()
+                        headers = {
+                            "Origin": backend.origin or "",
+                            "X-Canvas-Token": backend.session["token"],
+                            "X-Studio-API-Schema": backend.schema_hash,
+                        }
+
+                        def get(path: str):
+                            response = backend.request("GET", path, headers=headers)
+                            self.assertEqual(response.status, 200, response.body[:1500])
+                            return response.json()
+
+                        with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                            agent_id = json.loads(db.execute(
+                                "SELECT record FROM runtime_agents ORDER BY rowid LIMIT 1"
+                            ).fetchone()[0])["id"]
+                        identity = get("/api/sync/identity")
+                        self.assertTrue(identity["workspaceId"])
+                        page = get("/api/transcript/page?" + urlencode({"id": agent_id, "limit": 20}))
+                        self.assertTrue(any(
+                            item.get("id") == agent_id + ":long-body" and item.get("truncated")
+                            for item in page["items"]
+                        ))
+                        full_item = get("/api/transcript/item?" + urlencode(
+                            {"id": agent_id, "message_id": agent_id + ":long-body"}
+                        ))
+                        self.assertIn("legacymarker", full_item["text"])
+                        self.assertGreater(len(full_item["text"]), 20000)
+                        search = get("/api/search?" + urlencode({"q": "legacymarker", "limit": 20}))
+                        self.assertTrue(any(
+                            item.get("id") == agent_id + ":long-body"
+                            for item in search.get("results", [])
+                        ))
+                    finally:
+                        backend.close()
+        print(f"Rust historical-state HTTP test: {time.perf_counter() - started:.3f}s")
 
 
 class SupervisorUpgradeContract(unittest.TestCase):

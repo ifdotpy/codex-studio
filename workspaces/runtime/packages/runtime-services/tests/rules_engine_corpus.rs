@@ -60,6 +60,7 @@ fn python_written_records_and_real_rules_functions_match() {
                 CheckResult {
                     code: case["result"]["code"].as_i64(),
                     error: case["result"]["error"].as_str(),
+                    cancelled: false,
                     output: case["result"]["output"].as_str().expect("output"),
                 },
             ),
@@ -225,6 +226,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "must not wake"
                 },
                 0.0
@@ -243,6 +245,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "stale"
                 },
                 0.0
@@ -257,6 +260,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
             CheckResult {
                 code: Some(0),
                 error: None,
+                cancelled: false,
                 output: "ok",
             },
             0.0,
@@ -272,6 +276,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
                 CheckResult {
                     code: Some(0),
                     error: None,
+                    cancelled: false,
                     output: "duplicate"
                 },
                 0.0

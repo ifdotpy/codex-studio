@@ -17,6 +17,8 @@ pub enum BudgetError {
     Invalid(String),
     #[error("budget-policy/token-overflow")]
     Overflow,
+    #[error("budget/admission/staleHistory; pre-read histories and retry admission")]
+    StaleHistory,
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
 }
@@ -144,6 +146,28 @@ impl BudgetSnapshot {
         state: Option<&Value>,
         now: f64,
     ) -> Result<Self, BudgetError> {
+        Self::from_records_with_history_turn(agent, durable_agent, state, now, false)
+    }
+
+    /// Build a budget snapshot while importing historical usage. The supplied
+    /// agent's turn may be rollout context newer than the event turn; all other
+    /// supplied identity fields remain assertions against the durable agent.
+    pub(crate) fn from_history_records(
+        agent: &Value,
+        durable_agent: &Value,
+        state: Option<&Value>,
+        now: f64,
+    ) -> Result<Self, BudgetError> {
+        Self::from_records_with_history_turn(agent, durable_agent, state, now, true)
+    }
+
+    fn from_records_with_history_turn(
+        agent: &Value,
+        durable_agent: &Value,
+        state: Option<&Value>,
+        now: f64,
+        historical: bool,
+    ) -> Result<Self, BudgetError> {
         validate("PersistedBudgetAgent", agent, "runtime_agents")?;
         validate("PersistedBudgetAgent", durable_agent, "runtime_agents")?;
         if let Some(state) = state {
@@ -155,6 +179,9 @@ impl BudgetSnapshot {
             return Err(invalid("runtime_agents/id"));
         }
         for name in ["rootId", "accountKey", "threadId", "turnId", "epoch"] {
+            if name == "turnId" && historical {
+                continue;
+            }
             let expected = durable_agent.get(name).cloned().unwrap_or_else(|| {
                 if name == "accountKey" {
                     json!("default")
@@ -271,6 +298,11 @@ impl UsageObservation {
         if amount.is_none() && !exact {
             amount = counter;
         }
+        let observed_turn = params.get("turnId").filter(|v| truthy(Some(v)));
+        let identity_turn = match (source, params.get("turnId")) {
+            (CaptureSource::History, Some(turn)) => turn.clone(),
+            _ => observed_turn.cloned().unwrap_or(json!(a.turn_id)),
+        };
         let identity = if exact {
             json!([a.id, "response", params["responseId"]])
         } else {
@@ -278,11 +310,7 @@ impl UsageObservation {
                 a.id,
                 a.account_key,
                 "notice",
-                params
-                    .get("turnId")
-                    .filter(|v| truthy(Some(v)))
-                    .cloned()
-                    .unwrap_or(json!(a.turn_id)),
+                identity_turn,
                 usage.get("total"),
                 usage.get("last")
             ])
@@ -318,6 +346,7 @@ pub use studio_runtime_store::budget::BudgetUsageRow as UsageRow;
 pub struct CaptureDecision {
     pub state: BudgetState,
     pub usage: Option<UsageRow>,
+    pub changed: bool,
 }
 
 pub fn capture(
@@ -336,8 +365,15 @@ pub fn capture(
             if !p.exact && p.response {
                 state.ambiguous_notices.retain(|key| key != &p.key);
             }
-            if p.exact && p.amount.is_some_and(|n| n != previous.tokens) {
-                state.fault("conflictingResponseUsage");
+            if p.exact {
+                if previous.kind != "response" || p.amount != Some(previous.tokens) {
+                    return Err(invalid("runtime_budget_usage/responseReplayConflict"));
+                }
+                return Ok(CaptureDecision {
+                    state: snapshot.state.clone(),
+                    usage: None,
+                    changed: false,
+                });
             }
         } else if let Some(amount) = p.amount {
             inserted = Some(UsageRow {
@@ -395,6 +431,7 @@ pub fn capture(
     Ok(CaptureDecision {
         state,
         usage: inserted,
+        changed: true,
     })
 }
 
@@ -406,6 +443,12 @@ pub struct HistoryFileObservation {
     pub size: u64,
     pub final_size: u64,
     pub tail: String,
+    #[serde(default)]
+    pub modified_seconds: u64,
+    #[serde(default)]
+    pub modified_nanos: u32,
+    #[serde(default)]
+    pub content_hash: String,
 }
 #[derive(Clone, Debug)]
 pub struct HistoryObservation {
@@ -414,6 +457,15 @@ pub struct HistoryObservation {
     thread: Option<String>,
     reason: Option<String>,
     request_usage: bool,
+    runtime_binding: Option<HistoryRuntimeBinding>,
+}
+#[derive(Clone, Debug)]
+pub struct HistoryRuntimeBinding {
+    pub agent: Value,
+    pub budget: Option<Value>,
+    pub checkpoint_id: String,
+    pub checkpoint_record: Option<String>,
+    pub file: Option<HistoryFileObservation>,
 }
 impl HistoryObservation {
     pub fn from_records(
@@ -432,6 +484,7 @@ impl HistoryObservation {
             thread: a.thread_id,
             reason: None,
             request_usage: false,
+            runtime_binding: None,
         };
         let Some(history) = history else {
             observation.reason = Some("Native usage history is unavailable".into());
@@ -510,6 +563,12 @@ impl HistoryObservation {
         };
         observation.reason = reason.map(str::to_owned);
         Ok(observation)
+    }
+    pub fn bind_runtime(&mut self, binding: HistoryRuntimeBinding) {
+        self.runtime_binding = Some(binding);
+    }
+    pub(crate) fn runtime_binding(&self) -> Option<&HistoryRuntimeBinding> {
+        self.runtime_binding.as_ref()
     }
 }
 fn coverage(snapshot: &BudgetSnapshot, observation: Option<&HistoryObservation>) -> Option<String> {

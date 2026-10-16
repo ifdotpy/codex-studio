@@ -1,4 +1,4 @@
-//! One bounded directory scan per profile, shared by a scheduler round's actors.
+//! One bounded directory scan per profile, kept current by filesystem events.
 use super::{HistoryError, RolloutPath};
 use std::collections::BTreeMap;
 use std::fs;
@@ -12,6 +12,36 @@ pub struct DiscoveryRound {
     entries: usize,
 }
 impl DiscoveryRound {
+    /// Keep a previously discovered profile current without rescanning its
+    /// directory tree for each rollout append.
+    pub fn file_changed(&mut self, profile: &Path, path: &Path, removed: bool) {
+        let profile = canonical_or_absolute(profile);
+        let Some(paths) = self.profiles.get_mut(&profile) else {
+            return;
+        };
+        let Some(paths) = paths else {
+            self.profiles.remove(&profile);
+            return;
+        };
+        let path = canonical_or_absolute(path);
+        if removed {
+            paths.retain(|candidate| candidate != &path);
+        } else if !paths.iter().any(|candidate| candidate == &path) {
+            paths.push(path);
+        }
+    }
+
+    /// A directory event or watcher overflow invalidates only that profile.
+    pub fn invalidate(&mut self, profile: &Path) {
+        self.profiles.remove(&canonical_or_absolute(profile));
+    }
+
+    /// The scan budget applies to the first discovery in each event round;
+    /// cached profiles remain valid across rounds.
+    pub fn begin_round(&mut self) {
+        self.entries = 0;
+    }
+
     pub fn resolve(
         &mut self,
         profile: &Path,
@@ -89,5 +119,49 @@ impl DiscoveryRound {
             }
         }
         Ok(Some(paths))
+    }
+}
+
+fn canonical_or_absolute(path: &Path) -> PathBuf {
+    if let Ok(path) = fs::canonicalize(path) {
+        return path;
+    }
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn file_notification_updates_cached_profile_without_rescanning() {
+        let root = tempfile::tempdir().expect("profile");
+        let sessions = root.path().join("sessions");
+        fs::create_dir_all(&sessions).expect("sessions directory");
+        let first = sessions.join("rollout-first-thread.jsonl");
+        fs::write(&first, b"{}").expect("initial rollout");
+
+        let mut discovery = DiscoveryRound::default();
+        let cancel = AtomicBool::new(false);
+        assert!(matches!(
+            discovery.resolve(root.path(), "thread", &cancel),
+            Ok(RolloutPath::Found(_))
+        ));
+
+        let appended = sessions.join("rollout-second-thread.jsonl");
+        fs::write(&appended, b"{}").expect("new rollout");
+        discovery.file_changed(root.path(), &appended, false);
+        fs::remove_dir_all(&sessions).expect("remove scanned tree to prove no rescan");
+        assert!(matches!(
+            discovery.resolve(root.path(), "second-thread", &cancel),
+            Ok(RolloutPath::Found(path)) if path == appended
+        ));
     }
 }

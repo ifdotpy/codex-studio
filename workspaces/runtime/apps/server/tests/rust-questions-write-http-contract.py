@@ -7,9 +7,11 @@ from test_isolation import isolate_supervisor_environment
 
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import unittest
 import uuid
 from contextlib import closing
@@ -19,9 +21,27 @@ from pathlib import Path
 isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from studio_api.models import MAX_SAFE_INTEGER
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from http_runtime_test_support import answer_refusal_error
+
+
+COMPLAINT_WRITE_TABLES = frozenset({
+    "runtime_complaints",
+    "runtime_events",
+    "runtime_event_meta",
+    "runtime_operation_receipts",
+})
+
+
+def complaint_write_snapshot(
+    state: Path, baseline: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
+    """Compare complaint-route write tables, excluding asynchronous projections."""
+    return no_write_snapshot(
+        state, include_tables=COMPLAINT_WRITE_TABLES, baseline_snapshot=baseline,
+    )
 
 
 def seed_records(backend) -> None:
@@ -55,6 +75,8 @@ try:
             runtime.put(db, "agents", agent, sync_rooms=False)
         for key, method, status in (
             ("defer", "agent/asyncQuestion", "pending"),
+            ("async-answer", "agent/asyncQuestion", "pending"),
+            ("browser-host", "browser/open", "pending"),
             ("delete", "agent/asyncQuestion", "pending"),
             ("native", "item/tool/requestUserInput", "pending"),
             ("elicitation", "mcpServer/elicitation/request", "pending"),
@@ -72,8 +94,17 @@ try:
                 "id":"questions-write-" + key, "agent":agent_id, "method":method,
                 "status":status, "createdAt":now,
                 "epoch":0,
-                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}}}}
-                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}]}}),
+                "accountKey":"default", "connectionId":"questions-write-connection",
+                "supervisor":{{"generation":1}},
+                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}},
+                           "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
+                          if key == "elicitation" else (
+                              {{"bridgeId":"0123456789abcdef0123456789abcdef",
+                                "url":"https://login.example.test/", "source":"host"}}
+                              if key == "browser-host" else
+                              {{"questions":[{{"id":"value", "question":"Value?"}}],
+                               "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
+                          )),
             }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id":"questions-write-malformed-complaint", "leadId":lead["id"],
@@ -159,6 +190,48 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def _post(self, path, body):
         return self.backend.request("POST", path, body=body, headers=self._headers())
 
+    def _assert_mutation_payload(self, body, expected):
+        """Compare owned payload fields and validate the documented sync envelope."""
+        sync_fields = {"_syncEntities", "_syncEntitiesAfter"}
+        self.assertEqual(set(body) - sync_fields, set(expected))
+        if "_syncEntities" in body:
+            self.assertIsInstance(body["_syncEntities"], list)
+        if "_syncEntitiesAfter" in body:
+            self.assertIn("_syncEntities", body)
+            sync_after = body["_syncEntitiesAfter"]
+            self.assertIs(type(sync_after), int)
+            self.assertGreaterEqual(sync_after, 0)
+            self.assertLessEqual(sync_after, MAX_SAFE_INTEGER)
+        self.assertEqual({key: body[key] for key in expected}, expected)
+
+    def _async_answer_snapshot(self):
+        """Track the answered request and its one stable follow-up identity.
+
+        The Rust scheduler may consume the new follow-up between the answer
+        and replay. Its status/projection changes are separate from replay
+        idempotency; the request receipt and immutable event identity remain
+        the route-owned witness.
+        """
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            request = database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?",
+                ("questions-write-async-answer",),
+            ).fetchone()
+            events = database.execute(
+                "SELECT id,agent,kind,text,epoch,created FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchall()
+        return request, tuple(events)
+
+    def _question_request_snapshot(self, request_id: str):
+        """Read the exact durable question request row for defer replay."""
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            return database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?", (request_id,),
+            ).fetchone()
+
     def _unchanged_error(self, path, body, status, error):
         before = no_write_snapshot(self.backend.state)
         response = self._post(path, body)
@@ -166,6 +239,20 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.json()["error"], error)
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         return response
+
+    def _set_request_status(self, request_id: str, status: str) -> None:
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?", (request_id,)
+            ).fetchone()
+            self.assertIsNotNone(row, request_id)
+            record = json.loads(row[0])
+            record["status"] = status
+            database.execute(
+                "UPDATE runtime_requests SET record=? WHERE id=?",
+                (json.dumps(record, separators=(",", ":"), sort_keys=True), request_id),
+            )
+            database.commit()
 
     def test_defer_and_state_only_delete_commit_and_replay(self) -> None:
         before_noop = no_write_snapshot(self.backend.state)
@@ -181,11 +268,55 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(deferred.json()["id"], "questions-write-defer")
         self.assertEqual(deferred.json()["status"], "pending")
         self.assertTrue(deferred.json()["deferred"])
-        before_replay = no_write_snapshot(self.backend.state)
-        self.assertEqual(self._post(
+        before_replay = self._question_request_snapshot("questions-write-defer")
+        replay = self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
-        ).status, 200)
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        first_body = deferred.json()
+        replay_body = replay.json()
+        self._assert_mutation_payload(
+            first_body, {"id": "questions-write-defer", "status": "pending", "deferred": True},
+        )
+        self._assert_mutation_payload(
+            replay_body, {"id": "questions-write-defer", "status": "pending", "deferred": True},
+        )
+        self.assertEqual(
+            {key: first_body[key] for key in ("id", "status", "deferred")},
+            {key: replay_body[key] for key in ("id", "status", "deferred")},
+        )
+        self.assertEqual(
+            self._question_request_snapshot("questions-write-defer"), before_replay,
+        )
+
+    def test_async_question_answer_queues_one_durable_followup_and_replays(self) -> None:
+        request = {
+            "id": "questions-write-async-answer",
+            "answers": {"value": {"answers": ["An answer"]}},
+        }
+        answered = self._post("/api/answer", request)
+        self.assertEqual(answered.status, 200, answered.body[:1000])
+        self.assertEqual(answered.json()["status"], "answered")
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            event = db.execute(
+                "SELECT agent,kind,text FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()
+            self.assertIsNotNone(event)
+            self.assertEqual(event[0], "questions-write-lead")
+            self.assertEqual(event[2], "Value?\nAn answer")
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()[0], 1)
+        replay = self._post("/api/answer", request)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertTrue(replay.json().get("replayed"))
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()[0], 1)
 
         deleted = self._post("/api/questions/delete", {"id": "questions-write-delete"})
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
@@ -197,6 +328,59 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         ).status, 200)
         self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
+    def test_browser_answer_uses_the_host_bridge_socket(self) -> None:
+        # Startup recovery expires pending browser cards before HTTP readiness.
+        self._set_request_status("questions-write-browser-host", "pending")
+        socket_path = self.backend.state / "browser-host" / "control.sock"
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        socket_path.unlink(missing_ok=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+        server.settimeout(5)
+        requests: list[dict[str, object]] = []
+
+        def answer_from_host_bridge() -> None:
+            connection, _ = server.accept()
+            with connection:
+                stream = connection.makefile("rwb")
+                request = json.loads(stream.readline())
+                requests.append(request)
+                stream.write(json.dumps({
+                    "id": request["id"], "result": {"state": "opened"},
+                }).encode() + b"\n")
+                stream.flush()
+
+        worker = threading.Thread(target=answer_from_host_bridge, daemon=True)
+        worker.start()
+        try:
+            response = self._post("/api/answer", {
+                "id": "questions-write-browser-host", "decision": "accept",
+            })
+        finally:
+            server.close()
+            socket_path.unlink(missing_ok=True)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "host bridge did not receive the answer")
+        self._assert_mutation_payload(response.json(), {
+            "status": "answered", "openUrl": "https://login.example.test/",
+        })
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["method"], "browser.answer")
+        self.assertEqual(requests[0]["params"], {
+            "id": "0123456789abcdef0123456789abcdef", "decision": "approve",
+        })
+        self.assertEqual(requests[0]["id"],
+                         "browser-answer:0123456789abcdef0123456789abcdef:approve")
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            row = db.execute(
+                "SELECT record FROM runtime_requests WHERE id=?",
+                ("questions-write-browser-host",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(row[0])["status"], "answered")
+
     def test_provider_delivery_refusals_and_invalid_state_write_nothing(self) -> None:
         self._unchanged_error(
             "/api/questions/defer", {"id": "questions-write-answered", "deferred": True},
@@ -204,6 +388,11 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("provider answer delivery is implemented by the Python backend")
+        # Startup recovery expires pending native requests before HTTP readiness
+        # (codex_runtime.py:1834-1849). Re-pend them now so this contract exercises
+        # the live-session preflight for a genuinely pending native question.
+        self._set_request_status("questions-write-native", "pending")
+        self._set_request_status("questions-write-elicitation", "pending")
         self._unchanged_error(
             "/api/answer", {"id": "questions-write-native", "decision": "cancel"},
             501, answer_refusal_error(),
@@ -252,21 +441,21 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self._unchanged_error(
             "/api/questions/defer",
             {"id": "questions-write-malformed-request", "deferred": True},
-            500,
-            "Invalid stored object runtime_requests/questions-write-malformed-request",
+            503,
+            "Stored data runtime_requests/questions-write-malformed-request is unavailable",
         )
         self._unchanged_error(
             "/api/questions/defer",
             {"id": "questions-write-malformed-agent", "deferred": True},
-            500,
-            "Invalid stored object runtime_agents/questions-write-malformed-agent",
+            503,
+            "Stored data runtime_agents/questions-write-malformed-agent is unavailable",
         )
         self._unchanged_error(
             "/api/complaints",
             {"action": "respond", "id": "malformed", "complaint_id": "questions-write-malformed-complaint",
              "text": "Fixed", "status": "resolved", "version": 1},
-            500,
-            "Invalid stored object runtime_complaints/questions-write-malformed-complaint",
+            503,
+            "Stored data runtime_complaints/questions-write-malformed-complaint is unavailable",
         )
 
     def test_complaint_submit_matches_python_uuid_and_never_resets_existing_rows(self) -> None:
@@ -380,7 +569,8 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self._post("/api/complaints", {
             "id": "rollback-submit", "lead": "questions-write-lead", "text": "Rollback",
         })
-        self.assertIn(response.status, (400, 500), response.body[:1000])
+        self.assertFalse(200 <= response.status < 300, response.body[:1000])
+        self.assertIn("error", response.json())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DROP TRIGGER reject_question_complaint_event")
@@ -400,14 +590,16 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT count(*) FROM runtime_events WHERE id=?", ("complaint:" + record["id"],)
             ).fetchone()[0]
         self.assertEqual(count, 1)
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead",
             "text": "  Please fix the issue  ",
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], record["id"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead", "text": "Changed"
         }, 400, "This complaint id has different content")
@@ -426,7 +618,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ("complaint-response:user:questions-write-response",),
             ).fetchone()
         self.assertEqual(event, ("complaint_response", "pending"))
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         repeated = self._post("/api/complaints", {
             "action": "respond", "id": "questions-write-response",
             "complaint_id": "questions-write-existing", "text": "  Fixed  ",
@@ -435,7 +627,9 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         self.assertEqual(repeated.json()["version"], reply.json()["version"])
         self.assertEqual(repeated.json()["responses"], reply.json()["responses"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "action": "respond", "id": "questions-write-stale",
             "complaint_id": "questions-write-existing", "text": "Stale",

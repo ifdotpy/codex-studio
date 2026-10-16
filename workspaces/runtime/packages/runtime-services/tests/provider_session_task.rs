@@ -9,7 +9,8 @@ use std::{
     time::Duration,
 };
 use studio_runtime_process::{
-    EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
+    EventCursor, Generation, MAX_SUPERVISOR_FRAME_BYTES, OperationId, ProviderHandle,
+    ProviderLaunchSpec, provider_seam::*,
 };
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_services::provider_session_task::*;
@@ -430,7 +431,7 @@ async fn constructor_validates_recovered_and_initialize_before_factory_open() {
         let mut cfg = config();
         let mut opts = options();
         if case == 0 {
-            cfg.initialize_params = json!({"large":"x".repeat(1024*1024)});
+            cfg.initialize_params = json!({"large":"x".repeat(MAX_SUPERVISOR_FRAME_BYTES)});
         } else if case == 1 {
             cfg.recovered = vec![recovered(RequestId::Number(8), Method::ModelList, 10); 2];
         } else if case == 2 {

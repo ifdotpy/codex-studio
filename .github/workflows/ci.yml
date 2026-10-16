@@ -64,7 +64,8 @@ jobs:
   fast-server:
     name: "Fast tier: server (${{ matrix.label }})"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cold Rust backend builds take 6–7 minutes; server shards need another 7–8.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +83,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
+      - name: Build Rust HTTP backend for server contracts
+        run: cargo build --locked --release -p studio-runtime-server
       - name: Confirm hosted runner has no Codex executable
         run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
       - name: Run server shard
@@ -143,7 +146,8 @@ jobs:
   fast-rust:
     name: "Fast tier: Rust workspace (${{ matrix.partition }}/4)"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cold workspace compilation takes 6–8 minutes; leave a separate budget for tests.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -187,11 +191,13 @@ jobs:
       - name: Install the cached Chromium browser
         run: pnpm --filter codex-agents-web exec playwright install chromium
       - name: Run browser smoke subset
-        run: just test-browser-smoke
+        run: TMPDIR="$RUNNER_TEMP" just test-browser-smoke
       - name: Upload browser smoke diagnostics
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: facade-browser-smoke-diagnostics
-          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
+          path: |
+            ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
+            ${{ runner.temp }}/codex-playwright-*/playwright-output/
           if-no-files-found: ignore

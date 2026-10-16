@@ -115,21 +115,32 @@ def normalized_state(state: Path):
                             value = json.loads(value)
                         except json.JSONDecodeError:
                             pass
-                    row[column] = normalize_value(value)
+                    row[column] = normalize_value(value, column, state)
+                if table == 'sync_entity_meta' and row.get('key') == 'event_window_seq':
+                    # A relocated reference refreshes its own workspace entity,
+                    # consuming a global sequence before the same queue write.
+                    # Compare the marker's invariant rather than its number.
+                    event_high = database.execute(
+                        "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'"
+                    ).fetchone()[0]
+                    assert row['value'] == str(event_high), 'Event-window marker must match committed event rows'
+                    row['value'] = '<event-high>'
                 rows.append(row)
             normalized[table] = sorted(rows, key=repr)
     return normalized
 
 
-def normalize_value(value, key=None):
+def normalize_value(value, key=None, state=None):
     if isinstance(value, dict):
         return {
-            field: normalize_value(item, field)
+            field: normalize_value(item, field, state)
             for field, item in value.items()
             if field not in {"revision", "sequence", "seq", "acceptedAt", "created", "updatedAt", "serverId"}
         }
     if isinstance(value, list):
-        return [normalize_value(item) for item in value]
+        return [normalize_value(item, state=state) for item in value]
+    if key == 'stateDir' and state is not None and value == str(state):
+        return '<state-dir>'
     return value
 
 
@@ -180,6 +191,42 @@ def python_mutation(backend: object, agent_id: str, body: dict):
         return result, normalized_state(root)
     finally:
         runtime.close()
+
+
+class QueueStateNormalizationContract(unittest.TestCase):
+    @staticmethod
+    def seed_state(root):
+        root.mkdir()
+        with closing(sqlite3.connect(root / 'canvas.sqlite3')) as database:
+            database.execute('CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER)')
+            database.execute('CREATE TABLE sync_entity_meta(key TEXT,value TEXT)')
+            database.execute('INSERT INTO sync_entities VALUES (?,?,?,?,?,0)',
+                             ('workspace', 'current', 1, 'workspace', json.dumps({'value': {'stateDir': str(root)}})))
+            database.execute("INSERT INTO sync_entities VALUES ('event','event',7,'event','{}',0)")
+            database.execute("INSERT INTO sync_entity_meta VALUES ('event_window_seq','7')")
+            database.commit()
+
+    def test_only_the_own_state_root_is_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots = [Path(directory) / name for name in ('first', 'second')]
+            for root in roots:
+                self.seed_state(root)
+            self.assertEqual(normalized_state(roots[0]), normalized_state(roots[1]))
+            with closing(sqlite3.connect(roots[1] / 'canvas.sqlite3')) as database:
+                database.execute("UPDATE sync_entities SET payload=? WHERE collection='workspace'",
+                                 (json.dumps({'value': {'stateDir': str(roots[0])}}),))
+                database.commit()
+            self.assertNotEqual(normalized_state(roots[0]), normalized_state(roots[1]))
+
+    def test_event_marker_normalization_refuses_a_stale_high_water_mark(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'state'
+            self.seed_state(root)
+            with closing(sqlite3.connect(root / 'canvas.sqlite3')) as database:
+                database.execute("UPDATE sync_entity_meta SET value='6' WHERE key='event_window_seq'")
+                database.commit()
+            with self.assertRaisesRegex(AssertionError, 'match committed event rows'):
+                normalized_state(root)
 
 
 class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -414,7 +461,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.commit()
         try:
             event = self.get_queue()
-            self.assertEqual(event.status, 500, event.body[:1000])
+            self.assertEqual(event.status, 503, event.body[:1000])
             self.assertIn(f"runtime_event_meta/{self.queue_ids[0]}", event.json()["error"])
         finally:
             with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
@@ -443,7 +490,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.commit()
         before = no_write_snapshot(self.backend.state)
         receipt = self.request(broken_body)
-        self.assertEqual(receipt.status, 500, receipt.body[:1000])
+        self.assertEqual(receipt.status, 503, receipt.body[:1000])
         self.assertIn(f"runtime_operation_receipts/queue:{self.agent_id}:broken-receipt", receipt.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
@@ -464,7 +511,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         agent = self.request({
             "agent": self.agent_id, "action": "cancel", "message_id": self.queue_ids[0],
         })
-        self.assertEqual(agent.status, 500, agent.body[:1000])
+        self.assertEqual(agent.status, 503, agent.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", agent.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:

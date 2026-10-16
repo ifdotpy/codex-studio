@@ -1,5 +1,5 @@
 //! Owned, bounded pipe child. Callers supply an explicitly selected environment.
-//! Drop joins an owner whose private runtime awaits group termination and reaping.
+//! Drop signals an owner whose private runtime awaits group termination and reaping.
 //! Output ordering is per pipe. Completion is published only after both pipes drain.
 
 use std::collections::BTreeMap;
@@ -100,7 +100,7 @@ impl StreamChild {
         let (done_tx, done_rx) = watch::channel(None);
         let (ready_tx, ready_rx) = oneshot::channel();
         // The owner keeps its own runtime alive through kill + reap. Dropping an
-        // application runtime cannot discard cleanup, and dropping this handle joins it.
+        // application runtime cannot discard cleanup; the handle only signals it.
         let owner = std::thread::Builder::new()
             .name("stream-child".into())
             .spawn(move || {
@@ -174,9 +174,10 @@ impl StreamChild {
         if bytes.len() > INPUT_BYTES {
             return Err(ChildError::InputTooLarge);
         }
+        let empty_close = bytes.is_empty() && close;
         let (reply, response) = oneshot::channel();
         // Queue admission times out before the write exists: safely not submitted.
-        timeout(
+        let admitted = timeout(
             INPUT_DEADLINE,
             self.input.send(WriteRequest {
                 bytes,
@@ -184,13 +185,26 @@ impl StreamChild {
                 reply,
             }),
         )
-        .await
-        .map_err(|_| ChildError::Closed)?
-        .map_err(|_| ChildError::Closed)?;
-        timeout(INPUT_DEADLINE, response)
-            .await
-            .map_err(|_| ChildError::Unknown)?
-            .map_err(|_| ChildError::Unknown)?
+        .await;
+        match admitted {
+            Err(_) => return Err(ChildError::Closed),
+            Ok(Err(_)) => {
+                // Closing empty stdin carries no input outcome. A fast child
+                // may exit and drop its receiver before this close is queued.
+                return if empty_close {
+                    Ok(())
+                } else {
+                    Err(ChildError::Closed)
+                };
+            }
+            Ok(Ok(())) => {}
+        }
+        match timeout(INPUT_DEADLINE, response).await {
+            Err(_) => Err(ChildError::Unknown),
+            Ok(Err(_)) if empty_close => Ok(()),
+            Ok(Err(_)) => Err(ChildError::Unknown),
+            Ok(Ok(result)) => result,
+        }
     }
     pub async fn cancel(&self) -> Result<(), ChildError> {
         self.cancel.send_replace(true);
@@ -217,10 +231,9 @@ impl StreamChild {
 impl Drop for StreamChild {
     fn drop(&mut self) {
         self.cancel.send_replace(true);
-        if let Some(owner) = self.owner.take() {
-            // Cleanup is awaited by the owner even when no application runtime exists.
-            let _cleanup = owner.join();
-        }
+        // Dropping a JoinHandle detaches the owner. It owns a private runtime and
+        // continues kill + reap cleanup without blocking the caller's executor.
+        drop(self.owner.take());
     }
 }
 
@@ -387,6 +400,33 @@ pub async fn capture(spec: ChildSpec) -> io::Result<Capture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_empty_stdin_after_fast_child_exit_is_successful() {
+        let mut child = StreamChild::spawn(ChildSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "exit 0".into()],
+            cwd: std::env::current_dir().expect("test working directory is available"),
+            environment: BTreeMap::new(),
+            timeout: Duration::from_secs(2),
+            inherited_lease: None,
+        })
+        .await
+        .expect("true child starts");
+        assert!(matches!(
+            child.next_event().await,
+            Some(ChildEvent::Exited {
+                code: Some(0),
+                reason: ExitReason::Completed
+            })
+        ));
+        child
+            .write(Vec::new(), true)
+            .await
+            .expect("empty stdin closes successfully");
+        child.close().await.expect("child closes successfully");
+    }
 
     fn spec(command: &str, root: &std::path::Path) -> ChildSpec {
         ChildSpec {
@@ -585,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_reaps_descendant_holding_pipe_after_application_runtime_shutdown() {
+    fn drop_does_not_wait_for_owner_and_owner_reaps_after_application_runtime_shutdown() {
         let root = tempfile::tempdir().expect("root");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -604,7 +644,23 @@ mod tests {
             Some(ChildEvent::Output { .. })
         ));
         drop(runtime);
-        drop(child); // Joins the owner, which awaits process-group kill and reap.
+        let drop_started = std::time::Instant::now();
+        drop(child);
+        assert!(drop_started.elapsed() < Duration::from_millis(100));
+        let wait_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("wait runtime");
+        let mut done = done;
+        wait_runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while done.borrow().is_none() {
+                    done.changed().await.expect("owner completion sender");
+                }
+            })
+            .await
+            .expect("owner reaps after handle drop");
+        });
         assert!(matches!(
             done.borrow().as_ref(),
             Some(Ok(ChildEvent::Exited {

@@ -21,8 +21,6 @@ export type PendingUpload = {
   created: number;
   asset?: Attachment;
 };
-export const uploadsChanged = () =>
-  window.dispatchEvent(new Event("studio-uploads-changed"));
 export const UPLOAD_DATABASE_NAME = "codex-studio-uploads";
 export function createUploads(
   options = {
@@ -44,6 +42,44 @@ export function createUploads(
     syncDatabase,
   } = options;
   const localStorage = options.storage;
+  const UPLOADS_CHANNEL_NAME =
+    databaseName === serverStorageName(UPLOAD_DATABASE_NAME)
+      ? "studio-uploads-changed"
+      : `studio-uploads-changed:${databaseName}`;
+  let uploadsChannel: BroadcastChannel | undefined;
+  let uploadsChannelSubscribers = 0;
+  function onUploadsChanged(listener: () => void) {
+    window.addEventListener(UPLOADS_CHANNEL_NAME, listener);
+    let channel: BroadcastChannel | undefined;
+    if (typeof BroadcastChannel !== "undefined") {
+      uploadsChannel ??= new BroadcastChannel(UPLOADS_CHANNEL_NAME);
+      channel = uploadsChannel;
+      channel.addEventListener("message", listener);
+      uploadsChannelSubscribers += 1;
+    }
+    return () => {
+      window.removeEventListener(UPLOADS_CHANNEL_NAME, listener);
+      if (!channel) return;
+      channel.removeEventListener("message", listener);
+      uploadsChannelSubscribers -= 1;
+      if (!uploadsChannelSubscribers) {
+        channel.close();
+        uploadsChannel = undefined;
+      }
+    };
+  }
+  const uploadsChanged = () => {
+    window.dispatchEvent(new Event(UPLOADS_CHANNEL_NAME));
+    if (typeof BroadcastChannel === "undefined") return;
+    if (uploadsChannel) {
+      uploadsChannel.postMessage({ type: "changed" });
+      return;
+    }
+    const channel = new BroadcastChannel(UPLOADS_CHANNEL_NAME);
+    channel.postMessage({ type: "changed" });
+    setTimeout(() => channel.close(), 0);
+  };
+
   const database = () =>
     new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(databaseName, 2);
@@ -280,6 +316,8 @@ export function createUploads(
   }
 
   return {
+    uploadsChanged,
+    onUploadsChanged,
     queueUploads,
     pendingUploads,
     attachmentCancelled,
@@ -290,6 +328,8 @@ export function createUploads(
   };
 }
 export const {
+  uploadsChanged,
+  onUploadsChanged,
   queueUploads,
   pendingUploads,
   attachmentCancelled,

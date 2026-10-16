@@ -14,7 +14,10 @@ from urllib.parse import urlencode
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest, assert_stored_data_unavailable, no_write_snapshot,
+    start_contract_backend,
+)
 
 _spec = importlib.util.spec_from_file_location("p03_message_fixture", Path(__file__).with_name("rust-messages-http-contract.py"))
 _fixture = importlib.util.module_from_spec(_spec)
@@ -23,6 +26,15 @@ _spec.loader.exec_module(_fixture)
 
 
 class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
+    @classmethod
+    def assert_rust_recipient_held(cls):
+        with sqlite3.connect(cls.backend.state / "canvas.sqlite3") as db:
+            record = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (cls.agent,)).fetchone()[0])
+        state = (record.get("status"), record.get("autoWake"), record.get("inFlight"))
+        expected = ("approval", True, False)
+        if state != expected:
+            raise AssertionError(f"Rust P03 recipient state must stay held: {state!r}")
+
     @classmethod
     def setUpClass(cls):
         cls.backend = start_contract_backend(cls, hold_provider_method="thread/start")
@@ -40,13 +52,21 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         finally:
             runtime.close()
         cls.backend.start()
-        response = cls.backend.request("POST", "/api/messages", body={
-            "id": "06060606-0606-0606-0606-060606060606", "room": cls.agent, "text": "Hold provider preparation",
-        }, headers={"Origin": cls.backend.origin or "", "X-Canvas-Token": cls.backend.session["token"],
-                    "X-Studio-API-Schema": cls.backend.schema_hash})
-        if response.status != 200:
-            raise AssertionError(response.body)
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Apply the Rust-only hold after startup recovery and before any
+            # HTTP contract call. Approval keeps accepted messages unqueued.
+            _fixture.update_agent(
+                cls.backend, cls.agent,
+                {"status": "approval", "autoWake": True, "inFlight": False},
+            )
+            cls.assert_rust_recipient_held()
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            response = cls.backend.request("POST", "/api/messages", body={
+                "id": "06060606-0606-0606-0606-060606060606", "room": cls.agent, "text": "Hold provider preparation",
+            }, headers={"Origin": cls.backend.origin or "", "X-Canvas-Token": cls.backend.session["token"],
+                        "X-Studio-API-Schema": cls.backend.schema_hash})
+            if response.status != 200:
+                raise AssertionError(response.body)
             cls.backend.wait_until(cls.backend.provider_gate_started, "provider preparation gate")
 
     @classmethod
@@ -131,28 +151,36 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         hidden = self.request("POST", "/api/room/delete", {"id": "p03-private"})
         self.assertEqual(hidden.status, 200, hidden.body)
         self.assertEqual(hidden.json()["deleted"], ["p03-private"])
-        before = no_write_snapshot(self.backend.state)
+        before = _fixture.parsed_coordination_snapshot(self.backend.state / "canvas.sqlite3")
         replay = self.request("POST", "/api/room/delete", {"id": "p03-private"})
         self.assertEqual(replay.status, 200, replay.body)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(
+            _fixture.parsed_coordination_snapshot(self.backend.state / "canvas.sqlite3"), before,
+        )
         retained = self.request("GET", "/api/agent-chat?room=p03-private")
         self.assertEqual(retained.status, 200, retained.body)
         self.assertEqual(retained.json()["messages"], history.json()["messages"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(
+            _fixture.parsed_coordination_snapshot(self.backend.state / "canvas.sqlite3"), before,
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "located Rust storage errors")
     def test_corrupt_replay_and_operation_report_the_stored_row(self):
         body = {"id": "09090909-0909-0909-0909-090909090909", "room": self.agent, "text": "replay"}
         self.assertEqual(self.request("POST", "/api/messages", body).status, 200)
+        self.assert_rust_recipient_held()
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
             from codex_sync_entities import register_functions
             register_functions(db)
             db.execute("UPDATE runtime_events SET status='corrupt' WHERE id=?", (body["id"],))
-        before = no_write_snapshot(self.backend.state)
+        before = _fixture.message_write_snapshot(
+            self.backend.state / "canvas.sqlite3", body["id"], self.agent,
+        )
         response = self.request("POST", "/api/messages", body)
-        self.assertEqual(response.status, 500, response.body)
-        self.assertEqual(response.json()["error"], "Invalid stored object runtime_events/" + body["id"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        assert_stored_data_unavailable(self, response, body["id"])
+        self.assertEqual(_fixture.message_write_snapshot(
+            self.backend.state / "canvas.sqlite3", body["id"], self.agent,
+        ), before)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
             register_functions(db)
             db.execute("UPDATE runtime_events SET status='pending' WHERE id=?", (body["id"],))
@@ -161,29 +189,44 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
             db.execute("INSERT INTO runtime_workspace_operations VALUES('broken-operation','{broken')")
         _fixture.update_agent(self.backend, self.agent, {"workspaceOperation": "capture", "workspaceReservationId": "broken-operation"})
         try:
-            before = no_write_snapshot(self.backend.state)
-            response = self.request("POST", "/api/messages", {**body, "id": "10101010-1010-1010-1010-101010101010"})
-            self.assertEqual(response.status, 500, response.body)
-            self.assertEqual(response.json()["error"], "Invalid stored object runtime_workspace_operations/broken-operation")
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            operation_message_id = "10101010-1010-1010-1010-101010101010"
+            before = _fixture.message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", operation_message_id, self.agent,
+            )
+            response = self.request("POST", "/api/messages", {**body, "id": operation_message_id})
+            assert_stored_data_unavailable(self, response, "broken-operation")
+            self.assertEqual(_fixture.message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", operation_message_id, self.agent,
+            ), before)
         finally:
             _fixture.update_agent(self.backend, self.agent, {}, remove=("workspaceOperation", "workspaceReservationId"))
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_workspace_operations WHERE id='broken-operation'")
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "named Rust dependencies")
-    def test_unavailable_admission_never_writes_an_event(self):
-        for fields, dependency in (({"tokenBudget": 0}, "budget-policy/message-admission"),
-                                   ({"workspaceOperation": "restore"}, "workspace-policy/message-admission")):
+    def test_budget_and_workspace_admission_never_write_an_event(self):
+        for fields in ({"tokenBudget": 0}, {"workspaceOperation": "restore"}):
             _fixture.update_agent(self.backend, self.agent, fields)
-            before = no_write_snapshot(self.backend.state)
-            response = self.request("POST", "/api/messages", {
-                "id": "05050505-0505-0505-0505-050505050505", "room": self.agent, "text": "blocked",
-            })
-            self.assertEqual(response.status, 501, response.body)
-            self.assertEqual(response.json()["error"], "Not implemented: requires " + dependency)
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
-            _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
+            try:
+                before = no_write_snapshot(self.backend.state)
+                response = self.request("POST", "/api/messages", {
+                    "id": "05050505-0505-0505-0505-050505050505", "room": self.agent, "text": "blocked",
+                })
+                if "tokenBudget" in fields:
+                    self.assertEqual(response.status, 400, response.body)
+                    self.assertTrue(response.json()["error"].startswith("Team token budget"))
+                else:
+                    self.assertEqual(response.status, 400, response.body)
+                    self.assertTrue(response.json()["error"].startswith(
+                        "A workspace operation is active in this directory:"))
+                after = no_write_snapshot(self.backend.state, baseline_snapshot=before)
+                self.assertEqual(after, before)
+                with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                    self.assertIsNone(db.execute(
+                        "SELECT 1 FROM runtime_events WHERE id=?",
+                        ("05050505-0505-0505-0505-050505050505",),
+                    ).fetchone())
+            finally:
+                _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
 
 
 if __name__ == "__main__":

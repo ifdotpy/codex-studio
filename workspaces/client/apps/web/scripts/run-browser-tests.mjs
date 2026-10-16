@@ -21,6 +21,25 @@ if (separatorIndex !== -1) args.splice(separatorIndex, 1);
 
 const environment = { ...process.env };
 environment.PLAYWRIGHT_BROWSERS_PATH ??= defaultBrowserPath();
+// Discover the prepared interpreter through the caller's cache before replacing
+// HOME and XDG paths. Dependency probes and all fixtures use the isolated home.
+const repositoryRoot = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../..",
+);
+const pythonResolver = join(
+  repositoryRoot,
+  "workspaces/runtime/apps/server/src/codex_python.py",
+);
+const pythonBootstrap =
+  environment.PYTHON_BIN || environment.PYTHON || "python3";
+const pythonResolution = environment.CODEX_AGENTS_PYTHON
+  ? { status: 0, stdout: environment.CODEX_AGENTS_PYTHON }
+  : spawnSync(pythonBootstrap, [pythonResolver], {
+      encoding: "utf8",
+      env: environment,
+    });
+const pythonPath = pythonResolution.stdout?.trim();
 const stateRoot = mkdtempSync(join(tmpdir(), "codex-playwright-"));
 const outputDirectory = join(stateRoot, "playwright-output");
 mkdirSync(outputDirectory);
@@ -42,23 +61,6 @@ environment.HOME = isolatedHome;
 environment.CODEX_HOME = join(isolatedHome, ".codex");
 environment.CLAUDE_CONFIG_DIR = join(isolatedHome, ".claude");
 
-const repositoryRoot = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../../..",
-);
-const pythonResolver = join(
-  repositoryRoot,
-  "workspaces/runtime/apps/server/src/codex_python.py",
-);
-const pythonBootstrap =
-  environment.PYTHON_BIN || environment.PYTHON || "python3";
-const pythonResolution = environment.CODEX_AGENTS_PYTHON
-  ? { status: 0, stdout: environment.CODEX_AGENTS_PYTHON }
-  : spawnSync(pythonBootstrap, [pythonResolver], {
-      encoding: "utf8",
-      env: environment,
-    });
-const pythonPath = pythonResolution.stdout?.trim();
 const serverSourceDirectory = join(
   repositoryRoot,
   "workspaces/runtime/apps/server/src",

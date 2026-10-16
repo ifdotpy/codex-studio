@@ -481,6 +481,7 @@ test("accounts settings show per-server state and provider choices", async ({
   expect((await claudeCancelResponse).ok()).toBe(true);
   await expect(secondClaudeSignIn).toContainText("Sign-in cancelled.");
   await secondClaudeSignIn.getByLabel("Close", { exact: true }).click();
+  await expect(secondClaudeSignIn).toBeHidden();
   await expect(settings).toBeVisible();
 
   await accounts

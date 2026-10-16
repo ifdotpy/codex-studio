@@ -74,12 +74,15 @@ impl ClaudeSessionPort for ClaudePort {
                 .port
                 .request(SessionRequest {
                     scope: self.port.scope().clone(),
+                    expected_scope: None,
                     operation,
-                    actor: RequestActor {
+                    actor: Some(RequestActor {
                         agent: call.identity.scope.agent.clone(),
                         epoch: i64::try_from(call.identity.scope.epoch)
                             .map_err(|_| ControlError::Changed)?,
-                    },
+                    }),
+                    transfer: None,
+                    deleted_actor_session: None,
                     method: call.identity.method,
                     params: call.params,
                     deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(20))
@@ -121,17 +124,22 @@ pub struct HistoryPort {
     port: RetainedSessionPort,
     actor: RequestActor,
     runtime: tokio::runtime::Handle,
+    recovery_id: String,
+    read_step: u64,
 }
 impl HistoryPort {
     pub fn new(
         port: RetainedSessionPort,
         actor: RequestActor,
         runtime: tokio::runtime::Handle,
+        recovery_id: String,
     ) -> Self {
         Self {
             port,
             actor,
             runtime,
+            recovery_id,
+            read_step: 0,
         }
     }
 }
@@ -154,19 +162,16 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
         if scope != self.port.scope() {
             return Err(HistoryError::Identity);
         }
-        let query =
-            crate::event_write::request_signature(&json!([scope, method.as_str(), &params]));
-        let mut nonce = [0_u8; 16];
-        getrandom::fill(&mut nonce).map_err(|_| HistoryError::Unavailable)?;
-        let operation = format!(
-            "recovery-history:{query}:{}",
-            studio_runtime_store::sha256_hex(&nonce)
-        );
+        let operation = history_operation(&self.recovery_id, self.read_step, method, &params);
+        self.read_step = self.read_step.saturating_add(1);
         let receipt = self
             .runtime
             .block_on(self.port.request(SessionRequest {
                 scope: scope.clone(),
-                actor: self.actor.clone(),
+                expected_scope: None,
+                actor: Some(self.actor.clone()),
+                transfer: None,
+                deleted_actor_session: None,
                 operation,
                 method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
                 params,
@@ -185,5 +190,51 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
         self.runtime
             .block_on(self.port.barrier(scope, deadline))
             .map_err(history_error)
+    }
+}
+
+fn history_operation(
+    recovery_id: &str,
+    step: u64,
+    method: HistoryMethod,
+    params: &Value,
+) -> String {
+    let query = crate::event_write::request_signature(&json!([method.as_str(), params]));
+    format!("recovery-history:{recovery_id}:step:{step}:{query}")
+}
+
+#[cfg(test)]
+mod history_identity_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_history_identity_is_stable_per_command_and_query() {
+        let params = json!({"threadId":"thread-1","includeTurns":false});
+        let first = history_operation("recovery-1", 0, HistoryMethod::Thread, &params);
+        assert_eq!(
+            first,
+            history_operation("recovery-1", 0, HistoryMethod::Thread, &params)
+        );
+        assert_ne!(
+            first,
+            history_operation("recovery-1", 1, HistoryMethod::Thread, &params)
+        );
+        assert_ne!(
+            first,
+            history_operation("recovery-2", 0, HistoryMethod::Thread, &params)
+        );
+        assert_ne!(
+            first,
+            history_operation("recovery-1", 0, HistoryMethod::Turns, &params)
+        );
+        assert_ne!(
+            first,
+            history_operation(
+                "recovery-1",
+                0,
+                HistoryMethod::Thread,
+                &json!({"threadId":"thread-2","includeTurns":false})
+            )
+        );
     }
 }

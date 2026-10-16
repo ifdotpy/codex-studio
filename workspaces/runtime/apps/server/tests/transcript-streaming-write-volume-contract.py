@@ -17,12 +17,142 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_sync import SyncStore, TRANSCRIPT_MAX_TOMBSTONES
+import codex_sync_entities
 
 
 class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
+    @contextlib.contextmanager
+    def projected_store(self, item_count=3, before_writer=None):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sync.sqlite3'
+            writer = sqlite3.connect(path)
+            writer.execute('PRAGMA journal_mode=WAL')
+            sql = []
+
+            class Connection(sqlite3.Connection):
+                def execute(db, statement, parameters=()):
+                    if statement == 'BEGIN IMMEDIATE' and before_writer is not None:
+                        before_writer(writer)
+                    return super().execute(statement, parameters)
+
+            @contextlib.contextmanager
+            def connect():
+                db = sqlite3.connect(path, timeout=.05, factory=Connection)
+                db.set_trace_callback(sql.append)
+                try:
+                    with db:
+                        yield db
+                finally:
+                    db.close()
+
+            items = [{'id': f'msg-{i}', 'text': 'body', 'role': 'assistant'}
+                     for i in range(item_count)]
+            payload = {'items': items, 'agent': {'id': 'fixture'}}
+            store = SyncStore(connect, lambda _key: payload)
+            try:
+                yield store, writer, payload, sql
+            finally:
+                writer.rollback()
+                writer.close()
+
+    def test_projected_full_and_sparse_replays_do_not_claim_the_writer(self):
+        # A held external writer must not delay a replay of existing hashes,
+        # regardless of whether the client needs a full page or a sparse delta.
+        with self.projected_store() as (store, writer, payload, sql):
+            scope = 'transcript:fixture'
+            first = store.transcript_pull(scope, 0, payload, False)
+            cursor = first['checkpoint']['seq']
+            other = store.transcript_pull('transcript:other', 0, {'items': []}, False)
+            payload['items'][0]['text'] = 'changed body'
+            changed = store.transcript_pull(scope, cursor, payload, False)
+            high = changed['checkpoint']['seq']
+            expected_full = store.transcript_pull(scope, 0, payload, False)
+            writer.execute('BEGIN IMMEDIATE')
+            sql.clear()
+            with patch.object(codex_sync_entities, 'next_sequence', side_effect=AssertionError(
+                    'A projected replay must not allocate a sequence')):
+                self.assertEqual(store.transcript_pull(scope, 0, payload, False), expected_full)
+                self.assertEqual(store.transcript_pull(scope, cursor, payload, False), changed)
+                caught_up = store.transcript_pull(scope, high, payload, False)
+                self.assertEqual(caught_up['documents'], [])
+                self.assertEqual(caught_up['checkpoint']['seq'], high)
+                self.assertEqual(store.transcript_pull(
+                    'transcript:other', 0, {'items': []}, False), other)
+            self.assertNotIn('BEGIN IMMEDIATE', sql)
+            self.assertFalse(any(statement.split()[0].upper() in {'INSERT', 'UPDATE', 'DELETE'}
+                                 for statement in sql))
+            sparse = json.loads(changed['documents'][0]['payload'])
+            self.assertTrue(sparse['delta'])
+            self.assertEqual([item['id'] for item in sparse['items']], ['msg-0'])
+
+    def test_projected_tombstone_floor_and_deleted_replays_are_reads(self):
+        with self.projected_store(TRANSCRIPT_MAX_TOMBSTONES + 2) as (store, writer, payload, sql):
+            scope = 'transcript:fixture'
+            first = store.transcript_pull(scope, 0, payload, False)
+            stale_cursor = first['checkpoint']['seq']
+            payload['items'].clear()
+            changed = store.transcript_pull(scope, stale_cursor, payload, False)
+            full = store.transcript_pull(scope, stale_cursor, payload, False)
+            self.assertNotIn('delta', json.loads(full['documents'][0]['payload']))
+            writer.execute('BEGIN IMMEDIATE')
+            sql.clear()
+            with patch.object(codex_sync_entities, 'next_sequence', side_effect=AssertionError(
+                    'A replay below the retained tombstone floor must remain a read')):
+                self.assertEqual(store.transcript_pull(scope, stale_cursor, payload, False), full)
+            self.assertNotIn('BEGIN IMMEDIATE', sql)
+            writer.rollback()
+            deleted = store.transcript_pull(scope, changed['checkpoint']['seq'], {}, True)
+            writer.execute('BEGIN IMMEDIATE')
+            sql.clear()
+            with patch.object(codex_sync_entities, 'next_sequence', side_effect=AssertionError(
+                    'An existing deleted page must not allocate a sequence')):
+                replay = store.transcript_pull(scope, stale_cursor, {}, True)
+                self.assertTrue(replay['documents'][0]['_deleted'])
+                self.assertEqual(replay['checkpoint'], deleted['checkpoint'])
+                replay = store.transcript_pull(scope, 0, {}, True)
+                self.assertTrue(replay['documents'][0]['_deleted'])
+                self.assertEqual(replay['checkpoint'], deleted['checkpoint'])
+            self.assertNotIn('BEGIN IMMEDIATE', sql)
+
+    def test_changed_projection_rereads_after_reserving_the_writer(self):
+        competing_change = []
+
+        def remove_prior_hash(writer):
+            if competing_change:
+                competing_change.pop()
+                writer.execute("DELETE FROM sync_entities WHERE collection='transcript:fixture' AND id='item:msg-1'")
+                writer.commit()
+
+        with self.projected_store(before_writer=remove_prior_hash) as (store, writer, payload, sql):
+            scope = 'transcript:fixture'
+            first = store.transcript_pull(scope, 0, payload, False)
+            payload['items'][0]['text'] = 'changed body'
+            competing_change.append(True)
+            original = codex_sync_entities.next_sequence
+            with patch.object(codex_sync_entities, 'next_sequence', wraps=original) as allocate:
+                sql.clear()
+                changed = store.transcript_pull(scope, first['checkpoint']['seq'], payload, False)
+            self.assertEqual(allocate.call_count, 1)
+            self.assertEqual(sql.count('BEGIN IMMEDIATE'), 1)
+            writer_position = sql.index('BEGIN IMMEDIATE')
+            self.assertIn('ROLLBACK', sql[:writer_position])
+            ledger_reads = [index for index, statement in enumerate(sql)
+                            if statement.startswith('SELECT id,seq,hash,deleted FROM sync_entities')
+                            and 'AND seq>' not in statement]
+            self.assertEqual(len(ledger_reads), 2)
+            self.assertLess(ledger_reads[0], writer_position)
+            self.assertGreater(ledger_reads[1], writer_position)
+            self.assertGreater(changed['checkpoint']['seq'], first['checkpoint']['seq'])
+            projected = json.loads(changed['documents'][0]['payload'])
+            self.assertEqual({item['id'] for item in projected['items']}, {'msg-0', 'msg-1'})
+            self.assertIsNotNone(writer.execute("SELECT hash FROM sync_entities WHERE "
+                                               "collection='transcript:fixture' AND id='item:msg-1'").fetchone())
+            self.assertEqual(store.transcript_pull(scope, changed['checkpoint']['seq'], payload, False)['documents'], [])
+
     @staticmethod
     def prepare_revision(store, connect):
         store._ensure_versions()

@@ -29,7 +29,10 @@ import { fileURLToPath } from "node:url";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
-import { createSessionStore } from "./session-store.mjs";
+import {
+  createSessionStore,
+  ephemeralSessionOptions,
+} from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
@@ -1020,11 +1023,14 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
-    const mode = permissionMode(s, p);
+    const titleOptions = ephemeralSessionOptions(s);
+    const mode = titleOptions.permissionMode || permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
+        // Match Python's --no-session-persistence and --tools "" title flags.
+        ...titleOptions,
         model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }

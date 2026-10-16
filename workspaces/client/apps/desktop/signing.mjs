@@ -7,6 +7,7 @@ import {
   existsSync,
   openSync,
   closeSync,
+  readdirSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -116,17 +117,31 @@ export function signLinuxVM(target, identity = signingIdentity()) {
     timeout: 10_000,
   });
 }
-export function signApplication(application, identity = signingIdentity()) {
-  // External Python callers can import these modules without -B. Cache writes
-  // would add unsealed resources after installation and invalidate the bundle.
-  const scripts = path.join(
-    application,
-    "Contents/Resources/workspace/scripts",
-  );
-  if (existsSync(scripts)) {
-    const cache = path.join(scripts, "__pycache__");
+// Every folder with Python modules gets an empty read-only __pycache__.
+function guardBytecode(directory) {
+  const entries = readdirSync(directory, { withFileTypes: true });
+  if (entries.some((entry) => entry.isFile() && entry.name.endsWith(".py"))) {
+    const cache = path.join(directory, "__pycache__");
     mkdirSync(cache, { recursive: true });
     chmodSync(cache, 0o555);
+  }
+  for (const entry of entries) {
+    if (
+      entry.isDirectory() &&
+      entry.name !== "__pycache__" &&
+      entry.name !== "node_modules"
+    )
+      guardBytecode(path.join(directory, entry.name));
+  }
+}
+export function signApplication(application, identity = signingIdentity()) {
+  // External Python callers (a VM helper child, the host_exec service) can import
+  // these modules without -B. Cache writes would add unsealed resources after
+  // installation, invalidate the bundle, and fail the update of a paired Mac.
+  const workspace = path.join(application, "Contents/Resources/workspace");
+  if (existsSync(workspace)) guardBytecode(workspace);
+  const scripts = path.join(workspace, "scripts");
+  if (existsSync(scripts)) {
     // The updater opens this lease on its first tick. Create it before sealing
     // resources, and preserve the inode and contents of an existing lease.
     closeSync(openSync(path.join(scripts, ".studio-update.lock"), "a"));

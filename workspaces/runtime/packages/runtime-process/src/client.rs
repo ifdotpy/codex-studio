@@ -2,12 +2,12 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::provider_shared::{
-    handshake_request, request_value, response_value, validate_handshake,
+    SupervisorRequest, handshake_request, request_frame, response_value, validate_handshake,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::*;
-use crate::transport::{SupervisorTransport, read_frame, write_frame};
+use crate::transport::{SupervisorTransport, read_frame, write_frame, write_frame_bytes};
 
 const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -112,7 +112,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         self.call(SupervisorAction::Detach, request)
     }
 
-    fn call<R: Serialize, O: for<'de> Deserialize<'de>>(
+    fn call<R: Serialize + SupervisorRequest, O: for<'de> Deserialize<'de>>(
         &mut self,
         action: SupervisorAction,
         request: R,
@@ -121,8 +121,8 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
             SupervisorError::InvalidFrame("request identity space exhausted".into())
         })?;
         let request_id = self.next_request_id;
-        let value = request_value(action, request_id, request)?;
-        if let Err(error) = write_frame(self.stream.get_mut(), &value) {
+        let frame = request_frame(action, request_id, request)?;
+        if let Err(error) = write_frame_bytes(self.stream.get_mut(), &frame) {
             return match error {
                 SupervisorError::Io(_) => {
                     Err(SupervisorError::UnknownOutcome { action, request_id })

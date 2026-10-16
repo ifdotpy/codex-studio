@@ -24,6 +24,7 @@ import uuid
 
 from codex_shared_values import (
     MAX_PROJECT_SECRET_VALUE_BYTES,
+    PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS,
     project_secret_value_limit_label,
 )
 
@@ -46,18 +47,21 @@ def _names(project_id: str, result: Any) -> dict[str, Any]:
 
 def list_names(client: GuestClient, project_id: str) -> dict[str, Any]:
     """The names of the project's secrets. No call returns a value."""
-    return _names(project_id, client.call('secrets.list', {'projectId': project_id}, timeout=30))
+    return _names(project_id, client.call('secrets.list', {'projectId': project_id},
+                                          timeout=PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS))
 
 
 def set_secret(client: GuestClient, project_id: str, name: str, value: str, request_id: str) -> dict[str, Any]:
     """Set one secret. A repeated request ID returns the saved reply and does not set it again."""
     return _names(project_id, client.call('secrets.set', {'projectId': project_id, 'name': name, 'value': value},
-                                          request_id='secrets-set:' + request_id, timeout=30))
+                                          request_id='secrets-set:' + request_id,
+                                          timeout=PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS))
 
 
 def remove_secret(client: GuestClient, project_id: str, name: str, request_id: str) -> dict[str, Any]:
     return _names(project_id, client.call('secrets.remove', {'projectId': project_id, 'name': name},
-                                          request_id='secrets-remove:' + request_id, timeout=30))
+                                          request_id='secrets-remove:' + request_id,
+                                          timeout=PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS))
 
 
 def read_value(stdin: Any = None) -> str:

@@ -71,9 +71,7 @@ class RustCatalogHttpContract(unittest.TestCase):
             raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
         cls.backend = BackendProcess(Path(scratch))
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-        # The harness installs a replay executable and a disposable auth file.
-        # Keep the account signed out so even startup cannot launch that provider.
-        (cls.backend.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        # The provider executable and credentials are disposable replay fixtures.
         missing_home = cls.backend.root / "missing-profile"
         malformed_home = cls.backend.root / "malformed-profile"
         malformed_home.mkdir()
@@ -101,9 +99,14 @@ class RustCatalogHttpContract(unittest.TestCase):
                 **agent, "id": "catalog-http-vm-agent", "name": "Catalog VM probe",
                 "executionMode": "vm",
             }
+            unavailable_agent = {
+                **agent, "id": "catalog-http-unavailable-agent",
+                "name": "Catalog unavailable account probe", "accountKey": "missing-session",
+            }
             with runtime.lock, runtime.db() as connection:
                 runtime.put(connection, "agents", agent, sync_rooms=False)
                 runtime.put(connection, "agents", vm_agent, sync_rooms=False)
+                runtime.put(connection, "agents", unavailable_agent, sync_rooms=False)
                 runtime.put(connection, "tasks", {
                     "id": "catalog-http-active-command", "agent": agent["id"],
                     "kind": "command", "status": "running", "processId": "44",
@@ -150,7 +153,7 @@ class RustCatalogHttpContract(unittest.TestCase):
             ["default", "disconnected", "duplicate", "malformed"],
         )
         accounts = {account["id"]: account for account in body["accounts"]}
-        self.assertEqual(accounts["default"]["status"], "signedOut")
+        self.assertEqual(accounts["default"]["status"], "ready")
         self.assertEqual(accounts["disconnected"]["status"], "ready")
         self.assertTrue(accounts["disconnected"]["disconnected"])
         self.assertEqual(accounts["disconnected"]["accountId"], "stale-id")
@@ -339,7 +342,21 @@ class RustCatalogHttpContract(unittest.TestCase):
             }],
         )
 
-    def test_finder_view_uses_host_record_and_refuses_vm_dependency(self) -> None:
+    def test_missing_provider_session_discovery_is_returned_as_errors(self) -> None:
+        skills = self.backend.request(
+            "GET", "/api/skills?agent=catalog-http-unavailable-agent",
+        )
+        assert_status(skills, 200)
+        self.assertEqual(skills.json()["skills"], [])
+        self.assertTrue(skills.json()["errors"])
+
+        capabilities = self.backend.request(
+            "GET", "/api/capabilities?agent=catalog-http-unavailable-agent",
+        )
+        assert_status(capabilities, 200)
+        self.assertTrue(capabilities.json()["errors"])
+
+    def test_finder_view_uses_host_record_and_projects_vm_status(self) -> None:
         host = self.backend.request(
             "GET", "/api/agents/finder-view?agent=catalog-http-agent",
         )
@@ -350,18 +367,12 @@ class RustCatalogHttpContract(unittest.TestCase):
         vm = self.backend.request(
             "GET", "/api/agents/finder-view?agent=catalog-http-vm-agent",
         )
-        if self.rust_backend:
-            assert_status(vm, 501)
-            self.assertEqual(vm.json(), {
-                "error": "Not implemented: requires vm-agents/finder-view",
-            })
-        else:
-            assert_status(vm, 200)
-            self.assertEqual(vm.json(), {
-                "kind": "vm", "state": "unmounted", "path": None, "error": None,
-            })
+        assert_status(vm, 200)
+        self.assertEqual(vm.json(), {
+            "kind": "vm", "state": "unmounted", "path": None, "error": None,
+        })
 
-    def test_native_command_input_and_sync_notify_refuse_without_provider_or_writes(self) -> None:
+    def test_native_command_input_queues_a_durable_message_without_request_id(self) -> None:
         before = self.backend.received_provider_frames()
         if not self.rust_backend:
             self.skipTest("Python native-command input uses its existing event driver")
@@ -373,28 +384,24 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        assert_status(command, 501)
-        self.assertEqual(command.json(), {
-            "error": "Not implemented: requires turn-path/native-command-input",
-        })
+        assert_status(command, 200)
+        self.assertEqual(command.json()["status"], "queued")
         self.assertEqual(self.backend.received_provider_frames(), before)
         with sqlite3.connect(
             f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True,
         ) as connection:
-            row = connection.execute(
-                "SELECT record FROM runtime_tasks WHERE id=?",
-                ("catalog-http-active-command",),
+            event = connection.execute(
+                "SELECT text FROM runtime_events WHERE agent=? ORDER BY created DESC LIMIT 1",
+                ("catalog-http-agent",),
             ).fetchone()
-        self.assertIsNotNone(row)
-        task = json.loads(row[0])
-        self.assertEqual(task["status"], "running")
-        self.assertEqual(task["processId"], "44")
+        self.assertIsNotNone(event)
+        self.assertIn('native write_stdin tool for session 44', event[0])
+        self.assertIn('exactly this JSON string as chars: "x".', event[0])
 
-    def test_native_command_cancel_uses_the_exact_scripted_session(self) -> None:
+    def test_native_command_cancel_lists_exact_item_before_terminating(self) -> None:
         if not self.rust_backend:
-            self.skipTest(
-                "Python startup recovery marks the seeded command lost before the request"
-            )
+            self.skipTest("Python startup recovery marks the seeded command lost before the request")
+        before = self.backend.received_provider_frames()
         response = self.backend.request(
             "POST", "/api/native-command",
             body={"id": "catalog-http-active-command", "action": "cancel"},
@@ -405,11 +412,13 @@ class RustCatalogHttpContract(unittest.TestCase):
         )
         assert_status(response, 200)
         self.assertEqual(response.json(), {"terminated": True})
-        methods = [
-            frame.get("method") for frame in self.backend.received_provider_frames()
-        ]
-        self.assertIn("thread/backgroundTerminals/list", methods)
-        self.assertIn("thread/backgroundTerminals/terminate", methods)
+        frames = self.backend.received_provider_frames()[len(before):]
+        self.assertEqual(
+            [frame.get("method") for frame in frames if frame.get("method") in {
+                "thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate",
+            }],
+            ["thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate"],
+        )
 
     def test_sync_notify_contract(self) -> None:
         notify = self.backend.request(
@@ -443,25 +452,14 @@ class RustCatalogHttpContract(unittest.TestCase):
             "location": ["query", "extra"],
         })
 
-    def test_uncached_limits_declares_the_live_provider_dependency(self) -> None:
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest(
-                "Python's uncached limits route starts a provider read; the Rust partial contract is 501"
-            )
+    def test_uncached_limits_reports_runtime_provider_failure_as_a_snapshot(self) -> None:
         result = self.backend.request("GET", "/api/limits?account_key=disconnected")
-        assert_status(result, 501)
-        self.assertEqual(
-            result.json(),
-            {"error": "Not implemented: requires provider-session/account-rate-limits"},
-        )
-        methods = {frame.get("method") for frame in self.backend.received_provider_frames()}
-        self.assertNotIn("account/rateLimits/read", methods)
+        assert_status(result, 200)
+        value = result.json()
+        self.assertEqual(value["accountKey"], "disconnected")
+        self.assertTrue(value.get("data") is not None or value.get("error"))
 
-    def test_models_unknown_account_validation_remains_a_python_only_contract(self) -> None:
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest(
-                "Known gap: Rust GET /api/models remains 501 until provider-session/model-list lands"
-            )
+    def test_models_unknown_account_validation_matches_both_backends(self) -> None:
         result = self.backend.request("GET", "/api/models?account_key=not-registered")
         assert_status(result, 400)
         self.assertEqual(result.json(), {"error": "Unknown Codex account"})

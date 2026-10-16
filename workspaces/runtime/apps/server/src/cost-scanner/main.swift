@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
 
+// Parity-checked against Python's COST_REPORT_HISTORY_DAYS.
+private let costReportHistoryDays = 30
+
 private struct Arguments {
     let home: URL
     let cache: URL
@@ -266,7 +269,7 @@ private func scan(_ arguments: Arguments) throws -> CostPayload {
         currencyCode: "USD",
         sessionTokens: today?.totalTokens,
         sessionCostUSD: today?.costUSD,
-        historyDays: 30,
+        historyDays: costReportHistoryDays,
         last30DaysTokens: report.summary?.totalTokens,
         last30DaysCostUSD: report.summary?.totalCostUSD,
         daily: daily,

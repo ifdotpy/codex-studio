@@ -155,6 +155,25 @@ impl TerminalsRepository {
         Ok(())
     }
 
+    pub fn delete(transaction: &rusqlite::Transaction<'_>, id: &str) -> StoreResult<()> {
+        transaction.execute("DELETE FROM user_terminal_output WHERE terminal=?1", [id])?;
+        transaction.execute(
+            "DELETE FROM user_terminal_event_cursor WHERE terminal=?1",
+            [id],
+        )?;
+        transaction.execute(
+            "DELETE FROM user_terminal_decoder_state WHERE terminal=?1",
+            [id],
+        )?;
+        transaction.execute("DELETE FROM user_terminals WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    pub fn delete_receipt(transaction: &rusqlite::Transaction<'_>, id: &str) -> StoreResult<()> {
+        transaction.execute("DELETE FROM user_terminal_receipts WHERE id=?1", [id])?;
+        Ok(())
+    }
+
     pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<(String, String)>> {
         connection
             .query_row(
@@ -198,7 +217,7 @@ impl TerminalsRepository {
         end: i64,
         limit: i64,
     ) -> StoreResult<Vec<(i64, i64, String)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT start,end,text FROM user_terminal_output \
              WHERE terminal=?1 AND end>?2 AND start<?3 ORDER BY start LIMIT ?4",
         )?;

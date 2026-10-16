@@ -39,6 +39,7 @@ _KERNEL_SHA256 = '71fe6776ef591ea452661a5933e11d2044c5df6aaf76cf39b8d9655fa4e479
 _INITRD_URL = 'https://cloud-images.ubuntu.com/releases/noble/release-20260926/unpacked/ubuntu-24.04-server-cloudimg-arm64-initrd-generic'
 _INITRD_SHA256 = 'f77f65eccd619be537e44a7bb2664048e27f20fc8c8e7d4eeb5cf63d0c8cd213'
 _MAX_FRAME = 2 * 1024 * 1024
+GUEST_REQUEST_ID_MAX_CHARS = 128
 
 
 class LinuxVMError(RuntimeError):
@@ -388,12 +389,12 @@ timeout --kill-after=5 600 dpkg --configure -a || true
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd setfacl; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd setfacl apparmor_parser; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
 if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd acl
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd acl apparmor
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
@@ -458,7 +459,7 @@ if [ "$(codex --version 2>/dev/null || true)" != 'codex-cli @CODEX@' ]; then
     (cd /tmp && sha256sum -c codex-check)
     failure_cause=
     mkdir -p /opt/codex-studio/codex
-    tar -xzf "/tmp/$asset" -C /opt/codex-studio/codex
+    tar --no-same-owner -xzf "/tmp/$asset" -C /opt/codex-studio/codex
     # The release package contains the CLI and its companion executables.
     ln -sf /opt/codex-studio/codex/bin/codex /usr/local/bin/codex
     rm "/tmp/$asset" /tmp/codex-sums /tmp/codex-check
@@ -493,7 +494,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     files = []
     for path in sorted(guest_dir.rglob('*')):
         if (path.is_file() and not path.is_symlink() and '__pycache__' not in path.parts
-                and path.suffix in {'.py', '.sh', '.service'} and not path.name.startswith('test')
+                and path.suffix in {'.py', '.sh', '.service', '.apparmor'} and not path.name.startswith('test')
                 and path.name not in {'workspace.py', 'namespace_exec.py'}):
             files.append({'path': '/opt/codex-studio/vm/guest/' + path.relative_to(guest_dir).as_posix(),
                           'permissions': '0644', 'encoding': 'gz+b64',
@@ -1115,8 +1116,8 @@ class Client:
     def stream(self, method: str, params: dict[str, Any] | None = None, *, request_id: str | None = None,
                timeout: float = 60) -> Iterator[dict[str, Any]]:
         identity = request_id if request_id is not None else str(uuid.uuid4())
-        if not isinstance(identity, str) or not 1 <= len(identity) <= 128:
-            raise LinuxVMError('Guest request IDs must have 1 to 128 characters.')
+        if not isinstance(identity, str) or not 1 <= len(identity) <= GUEST_REQUEST_ID_MAX_CHARS:
+            raise LinuxVMError(f'Guest request IDs must have 1 to {GUEST_REQUEST_ID_MAX_CHARS} characters.')
         maximum = 9000 if method == 'host.exec' else 3600
         if not 0 < timeout <= maximum:
             raise LinuxVMError(f'Guest request timeout must be between 0 and {maximum} seconds.')

@@ -10,10 +10,9 @@ use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::AgentStatus;
 use thiserror::Error;
 
+use crate::agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind};
 use crate::event_write::{python_strip, truthy};
 
-const MAX_ROWS: usize = 10_000;
-const MAX_RECORD_BYTES: usize = 1_048_576;
 const MAX_SAFE_EPOCH: i64 = MAX_SAFE_INTEGER;
 const BRIEF_FIELDS: &[&str] = &[
     "id",
@@ -55,6 +54,20 @@ pub enum Action {
     Stop {
         target: String,
         descendants: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_epoch: Option<i64>,
+    },
+    RemoteStop {
+        principal: String,
+        link: String,
+        target: String,
+        request_id: String,
+        control_epoch: i64,
+        reason: String,
     },
     Delete {
         target: String,
@@ -139,17 +152,9 @@ struct Work {
     record: Value,
 }
 
-#[derive(Deserialize)]
-struct VoiceSession {
-    agent: String,
-    state: Option<String>,
-    ended: Option<f64>,
-}
-
 pub struct ManagementSnapshot {
     agents: Vec<Agent>,
     work: Vec<Work>,
-    voice_sessions: Vec<VoiceSession>,
     tables: BTreeMap<String, Vec<Value>>,
 }
 
@@ -164,6 +169,8 @@ pub struct Decision {
     pub result: Value,
     pub writes: Vec<RowWrite>,
     pub cancel_pending: Vec<String>,
+    #[serde(skip)]
+    pub(crate) effects: Vec<LifecycleEffect>,
 }
 impl Decision {
     fn result(result: Value) -> Self {
@@ -171,6 +178,7 @@ impl Decision {
             result,
             writes: Vec::new(),
             cancel_pending: Vec::new(),
+            effects: Vec::new(),
         }
     }
     fn write(&mut self, table: &str, record: Value) {
@@ -186,13 +194,7 @@ impl ManagementSnapshot {
     pub fn from_records(records: Records) -> Result<Self, ManagementError> {
         let mut agents = Vec::new();
         let mut work = Vec::new();
-        let mut voice_sessions = Vec::new();
         for (table, rows) in &records.tables {
-            if rows.len() > MAX_ROWS {
-                return Err(ManagementError::Unavailable(
-                    "agent-management/snapshot-limit",
-                ));
-            }
             let mut ids = BTreeSet::new();
             for row in rows {
                 let id = row.get("id").and_then(Value::as_str).unwrap_or("<missing>");
@@ -200,21 +202,13 @@ impl ManagementSnapshot {
                     table: table.clone(),
                     id: id.to_owned(),
                 };
-                if !row.is_object()
-                    || id == "<missing>"
-                    || !ids.insert(id)
-                    || row.to_string().len() > MAX_RECORD_BYTES
-                {
+                if !row.is_object() || id == "<missing>" || !ids.insert(id) {
                     return Err(invalid());
                 }
                 if let Some(schema) = studio_runtime_schema::table_schema(table)
                     && !studio_runtime_schema::validate(schema, row).map_err(|_| invalid())?
                 {
                     return Err(invalid());
-                }
-                if table == "voice_sessions" {
-                    voice_sessions
-                        .push(serde_json::from_value(row.clone()).map_err(|_| invalid())?);
                 }
                 if table == "runtime_work" {
                     work.push(Work {
@@ -233,7 +227,6 @@ impl ManagementSnapshot {
         Ok(Self {
             agents,
             work,
-            voice_sessions,
             tables: records.tables,
         })
     }
@@ -284,6 +277,41 @@ impl ManagementSnapshot {
         }
         Ok(target)
     }
+    fn authorize_interrupt(
+        &self,
+        sender: &str,
+        epoch: i64,
+        target: &str,
+    ) -> Result<(&Agent, &Agent), ManagementError> {
+        let sender = self.agent(sender)?;
+        if sender.flag("deletedAt")
+            || sender.identity.auto_wake != Some(true)
+            || sender.identity.epoch != epoch
+        {
+            return Err(ManagementError::Invalid("Sender was stopped"));
+        }
+        let target_agent = self.agent(target)?;
+        if target_agent.identity.root_id != sender.identity.root_id
+            || target_agent.id() == sender.id()
+        {
+            return Err(ManagementError::Invalid(
+                "You can interrupt only your descendants",
+            ));
+        }
+        let mut current = target_agent;
+        let mut seen = BTreeSet::new();
+        while current.identity.parent_id.as_deref() != Some(sender.id()) {
+            if !seen.insert(current.id()) {
+                return Err(ManagementError::Invalid(
+                    "You can interrupt only your descendants",
+                ));
+            }
+            current = self.agent(current.identity.parent_id.as_deref().ok_or(
+                ManagementError::Invalid("You can interrupt only your descendants"),
+            )?)?;
+        }
+        Ok((sender, target_agent))
+    }
     fn descendants(&self, target: &str, descendants: bool) -> Result<Vec<&Agent>, ManagementError> {
         self.agent(target)?;
         let mut ids = BTreeSet::from([target]);
@@ -310,6 +338,18 @@ impl ManagementSnapshot {
             .filter(|a| ids.contains(a.id()))
             .collect())
     }
+    /// Owner scope needed by delete to retain the same complete recursive
+    /// descendant set while avoiding unrelated lifecycle history reads.
+    pub(crate) fn delete_owner_scope(
+        &self,
+        target: &str,
+    ) -> Result<BTreeSet<String>, ManagementError> {
+        Ok(self
+            .descendants(target, true)?
+            .into_iter()
+            .map(|agent| agent.id().to_owned())
+            .collect())
+    }
     fn owned<'a>(&'a self, table: &str, field: &str, agent: &str) -> Vec<&'a Value> {
         self.rows(table)
             .iter()
@@ -327,31 +367,63 @@ impl ManagementSnapshot {
         }
         Ok(())
     }
+    fn has_active_voice_session(&self, agent: &Agent) -> bool {
+        self.rows("voice_sessions").iter().any(|session| {
+            session.get("agent").and_then(Value::as_str) == Some(agent.id())
+                && session.get("state").is_some_and(|state| !state.is_null())
+                && session.get("ended").is_none_or(Value::is_null)
+        })
+    }
     fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
-        if agent.active()
-            || [
-                "threadId",
-                "turnId",
-                "startAttempt",
-                "workspaceOperation",
-                "accountTransferId",
-            ]
-            .iter()
-            .any(|key| agent.flag(key))
+        self.stop_effects(agent, &mut Vec::new(), false, false)
+    }
+    fn stop_effects(
+        &self,
+        agent: &Agent,
+        effects: &mut Vec<LifecycleEffectKind>,
+        live: bool,
+        deleting: bool,
+    ) -> Result<(), ManagementError> {
+        let mut stage = |kind: LifecycleEffectKind| {
+            if !live {
+                return Err(ManagementError::Unavailable(kind.dependency()));
+            }
+            effects.push(kind);
+            Ok(())
+        };
+        let capacity_retry_is_local = agent
+            .record
+            .pointer("/capacityRetry/id")
+            .and_then(Value::as_str)
+            .zip(
+                agent
+                    .record
+                    .pointer("/startAttempt/capacityRetryId")
+                    .and_then(Value::as_str),
+            )
+            .is_some_and(|(retry_id, attempt_retry_id)| {
+                retry_id == attempt_retry_id
+                    && agent
+                        .record
+                        .pointer("/startAttempt/submitted")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+            });
+        if !capacity_retry_is_local
+            && (agent.active()
+                || [
+                    "threadId",
+                    "turnId",
+                    "startAttempt",
+                    "workspaceOperation",
+                    "accountTransferId",
+                ]
+                .iter()
+                .any(|key| agent.flag(key)))
         {
-            return Err(ManagementError::Unavailable(
-                "account-worker/agent-interrupt",
-            ));
+            stage(LifecycleEffectKind::Interrupt)?;
         }
-        if ["remoteWorker", "remoteAnchor", "remoteOrigin"]
-            .iter()
-            .any(|key| agent.flag(key))
-        {
-            return Err(ManagementError::Unavailable(
-                "cross-server/agent-management",
-            ));
-        }
-        if agent.flag("capacityRetry")
+        if (agent.flag("capacityRetry") && !capacity_retry_is_local)
             || agent
                 .record
                 .get("usageResume")
@@ -359,31 +431,19 @@ impl ManagementSnapshot {
                 .and_then(Value::as_str)
                 .is_some_and(|s| matches!(s, "scheduled" | "started"))
         {
-            return Err(ManagementError::Unavailable("usage-policy/agent-stop"));
+            stage(LifecycleEffectKind::CancelResume)?;
         }
         if self
             .owned("runtime_monitors", "agent", agent.id())
             .iter()
             .any(|r| is_status(r, &["starting", "running", "approval"]))
         {
-            return Err(ManagementError::Unavailable("monitor-driver/agent-stop"));
+            stage(LifecycleEffectKind::CancelMonitors)?;
         }
-        if self.voice_sessions.iter().any(|session| {
-            session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
-        }) {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
+        if !deleting && self.has_active_voice_session(agent) {
+            stage(LifecycleEffectKind::VoiceStop)?;
         }
         Ok(())
-    }
-    fn has_voice_data(&self, agent: &Agent) -> bool {
-        [
-            "voice_sessions",
-            "voice_records",
-            "voice_deliveries",
-            "voice_approvals",
-        ]
-        .iter()
-        .any(|table| !self.owned(table, "agent", agent.id()).is_empty())
     }
     fn blockers(&self, agent: &Agent, unassign: bool) -> Vec<Value> {
         let mut blocks = Vec::new();
@@ -477,6 +537,20 @@ fn is_status(row: &Value, statuses: &[&str]) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|s| statuses.contains(&s))
 }
+
+fn has_releasable_deleted_work(snapshot: &ManagementSnapshot, agents: &[&Agent]) -> bool {
+    agents.iter().any(|agent| {
+        agent.identity.parent_id.is_some()
+            && snapshot.work.iter().any(|work| {
+                work.identity.owner.as_deref() == Some(agent.id())
+                    && work
+                        .identity
+                        .status
+                        .as_deref()
+                        .is_some_and(|status| ["ready", "running", "blocked"].contains(&status))
+            })
+    })
+}
 fn brief(record: &Value) -> Value {
     Value::Object(
         BRIEF_FIELDS
@@ -499,16 +573,19 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
         .ok_or(ManagementError::Invalid("Agent epoch limit reached"))
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
+    let image_removed = agent
+        .record
+        .get("imageWorkspacePhase")
+        .and_then(Value::as_str)
+        == Some("removed");
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || [
-            "imageWorkspaceReady",
-            "worktreeReady",
-            "worktreeCleanup",
-            "cleanedWorktree",
-            "cleanedImageWorkspace",
-        ]
-        .iter()
-        .any(|key| agent.flag(key))
+        || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
+            .iter()
+            .any(|key| agent.flag(key))
+        || (!image_removed
+            && ["imageWorkspaceReady", "cleanedImageWorkspace"]
+                .iter()
+                .any(|key| agent.flag(key)))
     {
         return Err(ManagementError::Unavailable(
             "workspace-state/agent-lifecycle",
@@ -523,6 +600,27 @@ pub fn decide(
     action: &Action,
     now: f64,
 ) -> Result<Decision, ManagementError> {
+    let decision = decide_inner(snapshot, action, now, false)?;
+    if let Some(effect) = decision.effects.first() {
+        return Err(ManagementError::Unavailable(effect.kind().dependency()));
+    }
+    Ok(decision)
+}
+
+pub(crate) fn decide_with_effects(
+    snapshot: &ManagementSnapshot,
+    action: &Action,
+    now: f64,
+) -> Result<Decision, ManagementError> {
+    decide_inner(snapshot, action, now, true)
+}
+
+fn decide_inner(
+    snapshot: &ManagementSnapshot,
+    action: &Action,
+    now: f64,
+    live: bool,
+) -> Result<Decision, ManagementError> {
     if !now.is_finite() || now <= 0.0 {
         return Err(ManagementError::Invalid("Invalid lifecycle timestamp"));
     }
@@ -530,8 +628,96 @@ pub fn decide(
         Action::Stop {
             target,
             descendants,
-        } => stop(snapshot, target, *descendants, false, now),
-        Action::Delete { target } => stop(snapshot, target, true, true, now),
+            reason,
+            sender,
+            sender_epoch,
+        } => {
+            let reason = if let Some(sender) = sender {
+                let epoch = sender_epoch.ok_or(ManagementError::Invalid("senderEpoch"))?;
+                let (sender, _) = snapshot.authorize_interrupt(sender, epoch, target)?;
+                Some(
+                    format!(
+                        "Stopped by agent {}",
+                        sender
+                            .record
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(sender.id())
+                    )
+                    .chars()
+                    .take(160)
+                    .collect(),
+                )
+            } else {
+                reason.clone()
+            };
+            stop(
+                snapshot,
+                target,
+                StopOptions {
+                    descendants: *descendants,
+                    delete: false,
+                    reason: reason.as_deref(),
+                    now,
+                    live,
+                    remote_request: None,
+                },
+            )
+        }
+        Action::RemoteStop {
+            principal,
+            link,
+            target,
+            request_id,
+            control_epoch,
+            reason,
+        } => {
+            let agent = snapshot.agent(target)?;
+            let expected = json!({"server":principal,"link":link});
+            if agent.record.get("remoteWorker") != Some(&expected) || !agent.flag("movedTo") {
+                return Err(ManagementError::Invalid("The remote worker route changed"));
+            }
+            if agent
+                .record
+                .get("remoteStopRequest")
+                .and_then(Value::as_str)
+                == Some(request_id)
+            {
+                return Ok(Decision::result(json!({"stopped":[target]})));
+            }
+            if agent
+                .record
+                .get("remoteControlEpoch")
+                .and_then(Value::as_i64)
+                .is_some_and(|current| current > *control_epoch)
+            {
+                return Err(ManagementError::Invalid("The remote stop was superseded"));
+            }
+            stop(
+                snapshot,
+                target,
+                StopOptions {
+                    descendants: true,
+                    delete: false,
+                    reason: Some(reason),
+                    now,
+                    live,
+                    remote_request: Some((request_id, *control_epoch)),
+                },
+            )
+        }
+        Action::Delete { target } => stop(
+            snapshot,
+            target,
+            StopOptions {
+                descendants: true,
+                delete: true,
+                reason: None,
+                now,
+                live,
+                remote_request: None,
+            },
+        ),
         Action::Archive {
             actor,
             epoch,
@@ -565,28 +751,33 @@ pub fn decide(
     }
 }
 
-fn stop(
-    snapshot: &ManagementSnapshot,
-    target: &str,
+struct StopOptions<'a> {
     descendants: bool,
     delete: bool,
     now: f64,
+    live: bool,
+    reason: Option<&'a str>,
+    remote_request: Option<(&'a str, i64)>,
+}
+
+fn stop(
+    snapshot: &ManagementSnapshot,
+    target: &str,
+    options: StopOptions<'_>,
 ) -> Result<Decision, ManagementError> {
+    let StopOptions {
+        descendants,
+        delete,
+        reason,
+        now,
+        live,
+        remote_request,
+    } = options;
     let agents = snapshot.descendants(target, descendants)?;
+    let mut required = BTreeMap::new();
     for agent in &agents {
-        snapshot.refuse_live(agent)?;
-        // Deletion also removes saved voice data; stop only ends open sessions.
-        if delete && snapshot.has_voice_data(agent) {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
-        }
-        if delete {
-            workspace_dependency(agent)?;
-            if agent.flag("imageWorkspace") {
-                return Err(ManagementError::Unavailable(
-                    "workspace-state/agent-lifecycle",
-                ));
-            }
-        }
+        let mut effects = Vec::new();
+        snapshot.stop_effects(agent, &mut effects, live, delete)?;
         if !delete
             && agent.identity.is_lead != Some(true)
             && agent.identity.parent_id.is_some()
@@ -594,18 +785,29 @@ fn stop(
             && !agent.flag("deletedAt")
             && !agent.flag("agentArchive")
         {
-            return Err(ManagementError::Unavailable(
-                "event-driver/child-stop-notification",
-            ));
+            if !live {
+                return Err(ManagementError::Unavailable(
+                    LifecycleEffectKind::NotifyParent.dependency(),
+                ));
+            }
+            effects.push(LifecycleEffectKind::NotifyParent);
         }
+        if delete
+            && (agent.identity.in_flight == Some(true)
+                || agent.flag("turnId")
+                || truthy(agent.record["startAttempt"].get("activeAtReservation")))
+        {
+            effects.push(LifecycleEffectKind::FinalizeDeleted);
+        }
+        required.insert(agent.id(), effects);
     }
-    if delete
-        && snapshot
-            .rows("runtime_work")
-            .iter()
-            .any(|r| !is_status(r, &["accepted", "cancelled"]))
-    {
-        return Err(ManagementError::Unavailable("work-driver/deletion-release"));
+    // Python selects releasable rows by failed/deleted child owner, then only
+    // work statuses ready/running/blocked (codex_runtime.py:2816-2823).
+    if delete && has_releasable_deleted_work(snapshot, &agents) {
+        required
+            .entry(target)
+            .or_default()
+            .push(LifecycleEffectKind::ReleaseWork);
     }
     let mut ids = agents.iter().map(|a| a.id().to_owned()).collect::<Vec<_>>();
     ids.sort();
@@ -614,6 +816,17 @@ fn stop(
     } else {
         json!({"stopped":ids})
     };
+    let reason = if delete {
+        "Conversation deleted".to_owned()
+    } else if let Some(reason) = reason {
+        let reason = python_strip(reason);
+        if reason.is_empty() || reason.chars().count() > 160 {
+            return Err(ManagementError::Invalid("Invalid stop reason"));
+        }
+        reason.to_owned()
+    } else {
+        "Stopped by user".to_owned()
+    };
     let mut decision = Decision::result(result);
     for agent in agents {
         let mut record = agent.record.clone();
@@ -621,6 +834,20 @@ fn stop(
         let object = record
             .as_object_mut()
             .ok_or(ManagementError::Invalid("Invalid agent"))?;
+        let retry_id = object
+            .get("capacityRetry")
+            .and_then(|retry| retry.get("id"))
+            .and_then(Value::as_str);
+        let cancel_unsubmitted_retry = retry_id.is_some_and(|retry_id| {
+            object.get("startAttempt").is_some_and(|attempt| {
+                attempt.get("capacityRetryId").and_then(Value::as_str) == Some(retry_id)
+                    && attempt.get("submitted") != Some(&json!(true))
+            })
+        });
+        if cancel_unsubmitted_retry {
+            object.remove("startAttempt");
+            object.insert("inFlight".to_owned(), json!(false));
+        }
         let receipt = object.remove("parkReceipt");
         object.remove("parkedEvent");
         object.remove("parkAfterTurn");
@@ -633,16 +860,46 @@ fn stop(
         object.insert("autoWake".to_owned(), json!(false));
         object.insert("epoch".to_owned(), json!(epoch));
         object.insert("status".to_owned(), json!("paused"));
-        object.insert(
-            "error".to_owned(),
-            json!(if delete {
-                "Conversation deleted"
-            } else {
-                "Stopped by user"
-            }),
-        );
+        object.insert("error".to_owned(), json!(reason.clone()));
+        if let Some((request_id, control_epoch)) = remote_request
+            && agent.id() == target
+        {
+            object.insert("remoteStopRequest".to_owned(), json!(request_id));
+            object.insert("remoteControlEpoch".to_owned(), json!(control_epoch));
+        }
+        if agent.flag("autoWake")
+            && !agent.flag("movedTo")
+            && agent
+                .record
+                .get("remoteWorker")
+                .is_some_and(Value::is_object)
+        {
+            let request_id = remote_stop_request_id(agent.id(), epoch);
+            object.insert("remoteStopRequest".to_owned(), json!(request_id));
+            object.insert("remoteControlEpoch".to_owned(), json!(epoch));
+            required
+                .entry(agent.id())
+                .or_default()
+                .push(LifecycleEffectKind::RemoteStop);
+        }
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
+        }
+        if delete && agent.record.get("workspaceCleanupIntent").is_none() {
+            record["workspaceCleanupIntent"] =
+                crate::workspace_cleanup_runtime::queued_cleanup_intent(
+                    agent.id(),
+                    epoch,
+                    crate::workspace_cleanup_runtime::CleanupAction::Delete,
+                );
+        }
+        for kind in required.remove(agent.id()).unwrap_or_default() {
+            decision.effects.push(LifecycleEffect::new(
+                kind,
+                agent.record.clone(),
+                record.clone(),
+                now,
+            ));
         }
         decision.write("runtime_agents", record);
         decision.cancel_pending.push(agent.id().to_owned());
@@ -663,6 +920,16 @@ fn stop(
     Ok(decision)
 }
 
+fn remote_stop_request_id(agent_id: &str, control_epoch: i64) -> String {
+    // Match Python identity(agent_id, "stop", str(control_epoch)) in
+    // codex_multi_server_orchestration.py:60 and :782-784.
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-cross-server:{agent_id}:stop:{control_epoch}").as_bytes(),
+    )
+    .to_string()
+}
+
 fn archive(
     snapshot: &ManagementSnapshot,
     agent: &Agent,
@@ -678,9 +945,15 @@ fn archive(
     }
     if agent.flag("agentArchive") {
         if truthy(agent.record["agentArchive"].get("cleanupPending")) {
-            return Err(ManagementError::Unavailable(
-                "workspace-state/agent-lifecycle",
-            ));
+            return Ok(Decision::result(json!({
+                "status":"archived",
+                "agent":brief(&agent.record),
+                "replayed":true,
+                "cleanupPending":true,
+                "workspace":null,
+                "worktree":{"state":"pending","bytes":0},
+                "unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))
+            })));
         }
         workspace_dependency(agent)?;
         return Ok(Decision::result(
@@ -753,7 +1026,14 @@ fn archive(
     record["autoWake"] = json!(false);
     record["status"] = json!("paused");
     record["epoch"] = json!(next_epoch(agent)?);
-    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":false,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":true,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["workspaceCleanupIntent"] = crate::workspace_cleanup_runtime::queued_cleanup_intent(
+        agent.id(),
+        record["epoch"]
+            .as_i64()
+            .ok_or(ManagementError::Invalid("Invalid archive epoch"))?,
+        crate::workspace_cleanup_runtime::CleanupAction::Archive,
+    );
     decision.result = json!({"status":"archived","agent":brief(&record),"worktree":{"state":"none","bytes":0},"unassignedWork":unassigned});
     decision.write("runtime_agents", record);
     Ok(decision)
@@ -814,4 +1094,164 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     );
     decision.write("runtime_agents", record);
     Ok(decision)
+}
+
+#[cfg(test)]
+mod delete_scope_parity_tests {
+    use super::{Action, ManagementSnapshot, Records, decide_with_effects};
+    use serde_json::{Value, json};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn agent(id: &str, root: &str, parent: Option<&str>, lead: bool) -> Value {
+        let mut record = json!({
+            "id":id,
+            "rootId":root,
+            "epoch":1,
+            "status":"paused",
+            "autoWake":lead,
+            "isLead":lead,
+        });
+        if let Some(parent) = parent {
+            record["parentId"] = json!(parent);
+        }
+        record
+    }
+
+    fn scoped_delete_records(records: &Records, owners: &BTreeSet<String>) -> Records {
+        let mut tables = BTreeMap::new();
+        for (table, rows) in &records.tables {
+            if table == "runtime_agents" {
+                tables.insert(table.clone(), rows.clone());
+                continue;
+            }
+            if table.starts_with("voice_") {
+                // Delete skips voice liveness checks; saved voice rows are
+                // removed transactionally after the lifecycle decision.
+                continue;
+            }
+            let field = if table == "runtime_work" {
+                "owner"
+            } else {
+                "agent"
+            };
+            let matching = rows
+                .iter()
+                .filter(|row| {
+                    row.get(field)
+                        .and_then(Value::as_str)
+                        .is_some_and(|owner| owners.contains(owner))
+                })
+                .cloned()
+                .collect();
+            tables.insert(table.clone(), matching);
+        }
+        Records { tables }
+    }
+
+    fn effect_values(decision: &super::Decision) -> Vec<Value> {
+        decision
+            .effects
+            .iter()
+            .map(|effect| {
+                json!({
+                    "kind":effect.kind(),
+                    "before":effect.before(),
+                    "stopped":effect.stopped(),
+                    "at":effect.at(),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scoped_delete_decision_matches_full_snapshot_with_unrelated_history() {
+        let full = Records {
+            tables: BTreeMap::from([
+                (
+                    "runtime_agents".to_owned(),
+                    vec![
+                        agent("lead", "lead", None, true),
+                        agent("worker", "lead", Some("lead"), false),
+                        agent("nested", "lead", Some("worker"), false),
+                        agent("other-lead", "other-lead", None, true),
+                    ],
+                ),
+                (
+                    "runtime_monitors".to_owned(),
+                    vec![
+                        json!({"id":"worker-monitor","agent":"worker","status":"running"}),
+                        json!({"id":"unrelated-monitor","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "runtime_requests".to_owned(),
+                    vec![
+                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"user/input"}),
+                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve"}),
+                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"user/input"}),
+                    ],
+                ),
+                (
+                    "runtime_tasks".to_owned(),
+                    vec![
+                        json!({"id":"worker-task","agent":"worker","status":"pending"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "runtime_tool_requests".to_owned(),
+                    vec![
+                        json!({"id":"unrelated-tool","agent":"other-lead","stage":"completed","outcome":"applied"}),
+                    ],
+                ),
+                (
+                    "runtime_work".to_owned(),
+                    vec![
+                        json!({"id":"worker-work","owner":"worker","rootId":"lead","status":"ready","version":1}),
+                        json!({"id":"unrelated-work","owner":"other-lead","rootId":"other-lead","status":"running","version":1}),
+                    ],
+                ),
+                (
+                    "runtime_events".to_owned(),
+                    vec![
+                        json!({"id":"worker-event","agent":"worker","status":"pending","epoch":1}),
+                        json!({"id":"unrelated-event","agent":"other-lead","status":"pending","epoch":1}),
+                    ],
+                ),
+                (
+                    "voice_sessions".to_owned(),
+                    vec![json!({"id":"worker-voice","agent":"worker","state":"running"})],
+                ),
+            ]),
+        };
+        let full_snapshot = ManagementSnapshot::from_records(full.clone()).expect("full snapshot");
+        let owners = full_snapshot
+            .delete_owner_scope("lead")
+            .expect("complete descendant set");
+        assert_eq!(
+            owners,
+            BTreeSet::from(["lead".to_owned(), "nested".to_owned(), "worker".to_owned()])
+        );
+
+        let scoped = scoped_delete_records(&full, &owners);
+        let scoped_snapshot = ManagementSnapshot::from_records(scoped).expect("scoped snapshot");
+        let action = Action::Delete {
+            target: "lead".to_owned(),
+        };
+        let full_decision =
+            decide_with_effects(&full_snapshot, &action, 10.0).expect("full decision");
+        let scoped_decision =
+            decide_with_effects(&scoped_snapshot, &action, 10.0).expect("scoped decision");
+
+        assert_eq!(full_decision.result, scoped_decision.result);
+        assert_eq!(
+            serde_json::to_value(&full_decision.writes).expect("full writes"),
+            serde_json::to_value(&scoped_decision.writes).expect("scoped writes")
+        );
+        assert_eq!(full_decision.cancel_pending, scoped_decision.cancel_pending);
+        assert_eq!(
+            effect_values(&full_decision),
+            effect_values(&scoped_decision)
+        );
+    }
 }

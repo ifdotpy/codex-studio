@@ -285,7 +285,7 @@ impl SyncDocumentsRepository {
         after: i64,
         limit: i64,
     ) -> StoreResult<Vec<EntityRow>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
              WHERE seq>?1 AND collection NOT LIKE 'transcript:%' ORDER BY seq LIMIT ?2",
         )?;
@@ -333,7 +333,7 @@ impl SyncDocumentsRepository {
         after: i64,
         limit: i64,
     ) -> StoreResult<Vec<SyncDocument>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT seq,id,payload,deleted FROM sync_documents \
              WHERE scope='drafts' AND seq>?1 ORDER BY seq LIMIT ?2",
         )?;
@@ -473,7 +473,7 @@ fn read_entity_page(
     priority_id: Option<&str>,
     limit: i64,
 ) -> StoreResult<Vec<EntityRow>> {
-    let mut statement = transaction.prepare(
+    let mut statement = transaction.prepare_cached(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities \
          WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
            AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \

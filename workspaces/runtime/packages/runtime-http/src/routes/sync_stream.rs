@@ -29,7 +29,9 @@ use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocuments
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
+#[cfg(windows)]
+use super::manifest::Dependency;
+use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
@@ -38,19 +40,22 @@ use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 pub(crate) async fn notify_resources(
     state: HttpState,
     body: Value,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     let notifications = state.resource_notifications;
     let request_id = body["requestId"].clone();
-    tokio::task::spawn_blocking(move || notifications.publish_once(&body))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(|error| match error {
-            ResourceNotifyError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-            ResourceNotifyError::Invalid => ApiError::validation(vec![json!("body")]),
-            ResourceNotifyError::Unavailable => {
-                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
-            }
-        })?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || notifications.publish_once(&body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|error| match error {
+        ResourceNotifyError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        ResourceNotifyError::Invalid => ApiError::validation(vec![json!("body")]),
+        ResourceNotifyError::Unavailable => {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+    })?;
     Ok(Json(super::generated_json::<
         crate::generated::ResourceNotifyAck,
     >(
@@ -58,16 +63,9 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
-static STREAM_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-session/app-server"),
-    Dependency::new("usage-policy/token-rates"),
-];
 #[cfg(windows)]
-static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-session/app-server"),
-    Dependency::new("resource-policy/windows-file-identity"),
-    Dependency::new("usage-policy/token-rates"),
-];
+static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] =
+    &[Dependency::new("resource-policy/windows-file-identity")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get("/api/sync/stream", stream_status(), sync_stream)])
@@ -80,7 +78,7 @@ fn stream_status() -> OperationStatus {
 
 #[cfg(not(windows))]
 fn stream_status() -> OperationStatus {
-    OperationStatus::partial(STREAM_DEPENDENCIES)
+    OperationStatus::Implemented
 }
 
 async fn sync_stream(
@@ -187,6 +185,7 @@ async fn sync_stream(
         changes,
         notifications: state.resource_notifications,
         token_rates,
+        consecutive_token_frames: 0,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -209,31 +208,28 @@ async fn active_panel_agents(
     if agents.is_empty() {
         return Ok(Vec::new());
     }
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let mut active = Vec::new();
-        for id in agents {
-            let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-                .map_err(|_| ApiError::internal())?;
-            if agent.is_some_and(|agent| !agent.extra.get("deletedAt").is_some_and(json_truthy)) {
-                active.push(id);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let mut active = Vec::new();
+            for id in agents {
+                let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                    .map_err(|_| ApiError::internal())?;
+                if agent.is_some_and(|agent| {
+                    !agent
+                        .extra
+                        .get("deletedAt")
+                        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
+                }) {
+                    active.push(id);
+                }
             }
-        }
-        Ok(active)
-    })
+            Ok(active)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
-}
-
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -279,10 +275,13 @@ async fn read_entity_sequence(
         return Ok(0);
     }
     let store = store.ok_or_else(ApiError::internal)?;
-    let sequence = tokio::task::spawn_blocking(move || {
-        let connection = store.read()?;
-        SyncDocumentsRepository::entity_sequence(&connection)
-    })
+    let sequence = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || {
+            let connection = store.read()?;
+            SyncDocumentsRepository::entity_sequence(&connection)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|_| ApiError::internal())?;
@@ -303,6 +302,7 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     token_rates: tokio::sync::watch::Receiver<TokenRates>,
+    consecutive_token_frames: usize,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -315,21 +315,41 @@ async fn next_frame(
     }
 
     loop {
-        let heartbeat = tokio::select! {
-            biased;
-            // A pending latest-value slot wins even when every reader poll follows a publication.
-            changed = state.token_rates.changed() => {
-                if changed.is_err() { return None; }
-                let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
-                if cursor.closed { return None; }
-                return Some((Ok(token_rate_event(&state.workspace_id, &cursor, &rates)), state));
-            },
-            changed = state.changes.changed() => {
-                if changed.is_err() { return None; }
-                state.changes.borrow_and_update();
-                false
-            },
-            _ = state.heartbeat.tick() => true,
+        // Match Python's token-first behavior when both lanes are pending,
+        // while bounding token bursts so resource invalidations still progress.
+        let prefer_resource = state.consecutive_token_frames >= 8;
+        let heartbeat = if prefer_resource {
+            tokio::select! {
+                biased;
+                changed = state.changes.changed() => {
+                    if changed.is_err() { return None; }
+                    state.changes.borrow_and_update();
+                    false
+                },
+                changed = state.token_rates.changed() => {
+                    if changed.is_err() { return None; }
+                    state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
+                    let frame = token_rate_sse_frame(&mut state)?;
+                    return Some((Ok(frame), state));
+                },
+                _ = state.heartbeat.tick() => true,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                changed = state.token_rates.changed() => {
+                    if changed.is_err() { return None; }
+                    state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
+                    let frame = token_rate_sse_frame(&mut state)?;
+                    return Some((Ok(frame), state));
+                },
+                changed = state.changes.changed() => {
+                    if changed.is_err() { return None; }
+                    state.changes.borrow_and_update();
+                    false
+                },
+                _ = state.heartbeat.tick() => true,
+            }
         };
         let view = match state
             .notifications
@@ -341,6 +361,7 @@ async fn next_frame(
         let previous = state.last_revision;
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
+            state.consecutive_token_frames = 0;
             state.entity_sequence =
                 match read_entity_sequence(state.store.clone(), &state.resources).await {
                     Ok(sequence) => sequence,
@@ -372,6 +393,14 @@ async fn next_frame(
             ));
         }
     }
+}
+
+fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
+    let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
+    if cursor.closed {
+        return None;
+    }
+    Some(token_rate_event(&state.workspace_id, &cursor, &rates))
 }
 
 // Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
@@ -484,6 +513,20 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn sync_stream_manifest_is_implemented_on_hosts_without_the_windows_file_identity_gap() {
+        let operation = crate::routes::manifest::operation_manifest()
+            .expect("route manifest validates")
+            .into_iter()
+            .find(|operation| operation.key() == ("GET".to_owned(), "/api/sync/stream".to_owned()))
+            .expect("sync stream operation is registered");
+        assert_eq!(
+            serde_json::to_value(operation).expect("operation serializes")["status"],
+            "implemented"
+        );
+    }
 
     mod python {
         include!(concat!(
@@ -600,6 +643,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: tokens.subscribe(),
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -640,6 +684,7 @@ mod tests {
             changes,
             notifications: notifications.clone(),
             token_rates: token_hub.subscribe(),
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -669,6 +714,37 @@ mod tests {
                 .publish(json!({"rates":{},"teams":{}}))
                 .expect("publish disconnected")
         );
+    }
+
+    #[tokio::test]
+    async fn pending_resource_change_gets_a_turn_after_bounded_token_updates() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let token_hub = TokenRateHub::with_change_hub(hub.clone());
+        let state = test_stream(
+            &hub,
+            &token_hub,
+            notifications,
+            vec![json!({"kind":"accounts"})],
+        );
+        hub.notify_one();
+        let mut state = state;
+        for rate in 1..=8 {
+            token_hub.publish(test_rates(rate)).expect("token rate");
+            let (token, next_state) = next_frame(state).await.expect("token event");
+            state = next_state;
+            let token = event_document(token).await;
+            assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(rate as f64));
+        }
+
+        let (resource, state) = next_frame(state).await.expect("resource event");
+        let resource = event_document(resource).await;
+        assert_eq!(resource["resources"], json!([{"kind":"accounts"}]));
+
+        token_hub.publish(test_rates(9)).expect("latest rate");
+        let (token, _state) = next_frame(state).await.expect("latest token snapshot");
+        let token = event_document(token).await;
+        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(9.0));
     }
 
     #[test]
@@ -715,6 +791,7 @@ mod tests {
             changes,
             notifications,
             token_rates: tokens.subscribe(),
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(15),
@@ -948,6 +1025,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: TokenRateHub::new().subscribe(),
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -965,9 +1043,7 @@ inventory::submit! {
         name: "sync_stream",
         routes: Some(routes),
         dependencies: &[
-        "provider-session/app-server",
         "resource-policy/windows-file-identity",
-        "usage-policy/token-rates",
         ],
     }
 }

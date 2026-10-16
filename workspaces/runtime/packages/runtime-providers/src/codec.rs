@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -286,19 +286,41 @@ impl LineDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, CodecError> {
         self.buffer.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
+        let mut consumed = 0;
+        let mut decode_error = None;
+        while let Some(relative_end) = self.buffer[consumed..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let end = consumed + relative_end;
             if end > MAX_FRAME_BYTES {
-                self.buffer.drain(..=end);
-                return Err(CodecError::FrameTooLarge {
+                consumed = end + 1;
+                decode_error = Some(CodecError::FrameTooLarge {
                     limit: MAX_FRAME_BYTES,
                 });
+                break;
             }
-            let mut line = self.buffer.drain(..=end).collect::<Vec<_>>();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
+            let start = consumed;
+            consumed = end + 1;
+            let mut line_end = end;
+            if line_end > start && self.buffer[line_end - 1] == b'\r' {
+                line_end -= 1;
             }
-            frames.push(decode_frame(&line)?);
+            match decode_frame(&self.buffer[start..line_end]) {
+                Ok(frame) => frames.push(frame),
+                Err(error) => {
+                    decode_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if consumed > 0 {
+            let remaining = self.buffer.len() - consumed;
+            self.buffer.copy_within(consumed.., 0);
+            self.buffer.truncate(remaining);
+        }
+        if let Some(error) = decode_error {
+            return Err(error);
         }
         if self.buffer.len() > MAX_FRAME_BYTES {
             return Err(CodecError::FrameTooLarge {
@@ -320,17 +342,31 @@ impl LineDecoder {
 }
 
 fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
-    let mut object: Map<String, Value> = serde_json::from_slice(line)
+    let object: Map<String, Value> = serde_json::from_slice(line)
         .map_err(|error| CodecError::MalformedJson(error.to_string()))?;
+    decode_object(object).map_err(|(error, _object)| error)
+}
+
+fn decode_object(
+    mut object: Map<String, Value>,
+) -> Result<Frame, (CodecError, Map<String, Value>)> {
     let Some(object_method) = object.get("method") else {
-        let Some(id_value) = object.remove("id") else {
-            return Err(CodecError::MalformedFrame(
-                "expected a method or response id",
+        let Some(id_value) = object.get("id") else {
+            return Err((
+                CodecError::MalformedFrame("expected a method or response id"),
+                object,
             ));
         };
-        let id = serde_json::from_value(id_value).map_err(|_| {
-            CodecError::MalformedFrame("response id must be a string or unsigned integer")
-        })?;
+        let id = match serde_json::from_value(id_value.clone()) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err((
+                    CodecError::MalformedFrame("response id must be a string or unsigned integer"),
+                    object,
+                ));
+            }
+        };
+        object.remove("id");
         let result = object.remove("result");
         let error = object.remove("error");
         let body = if let Some(value) = error {
@@ -345,17 +381,31 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
         });
     };
     let Some(method_name) = object_method.as_str() else {
-        return Err(CodecError::MalformedFrame("method must be a string"));
+        return Err((
+            CodecError::MalformedFrame("method must be a string"),
+            object,
+        ));
     };
     let method_name = method_name.to_owned();
     if let Some(method) = Method::from_str(&method_name) {
-        let id = object.remove("id");
+        let id = match object.get("id") {
+            Some(value) => match serde_json::from_value(value.clone()) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    return Err((
+                        CodecError::MalformedFrame(
+                            "request id must be a string or unsigned integer",
+                        ),
+                        object,
+                    ));
+                }
+            },
+            None => None,
+        };
+        object.remove("id");
         let params = object.remove("params");
         object.remove("method");
         return if let Some(id) = id {
-            let id = serde_json::from_value(id).map_err(|_| {
-                CodecError::MalformedFrame("request id must be a string or unsigned integer")
-            })?;
             Ok(Frame::Request(RequestFrame {
                 id,
                 method,
@@ -376,23 +426,101 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
     }))
 }
 
+struct JsonByteCounter(usize);
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("JSON frame size overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Decode a supervisor event payload directly from the already parsed JSON
+/// value. Only malformed or oversized payloads are serialized to retain their
+/// raw stdout bytes beside the journal cursor.
+pub fn decode_journal_value(cursor: u64, generation: u64, payload: Value) -> DecodedJournalEntry {
+    let mut byte_count = JsonByteCounter(0);
+    if serde_json::to_writer(&mut byte_count, &payload).is_err() {
+        return raw_value_entry(
+            cursor,
+            generation,
+            payload,
+            CodecError::Serialization("cannot measure JSON payload".to_owned()),
+        );
+    }
+    if byte_count.0 > MAX_FRAME_BYTES {
+        return raw_value_entry(
+            cursor,
+            generation,
+            payload,
+            CodecError::FrameTooLarge {
+                limit: MAX_FRAME_BYTES,
+            },
+        );
+    }
+    let Value::Object(object) = payload else {
+        let error = match serde_json::from_value::<Map<String, Value>>(payload.clone()) {
+            Ok(_) => CodecError::MalformedFrame("expected a protocol object"),
+            Err(error) => CodecError::MalformedJson(error.to_string()),
+        };
+        return raw_value_entry(cursor, generation, payload, error);
+    };
+    match decode_object(object) {
+        Ok(frame) => DecodedJournalEntry {
+            cursor,
+            generation,
+            payload: DecodedJournalPayload::Frame(frame),
+        },
+        Err((error, object)) => raw_object_entry(cursor, generation, object, error),
+    }
+}
+
+fn raw_value_entry(
+    cursor: u64,
+    generation: u64,
+    payload: Value,
+    error: CodecError,
+) -> DecodedJournalEntry {
+    let bytes = match serde_json::to_vec(&payload) {
+        Ok(bytes) => bytes,
+        Err(serialization) => {
+            return DecodedJournalEntry {
+                cursor,
+                generation,
+                payload: DecodedJournalPayload::RawStdout {
+                    bytes: Vec::new(),
+                    error: CodecError::Serialization(serialization.to_string()),
+                },
+            };
+        }
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload: DecodedJournalPayload::RawStdout { bytes, error },
+    }
+}
+
+fn raw_object_entry(
+    cursor: u64,
+    generation: u64,
+    object: Map<String, Value>,
+    error: CodecError,
+) -> DecodedJournalEntry {
+    raw_value_entry(cursor, generation, Value::Object(object), error)
+}
+
 /// Decode a complete supervisor stdout journal record without losing its
 /// cursor when its payload is not valid protocol JSON.
 pub fn decode_journal_entry(cursor: u64, generation: u64, bytes: Vec<u8>) -> DecodedJournalEntry {
-    let mut line = bytes.as_slice();
-    if let Some(without_newline) = line.strip_suffix(b"\n") {
-        line = without_newline;
-        if let Some(without_carriage_return) = line.strip_suffix(b"\r") {
-            line = without_carriage_return;
-        }
-    }
-    let decoded = if line.len() > MAX_FRAME_BYTES {
-        Err(CodecError::FrameTooLarge {
-            limit: MAX_FRAME_BYTES,
-        })
-    } else {
-        decode_frame(line)
-    };
+    let decoded = decode_journal_frame(&bytes);
     let payload = match decoded {
         Ok(frame) => DecodedJournalPayload::Frame(frame),
         Err(error) => DecodedJournalPayload::RawStdout { bytes, error },
@@ -404,65 +532,156 @@ pub fn decode_journal_entry(cursor: u64, generation: u64, bytes: Vec<u8>) -> Dec
     }
 }
 
+/// Decode a complete stdout record by borrowing its buffer. Malformed bytes are
+/// copied into the returned journal entry; valid frame bytes are not retained.
+pub fn decode_journal_entry_borrowed(
+    cursor: u64,
+    generation: u64,
+    bytes: &[u8],
+) -> DecodedJournalEntry {
+    let payload = match decode_journal_frame(bytes) {
+        Ok(frame) => DecodedJournalPayload::Frame(frame),
+        Err(error) => DecodedJournalPayload::RawStdout {
+            bytes: bytes.to_vec(),
+            error,
+        },
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload,
+    }
+}
+
+fn decode_journal_frame(bytes: &[u8]) -> Result<Frame, CodecError> {
+    let mut line = bytes;
+    if let Some(without_newline) = line.strip_suffix(b"\n") {
+        line = without_newline;
+        if let Some(without_carriage_return) = line.strip_suffix(b"\r") {
+            line = without_carriage_return;
+        }
+    }
+    if line.len() > MAX_FRAME_BYTES {
+        Err(CodecError::FrameTooLarge {
+            limit: MAX_FRAME_BYTES,
+        })
+    } else {
+        decode_frame(line)
+    }
+}
+
 fn serialize_error(error: serde_json::Error) -> CodecError {
     CodecError::Serialization(error.to_string())
 }
 
 /// Serialize a frame with the provider stdio newline delimiter.
 pub fn encode_line(frame: &Frame) -> Result<Vec<u8>, CodecError> {
-    let fields = match frame {
-        Frame::Request(method) => {
-            let mut fields = method.fields.clone();
-            fields.insert(
-                "id".into(),
-                serde_json::to_value(&method.id).map_err(serialize_error)?,
-            );
-            fields.insert(
-                "method".into(),
-                Value::String(method.method.as_str().to_owned()),
-            );
-            if let Some(params) = &method.params {
-                fields.insert("params".into(), params.clone());
-            }
-            fields
-        }
-        Frame::Notification(method) => {
-            let mut fields = method.fields.clone();
-            fields.insert(
-                "method".into(),
-                Value::String(method.method.as_str().to_owned()),
-            );
-            if let Some(params) = &method.params {
-                fields.insert("params".into(), params.clone());
-            }
-            fields
-        }
-        Frame::UnknownMethod(unknown) => unknown.fields.clone(),
-        Frame::Response { id, body, fields } => {
-            let mut fields = fields.clone();
-            fields.insert(
-                "id".into(),
-                serde_json::to_value(id).map_err(serialize_error)?,
-            );
-            match body {
-                ResponseBody::Result(value) => {
-                    fields.insert("result".into(), value.clone());
-                }
-                ResponseBody::Error(value) => {
-                    fields.insert("error".into(), value.clone());
-                }
-            }
-            fields
-        }
-    };
-    let mut output = serde_json::to_vec(&fields).map_err(serialize_error)?;
+    let mut output = Vec::new();
+    encode_line_into(frame, &mut output)?;
+    Ok(output)
+}
+
+/// Serialize into a caller-owned buffer, retaining its allocation for reuse.
+pub fn encode_line_into(frame: &Frame, output: &mut Vec<u8>) -> Result<(), CodecError> {
+    output.clear();
+    let view = FrameView::new(frame);
+    if let Err(error) = serde_json::to_writer(&mut *output, &view) {
+        output.clear();
+        return Err(serialize_error(error));
+    }
     if output.len() > MAX_FRAME_BYTES {
+        output.clear();
         return Err(CodecError::FrameTooLarge {
             limit: MAX_FRAME_BYTES,
         });
     }
     output.push(b'\n');
-    Ok(output)
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum FrameValue<'a> {
+    Json(&'a Value),
+    Id(&'a RequestId),
+    Text(&'a str),
+}
+
+impl Serialize for FrameValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Json(value) => value.serialize(serializer),
+            Self::Id(value) => value.serialize(serializer),
+            Self::Text(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+struct FrameView<'a> {
+    entries: Vec<(&'a str, FrameValue<'a>)>,
+}
+
+impl<'a> FrameView<'a> {
+    fn new(frame: &'a Frame) -> Self {
+        let (fields, overrides): (&Map<String, Value>, Vec<(&str, FrameValue<'a>)>) = match frame {
+            Frame::Request(method) => {
+                let mut overrides = vec![
+                    ("id", FrameValue::Id(&method.id)),
+                    ("method", FrameValue::Text(method.method.as_str())),
+                ];
+                if let Some(params) = &method.params {
+                    overrides.push(("params", FrameValue::Json(params)));
+                }
+                (&method.fields, overrides)
+            }
+            Frame::Notification(method) => {
+                let mut overrides = vec![("method", FrameValue::Text(method.method.as_str()))];
+                if let Some(params) = &method.params {
+                    overrides.push(("params", FrameValue::Json(params)));
+                }
+                (&method.fields, overrides)
+            }
+            Frame::UnknownMethod(unknown) => (&unknown.fields, Vec::new()),
+            Frame::Response { id, body, fields } => {
+                let mut overrides = vec![("id", FrameValue::Id(id))];
+                match body {
+                    ResponseBody::Result(value) => {
+                        overrides.push(("result", FrameValue::Json(value)))
+                    }
+                    ResponseBody::Error(value) => {
+                        overrides.push(("error", FrameValue::Json(value)))
+                    }
+                }
+                (fields, overrides)
+            }
+        };
+        let mut entries = fields
+            .iter()
+            .map(|(key, value)| (key.as_str(), FrameValue::Json(value)))
+            .collect::<Vec<_>>();
+        for (key, value) in overrides {
+            match entries.binary_search_by(|(existing, _)| existing.cmp(&key)) {
+                Ok(index) => entries[index].1 = value,
+                Err(index) => entries.insert(index, (key, value)),
+            }
+        }
+        Self { entries }
+    }
+}
+
+impl Serialize for FrameView<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in &self.entries {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }
 
 /// Validate provider initialization parameters before opening a child process.

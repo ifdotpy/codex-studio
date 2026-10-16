@@ -77,7 +77,9 @@ impl OperationStatus {
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
         matches!(self, Self::Partial { dependencies: declared }
             if !dependencies.is_empty()
-                && dependencies.iter().all(|dependency| declared.contains(dependency)))
+                && dependencies.len() == declared.len()
+                && dependencies.iter().all(|dependency| declared.contains(dependency))
+                && declared.iter().all(|dependency| dependencies.contains(dependency)))
     }
 }
 
@@ -248,11 +250,12 @@ mod tests {
 
     #[test]
     fn dependency_unavailability_requires_a_known_nonempty_list() {
-        static DEPENDENCIES: [Dependency; 1] =
-            [Dependency::new("provider-session/account-rate-limits")];
+        static KNOWN: [Dependency; 1] = [Dependency::new(
+            "account-transfer/provider-history-executor",
+        )];
         assert!(
             OperationStatus::Partial {
-                dependencies: &DEPENDENCIES,
+                dependencies: &KNOWN,
             }
             .validate()
             .is_ok()
@@ -270,7 +273,26 @@ mod tests {
             .validate()
             .is_err()
         );
-        assert!(super::dependency_unavailable("GET", "/api/limits", &DEPENDENCIES).is_ok());
-        assert!(super::dependency_unavailable("GET", "/api/limits", &UNKNOWN).is_err());
+        static TRANSFER: [Dependency; 3] = [
+            Dependency::new("account-transfer/provider-history-executor"),
+            Dependency::new("account-transfer/destination-settings"),
+            Dependency::new("store-bootstrap/account-transfer-schema"),
+        ];
+        static TRANSFER_SUBSET: [Dependency; 1] = [Dependency::new(
+            "account-transfer/provider-history-executor",
+        )];
+        let partial = OperationStatus::Partial {
+            dependencies: &TRANSFER,
+        };
+        assert!(partial.validate().is_ok());
+        assert!(partial.matches_dependencies(&TRANSFER));
+        assert!(!partial.matches_dependencies(&TRANSFER_SUBSET));
+        assert!(!partial.matches_dependencies(&UNKNOWN));
+        assert!(!OperationStatus::Implemented.matches_dependencies(&TRANSFER));
+        assert!(
+            super::dependency_unavailable("POST", "/api/agents/account-transfer", &TRANSFER)
+                .is_err(),
+            "implemented transfer routes cannot claim dependency unavailability"
+        );
     }
 }

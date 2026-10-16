@@ -95,6 +95,11 @@ class SyncStoreTests(unittest.TestCase):
             db.execute("INSERT INTO runtime_rules VALUES (?,?)", (rule["id"], json.dumps(rule)))
             db.execute("INSERT INTO runtime_work VALUES (?,?)", (work["id"], json.dumps(work)))
 
+        # The legacy persisted records were populated after setUp's store was
+        # prepared. Reproduce an unseeded database and finish boot before GET.
+        with self.connect() as db:
+            db.execute("DELETE FROM sync_entity_meta WHERE key='seeded'")
+        self.store.prepare_entities()
         pulled = self.store.pull("state:entities:v1", fresh=True, limit=500)
         entities = {
             document["id"]: json.loads(document["payload"])["value"]

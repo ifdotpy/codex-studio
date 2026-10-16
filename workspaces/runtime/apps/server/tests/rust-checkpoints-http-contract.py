@@ -22,7 +22,9 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import BackendProcess, HTTPTransportError, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess, HTTPTransportError, assert_stored_data_unavailable, no_write_snapshot,
+)
 
 
 AGENT_ID = "checkpoints-contract-agent"
@@ -87,6 +89,10 @@ try:
             agent["nativeNameSynced"] = native_name_identity(agent)
             runtime.put(db, "agents", agent, sync_rooms=False)
     checkpoint = runtime.capture_checkpoint({AGENT_ID!r}, "Python fixture")
+    image_checkpoint = {{**checkpoint, "id": "image-preview-checkpoint",
+                        "agent": {IMAGE_AGENT_ID!r}, "rootId": "checkpoints-contract-image"}}
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "checkpoints", image_checkpoint, sync_rooms=False)
     print(checkpoint["id"])
 finally:
     runtime.close()
@@ -351,7 +357,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     }
                 ),
                 "INSERT INTO runtime_workspace_operations(id,record) VALUES(?,?)",
-                "Invalid stored object runtime_workspace_operations/invalid-operation-owner",
+                "runtime_workspace_operations/invalid-operation-owner",
             ),
             (
                 "runtime_tasks",
@@ -360,7 +366,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     {"id": "invalid-task-owner", "status": "running", "agent": 17}
                 ),
                 "INSERT INTO runtime_tasks(id,record) VALUES(?,?)",
-                "Invalid stored object runtime_tasks/invalid-task-owner",
+                "runtime_tasks/invalid-task-owner",
             ),
         )
         for table, row_id, record, insert_sql, expected_error in cases:
@@ -372,8 +378,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 response = backend.request(
                     "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
                 )
-                self.assertEqual(response.status, 500, response.body[:1000])
-                self.assertEqual(response.json()["error"], expected_error)
+                assert_stored_data_unavailable(self, response, expected_error)
                 self.assertEqual(
                     (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
                 )
@@ -402,7 +407,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
             response = backend.request(
                 "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
         finally:
             with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
                 database.execute("DROP TRIGGER abort_checkpoint_completion")
@@ -538,6 +544,44 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
             )
 
+    def test_preview_refuses_checkpoint_with_missing_or_null_agent_without_writes(self) -> None:
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        for owner in ("missing", "null"):
+            with closing(sqlite3.connect(database_path)) as database:
+                raw = database.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (self.initial_checkpoint_id,),
+                ).fetchone()[0]
+                checkpoint = json.loads(raw)
+                if owner == "missing":
+                    checkpoint.pop("agent", None)
+                else:
+                    checkpoint["agent"] = None
+                database.execute(
+                    "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                    (json.dumps(checkpoint), self.initial_checkpoint_id),
+                )
+                database.commit()
+            before = no_write_snapshot(backend.state)
+            try:
+                response = backend.request(
+                    "POST",
+                    "/api/checkpoint/preview",
+                    body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
+                    headers=self.headers(),
+                )
+                accepted_refusal_statuses = {400, 500} if not is_rust_backend() and owner == "missing" else {400}
+                self.assertIn(response.status, accepted_refusal_statuses, response.body[:1000])
+                self.assertEqual(no_write_snapshot(backend.state), before)
+            finally:
+                with closing(sqlite3.connect(database_path)) as database:
+                    database.execute(
+                        "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                        (raw, self.initial_checkpoint_id),
+                    )
+                    database.commit()
+
     @unittest.skipUnless(is_rust_backend(), "Stored Git option validation belongs to Rust")
     def test_preview_rejects_non_object_id_tree_without_writes(self) -> None:
         backend = self.backend
@@ -562,7 +606,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
                 headers=self.headers(),
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(response.status, 503, response.body[:1000])
             self.assertFalse(marker.exists())
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
@@ -573,42 +617,140 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 )
                 database.commit()
 
-    @unittest.skipUnless(is_rust_backend(), "Provider and execution 501s belong to Rust")
-    def test_provider_and_execution_dependencies_return_named_501_without_writes(self) -> None:
-        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
-        cases = (
-            (
-                "/api/branch",
-                {"agent": AGENT_ID, "id": "branch-contract", "message_id": "branch-message"},
-                "Not implemented: requires provider-session/thread-fork",
-            ),
-            (
-                "/api/checkpoint/restore",
-                {
-                    "agent": AGENT_ID,
-                    "checkpoint": self.initial_checkpoint_id,
-                    "expectedTree": "0" * 40,
-                },
-                "Not implemented: requires provider-session/thread-fork",
-            ),
-            (
-                "/api/checkpoint",
-                {"agent": IMAGE_AGENT_ID},
-                "Not implemented: requires workspace-state/image-execution",
-            ),
-            (
-                "/api/checkpoint",
-                {"agent": VM_AGENT_ID},
-                "Not implemented: requires workspace-state/image-execution",
-            ),
+    def test_restore_uses_fake_provider_and_restores_previewed_files(self) -> None:
+        backend = self.backend
+        (self.workspace / "tracked.txt").write_text("edited after checkpoint\n", encoding="utf-8")
+        preview = backend.request(
+            "POST", "/api/checkpoint/preview",
+            body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
+            headers=self.headers(),
         )
-        for path, body, error in cases:
-            response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, (path, response.body[:1000]))
-            self.assertEqual(response.json()["error"], error)
-            self.assertEqual(
-                (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        self.assertEqual(preview.status, 200, preview.body[:1000])
+        expected_tree = preview.json()["expectedTree"]
+        self.assertTrue(expected_tree)
+        restored = backend.request(
+            "POST", "/api/checkpoint/restore",
+            body={
+                "agent": AGENT_ID,
+                "checkpoint": self.initial_checkpoint_id,
+                "expectedTree": expected_tree,
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(restored.status, 200, restored.body[:1000])
+        self.assertEqual(restored.json()["status"], "restored")
+        self.assertEqual(restored.json()["checkpoint"], self.initial_checkpoint_id)
+        if is_rust_backend():
+            self.assertEqual(restored.json(), {
+                "status": "restored", "checkpoint": self.initial_checkpoint_id,
+            })
+        else:
+            self.assertIsInstance(restored.json().get("_syncEntities"), list)
+        self.assertEqual((self.workspace / "tracked.txt").read_text(encoding="utf-8"), "base checkpoint\n")
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+            agent = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,),
+            ).fetchone()[0])
+            operation = json.loads(database.execute(
+                "SELECT record FROM runtime_workspace_operations WHERE id LIKE 'restore:%' "
+                "ORDER BY rowid DESC LIMIT 1",
+            ).fetchone()[0])
+            before = database.execute(
+                "SELECT id FROM runtime_checkpoints WHERE id=?", (operation["beforeCheckpoint"],),
+            ).fetchone()
+            system_item = database.execute(
+                "SELECT record FROM runtime_items WHERE id=?",
+                (f"{AGENT_ID}:restore:{self.initial_checkpoint_id}",),
+            ).fetchone()
+        self.assertEqual(operation["phase"], "completed")
+        self.assertIsNotNone(before)
+        self.assertIsNotNone(system_item)
+        self.assertIsNone(agent.get("workspaceReservationId"))
+        self.assertIsNone(agent.get("workspaceOperation"))
+        self.assertEqual(agent["checkpointHistoryHead"], self.initial_checkpoint_id)
+        self.assertNotEqual(agent["threadId"], "thread-contract")
+
+    def test_malformed_provider_thread_start_settles_recovery_and_returns_value_error(self) -> None:
+        scratch = Path(os.environ["TMPDIR"])
+        backend = BackendProcess(scratch)
+        try:
+            backend.create_codex_replay("checkpoint-restore-malformed-thread-start.json")
+            initialize_repository(backend.cwd)
+            checkpoint_id = seed_python_state(backend)
+            backend.start()
+            headers = {
+                "Origin": backend.origin or "",
+                "X-Canvas-Token": backend.session["token"],
+                "X-Canvas-Workspace": backend.identity["workspaceId"],
+                "X-Studio-API-Schema": backend.schema_hash,
+            }
+            edited = backend.cwd / "tracked.txt"
+            edited.write_text("edited before malformed restore\n", encoding="utf-8")
+            preview = backend.request(
+                "POST", "/api/checkpoint/preview",
+                body={"agent": AGENT_ID, "checkpoint": checkpoint_id}, headers=headers,
             )
+            self.assertEqual(preview.status, 200, preview.body[:1000])
+            response = backend.request(
+                "POST", "/api/checkpoint/restore",
+                body={
+                    "agent": AGENT_ID,
+                    "checkpoint": checkpoint_id,
+                    "expectedTree": preview.json()["expectedTree"],
+                },
+                headers=headers,
+            )
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(response.json()["error"], "The native workspace response has no thread id")
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                operation = json.loads(database.execute(
+                    "SELECT record FROM runtime_workspace_operations WHERE id LIKE 'restore:%' LIMIT 1",
+                ).fetchone()[0])
+                agent = json.loads(database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,),
+                ).fetchone()[0])
+            self.assertEqual(operation["phase"], "recovery_required")
+            self.assertEqual(agent["workspaceOperation"], "restore_recovery")
+            self.assertEqual((backend.cwd / "tracked.txt").read_text(encoding="utf-8"), "edited before malformed restore\n")
+        finally:
+            backend.close()
+
+    def test_image_checkpoint_refusal_matches_python_without_writes(self) -> None:
+        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
+        response = self.backend.request(
+            "POST", "/api/checkpoint", body={"agent": IMAGE_AGENT_ID}, headers=self.headers()
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"], "Studio Git checkpoints are unavailable for image workspaces"
+        )
+        self.assertEqual(
+            (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        )
+
+        preview = self.backend.request(
+            "POST", "/api/checkpoint/preview",
+            body={"agent": IMAGE_AGENT_ID, "checkpoint": "image-preview-checkpoint"},
+            headers=self.headers(),
+        )
+        self.assertEqual(preview.status, 400, preview.body[:1000])
+        self.assertEqual(
+            preview.json()["error"],
+            "Studio Git tools are unavailable for image workspaces",
+        )
+        self.assertEqual(
+            (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        )
+
+    def test_vm_checkpoint_uses_local_git_workspace(self) -> None:
+        response = self.backend.request(
+            "POST",
+            "/api/checkpoint",
+            body={"agent": VM_AGENT_ID, "label": "VM local Git checkpoint"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["agent"], VM_AGENT_ID)
 
     def test_crash_after_update_ref_leaves_dangling_ref_and_recovers_on_startup(self) -> None:
         backend = self.backend

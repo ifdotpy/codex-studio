@@ -1,7 +1,7 @@
 //! Transcript item/search readers and durable sync projection from committed state.
 
 use crate::event_write::truthy;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId,
@@ -9,6 +9,8 @@ use studio_runtime_store::{
     WorkspaceViewsRepository,
 };
 use thiserror::Error;
+
+const TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES: usize = 1;
 
 #[derive(Debug, Error)]
 pub enum TranscriptError {
@@ -38,6 +40,8 @@ pub enum TranscriptError {
     InvalidSearch,
     #[error("search context changed; retry the read")]
     SnapshotChanged,
+    #[error("read-only snapshot requires transcript cache repair")]
+    ReadOnlyRepair,
     #[error("transcript operation requires {0}")]
     RequiresDependency(&'static str),
 }
@@ -45,10 +49,19 @@ pub enum TranscriptError {
 impl From<TranscriptStoreError> for TranscriptError {
     fn from(error: TranscriptStoreError) -> Self {
         match error {
+            TranscriptStoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ReadOnly =>
+            {
+                Self::ReadOnlyRepair
+            }
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
             TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
+            TranscriptStoreError::Store(StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+                error,
+                _,
+            ))) if error.code == rusqlite::ErrorCode::ReadOnly => Self::ReadOnlyRepair,
             TranscriptStoreError::Store(_) => Self::Store,
             TranscriptStoreError::Sqlite(_) => Self::Store,
         }
@@ -60,6 +73,11 @@ impl From<StoreError> for TranscriptError {
         match error {
             StoreError::InvalidSyncObject { scope, id } => {
                 Self::InvalidStoredState { table: scope, id }
+            }
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ReadOnly =>
+            {
+                Self::ReadOnlyRepair
             }
             _ => Self::Store,
         }
@@ -76,8 +94,15 @@ impl From<studio_runtime_store::analytics::AnalyticsError> for TranscriptError {
     }
 }
 impl From<rusqlite::Error> for TranscriptError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::Store
+    fn from(error: rusqlite::Error) -> Self {
+        match error {
+            rusqlite::Error::SqliteFailure(error, _)
+                if error.code == rusqlite::ErrorCode::ReadOnly =>
+            {
+                Self::ReadOnlyRepair
+            }
+            _ => Self::Store,
+        }
     }
 }
 
@@ -88,65 +113,170 @@ pub fn pull_scope(
     after: i64,
 ) -> Result<Value, TranscriptError> {
     let now = crate::transcript_runtime::observed_at()?;
-    let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
-        .open_read_only()
-        .map_err(|_| TranscriptError::Store)?;
-    store.transaction_with(|transaction| {
-        let actor = TranscriptRepository::agent(transaction, agent)?;
+    for attempt in 0..=TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES {
+        let mut reader = store.read()?;
+        let snapshot = reader.transaction()?;
+        let actor = TranscriptRepository::agent(&snapshot, agent)?;
         let deleted = actor
             .as_ref()
-            .is_none_or(|a| truthy(a.get("deletedAt")));
-        let revision = transaction
-            .query_row(
-                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                [agent],
-                |r| r.get::<_, i64>(0),
+            .is_none_or(|value| truthy(value.get("deletedAt")));
+        let deleted_revision = if deleted {
+            snapshot
+                .query_row(
+                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                    [agent],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        drop(snapshot);
+        drop(reader);
+        let (expected_revision, fresh_payload) = if deleted {
+            (deleted_revision, None)
+        } else {
+            let snapshot = crate::transcript_runtime::page_at_snapshot(
+                store,
+                agent,
+                &crate::transcript_runtime::PageRequest::default(),
+                now,
+            );
+            let (payload, revision) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(TranscriptError::DeletedConversation)
+                    if attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            (revision, Some(payload))
+        };
+        let result = match store.read_transaction_with_error(|transaction| {
+            pull_scope_in(
+                transaction,
+                scope,
+                agent,
+                after,
+                expected_revision,
+                fresh_payload.as_ref(),
             )
-            .optional()?
-            .unwrap_or(0);
-        // An unchanged revision is authoritative even when a reasoning view
-        // contains an observation timestamp. Do not turn a read into new deltas.
-        let high=transaction.query_row("SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",[scope],|r|r.get::<_,i64>(0))?;
-        let hash=transaction.query_row("SELECT hash FROM sync_entities WHERE collection=?1 AND id='@revision' AND deleted=0",[scope],|r|r.get::<_,String>(0)).optional()?;
-        if after>0 && after>=high && hash.as_deref()==Some(studio_runtime_store::sha256_hex(revision.to_string().as_bytes()).as_str()) {
-            return Ok(json!({"workspaceId":studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?,"documents":[],"checkpoint":{"seq":high}}));
+        }) {
+            Err(TranscriptError::ReadOnlyRepair) => store.transaction_with(|transaction| {
+                pull_scope_in(
+                    transaction,
+                    scope,
+                    agent,
+                    after,
+                    expected_revision,
+                    fresh_payload.as_ref(),
+                )
+            }),
+            result => result,
+        };
+        if matches!(&result, Err(TranscriptError::SnapshotChanged))
+            && attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES
+        {
+            continue;
         }
-        let cache = transaction.query_row(
+        return result;
+    }
+    unreachable!("the transcript snapshot retry loop always returns or continues")
+}
+
+fn pull_scope_in(
+    transaction: &Transaction<'_>,
+    scope: &str,
+    agent: &str,
+    after: i64,
+    expected_revision: i64,
+    fresh_payload: Option<&Value>,
+) -> Result<Value, TranscriptError> {
+    let actor = TranscriptRepository::agent(transaction, agent)?;
+    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+            [agent],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    // An unchanged revision is authoritative even when a reasoning view
+    // contains an observation timestamp. Do not turn a read into new deltas.
+    let high = transaction.query_row(
+        "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
+        [scope],
+        |r| r.get::<_, i64>(0),
+    )?;
+    let hash = transaction
+        .query_row(
+            "SELECT hash FROM sync_entities WHERE collection=?1 AND id='@revision' AND deleted=0",
+            [scope],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    if after > 0
+        && after >= high
+        && hash.as_deref()
+            == Some(studio_runtime_store::sha256_hex(revision.to_string().as_bytes()).as_str())
+    {
+        return Ok(
+            json!({"workspaceId":studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?,"documents":[],"checkpoint":{"seq":high}}),
+        );
+    }
+    let cache = transaction.query_row(
             "SELECT payload FROM sync_entities WHERE collection=?1 AND id='@revision' AND hash=?2 AND deleted=0",
             params![scope, studio_runtime_store::sha256_hex(revision.to_string().as_bytes())],
             |r| r.get::<_, Option<String>>(0),
         ).optional()?.flatten();
-        let payload = if let Some(raw) = &cache {
-            serde_json::from_str(raw).map_err(|_| invalid_stored("sync_entities", scope))?
-        } else if deleted {
-            json!({})
-        } else {
-            crate::transcript_runtime::project(transaction, &analytics, agent,
-                &crate::transcript_runtime::PageRequest::default(), now)?
-        };
-        if cache.is_some() && !deleted {
-            let cache_id = format!("{scope}/@revision");
-            let items = payload.get("items").and_then(Value::as_array).ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-            if payload.get("truncated").and_then(Value::as_bool).is_none() {
-                return Err(invalid_stored("sync_entities", &cache_id));
-            }
-            for item in items {
-                let id = item["id"].as_str().ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-                studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
-                    .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
-            }
+    if cache.is_none() && !deleted && revision != expected_revision {
+        return Err(TranscriptError::SnapshotChanged);
+    }
+    let payload = if let Some(raw) = &cache {
+        serde_json::from_str(raw).map_err(|_| invalid_stored("sync_entities", scope))?
+    } else if deleted {
+        json!({})
+    } else {
+        fresh_payload.cloned().ok_or(TranscriptError::Store)?
+    };
+    if cache.is_some() && !deleted {
+        let cache_id = format!("{scope}/@revision");
+        let items = payload
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
+        if payload.get("truncated").and_then(Value::as_bool).is_none() {
+            return Err(invalid_stored("sync_entities", &cache_id));
         }
-        let response = TranscriptRepository::pull_payload(
-            transaction, scope, after.max(0), &payload, deleted, Some(revision),
+        for item in items {
+            let id = item["id"]
+                .as_str()
+                .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
+            studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
+                .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
+        }
+    }
+    let response = TranscriptRepository::pull_payload(
+        transaction,
+        scope,
+        after.max(0),
+        &payload,
+        deleted,
+        Some(revision),
+    )?;
+    if cache.is_none() {
+        // Keep the bounded result on the existing revision entity. A lost
+        // response can replay any original cursor without observing time again.
+        let encoded = serde_json::to_string(&payload).map_err(|_| TranscriptError::Store)?;
+        transaction.execute(
+            "UPDATE sync_entities SET payload=?1 WHERE collection=?2 AND id='@revision'",
+            params![encoded, scope],
         )?;
-        if cache.is_none() {
-            // Keep the bounded result on the existing revision entity. A lost
-            // response can replay any original cursor without observing time again.
-            let encoded = serde_json::to_string(&payload).map_err(|_| TranscriptError::Store)?;
-            transaction.execute("UPDATE sync_entities SET payload=?1 WHERE collection=?2 AND id='@revision'", params![encoded, scope])?;
-        }
-        Ok(response)
-    })
+    }
+    Ok(response)
 }
 
 pub fn item(store: &RuntimeStore, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
@@ -373,22 +503,35 @@ pub fn search_work(
     agent_filter: Option<&str>,
     limit: i64,
 ) -> Result<Value, TranscriptError> {
+    let reader = store.read()?;
+    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+    let connection = reader.unchecked_transaction()?;
+    search_work_in_transaction(&connection, &directory, query, agent_filter, limit)
+}
+
+/// Transaction-aware search for callback dispatch. The room directory is
+/// captured before opening the writer transaction and compared against rows
+/// again here before any search result is returned.
+pub(crate) fn search_work_in_transaction(
+    connection: &Connection,
+    directory: &crate::sync_entity_context::RoomDirectory,
+    query: &str,
+    agent_filter: Option<&str>,
+    limit: i64,
+) -> Result<Value, TranscriptError> {
     let query = query.trim();
     if query.is_empty() || query.chars().count() > 500 {
         return Err(TranscriptError::InvalidSearch);
     }
     let limit = limit.clamp(1, 100) as usize;
-    let mut reader = store.read()?;
-    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let connection = reader.transaction()?;
-    if !directory.matches(&connection)? {
+    if !directory.matches(connection)? {
         return Err(TranscriptError::SnapshotChanged);
     }
-    let agents = Table::<AgentRecord>::new(&connection)
+    let agents = Table::<AgentRecord>::new(connection)
         .list()
         .map_err(|_| TranscriptError::Store)?;
     let caller_root = if let Some(agent) = agent_filter {
-        let caller = TranscriptRepository::agent(&connection, agent)?
+        let caller = TranscriptRepository::agent(connection, agent)?
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if truthy(caller.get("deletedAt")) {
             return Err(TranscriptError::DeletedConversation);
@@ -416,14 +559,14 @@ pub fn search_work(
         .collect::<Vec<_>>()
         .join(" AND ");
     let mut found = Vec::new();
-    for (id, agent, kind) in TranscriptRepository::search_hits(&connection, &match_query)? {
+    for (id, agent, kind) in TranscriptRepository::search_hits(connection, &match_query)? {
         if !allowed.contains(agent.as_str()) || agent_filter.is_some_and(|caller| caller != agent) {
             continue;
         }
-        let Some(item) = TranscriptRepository::item(&connection, &agent, &id)? else {
+        let Some(item) = TranscriptRepository::item(connection, &agent, &id)? else {
             continue;
         };
-        let body = searchable_text(&connection, &item)?;
+        let body = searchable_text(connection, &item)?;
         let excerpt = excerpt(&body, query);
         found.push(json!({"id":id,"agent":agent,"type":"message","kind":kind,"reference":id,"excerpt":excerpt,"text":excerpt}));
     }
@@ -432,14 +575,27 @@ pub fn search_work(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in WorkspaceViewsRepository::records(&connection, table)
-            .map_err(|_| TranscriptError::Store)?
+        for stored in
+            WorkspaceViewsRepository::records(connection, table).map_err(|error| match error {
+                StoreError::InvalidStoredObject { table, id } => {
+                    TranscriptError::InvalidStoredObject { table, id }
+                }
+                _ => TranscriptError::Store,
+            })?
         {
             let Some(encoded) = stored.record else {
                 return Err(invalid_stored(table, &stored.id));
             };
             let record: Value =
                 serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
+            let schema = studio_runtime_schema::table_schema(table)
+                .ok_or_else(|| invalid_stored(table, &stored.id))?;
+            if studio_runtime_schema::first_error(schema, &record)
+                .map_err(|_| invalid_stored(table, &stored.id))?
+                .is_some()
+            {
+                return Err(invalid_stored(table, &stored.id));
+            }
             let root = record
                 .get("rootId")
                 .filter(|value| truthy(Some(value)))
@@ -470,8 +626,8 @@ pub fn search_work(
         }
     }
     let mut readable = std::collections::BTreeSet::new();
-    for room in studio_runtime_store::system_reads::all(&connection, "runtime_rooms")? {
-        let Some(view) = room_view(&connection, &directory, &room)? else {
+    for room in studio_runtime_store::system_reads::all(connection, "runtime_rooms")? {
+        let Some(view) = room_view(connection, directory, &room)? else {
             continue;
         };
         if let Some(caller) = agent_filter {

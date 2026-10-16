@@ -359,6 +359,7 @@ class ClientTests(unittest.TestCase):
         guest = self.directory / 'vm-guest'
         guest.mkdir(parents=True)
         (guest / 'install.sh').write_text('true')
+        (guest / 'studio-codex.apparmor').write_text('profile fixture {}')
         (guest / 'credentials.json').write_text('not a runtime file')
         cache = guest / '__pycache__'
         cache.mkdir()
@@ -389,6 +390,7 @@ class ClientTests(unittest.TestCase):
                                   bridge_source=bridge)
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
+        self.assertIn('/opt/codex-studio/vm/guest/studio-codex.apparmor', paths)
         bridge_root = '/opt/codex-studio/workspaces/providers/apps/claude-bridge/'
         self.assertIn(bridge_root + 'bridge.mjs', paths)
         self.assertIn(bridge_root + 'package.json', paths)
@@ -401,7 +403,7 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(any(path.endswith('/unlisted.rs') for path in paths))
         self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
         skills = [path for path in paths if '/.agents/skills/' in path]
-        self.assertEqual(len(paths) - len(skills), 19)
+        self.assertEqual(len(paths) - len(skills), 20)
         self.assertNotIn('credentials', json.dumps(config))
         unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
         ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))
@@ -519,6 +521,9 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn('setfacl', section.split('for tool in ', 1)[1].split('; do', 1)[0].split())
         install = next(line for line in section.splitlines() if 'apt-get install ' in line)
         self.assertIn('acl', install.split())
+        self.assertIn('apparmor', install.split())
+        self.assertIn('apparmor_parser', section.split('for tool in ', 1)[1].split('; do', 1)[0].split())
+        self.assertIn('tar --no-same-owner -xzf', self.script)
 
     def test_needrestart_leaves_studio_units_and_kernel_packages_are_held(self):
         start = self.script.index("mkdir -p /etc/needrestart/conf.d")

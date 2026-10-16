@@ -4,7 +4,75 @@ use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_p
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
+use std::{future::Future, pin::Pin};
+use studio_runtime_process::ProviderLaunchSpec;
 use studio_runtime_store::{AgentRecord, Transaction};
+
+/// Actor-specific inputs needed to launch a provider inside a Linux VM.
+/// Credentials are deliberately absent: the resolver reads and copies them
+/// through its private guest boundary and never returns or logs their values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmProviderLaunchRequest {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub generation: u64,
+    pub account_key: String,
+    pub provider: String,
+    pub cwd: String,
+    pub guest_home: String,
+}
+
+/// Provider launch resolved for one actor. `launch.environment` is the guest
+/// environment only; callers must not merge in the host process environment.
+pub struct VmProviderLaunch {
+    pub provider: String,
+    pub profile: String,
+    pub launch: ProviderLaunchSpec,
+    /// Host-refreshed login payload sent only through the retained guest session.
+    /// It is transient and must never be persisted or logged.
+    pub bootstrap: Option<Value>,
+}
+
+pub type VmProviderLaunchFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<VmProviderLaunch, WorkerError>> + Send + 'a>>;
+
+/// Host-owned VM launch resolver. It selects the provider/profile and durably
+/// copies the minimal provider credential material into the guest before the
+/// caller starts the provider process.
+pub trait VmProviderLaunchResolver: Send + Sync {
+    fn resolve(&self, request: VmProviderLaunchRequest) -> VmProviderLaunchFuture<'_>;
+
+    /// Host-owned Codex refresh for a token callback emitted by a guest actor.
+    fn refresh_codex(
+        &self,
+        _account_key: String,
+        _previous_account_id: String,
+        _actor_id: String,
+        _actor_epoch: i64,
+        _generation: u64,
+    ) -> VmProviderAuthFuture<'_> {
+        Box::pin(async {
+            Err(WorkerError::PreparationPending(
+                "provider-session/vm-token-refresh".into(),
+            ))
+        })
+    }
+
+    /// Refresh the shared host Claude profile once, then copy it to every
+    /// currently attached actor in the account worker's fenced sweep.
+    fn refresh_claude_credentials(
+        &self,
+        _actors: Vec<VmProviderLaunchRequest>,
+    ) -> VmProviderRefreshFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+pub type VmProviderAuthFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Value, WorkerError>> + Send + 'a>>;
+
+pub type VmProviderRefreshFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send + 'a>>;
 
 #[derive(Clone)]
 pub struct PreparationResources {
@@ -17,18 +85,40 @@ pub struct PreparationResources {
     pub role_guidance: BTreeMap<PathBuf, String>,
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
-    /// Resolved interpreter used to start this runtime, also embedded in guidance.
-    pub python_executable: PathBuf,
+    pub server_source_root: PathBuf,
+    pub claude_account_pin: Value,
+    pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
+    /// The host's registry-backed session surface for preparation calls that
+    /// need to coordinate another live account.
+    pub account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    /// Fakeable guest RPC for VM workspace preparation in the turn-start path.
+    pub guest_rpc: Option<Arc<dyn crate::linux_vm_guest::GuestRpc>>,
+    /// Host-owned per-actor VM provider launch and credential-copy boundary.
+    pub vm_provider_launch: Option<Arc<dyn VmProviderLaunchResolver>>,
 }
 impl PreparationResources {
     pub fn bundled(
         account_home: String,
         model_catalog: ModelCatalogService,
-        python_executable: PathBuf,
     ) -> Result<Self, WorkerError> {
-        if !python_executable.is_absolute() {
-            return Err(refusal("preparation/resolved-python-required".into()));
-        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .canonicalize()
+            .map_err(|_| invalid("repository root"))?;
+        Self::bundled_at(
+            account_home,
+            model_catalog,
+            root.clone(),
+            root.join("workspaces/runtime/apps/server/src"),
+        )
+    }
+
+    pub fn bundled_at(
+        account_home: String,
+        model_catalog: ModelCatalogService,
+        root: PathBuf,
+        server_source_root: PathBuf,
+    ) -> Result<Self, WorkerError> {
         #[derive(Deserialize)]
         struct Bundled {
             instructions: String,
@@ -41,10 +131,6 @@ impl PreparationResources {
                 .map_err(|_| invalid("preparation resources"))?,
             "preparation resources",
         )?;
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .map_err(|_| invalid("repository root"))?;
         let legacy_tools = decode(
             serde_json::from_str(include_str!(
                 "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
@@ -76,9 +162,22 @@ impl PreparationResources {
             legacy_tools,
             skills_root,
             model_catalog,
-            python_executable,
             account_home,
+            server_source_root,
+            claude_account_pin: Value::Null,
+            account_driver: None,
+            account_session: None,
+            guest_rpc: None,
+            vm_provider_launch: None,
         })
+    }
+
+    pub fn with_account_session(
+        mut self,
+        account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    ) -> Self {
+        self.account_session = account_session;
+        self
     }
 }
 pub(super) fn decode<T: DeserializeOwned>(value: Value, location: &str) -> Result<T, WorkerError> {
@@ -127,6 +226,25 @@ impl FilesystemSnapshot {
         for (rows, key) in [(&agents, "cwd"), (&projects, "path")] {
             for raw in rows.values() {
                 let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
+                if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm")
+                {
+                    // VM cwd is guest-owned. Give authorization a stable,
+                    // normalized host-shaped identity without resolving it on
+                    // the host or treating it as a filesystem location.
+                    if let Some(path) = record
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|p| !p.is_empty())
+                    {
+                        let agent_id = record
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| invalid("vm-agent-id"))?;
+                        let identity = vm_guest_identity(agent_id, path);
+                        resolved_paths.insert(path.to_owned(), identity);
+                    }
+                    continue;
+                }
                 if let Some(path) = record
                     .get(key)
                     .and_then(Value::as_str)
@@ -148,11 +266,74 @@ impl FilesystemSnapshot {
         })
     }
 }
+
+fn vm_guest_identity(agent_id: &str, guest_cwd: &str) -> String {
+    format!(
+        "/__codex_vm__/{agent_id}/{}",
+        studio_runtime_store::sha256_hex(guest_cwd.as_bytes())
+    )
+}
+
+#[cfg(test)]
+mod vm_identity_tests {
+    use super::vm_guest_identity;
+
+    #[test]
+    fn guest_cwd_gets_a_normalized_host_independent_identity() {
+        let identity = vm_guest_identity("agent-1", "/guest/project/lines/main");
+        assert!(identity.starts_with("/__codex_vm__/agent-1/"));
+        let path = std::path::Path::new(&identity);
+        assert!(path.is_absolute());
+        assert!(
+            !path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        );
+        assert_eq!(
+            identity,
+            vm_guest_identity("agent-1", "/guest/project/lines/main")
+        );
+        assert_ne!(
+            identity,
+            vm_guest_identity("agent-1", "/guest/project/lines/other")
+        );
+    }
+}
 pub(super) fn authorize(
     tx: &Transaction<'_>,
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
+    prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<(), WorkerError> {
+    if intent.radio_authorized {
+        let prepared = prepared_host.ok_or_else(|| invalid("radio/prepared-host"))?;
+        let radio_events = intent
+            .events
+            .iter()
+            .filter(|event| event.kind == "radio_turn")
+            .map(|event| {
+                studio_runtime_store::QueueEventRepository::get(
+                    tx,
+                    &studio_runtime_store::QueueEventId::from(event.id.as_str()),
+                )?
+                .ok_or_else(|| invalid("radio/event"))
+            })
+            .collect::<Result<Vec<_>, WorkerError>>()?;
+        if radio_events.len() != 1 {
+            return Err(refusal("radio/turn-selection-changed".into()));
+        }
+        let selected = crate::radio_runtime::select_pending(
+            tx,
+            prepared,
+            &agent(tx, &intent.agent_id)?.value(),
+            &radio_events,
+            now(),
+        )
+        .map_err(|error| refusal(error.to_string()))?;
+        if selected.len() != 1 || selected[0].id.0 != radio_events[0].id.0 {
+            return Err(refusal("radio/turn-selection-changed".into()));
+        }
+    }
     let agents = records(tx, "runtime_agents")?;
     let projects = records(tx, "runtime_projects")?;
     let resolved_paths = filesystem.resolved_paths.clone();
@@ -167,6 +348,7 @@ pub(super) fn authorize(
         events: intent
             .events
             .iter()
+            .filter(|event| !(intent.radio_authorized && event.kind == "radio_turn"))
             .map(|e| crate::submit_gates::StoredEvent {
                 id: e.id.clone(),
                 kind: e.kind.clone(),
@@ -206,6 +388,20 @@ pub(super) fn guidance(
     resources: &PreparationResources,
     record: &Value,
     state_root: &Path,
+) -> Result<thread::GuidanceBundle, WorkerError> {
+    guidance_with_python(
+        resources,
+        record,
+        state_root,
+        crate::python_tool::resolve_python_tool(),
+    )
+}
+
+fn guidance_with_python(
+    resources: &PreparationResources,
+    record: &Value,
+    state_root: &Path,
+    python: Option<PathBuf>,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
@@ -251,7 +447,7 @@ pub(super) fn guidance(
             content.trim()
         )
     };
-    let progress = if lead {
+    let progress = if lead && !resources.progress_template.is_empty() {
         let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
         if id.is_empty()
             || id.len() > 200
@@ -262,14 +458,7 @@ pub(super) fn guidance(
             return Err(invalid("progress agent"));
         }
         let path = state_root.join("progress").join(id).join("PROGRESS.md");
-        let script = resources
-            .skills_root
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| invalid("skills root"))?
-            .join("workspaces/runtime/apps/server/src/codex_progress_layout.py");
-        let python = resources.python_executable.to_string_lossy();
-        resources
+        let progress = resources
             .progress_template
             .replace("{progress_file}", &path.to_string_lossy())
             .replace(
@@ -277,9 +466,15 @@ pub(super) fn guidance(
                 &path
                     .with_file_name("PROGRESS.layout.json")
                     .to_string_lossy(),
-            )
-            .replace("{python}", &shell_quote(&python))
-            .replace("{progress_script}", &shell_quote(&script.to_string_lossy()))
+            );
+        let layout_guidance = progress_layout_guidance(
+            python,
+            &resources
+                .server_source_root
+                .join("codex_progress_layout.py"),
+            &path,
+        );
+        progress.replace("{progress_layout_check}", &layout_guidance)
     } else {
         String::new()
     };
@@ -289,6 +484,24 @@ pub(super) fn guidance(
         progress,
         thread_config: resources.thread_config.clone(),
     })
+}
+
+fn progress_layout_guidance(
+    python: Option<PathBuf>,
+    script: &Path,
+    progress_file: &Path,
+) -> String {
+    python.map_or_else(
+            String::new,
+            |python| {
+                format!(
+                    "After editing PROGRESS.md, run {} {} {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
+                    shell_quote(&python.to_string_lossy()),
+                    shell_quote(&script.to_string_lossy()),
+                    shell_quote(&progress_file.to_string_lossy()),
+                )
+            },
+        )
 }
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
     let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
@@ -363,6 +576,7 @@ pub(super) fn thread_snapshot(
     connection: &str,
     state_root: &Path,
     progress_directory: Option<String>,
+    account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
     let root_id = record["rootId"]
@@ -387,9 +601,17 @@ pub(super) fn thread_snapshot(
         thread::Role::Implementer
     });
     let progress_directory = lead.then_some(progress_directory).flatten();
+    let owned_transfer = account_transfer_owner
+        .map(|transfer_id| {
+            crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
+                .map_err(|error| refusal(format!("account-transfer/{error}")))
+        })
+        .transpose()?
+        .unwrap_or(false);
     let admission = if record
         .get("accountTransferId")
         .is_some_and(|v| !v.is_null())
+        && !owned_transfer
     {
         Some(thread::HoldReason::AccountTransfer)
     } else if context_repair_blocked(record) {
@@ -779,20 +1001,18 @@ mod resource_tests {
     }
 
     #[test]
-    fn guidance_uses_the_resolved_runtime_interpreter() {
+    fn guidance_includes_the_optional_python_layout_tool() {
         let python = crate::agents_create::prepared_python(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        let resources = PreparationResources::bundled(
-            String::new(),
-            ModelCatalogService::new(None),
-            python.clone(),
-        )
-        .expect("runtime resources");
-        let bundle = guidance(
+        let resources =
+            PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
+                .expect("runtime resources");
+        let bundle = guidance_with_python(
             &resources,
             &json!({"id":"lead", "isLead":true}),
             Path::new("/state"),
+            Some(python.clone()),
         )
         .expect("progress guidance");
         assert!(
@@ -800,13 +1020,14 @@ mod resource_tests {
                 .progress
                 .contains(&shell_quote(&python.to_string_lossy()))
         );
-        assert!(
-            PreparationResources::bundled(
-                String::new(),
-                ModelCatalogService::new(None),
-                PathBuf::from("python3"),
-            )
-            .is_err()
-        );
+        let without_python = guidance_with_python(
+            &resources,
+            &json!({"id":"lead", "isLead":true}),
+            Path::new("/state"),
+            None,
+        )
+        .expect("progress guidance without Python");
+        assert!(!without_python.progress.contains("--wait 3"));
+        assert!(without_python.progress.contains("Do not repeat rewrites"));
     }
 }

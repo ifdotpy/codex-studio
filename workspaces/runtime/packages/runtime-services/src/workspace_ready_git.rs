@@ -79,6 +79,70 @@ fn prepare_attempt(
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(store, agent_id)?;
     let actor = actor(&initial)?;
+    // VM paths are guest paths, so they cannot enter Git canonicalization. The
+    // native-action owner binds the line; this token admits only the persisted
+    // ready association and is rechecked when the turn is submitted.
+    if actor.execution_mode.as_deref() == Some("vm") {
+        if actor.deleted_at.is_some() || !actor.auto_wake {
+            return Ok(WorkspaceDecision::Defer { reservation: None });
+        }
+        let value = &initial.agent.record;
+        if value.get("layrReady").and_then(Value::as_bool) != Some(true)
+            || value
+                .get("layrProjectId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || value
+                .get("layrLine")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Ok(WorkspaceDecision::Defer { reservation: None });
+        }
+        let cwd = value
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|cwd| !cwd.is_empty())
+            .ok_or(WorkspaceError::InvalidRecord)?;
+        return Ok(WorkspaceDecision::Ready {
+            token: ReadyToken::new(value, PathBuf::from(cwd)),
+        });
+    }
+    if actor.image_workspace
+        || actor.image_workspace_ready
+        || actor.image_workspace_phase.is_some()
+        || actor.workspace_mode.as_deref() == Some("image")
+    {
+        #[cfg(not(target_os = "macos"))]
+        return Ok(image_workspace_refusal_decision());
+        #[cfg(target_os = "macos")]
+        {
+            if actor.deleted_at.is_some() || !actor.auto_wake {
+                return Ok(WorkspaceDecision::Defer { reservation: None });
+            }
+            if !actor.image_workspace_ready {
+                return Ok(
+                    if actor.image_workspace_phase.as_deref() == Some("creating") {
+                        WorkspaceDecision::Defer { reservation: None }
+                    } else {
+                        WorkspaceDecision::Refuse(
+                            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
+                        )
+                    },
+                );
+            }
+            let mounted = crate::image_workspace::ensure_mounted(agent_id)
+                .map_err(|_| WorkspaceError::Git)?;
+            let path = mounted
+                .get("path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .ok_or(WorkspaceError::InvalidRecord)?;
+            return Ok(WorkspaceDecision::Ready {
+                token: ReadyToken::new(&initial.agent.record, path),
+            });
+        }
+    }
     if let Some(refusal) = unsupported(&actor) {
         return Ok(WorkspaceDecision::Refuse(refusal));
     }
@@ -109,6 +173,11 @@ fn prepare_attempt(
         return Ok(context.decide());
     };
     provision(store, &context, plan, &git)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
+    WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
 }
 
 fn provision(
@@ -235,7 +304,7 @@ impl Context {
     }
 }
 fn snapshot(store: &RuntimeStore, id: &str) -> Result<WorkspaceSnapshot, WorkspaceError> {
-    CheckpointsRepository::workspace_snapshot(&store.read()?, id)?
+    CheckpointsRepository::workspace_snapshot(&*store.read()?, id)?
         .ok_or(WorkspaceError::InvalidRecord)
 }
 fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError> {
@@ -266,7 +335,7 @@ fn observe(
     if unsupported(&context.actor).is_some()
         || !context.actor.auto_wake
         || context.actor.deleted_at.is_some()
-        || (!context.actor.worktree && context.actor.workspace_mode.as_deref() != Some("worktree"))
+        || !crate::workspace_ready::requires_worktree(&context.actor)
     {
         return Ok(context);
     }
@@ -304,7 +373,7 @@ fn observe(
     let destination = repository
         .join(".worktrees/codex-agents")
         .join(&context.actor.id);
-    let journal = WorkspaceReadyRepository::journal(&store.read()?, &id)?;
+    let journal = WorkspaceReadyRepository::journal(&*store.read()?, &id)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())

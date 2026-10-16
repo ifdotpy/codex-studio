@@ -31,6 +31,57 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
 }
 
 #[test]
+fn local_cancel_persists_before_fake_provider_termination() {
+    use std::sync::{Arc, Mutex};
+    use studio_runtime_services::monitor_driver::{self, MonitorNative, Submission};
+    struct Port {
+        store: Arc<RuntimeStore>,
+        id: String,
+        submitted: Mutex<Vec<String>>,
+    }
+    impl MonitorNative for Port {
+        fn submit(&self, _: &Operation, effect: &monitor_policy::Effect) -> Submission {
+            assert_eq!(
+                record(&self.store, &self.id)["cancelRequested"],
+                json!(true)
+            );
+            let monitor_policy::Effect::Native { method, params, .. } = effect else {
+                panic!("expected provider termination")
+            };
+            assert_eq!(*method, "command/exec/terminate");
+            assert_eq!(params["processId"], self.id);
+            self.submitted
+                .lock()
+                .expect("submission lock")
+                .push((*method).into());
+            Submission::Written
+        }
+    }
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    let id = "local-cancel-provider-test";
+    case["before"]["id"] = json!(id);
+    let store = Arc::new(fixtures::store(root.path(), "local-cancel"));
+    fixtures::seed(&store, &case);
+    let port = Port {
+        store: Arc::clone(&store),
+        id: id.into(),
+        submitted: Mutex::new(Vec::new()),
+    };
+
+    let result = monitor_driver::cancel(&store, &port, id, None, 2001.0)
+        .expect("local cancel dispatch succeeds");
+    assert_eq!(result["status"], "running");
+    assert_eq!(result["cancelRequested"], true);
+    assert_eq!(record(&store, id)["cancelRequested"], true);
+    assert_eq!(
+        *port.submitted.lock().expect("submission lock"),
+        ["command/exec/terminate"]
+    );
+}
+
+#[test]
 fn receipt_survives_store_failure_restart_and_replays_once() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
@@ -77,6 +128,22 @@ fn receipt_survives_store_failure_restart_and_replays_once() {
             .count(),
         0
     );
+}
+
+#[test]
+fn malformed_pending_result_receipt_is_retained_and_skipped() {
+    let root = fixtures::tempdir();
+    fixtures::corpus(root.path());
+    let store = fixtures::store(root.path(), "corrupt-receipt");
+    let directory = store.root().join("monitor-results");
+    std::fs::create_dir(&directory).expect("monitor fixture");
+    std::fs::write(directory.join("corrupt.json"), b"{").expect("monitor fixture");
+
+    assert_eq!(
+        monitor_receipts::recover_pending(&store, 64).expect("skip corrupt receipt"),
+        0
+    );
+    assert!(directory.join("corrupt.json").exists());
 }
 
 #[test]
@@ -137,7 +204,7 @@ fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
 }
 
 #[test]
-fn malformed_state_and_unavailable_native_effects_write_nothing() {
+fn monitor_cancel_persists_before_dispatch_and_malformed_state_is_refused() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -145,8 +212,11 @@ fn malformed_state_and_unavailable_native_effects_write_nothing() {
     fixtures::seed(&store, &case);
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let before = record(&store, id);
-    assert!(monitor_runtime::cancel(&store, id, None, 2000.0).is_err());
-    assert_eq!(record(&store, id), before);
+    let result = monitor_runtime::cancel(&store, id, None, 2000.0)
+        .expect("cancel intent persists without a synchronous provider port");
+    assert_eq!(result["cancelRequested"], true);
+    assert_eq!(record(&store, id)["cancelRequested"], true);
+    assert_ne!(record(&store, id), before);
     assert_eq!(fixtures::events(&store), json!([]));
     for (field, value) in [
         ("bytes", json!(-1)),
@@ -414,12 +484,13 @@ fn launch_admission_serializes_cancel_before_native_submission_completes() {
                 self.release.wait();
             }
             self.sent.lock().expect("sent").push((*method).into());
-            Submission::Accepted
+            Submission::Written
         }
     }
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
+    case["before"]["id"] = json!("monitor-admission-barrier");
     let op = operation(&case);
     case["before"]["status"] = json!("starting");
     case["before"]

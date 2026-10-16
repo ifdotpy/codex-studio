@@ -34,7 +34,7 @@ impl CapabilityReadsRepository {
         let sql = format!(
             "SELECT {name} FROM runtime_tasks INDEXED BY runtime_task_history WHERE json_extract(record,'$.status')!='running' AND json_extract(record,'$.agent')=? UNION SELECT {name} FROM runtime_tasks INDEXED BY runtime_task_status WHERE (json_extract(record,'$.status')='running' OR json_extract(record,'$.status') IS NULL) AND json_extract(record,'$.agent')=? ORDER BY 1"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         let rows = statement.query_map([agent_id, agent_id], |row| row.get::<_, String>(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }

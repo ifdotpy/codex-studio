@@ -23,7 +23,7 @@ fn journal(
         .push(&bytes)
         .expect("test invariant")
         .remove(0);
-    let publication = PublicationContext::load(store.root()).expect("test invariant");
+    let publication = PublicationContext::load(store).expect("test invariant");
     store.transaction_with(|tx| {
         let raw: String = tx
             .query_row("SELECT payload FROM p06_buffer WHERE id=1", [], |row| {

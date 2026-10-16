@@ -1,9 +1,15 @@
 //! Asynchronous provider adapters, process ports and the supervisor v1 client.
 
+pub mod blocking_pool;
 pub mod child_priority;
 mod client;
+pub mod operational_log;
+#[cfg(unix)]
+mod owned_process_group;
 mod ports;
 mod protocol;
+#[cfg(unix)]
+pub mod provider_direct;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
@@ -11,6 +17,8 @@ mod provider_shared;
 pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
+#[cfg(unix)]
+mod pty_host;
 mod shared_values_generated;
 #[cfg(unix)]
 pub mod stream_child;
@@ -19,13 +27,19 @@ mod supervisor_child;
 #[cfg(unix)]
 pub mod supervisor_daemon;
 #[cfg(unix)]
-mod supervisor_identity;
+pub(crate) mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
+#[cfg(unix)]
+pub use pty_host::{
+    LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
+    terminal_environment_from,
+};
+pub use shared_values_generated::MAX_SUPERVISOR_FRAME_BYTES;
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]

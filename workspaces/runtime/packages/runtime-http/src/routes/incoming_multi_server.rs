@@ -21,12 +21,12 @@ inventory::submit! {
 }
 
 pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
+    // Ordinary authenticated browser writes carry request IDs too; signed
+    // identity headers select this boundary.
     !path.starts_with("/api/federation/")
         && ((path == "/api/multi-server/v1/identity" && headers.contains_key("x-forwarded-for"))
             || (path.starts_with("/api/multi-server")
                 && headers.contains_key("access-control-request-headers"))
-            || (headers.contains_key("x-forwarded-for")
-                && headers.contains_key("x-studio-request-id"))
             || [
                 "x-studio-client",
                 "x-studio-server",
@@ -47,6 +47,11 @@ pub(crate) async fn serve(state: HttpState, request: Request<Body>) -> Response 
     response
 }
 async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
+    let peer_link_advert = state
+        .peer_link_advert
+        .read()
+        .ok()
+        .and_then(|advert| advert.clone());
     let peer_loopback = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -84,12 +89,15 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     {
         return error_response(StatusCode::FORBIDDEN, "The Tailscale identity is invalid");
     }
-    let Some(boundary) = state.multi_server_boundary else {
+    let Some(boundary) = state.multi_server_boundary.clone() else {
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires remote-transport/owner-lookup",
         );
     };
+    let credentials = state.credentials.clone();
+    let public_origin = state.public_origin.clone();
+    let whoami = state.tailscale_whoami.clone();
     if request.method() == "OPTIONS" {
         const ALLOWED: &str = "content-type, accept, x-canvas-workspace, x-studio-api-schema, x-codex-sync-protocol, last-event-id, if-none-match, cache-control, range, x-studio-client, x-studio-server, x-studio-timestamp, x-studio-nonce, x-studio-request-id, x-studio-signature";
         let requested = request
@@ -120,7 +128,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         return response;
     }
     if request.method() == "GET" && request.uri().path() == "/api/multi-server/v1/identity" {
-        let Some(store) = state.store else {
+        let Some(store) = state.store.clone() else {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
         };
         let address = request
@@ -135,9 +143,10 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             .iter()
             .filter_map(|v| v.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
-        return match tokio::task::spawn_blocking(move || {
-            boundary.discovery_identity(&store, &address, &logins)
-        })
+        return match studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/incoming_multi_server",
+            move || boundary.discovery_identity(&store, &address, &logins),
+        )
         .await
         {
             Ok(Ok(v)) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
@@ -153,6 +162,9 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         ("GET", multi_server_auth::STATUS_PATH)
             | ("POST", multi_server_auth::PAIR_PATH)
             | ("POST", multi_server_auth::AUTO_PAIR_PATH)
+            | ("POST", multi_server_auth::NAME_PATH)
+            | ("POST", "/api/multi-server")
+            | ("POST", "/api/servers/orchestration")
     );
     if !supported {
         return error_response(
@@ -160,7 +172,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             "Not implemented: requires multi-server-runtime/signed-dispatch",
         );
     }
-    let Some(store) = state.store else {
+    let Some(store) = state.store.clone() else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
     let lengths = request.headers().get_all("content-length");
@@ -242,26 +254,258 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         Some(v) => v,
         None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     };
-    let result = tokio::task::spawn_blocking(move || {
-        boundary.handle_incoming(&store, &request, &address, &logins, now)
-    })
+    let is_orchestration = request.is_orchestration();
+    let is_name = request.is_name();
+    let is_management_invite = request.is_management_invite();
+    let updates_snapshot = !is_orchestration
+        && (request.is_pairing() || request.is_auto_pairing() || is_management_invite);
+    let advertise_link = is_orchestration
+        || request.is_status()
+        || request.is_pairing()
+        || request.is_auto_pairing()
+        || is_name
+        || is_management_invite;
+    let request_id = request.request_id().to_owned();
+    let notifications = state.resource_notifications.clone();
+    let driver = state.orchestration_driver.clone();
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/incoming_multi_server",
+        move || {
+            let result = if is_orchestration {
+                let principal = boundary
+                    .authorize_operation_incoming(&store, &request, &address, &logins, now)?;
+                let driver = driver.ok_or_else(|| {
+                    multi_server_auth::refused(
+                        501,
+                        "orchestration_unavailable",
+                        "The cross-server orchestration receiver is unavailable",
+                    )
+                })?;
+                let outcome = driver.receive(&principal, request.body(), now as i64)?;
+                Ok(outcome.to_value(&request_id))
+            } else if is_name {
+                let principal = boundary
+                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
+                let label = request
+                    .body()
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                credentials
+                    .rename_with_notification(
+                        &store,
+                        "local",
+                        &label,
+                        &request_id,
+                        &principal,
+                        |request_id| {
+                            super::multi_server::publish_resource_change(&notifications, request_id)
+                        },
+                    )
+                    .map_err(credential_error)?;
+                credentials
+                    .identity(&store, public_origin.as_deref())
+                    .map_err(credential_error)
+            } else if is_management_invite {
+                let actor = boundary
+                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
+                let identity = credentials
+                    .identity(&store, public_origin.as_deref())
+                    .map_err(credential_error)?;
+                let owner = whoami
+                    .and_then(|probe| probe())
+                    .and_then(|value| super::multi_server::tailscale_login(&value))
+                    .ok_or_else(|| {
+                        multi_server_auth::refused(
+                            503,
+                            "identity_unavailable",
+                            "The Tailscale owner identity is unavailable",
+                        )
+                    })?;
+                studio_runtime_services::multi_server::create_invite(
+                    &store,
+                    &identity,
+                    request.body(),
+                    &actor,
+                    Some(&owner),
+                )
+                .map_err(map_invite_error)
+            } else {
+                boundary.handle_incoming(&store, &request, &address, &logins, now)
+            };
+            if updates_snapshot && result.is_ok() {
+                // Publish before returning from the blocking task. If the HTTP
+                // future is canceled after commit, the durable write still has
+                // its targeted wake. Stable IDs deduplicate exact retries.
+                super::multi_server::publish_resource_change(&notifications, &request_id);
+            }
+            result
+        },
+    )
     .await;
     match result {
-        Ok(Ok(value)) => {
-            let checked = if method == "GET" {
-                super::generated_json::<crate::generated::ServerIdentityResponse>(value)
-            } else {
-                super::generated_json::<crate::generated::DevicePairResponse>(value)
-            };
-            match checked {
-                Ok(v) => Json(v).into_response(),
-                Err(e) => e.into_response(),
+        Ok(Ok(value)) if is_orchestration => {
+            let mut response = Json(value).into_response();
+            if advertise_link {
+                add_link_advert(&mut response, peer_link_advert.as_deref());
             }
+            response
         }
+        Ok(Ok(value)) => match validate_response(&method, is_name, is_management_invite, value) {
+            Ok(v) => {
+                let mut response = Json(v).into_response();
+                if advertise_link {
+                    add_link_advert(&mut response, peer_link_advert.as_deref());
+                }
+                response
+            }
+            Err(e) => e.into_response(),
+        },
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
 }
+
+#[cfg(test)]
+mod classification_tests {
+    use axum::http::HeaderMap;
+    use studio_runtime_services::multi_server_auth::SignedRequest;
+
+    use super::needed;
+
+    #[test]
+    fn request_identity_alone_keeps_forwarded_browser_writes_on_the_local_api_route() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-request-id",
+            "request-1".parse().expect("header value"),
+        );
+
+        assert!(!needed(&headers, "/api/sync/preferences"));
+    }
+
+    #[test]
+    fn partial_signed_credentials_still_use_the_fail_closed_signed_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-request-id",
+            "request-1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-signature",
+            "partial".parse().expect("header value"),
+        );
+
+        assert!(needed(&headers, "/api/sync/preferences"));
+        let signed_headers = headers
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_owned(), value.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        let error = SignedRequest::from_headers(
+            "POST",
+            "/api/sync/preferences",
+            &signed_headers,
+            br#"{"scope":"user","fields":{}}"#,
+        )
+        .err()
+        .expect("partial signed headers are rejected");
+        assert_eq!(error.status(), 401);
+    }
+
+    #[test]
+    fn remote_discovery_identity_still_uses_the_incoming_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+
+        assert!(needed(&headers, "/api/multi-server/v1/identity"));
+    }
+
+    #[test]
+    fn federation_paths_do_not_enter_the_multi_server_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-studio-signature",
+            "partial".parse().expect("header value"),
+        );
+
+        assert!(!needed(&headers, "/api/federation/v1/message"));
+    }
+}
+
+fn map_invite_error(error: studio_runtime_services::multi_server::MultiServerError) -> AccessError {
+    use studio_runtime_services::multi_server::MultiServerError;
+    match error {
+        MultiServerError::Conflict(_) => multi_server_auth::refused(
+            409,
+            "request_conflict",
+            "The request ID has different content",
+        ),
+        MultiServerError::Refused(_) => multi_server_auth::refused(
+            400,
+            "invalid_invite_request",
+            "The invitation request is invalid",
+        ),
+        MultiServerError::NeedsSignedRequest => {
+            multi_server_auth::refused(403, "server_required", "A paired server is required")
+        }
+        MultiServerError::Store(_) | MultiServerError::Sqlite(_) => {
+            multi_server_auth::refused(503, "invite_unavailable", "The invitation is unavailable")
+        }
+    }
+}
+
+fn add_link_advert(response: &mut Response, advert: Option<&str>) {
+    if response.status().is_success()
+        && let Some(advert) = advert
+        && let Ok(value) = axum::http::HeaderValue::from_str(advert)
+    {
+        response.headers_mut().insert("x-studio-link", value);
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum IncomingMultiServerResponse {
+    Identity(crate::generated::ServerIdentityResponse),
+    Pair(crate::generated::DevicePairResponse),
+    Invite(crate::generated::InvitationResponse),
+}
+
+fn validate_response(
+    method: &str,
+    is_name: bool,
+    is_management_invite: bool,
+    value: serde_json::Value,
+) -> Result<IncomingMultiServerResponse, crate::error::ApiError> {
+    if is_management_invite {
+        super::generated_json::<crate::generated::InvitationResponse>(value)
+            .map(IncomingMultiServerResponse::Invite)
+    } else if method == "GET" || is_name {
+        super::generated_json::<crate::generated::ServerIdentityResponse>(value)
+            .map(IncomingMultiServerResponse::Identity)
+    } else {
+        super::generated_json::<crate::generated::DevicePairResponse>(value)
+            .map(IncomingMultiServerResponse::Pair)
+    }
+}
+
 fn failure(error: AccessError) -> Response {
     let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
     // Stored-object locations are operator diagnostics, not remote response data.
@@ -272,5 +516,67 @@ fn failure(error: AccessError) -> Response {
         )
             .into_response(),
         _ => error_response(status, "The server access operation failed"),
+    }
+}
+
+fn credential_error(
+    error: studio_runtime_services::federation_credentials::CredentialError,
+) -> AccessError {
+    use studio_runtime_services::federation_credentials::CredentialError;
+    match error {
+        CredentialError::Conflict => multi_server_auth::refused(
+            409,
+            "request_conflict",
+            "The request ID has different content",
+        ),
+        CredentialError::RemoteRequired => {
+            multi_server_auth::refused(403, "server_required", "A paired server is required")
+        }
+        _ => multi_server_auth::refused(
+            503,
+            "identity_unavailable",
+            "The server identity is unavailable",
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IncomingMultiServerResponse, validate_response};
+    use serde_json::json;
+
+    #[test]
+    fn signed_name_post_validates_identity_response() {
+        let response = json!({
+            "serverId": "remote-server",
+            "label": "Renamed",
+            "origin": "https://remote.example",
+            "publicKey": "key",
+            "tailscaleUser": null
+        });
+
+        assert!(matches!(
+            validate_response("POST", true, false, response),
+            Ok(IncomingMultiServerResponse::Identity(_))
+        ));
+    }
+
+    #[test]
+    fn signed_pair_post_still_validates_pair_response() {
+        let response = json!({
+            "protocol": 1,
+            "serverId": "remote-server",
+            "clientId": "client",
+            "label": "Remote",
+            "origin": "https://remote.example",
+            "publicKey": "key",
+            "tailscaleUser": "owner@example.test",
+            "paired": true
+        });
+
+        assert!(matches!(
+            validate_response("POST", false, false, response),
+            Ok(IncomingMultiServerResponse::Pair(_))
+        ));
     }
 }

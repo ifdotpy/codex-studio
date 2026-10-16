@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const { savedLaunchEnvironment } = require("./restart-environment.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -13,8 +13,136 @@ function backendExitStatus(child) {
 }
 
 const backendIdentityTimeoutMs = 10000;
+const backendSelectionEnv = "CODEX_DESKTOP_BACKEND";
+const rustStateOwnerFile = "rust-state-owner.json";
+const rustStateFormatVersion = 1;
+
+function backendSelection(env = process.env) {
+  const selected = env[backendSelectionEnv] || "python";
+  if (selected !== "python" && selected !== "rust")
+    throw new Error(`${backendSelectionEnv} must be either python or rust.`);
+  return selected;
+}
+
+function runtimeServer(resources, env = process.env) {
+  const configured = env.CODEX_RUNTIME_SERVER;
+  const candidates = configured
+    ? [configured]
+    : [
+        path.join(
+          resources,
+          "bin",
+          process.platform === "win32"
+            ? "studio-runtime-server.exe"
+            : "studio-runtime-server",
+        ),
+        path.join(
+          __dirname,
+          "../../../../target/release",
+          process.platform === "win32"
+            ? "studio-runtime-server.exe"
+            : "studio-runtime-server",
+        ),
+        path.join(
+          __dirname,
+          "../../../../target/debug",
+          process.platform === "win32"
+            ? "studio-runtime-server.exe"
+            : "studio-runtime-server",
+        ),
+      ];
+  for (const candidate of candidates) {
+    if (!path.isAbsolute(candidate)) continue;
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  throw new Error(
+    configured
+      ? "CODEX_RUNTIME_SERVER must point to an executable runtime server."
+      : "The Rust runtime server is missing. Build or package studio-runtime-server, or set CODEX_RUNTIME_SERVER to its absolute executable path.",
+  );
+}
+
+function runtimeServerBuild(resources, env = process.env) {
+  const file = runtimeServer(resources, env);
+  const descriptor = fs.openSync(file, "r");
+  try {
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytesRead;
+    while (
+      (bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0
+    ) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function claimRustState(state, backendBuild) {
+  const marker = path.join(state, rustStateOwnerFile);
+  let prior;
+  try {
+    prior = JSON.parse(fs.readFileSync(marker, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw new Error(
+        `Cannot verify Rust state ownership marker: ${error.message}`,
+      );
+  }
+  if (prior) {
+    if (
+      prior.runtime !== "rust" ||
+      prior.formatVersion !== rustStateFormatVersion ||
+      prior.backendBuild !== backendBuild
+    )
+      throw new Error(
+        "The state directory has a different or unknown Rust owner. Restore a verified backup or use a compatible Rust build.",
+      );
+    return;
+  }
+  const temporary = path.join(state, `.rust-state-owner.${randomUUID()}.tmp`);
+  const fd = fs.openSync(temporary, "wx", 0o600);
+  try {
+    fs.writeFileSync(
+      fd,
+      `${JSON.stringify({ runtime: "rust", formatVersion: rustStateFormatVersion, backendBuild })}\n`,
+    );
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.linkSync(temporary, marker);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const raced = JSON.parse(fs.readFileSync(marker, "utf8"));
+    if (
+      raced.runtime !== "rust" ||
+      raced.formatVersion !== rustStateFormatVersion ||
+      raced.backendBuild !== backendBuild
+    )
+      throw new Error("Another backend claimed this state directory.");
+  } finally {
+    fs.unlinkSync(temporary);
+  }
+  if (process.platform !== "win32") {
+    const directoryFd = fs.openSync(state, fs.constants.O_RDONLY);
+    try {
+      fs.fsyncSync(directoryFd);
+    } finally {
+      fs.closeSync(directoryFd);
+    }
+  }
+}
 
 function backendBuild(resources, env = process.env) {
+  if (backendSelection(env) === "rust")
+    return runtimeServerBuild(resources, env);
   const developmentIdentity = path.join(
     resources,
     "workspaces/runtime/apps/server/src/codex_backend_identity.py",
@@ -148,7 +276,12 @@ function apiPython(resources, env = process.env) {
 async function identity(
   origin,
   state,
-  { attemptTimeoutMs = 5000, timeoutMs = 15000, retryDelayMs = 200 } = {},
+  {
+    attemptTimeoutMs = 5000,
+    timeoutMs = 15000,
+    retryDelayMs = 200,
+    expectedBackendBuild,
+  } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let uncertain = false;
@@ -199,6 +332,13 @@ async function identity(
       "The existing server is incompatible or uses a different state directory. Update or stop it before desktop startup.",
     );
   }
+  if (
+    expectedBackendBuild !== undefined &&
+    data.backendBuild !== expectedBackendBuild
+  )
+    throw new Error(
+      "The started Rust backend identity does not match the selected executable.",
+    );
   process.kill(data.pid, 0);
   return data;
 }
@@ -208,6 +348,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const state = stateDirectory(env);
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
+  const selectedBackend = backendSelection(env);
   let persistedSupervisorMode = false;
   let saved = {};
   try {
@@ -230,8 +371,16 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     env.CODEX_AGENTS_SUPERVISOR_MODE === undefined
       ? persistedSupervisorMode
       : env.CODEX_AGENTS_SUPERVISOR_MODE === "1";
+  if (selectedBackend === "rust" && supervisorMode)
+    throw new Error(
+      "The Rust runtime server cannot use the configured Python process supervisor. Disable supervisor mode before selecting Rust.",
+    );
   const origin = `http://127.0.0.1:${port}`;
   const existing = await identity(origin, canonicalState);
+  if (existing && selectedBackend === "rust" && existing.backendKind !== "rust")
+    throw new Error(
+      "A different backend owns the selected port. Stop it before selecting the Rust runtime server.",
+    );
   if (
     existing &&
     supervisorMode &&
@@ -273,17 +422,19 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     throw new Error(
       "Desktop assets are missing. Run the web build before starting or packaging desktop.",
     );
-  const python = apiPython(resources, launchEnv);
-  execFileSync(
-    python,
-    [
-      "-c",
-      'import sys; assert sys.version_info >= (3,11), "Python 3.11 or later is required"',
-    ],
-    { timeout: 5000 },
-  );
+  const python =
+    selectedBackend === "python" ? apiPython(resources, launchEnv) : null;
+  if (python)
+    execFileSync(
+      python,
+      [
+        "-c",
+        'import sys; assert sys.version_info >= (3,11), "Python 3.11 or later is required"',
+      ],
+      { timeout: 5000 },
+    );
   const codex = executable("codex", launchEnv);
-  if (supervisorMode) {
+  if (supervisorMode && python) {
     const supervisor = path.join(scripts, "codex_process_supervisor.py");
     if (!fs.existsSync(supervisor))
       throw new Error(
@@ -316,10 +467,21 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     }
   }
   const log = path.join(state, "canvas.log");
+  const backendExecutable =
+    selectedBackend === "rust" ? runtimeServer(resources, launchEnv) : python;
+  const backendArgs =
+    selectedBackend === "rust"
+      ? ["--port", String(port)]
+      : ["-B", script, "--port", String(port)];
+  const backendBuildId =
+    selectedBackend === "rust"
+      ? runtimeServerBuild(resources, launchEnv)
+      : undefined;
+  if (backendBuildId) claimRustState(canonicalState, backendBuildId);
   const fd = fs.openSync(log, "a", 0o600);
   let child;
   try {
-    child = spawn(python, ["-B", script, "--port", String(port)], {
+    child = spawn(backendExecutable, backendArgs, {
       cwd: os.homedir(),
       detached: true,
       stdio: ["ignore", fd, fd],
@@ -327,6 +489,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         ...launchEnv,
         CODEX_AGENTS_STATE_DIR: canonicalState,
         CODEX_AGENTS_SUPERVISOR_MODE: supervisorMode ? "1" : "0",
+        ...(backendBuildId ? { CODEX_BACKEND_BUILD: backendBuildId } : {}),
         CODEX_BIN: codex,
         CODEX_NODE: process.execPath,
         PATH: `${path.dirname(codex)}:${launchEnv.PATH || "/usr/bin:/bin"}`,
@@ -343,7 +506,13 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   for (let attempt = 0; attempt < 100; attempt++) {
     await sleep(100);
     if (failure) throw failure;
-    const ready = await identity(origin, canonicalState);
+    const ready = await identity(
+      origin,
+      canonicalState,
+      selectedBackend === "rust"
+        ? { expectedBackendBuild: backendBuildId }
+        : {},
+    );
     if (ready) {
       // A competing launcher can win the port. Its runtime flock remains authoritative.
       fs.writeFileSync(path.join(state, "canvas.pid"), `${ready.pid}\n`, {
@@ -376,4 +545,7 @@ module.exports = {
   backendBuild,
   updateStatus,
   backendExitStatus,
+  backendSelection,
+  runtimeServer,
+  runtimeServerBuild,
 };

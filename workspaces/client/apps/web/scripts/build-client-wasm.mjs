@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 const root = fileURLToPath(new URL("../../../../../", import.meta.url));
@@ -7,10 +8,20 @@ function run(command, args) {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status || 1);
 }
+// The parser crate owns the binding ABI version; the CLI must match it exactly.
+const manifest = readFileSync(
+  resolve(root, "workspaces/client/packages/client-wasm/Cargo.toml"),
+  "utf8",
+);
+const bindingVersion = manifest.match(
+  /^wasm-bindgen\s*=\s*"=([^"\s]+)"\s*$/m,
+)?.[1];
+if (!bindingVersion)
+  throw new Error("client-wasm must pin one exact wasm-bindgen version.");
 const version = spawnSync("wasm-bindgen", ["--version"], { encoding: "utf8" });
-if (version.stdout?.trim() !== "wasm-bindgen 0.2.129") {
+if (version.stdout?.trim() !== `wasm-bindgen ${bindingVersion}`) {
   throw new Error(
-    "Install the matching binding generator: cargo install wasm-bindgen-cli --version 0.2.129 --locked",
+    `Install the matching binding generator: cargo install wasm-bindgen-cli --version ${bindingVersion} --locked`,
   );
 }
 run("cargo", [

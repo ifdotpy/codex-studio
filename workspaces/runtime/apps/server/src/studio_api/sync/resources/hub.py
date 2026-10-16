@@ -30,6 +30,7 @@ from studio_api.sync.resources.models import (
     DraftsResource,
     LimitsResource,
     ModelsResource,
+    MultiServerResource,
     PanelResource,
     QueueResource,
     ReceiptsResource,
@@ -121,7 +122,8 @@ def _key(resource: ResourceRef) -> ResourceKey:
         case RoomResource(roomId=identity):
             return "room", identity
         case (TerminalsResource() | AccountsResource() | ModelsResource() | CostsResource()
-              | DesktopResource() | StateResource() | DraftsResource() | TranscriptsResource()):
+              | DesktopResource() | StateResource() | MultiServerResource() | DraftsResource()
+              | TranscriptsResource()):
             return value.kind, None
         case TranscriptResource(agentId=identity):
             return "transcript", identity

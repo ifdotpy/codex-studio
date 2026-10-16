@@ -10,6 +10,7 @@ from typing import NotRequired, TypedDict
 from codex_cache_paths import cache_dir
 
 ACTIVE = {"starting", "running", "waiting", "capacity-retry"}
+PYTHON_COMPATIBLE_RUST_STATE_OWNERS: frozenset[tuple[int, str]] = frozenset()
 
 
 class ThreadStatus(TypedDict):
@@ -28,13 +29,41 @@ def outside_claude(path: Path) -> Path:
 def state_dir() -> Path:
     configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
     if configured:
-        return outside_claude(Path(configured))
+        root = outside_claude(Path(configured))
+        _check_rust_state_owner(root)
+        return root
     if os.name == "nt":
         appdata = os.environ.get("LOCALAPPDATA")
         if appdata:
-            return outside_claude(Path(appdata) / "CodexStudio" / "state")
+            root = outside_claude(Path(appdata) / "CodexStudio" / "state")
+            _check_rust_state_owner(root)
+            return root
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-    return outside_claude(base / "codex-agents")
+    root = outside_claude(base / "codex-agents")
+    _check_rust_state_owner(root)
+    return root
+
+def _check_rust_state_owner(root: Path) -> None:
+    marker = root / "rust-state-owner.json"
+    try:
+        owner = json.loads(marker.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Cannot verify Rust state ownership marker {marker}: {error}") from error
+    if not isinstance(owner, dict):
+        raise RuntimeError(f"Invalid Rust state ownership marker: {marker}")
+    version, build = owner.get("formatVersion"), owner.get("backendBuild")
+    if (
+        owner.get("runtime") != "rust"
+        or not isinstance(version, int)
+        or isinstance(version, bool)
+        or not isinstance(build, str)
+        or (version, build) not in PYTHON_COMPATIBLE_RUST_STATE_OWNERS
+    ):
+        raise RuntimeError(
+            f"Python is fenced from Rust-owned state at {root}; restore a verified pre-Rust backup or use a Python build with proven compatibility."
+        )
 
 def codex_home() -> Path:
     return outside_claude(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"))

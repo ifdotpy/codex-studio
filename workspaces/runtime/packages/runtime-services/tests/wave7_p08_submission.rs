@@ -131,6 +131,7 @@ fn intent(state: &Value) -> TurnIntent {
         thread_id: Some("thread".into()),
         cwd: Some("/fixture".into()),
         model: Some(a["model"].as_str().expect("model").into()),
+        radio_authorized: false,
         events: vec![],
     }
 }
@@ -153,6 +154,7 @@ fn submission(state: &Value, at: f64) -> PreparedSubmission {
                 assets: json!([]),
             })
             .collect(),
+        radio_authorized: false,
     }
 }
 fn params(state: &Value) -> Value {
@@ -161,6 +163,8 @@ fn params(state: &Value) -> Value {
 }
 // Python does not persist Rust's request/receipt audit envelopes. Check those
 // exact additional fields and rows, while comparing every Python column/record.
+// The transport connection is nevertheless part of Python's persisted
+// startAttempt identity (codex_runtime.py Runtime.start, lines 7455-7458).
 fn add_receipts(expected: &mut Value, attempts: &[&str], transcript: bool) {
     for row in expected["runtime_execution_attempts"]
         .as_array_mut()
@@ -169,7 +173,8 @@ fn add_receipts(expected: &mut Value, attempts: &[&str], transcript: bool) {
         let id = row["id"].as_str().expect("id");
         if attempts.contains(&id) {
             row["record"]["receipts"] = json!({"submission":{"input":{"agent":"agent","epoch":2,
-                "ticket":format!("request:{id}"),"account":"account","generation":7,"thread":"thread"},"result":true}});
+                "ticket":format!("request:{id}"),"account":"account","connection":"connection",
+                "generation":7,"thread":"thread"},"result":true}});
         }
     }
     if transcript {
@@ -319,7 +324,7 @@ fn first_submission_rejection_and_new_attempt_preserve_the_complete_original_rec
         &later.text,
     )
     .expect("freeze");
-    assert!(matches!(commit_prepared_turn(&tx,&intent(&expected_before),"request:retry",7,&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))));
+    assert!(matches!(commit_prepared_turn(&tx,&intent(&expected_before),"request:retry",7,"test-connection",&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))));
     drop(tx);
     compare(&db, &expected_before, "conflicting integration rolled back");
     let tx = db.transaction().expect("tx");
@@ -383,6 +388,7 @@ fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreign_tran
                 &intent(&before),
                 "request:attempt",
                 7,
+                "test-connection",
                 &submission(&before, 150.0)
             )
             .expect("Submitted")
@@ -580,7 +586,7 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
             "submitted",
             "UPDATE",
             "runtime_agents",
-            "json_extract(NEW.record,'$.startAttempt.submitted')=1 AND json_extract(NEW.record,'$.startAttempt.connectionId') IS NULL",
+            "json_extract(NEW.record,'$.startAttempt.submitted')=1",
         ),
         ("event", "UPDATE", "runtime_events", "1"),
         ("transcript", "INSERT", "runtime_items", "1"),

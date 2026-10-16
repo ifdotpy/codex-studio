@@ -29,8 +29,12 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     );
     assert_eq!(
         replaced,
-        Vec::<String>::new(),
-        "live fixture first-open replacements"
+        vec![
+            "trigger:sync_entity_event_DELETE".to_owned(),
+            "trigger:sync_entity_event_INSERT".to_owned(),
+            "trigger:sync_entity_event_UPDATE".to_owned(),
+        ],
+        "old event triggers upgrade to atomic portable window maintenance"
     );
     let before = catalog(&state.join("canvas.sqlite3"));
     let reader = store.read().expect("reader opens");
@@ -117,6 +121,35 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     );
     drop(reader);
     drop(reopened);
+    cleanup(state);
+}
+
+#[test]
+fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
+    let state = temporary_state();
+    create_from_live_schema(&state);
+    let analytics_path = state.join("analytics.sqlite3");
+    let db = Connection::open(&analytics_path).expect("analytics fixture opens");
+    db.execute("DROP INDEX analytics_limits_account_at", [])
+        .expect("fixture index drops");
+    drop(db);
+
+    let store = RuntimeStore::open(Some(&state)).expect("Rust opens existing analytics schema");
+    drop(store);
+
+    let db = Connection::open(&analytics_path).expect("analytics fixture reopens");
+    let exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='analytics_limits_account_at')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("index lookup succeeds");
+    assert!(
+        exists,
+        "Rust open creates the missing analytics limits index"
+    );
+    drop(db);
     cleanup(state);
 }
 
@@ -401,6 +434,7 @@ path = pathlib.Path(sys.argv[1]) / 'canvas.sqlite3'
 @contextlib.contextmanager
 def connect():
     db = sqlite3.connect(path)
+    register_functions(db)
     try:
         yield db
     finally:
@@ -518,6 +552,103 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
 }
 
 #[test]
+fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
+    let state = temporary_state();
+    create_from_live_schema(&state);
+    prepare_with_python(&state);
+    let canvas = state.join("canvas.sqlite3");
+    // Simulate a development state that briefly had the Python-only trigger.
+    let database = Connection::open(&canvas).expect("Python-prepared state opens");
+    database
+        .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
+        .expect("intermediate trigger fixture creates");
+    drop(database);
+    let store =
+        RuntimeStore::open(Some(&state)).expect("Rust upgrades the actual Python-prepared state");
+    let window = include_str!("../src/sync_schema.sql")
+        .lines()
+        .find_map(|line| line.strip_prefix("-- event-window-size: "))
+        .and_then(|size| size.parse::<usize>().ok())
+        .expect("generated SQL identifies codex_entity_contracts.EVENT_WINDOW");
+    store
+        .transaction(|tx| {
+            for index in 0..window + 2 {
+                QueueEventRepository::put(
+                    tx,
+                    &QueueEvent {
+                        id: QueueEventId::from(format!("portable-{index:04}")),
+                        agent: AgentId::from("fixture-agent"),
+                        kind: "user".into(),
+                        text: "fixture".into(),
+                        status: "delivered".into(),
+                        created: index as f64,
+                        epoch: 0,
+                        turn_id: None,
+                        error: None,
+                    },
+                )?;
+            }
+            let live: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM sync_entities WHERE collection='event' AND deleted=0",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                live,
+                i64::try_from(window).expect("event window fits SQLite count"),
+                "the source writer commits an exact bounded window"
+            );
+            let distinct: i64 = tx.query_row(
+                "SELECT COUNT(DISTINCT seq) FROM sync_entities WHERE collection='event'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                distinct,
+                i64::try_from(window + 2).expect("event fixture count fits SQLite count"),
+                "every event and displacement has its own sequence"
+            );
+            Ok(())
+        })
+        .expect("Rust event writes need only its existing portable projection functions");
+    let reader = store.read().expect("committed reader opens");
+    let before: i64 = reader
+        .query_row(
+            "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("committed event sequence reads");
+    drop(reader);
+    let rollback: Result<(), StoreError> = store.transaction(|tx| {
+        tx.execute("DELETE FROM runtime_events WHERE id='portable-0002'", [])?;
+        Err(StoreError::SchemaMismatch(
+            "intentional fixture rollback".into(),
+        ))
+    });
+    assert!(rollback.is_err());
+    let reader = store.read().expect("reader opens after rollback");
+    let after: i64 = reader
+        .query_row(
+            "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("rolled-back event sequence reads");
+    assert_eq!(
+        before, after,
+        "rollback preserves source, window, and checkpoint together"
+    );
+    let obsolete: i64 = reader
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_entity_event_window_v2_*'", [], |row| row.get(0))
+        .expect("obsolete trigger count reads");
+    assert_eq!(obsolete, 0);
+    drop(reader);
+    drop(store);
+    cleanup(state);
+}
+
+#[test]
 fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
     let python_state = temporary_state();
     let rust_state = temporary_state();
@@ -548,10 +679,32 @@ fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
         Vec::<String>::new(),
         "Python first-open replacements"
     );
-    assert_eq!(
-        sync_seed_rows(&rust_state.join("canvas.sqlite3")),
-        python_seeds
-    );
+    let rust_seeds = sync_seed_rows(&rust_state.join("canvas.sqlite3"));
+    for seed in &rust_seeds {
+        assert!(
+            python_seeds.contains(seed),
+            "shared schema seed differs: {seed}"
+        );
+    }
+    // Python prepares renderer projections before serving; Rust's bootstrap
+    // prepares their storage without claiming those projections were seeded.
+    // Opening that Python state must retain its exact projection checkpoints.
+    for extra in python_seeds
+        .iter()
+        .filter(|seed| !rust_seeds.contains(seed))
+    {
+        assert!(
+            [
+                "meta:seeded:",
+                "meta:event_window_seq:",
+                "meta:task_window_migrated:"
+            ]
+            .iter()
+            .any(|prefix| extra.starts_with(prefix)),
+            "unexpected producer-specific schema seed: {extra}"
+        );
+    }
+    assert_eq!(sync_seed_rows(&python_canvas), python_seeds);
 
     store
         .transaction(|tx| {

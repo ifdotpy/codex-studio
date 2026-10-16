@@ -3,6 +3,7 @@ use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
 use crate::event_write::{python_json, python_strip, truthy};
+use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use studio_runtime_schema::agent_limits_generated::{
@@ -14,6 +15,9 @@ pub struct Context<'a> {
     pub store: &'a RuntimeStore,
     pub accounts: Option<&'a AccountPolicyState>,
     pub driver: Option<&'a AccountDriver>,
+    pub catalog: Option<&'a dyn crate::host_worker_create::CreationCatalog>,
+    pub managed_creation_environment:
+        Option<&'a dyn crate::managed_child_create::ManagedCreationEnvironment>,
     pub validate: &'a dyn Fn(&str, &Value) -> bool,
 }
 
@@ -21,6 +25,8 @@ pub struct Context<'a> {
 pub enum OperationError {
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    Forbidden(&'static str),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error(transparent)]
@@ -31,7 +37,7 @@ pub enum OperationError {
     Internal,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Creation {
     pub id: Option<String>,
     pub cwd: Option<String>,
@@ -52,6 +58,8 @@ pub struct Creation {
     pub worker_catalog: bool,
     pub project_binding: bool,
     pub intent: Value,
+    /// Source native thread attached atomically for provider-history imports.
+    pub imported_from: Option<String>,
 }
 
 pub struct Configuration {
@@ -59,25 +67,372 @@ pub struct Configuration {
     pub concurrency: Option<i64>,
     pub max_agents: Option<i64>,
     pub token_budget: Option<Option<i64>>,
-    pub mode_receipt: bool,
+    pub expected_mode_revision: Option<i64>,
+    pub request_id: Option<String>,
 }
 
 pub struct Conversation {
     pub id: String,
     pub expected_account: Option<String>,
     pub excluded: Option<Vec<String>>,
-    pub settings: bool,
+    pub cwd: Option<String>,
+    pub yolo_mode: Option<bool>,
+    pub model: Option<String>,
+    pub model_present: bool,
+    pub effort: Option<Option<String>>,
+    pub effort_present: bool,
+    pub fast_mode: Option<bool>,
+    pub fast_mode_present: bool,
+    pub daybreak_enabled: Option<bool>,
+    pub daybreak_present: bool,
+    pub next_turn: Option<Option<bool>>,
+    pub request_id: Option<Option<String>>,
+    pub mode_settings: bool,
+    pub mode_limit: Option<i64>,
+    pub mode_revision: Option<i64>,
+    pub mode_request_id: Option<String>,
+    pub worker_settings: bool,
+    pub worker_defaults: Option<Value>,
+    pub review_defaults: Option<Value>,
     pub non_defaults: bool,
 }
 
-const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
+/// Read-only result of the ordered create admission phase. The HTTP layer uses
+/// it before waiting on a provider catalog, then `agent` repeats the durable
+/// replay check inside its write path to cover concurrent creation.
+pub struct AgentAdmission {
+    pub replay: Option<Value>,
+    pub account: Option<String>,
+    pub model: Option<String>,
+    pub needs_catalog: bool,
+}
+
+pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)
 }
+
+/// Return a durable lead replay without consulting catalog or provider state.
+/// The HTTP admission edge calls this before any catalog wait, matching the
+/// Python `new_lead` replay check at `codex_runtime.py:5067-5131`, which runs
+/// before `self.catalog(...)`.
+pub fn replay_lead_request(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<Option<Value>, OperationError> {
+    let Some(id) = request.id.as_deref() else {
+        return Ok(None);
+    };
+    let workspace = request
+        .workspace
+        .as_deref()
+        .unwrap_or(if cfg!(target_os = "macos") {
+            "layr"
+        } else {
+            "worktree"
+        });
+    let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
+    let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    context.store.transaction_with_error(|tx| {
+        let Some(record) = super::replay_lead(tx, id, &signature, validate)? else {
+            return Ok(None);
+        };
+        Ok(Some(sync_projection(tx, &record)?))
+    })
+}
+
+/// Resolve the same project-bound account used by lead creation before the
+/// HTTP edge admits a model catalog request, matching Python's project account
+/// selection at `codex_runtime.py:5067-5131`.
+pub fn creation_account_key(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<String, OperationError> {
+    let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
+    let cwd = requested_cwd.map_or_else(
+        || {
+            previous
+                .as_ref()
+                .and_then(|prior| {
+                    prior
+                        .get("hostProjectPath")
+                        .filter(|value| !value.is_null())
+                        .or_else(|| prior.get("cwd"))
+                        .and_then(Value::as_str)
+                })
+                .map(project_directory)
+                .transpose()
+                .and_then(|cwd| cwd.map_or_else(project_directory_default, Ok))
+        },
+        Ok,
+    )?;
+    drop(read);
+    account_key(context, request.account.as_deref(), &cwd)
+}
+
+pub fn conversation_account_key(
+    context: &Context<'_>,
+    id: &str,
+    expected_account: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<String, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let initial = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+    let old_account = initial
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if expected_account.is_some_and(|expected| expected != old_account) {
+        return Err(MutationError::Stale.into());
+    }
+    drop(read);
+    // Python's conversation update uses the requested project account when cwd
+    // changes and otherwise keeps this conversation's account; settings then
+    // resolve their catalogs separately (`codex_runtime.py:5484-5491`).
+    if let Some(cwd) = cwd {
+        account_key(context, None, &project_directory(cwd)?)
+    } else {
+        Ok(old_account.to_owned())
+    }
+}
+
+/// Return the currently selected worker account for Python's review-defaults
+/// settings-catalog path (`codex_runtime.py:5487-5491`).
+pub fn conversation_worker_account_key(
+    context: &Context<'_>,
+    id: &str,
+    expected_account: Option<&str>,
+) -> Result<Option<String>, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let record = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+    let account = record
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if expected_account.is_some_and(|expected| expected != account) {
+        return Err(MutationError::Stale.into());
+    }
+    Ok(record
+        .pointer("/workerDefaults/accountKey")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
 pub fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, false)
 }
+
+/// Transcribe `Runtime.create`'s pre-write ordering for the HTTP admission
+/// edge: replay first, then profile and account resolution, then decide whether
+/// Python's catalog-dependent fields require a catalog. The write path repeats
+/// replay and profile validation to handle races after this read-only phase.
+pub fn prepare_agent_admission(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<AgentAdmission, OperationError> {
+    // Python's durable existing-agent replay is the no-side-effect fast path;
+    // `codex_runtime.py:4902-4913`. Keep it ahead of profile/account/catalog work.
+    let Some(id) = request.id.as_deref() else {
+        return prepare_new_agent_admission(context, request);
+    };
+    let intent = agent_creation_intent(request)?;
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let replayed = {
+        let read = context.store.read()?;
+        super::replay_agent(&read, id, &intent, validate)?
+    };
+    if replayed.is_some() {
+        let replay = context.store.transaction_with_error(|tx| {
+            let record =
+                super::replay_agent(tx, id, &intent, validate)?.ok_or(CreateError::Conflict)?;
+            Ok::<Value, OperationError>(sync_projection(tx, &record)?)
+        })?;
+        return Ok(AgentAdmission {
+            replay: Some(replay),
+            account: None,
+            model: None,
+            needs_catalog: false,
+        });
+    }
+    prepare_new_agent_admission(context, request)
+}
+
+fn prepare_new_agent_admission(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<AgentAdmission, OperationError> {
+    // Python resolves the parent delegation/profile before deciding whether a
+    // catalog is needed (`codex_runtime.py:4853-4888`). A profile contributes
+    // only non-null model/effort values that the request did not override.
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let profile = {
+        let read = context.store.read()?;
+        request
+            .profile
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .map(|id| {
+                load_record(&read, "runtime_profiles", "ProfileRecord", id, &validate)?
+                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+            })
+            .transpose()?
+    };
+    let explicit = request.intent.as_object();
+    let profile_model_value = profile
+        .as_ref()
+        .and_then(|profile| profile.get("model"))
+        .filter(|value| !value.is_null());
+    let profile_model = profile_model_value.and_then(Value::as_str);
+    let profile_effort = profile
+        .as_ref()
+        .and_then(|profile| profile.get("effort"))
+        .filter(|value| !value.is_null());
+    let model = explicit
+        .and_then(|body| body.get("model"))
+        .and_then(Value::as_str)
+        .or(profile_model)
+        .map(str::to_owned);
+    let profile_supplies_model =
+        explicit.is_none_or(|body| !body.contains_key("model")) && profile_model_value.is_some();
+    let profile_supplies_effort =
+        explicit.is_none_or(|body| !body.contains_key("effort")) && profile_effort.is_some();
+    // Python's `needs_catalog` is based on the merged data keys, not on the
+    // mere presence of `profile_id` (`codex_runtime.py:4875-4888`).
+    let needs_catalog = agent_needs_catalog(
+        request.parent.is_some(),
+        explicit,
+        profile_supplies_model,
+        profile_supplies_effort,
+    );
+    // Standalone create resolves its project/account binding before fetching a
+    // catalog; child account selection is resolved from the parent at the
+    // admission boundary (`codex_runtime.py:4876-4888`).
+    let account = if request.parent.is_none() {
+        Some(creation_account_key(context, request)?)
+    } else {
+        None
+    };
+    Ok(AgentAdmission {
+        replay: None,
+        account,
+        model,
+        needs_catalog,
+    })
+}
+
+fn agent_needs_catalog(
+    is_child: bool,
+    explicit: Option<&serde_json::Map<String, Value>>,
+    profile_supplies_model: bool,
+    profile_supplies_effort: bool,
+) -> bool {
+    is_child
+        || [
+            "model",
+            "effort",
+            "fast_mode",
+            "daybreak_enabled",
+            "worker_defaults",
+        ]
+        .iter()
+        .any(|field| explicit.is_some_and(|body| body.contains_key(*field)))
+        || profile_supplies_model
+        || profile_supplies_effort
+}
+
+fn merge_profile_catalog_fields(intent: &mut Value, original: &Value, profile: &Value) -> bool {
+    let mut needs_catalog = false;
+    for field in ["model", "effort"] {
+        let supplied = !original
+            .as_object()
+            .is_some_and(|body| body.contains_key(field))
+            && profile.get(field).is_some_and(|value| !value.is_null());
+        if supplied {
+            intent[field] = profile[field].clone();
+            needs_catalog = true;
+        }
+    }
+    needs_catalog
+}
+
+#[cfg(test)]
+mod agent_catalog_requirement_tests {
+    use super::{agent_needs_catalog, merge_profile_catalog_fields};
+    use serde_json::json;
+
+    #[test]
+    fn catalog_is_required_for_merged_model_or_effort_but_not_profile_presence() {
+        // Python merges non-null profile fields before evaluating `needs_catalog`
+        // (`codex_runtime.py:4859-4888`).
+        let profile_only = json!({"profile_id": "role-only", "role": "reviewer"});
+        assert!(!agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            false,
+            false
+        ));
+        assert!(agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            true,
+            false
+        ));
+        assert!(agent_needs_catalog(
+            false,
+            profile_only.as_object(),
+            false,
+            true
+        ));
+        let explicit_model = json!({"model": "gpt-6-astra"});
+        assert!(agent_needs_catalog(
+            false,
+            explicit_model.as_object(),
+            false,
+            false
+        ));
+        assert!(!agent_needs_catalog(false, None, false, false));
+        assert!(agent_needs_catalog(true, None, false, false));
+    }
+
+    #[test]
+    fn profile_merges_model_and_effort_without_losing_either_field() {
+        // Python's `{profile fields, **data}` merge keeps both profile values
+        // when the request omitted them (`codex_runtime.py:4859-4872`).
+        let original = json!({"profile_id": "execution-profile"});
+        let profile = json!({"model": "gpt-6-luna", "effort": "high"});
+        let mut effective = original.clone();
+        assert!(merge_profile_catalog_fields(
+            &mut effective,
+            &original,
+            &profile
+        ));
+        assert_eq!(effective["model"], "gpt-6-luna");
+        assert_eq!(effective["effort"], "high");
+    }
+}
+
+fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
+    let mut intent = request.intent.clone();
+    let object = intent.as_object_mut().ok_or(OperationError::Internal)?;
+    if let Some(imported_from) = &request.imported_from {
+        object.insert("imported_from".to_owned(), json!(imported_from));
+    }
+    object.remove("id");
+    intent["prompt"] = json!(python_strip(&request.prompt));
+    intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
+    if let Some(cwd) = request.cwd.as_deref().map(project_directory).transpose()? {
+        intent["cwd"] = json!(cwd);
+    }
+    Ok(intent)
+}
+
 fn create(
     context: &Context<'_>,
     mut request: Creation,
@@ -94,16 +449,10 @@ fn create(
         });
     let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     if !draft {
-        request
-            .intent
-            .as_object_mut()
-            .ok_or(OperationError::Internal)?
-            .remove("id");
-        request.intent["prompt"] = json!(python_strip(&request.prompt));
-        request.intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
-        if let Some(cwd) = &requested_cwd {
-            request.intent["cwd"] = json!(cwd);
-        }
+        // Import source is part of the durable creation identity. Keep it in
+        // the intent compared by replay_agent, including the transaction's
+        // concurrent recheck, rather than relying on an earlier route read.
+        request.intent = agent_creation_intent(&request)?;
     }
     let signature = lead_signature(&request.intent, workspace, requested_cwd.as_deref());
     let read = context.store.read()?;
@@ -119,10 +468,19 @@ fn create(
     let existing = replay(&read)?;
     drop(read);
     if existing.is_some() {
-        return context.store.transaction_with_error(|tx| {
+        let replayed = context.store.transaction_with_error(|tx| {
             let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok(sync_projection(tx, &current)?)
-        });
+            Ok::<Value, OperationError>(sync_projection(tx, &current)?)
+        })?;
+        #[cfg(target_os = "macos")]
+        // Replays use the persisted child workspace mode, even when the retry
+        // omitted an explicit workspace (Python `codex_runtime.py:5175-5201`).
+        let replayed = if should_resume_image_provisioning(&replayed) {
+            provision_image_workspace(context, &replayed, &id)?
+        } else {
+            replayed
+        };
+        return Ok(replayed);
     }
     let read = context.store.read()?;
     let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
@@ -142,35 +500,25 @@ fn create(
                 .and_then(Value::as_str)
                 .map(str::to_owned);
         }
-        request.catalog |= ["model", "effort"].iter().any(|field| {
-            !request
-                .intent
-                .as_object()
-                .is_some_and(|body| body.contains_key(*field))
-                && profile.get(*field).is_some_and(|value| !value.is_null())
-        });
+        request.catalog |= merge_profile_catalog_fields(&mut request.intent, &intent, profile);
     }
     drop(read);
     if request.parent.is_some() {
-        return Err(OperationError::Unavailable(
-            "worker-driver/workspace-preparation",
-        ));
+        if request.worker_catalog {
+            return Err(OperationError::Invalid(
+                "Only a lead can change worker defaults",
+            ));
+        }
+        return create_child(context, &request, &id, &request.intent, &intent, &validate);
     }
-    if request.catalog {
-        return Err(OperationError::Unavailable("provider-session/model-list"));
-    }
-    if request.worker_catalog {
-        return Err(OperationError::Unavailable(
-            "worker-driver/settings-catalog",
-        ));
-    }
-    if request.project_binding {
-        return Err(OperationError::Unavailable("project-driver/chat-binding"));
-    }
-    if workspace != "worktree" {
-        return Err(OperationError::Unavailable(
-            "workspace-state/lead-workspace",
-        ));
+    if matches!(workspace, "image" | "layr") {
+        if !cfg!(target_os = "macos") {
+            return Err(OperationError::Invalid(
+                "This server supports only worktree chats",
+            ));
+        }
+    } else if workspace != "worktree" {
+        return Err(OperationError::Invalid("Unknown workspace mode"));
     }
     if !draft && request.cwd.as_deref().is_none_or(str::is_empty) {
         return Err(OperationError::Invalid(
@@ -194,7 +542,92 @@ fn create(
         },
         Ok,
     )?;
+    let binding = if request.project_binding {
+        Some(resolve_project_binding(
+            context,
+            &cwd,
+            request.intent.get("project_id").and_then(Value::as_str),
+            request
+                .intent
+                .get("project_server_id")
+                .and_then(Value::as_str),
+            request.intent.get("project_folder"),
+        )?)
+    } else {
+        None
+    };
     let account = account_key(context, request.account.as_deref(), &cwd)?;
+    let identity = account_identity(context, &account)?;
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let settings = if request.catalog || request.worker_catalog {
+        let model = request
+            .intent
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or(if provider == "claude" {
+                "default"
+            } else {
+                DEFAULT_LEAD_MODEL
+            });
+        let effort = request
+            .intent
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty());
+        let effort = effort.or_else(|| {
+            (request
+                .intent
+                .get("model")
+                .and_then(Value::as_str)
+                .is_some())
+            .then(|| previous.as_ref()?.get("effort")?.as_str())
+            .flatten()
+        });
+        let fast_mode = request
+            .intent
+            .get("fast_mode")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                request.intent.get("model").and_then(Value::as_str)?;
+                previous.as_ref()?.get("fastMode")?.as_bool()
+            })
+            .unwrap_or(false);
+        let daybreak_enabled = request
+            .intent
+            .get("daybreak_enabled")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                request.intent.get("model").and_then(Value::as_str)?;
+                previous.as_ref()?.get("daybreakEnabled")?.as_bool()
+            })
+            .unwrap_or(false);
+        context
+            .catalog
+            .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+            .resolve(
+                &account,
+                &identity,
+                model,
+                effort,
+                fast_mode,
+                daybreak_enabled,
+            )?
+    } else {
+        ExecutionSettings {
+            model: if provider == "claude" {
+                "default".to_owned()
+            } else {
+                DEFAULT_LEAD_MODEL.to_owned()
+            },
+            effort: Some("medium".to_owned()),
+            native_effort: "medium".to_owned(),
+            fast_mode: false,
+            daybreak_enabled: false,
+            cyber_access_program: "standard".to_owned(),
+        }
+    };
     let yolo = request.yolo.unwrap_or_else(|| {
         previous
             .as_ref()
@@ -204,6 +637,16 @@ fn create(
     });
     let concurrency = request.concurrency.unwrap_or(DEFAULT_SUBAGENT_CONCURRENCY);
     let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
+    if !(0..=512).contains(&concurrency) || !(1..=1024).contains(&requested_max_agents) {
+        return Err(OperationError::Invalid(
+            "Concurrency must be 0 to 512 and team size must be 1 to 1024",
+        ));
+    }
+    if request.token_budget.is_some_and(|budget| budget <= 0) {
+        return Err(OperationError::Invalid(
+            "Token budget must be a positive integer",
+        ));
+    }
     let role = request.role.as_deref().unwrap_or("orchestrator");
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
@@ -212,6 +655,31 @@ fn create(
     };
     let prompt = python_strip(&request.prompt);
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
+    let (worker_defaults, review_defaults) = if role == "orchestrator" {
+        (
+            Some(resolve_worker_defaults(
+                context,
+                request.intent.get("worker_defaults"),
+                &account,
+                &identity,
+                &settings.model,
+                &[],
+            )?),
+            Some(resolve_review_defaults(
+                context,
+                request.intent.get("review_defaults"),
+                &account,
+                &identity,
+                request
+                    .intent
+                    .pointer("/worker_defaults/account_key")
+                    .and_then(Value::as_str),
+                &[],
+            )?),
+        )
+    } else {
+        (None, None)
+    };
     let mut record = build_agent_record(
         &id,
         if draft {
@@ -222,7 +690,7 @@ fn create(
         prompt,
         &cwd,
         &account,
-        provider(context, &account),
+        provider,
         yolo,
         role,
         role == "orchestrator",
@@ -238,7 +706,28 @@ fn create(
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
     }
+    if let Some(imported_from) = &request.imported_from {
+        record["importedFrom"] = json!(imported_from);
+        record["autoWake"] = json!(true);
+    }
+    if role == "orchestrator" {
+        record["workerDefaults"] = worker_defaults.unwrap_or_else(|| {
+            json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1})
+        });
+        record["reviewDefaults"] = review_defaults.unwrap_or(json!({"model":null,"effort":null}));
+    }
     mode_fields(&mut record);
+    if workspace == "image" {
+        set_image_workspace_fields(&mut record, &cwd);
+    }
+    if workspace == "layr" {
+        set_vm_workspace_fields(&mut record, &cwd);
+    }
+    record["model"] = json!(settings.model);
+    record["effort"] = json!(settings.effort);
+    record["fastMode"] = json!(settings.fast_mode);
+    record["daybreakEnabled"] = json!(settings.daybreak_enabled);
+    record["cyberAccessProgram"] = json!(settings.cyber_access_program);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
         record["profileInstructions"] = profile["instructions"].clone();
@@ -246,12 +735,30 @@ fn create(
     if !draft {
         record["creationIntent"] = intent.clone();
     }
-    mutate(context, |tx| {
+    if let Some(binding) = &binding {
+        record["projectId"] = binding["projectId"].clone();
+        record["projectServerId"] = binding["projectServerId"].clone();
+        record["projectFolder"] = binding["projectFolder"].clone();
+    }
+    let reuse_execution_fields = [
+        "effort",
+        "fast_mode",
+        "daybreak_enabled",
+        "worker_defaults",
+        "review_defaults",
+    ]
+    .iter()
+    .any(|field| request.intent.get(*field).is_some());
+    let result = mutate(context, |tx| {
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
+            && draft
+            && !reuse_execution_fields
+            && !request.worker_catalog
+            && reusable_previous_workspace(&prior, workspace, &cwd)
             && !truthy(prior.get("layrReady"))
             && prior
                 .get("workspaceMode")
@@ -262,32 +769,668 @@ fn create(
                 .get("provider")
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
-                == provider(context, &account)
+                == provider
             && crate::sync_entity_context::agent_view_context(tx, &prior, None)?.empty_lead
         {
-            return Err(OperationError::Unavailable(
-                "agent-management/empty-chat-reuse",
-            ));
+            let mut reused = prior;
+            let previous_account = reused
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned();
+            if reused.get("provider").and_then(Value::as_str) != Some(provider) {
+                return Err(OperationError::Create(CreateError::IdentityChanged));
+            }
+            reused["cwd"] = json!(cwd);
+            reused["hostProjectPath"] = json!(cwd);
+            reused["accountKey"] = json!(account);
+            reused["executionSettingsAccountKey"] = json!(account);
+            reused["yoloMode"] = json!(yolo);
+            if request
+                .intent
+                .get("model")
+                .and_then(Value::as_str)
+                .is_some()
+            {
+                reused["model"] = json!(settings.model);
+                reused["effort"] = json!(settings.effort);
+                reused["fastMode"] = json!(settings.fast_mode);
+                reused["daybreakEnabled"] = json!(settings.daybreak_enabled);
+                reused["cyberAccessProgram"] = json!(settings.cyber_access_program);
+            }
+            if let Some(binding) = &binding {
+                reused["projectId"] = binding["projectId"].clone();
+                reused["projectServerId"] = binding["projectServerId"].clone();
+                reused["projectFolder"] = binding["projectFolder"].clone();
+            } else if let Some(fields) = reused.as_object_mut() {
+                fields.remove("projectId");
+                fields.remove("projectServerId");
+                fields.remove("projectFolder");
+            }
+            if previous_account != account {
+                reused["daybreakEnabled"] = json!(false);
+                reused["cyberAccessProgram"] = json!("standard");
+                reused
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettings");
+                reused
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettingsAccountKey");
+            }
+            if workspace == "layr" {
+                set_vm_workspace_fields(&mut reused, &cwd);
+            } else if workspace == "image" {
+                set_image_workspace_fields(&mut reused, &cwd);
+            }
+            ensure_project(tx, &reused)?;
+            save_agent(tx, &reused, &validate)?;
+            tx.execute(
+                "INSERT INTO runtime_lead_requests(id,agent,signature) VALUES(?1,?2,?3)",
+                rusqlite::params![id, reused["id"].as_str(), signature],
+            )
+            .map_err(StoreError::from)?;
+            return Ok(sync_projection(tx, &reused)?);
         }
-        refresh_account(context, &account)?;
-        Ok(super::create_agent(
+        if let Some(binding) = &binding {
+            let current = resolve_project_binding_from(
+                tx,
+                binding["cwd"].as_str().ok_or(OperationError::Internal)?,
+                binding["projectId"].as_str(),
+                binding["projectServerId"].as_str(),
+                binding["localServerId"]
+                    .as_str()
+                    .ok_or(OperationError::Internal)?,
+                Some(&binding["projectFolder"]),
+            )?;
+            if current != *binding {
+                return Err(CreateError::IdentityChanged.into());
+            }
+        }
+        Ok(super::create_agent_with_identity(
             tx, &id, prompt, record, created, validate,
         )?)
-    })
+    })?;
+    #[cfg(target_os = "macos")]
+    let result = if workspace == "image" {
+        provision_image_workspace(context, &result, &id)?
+    } else {
+        result
+    };
+    Ok(result)
+}
+
+fn create_child(
+    context: &Context<'_>,
+    request: &Creation,
+    id: &str,
+    execution_intent: &Value,
+    creation_intent: &Value,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Value, OperationError> {
+    let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
+    let (parent, root, project_binding) = {
+        let db = context.store.read()?;
+        let parent =
+            load_agent_value(&db, parent_id, validate)?.ok_or(MutationError::UnknownAgent)?;
+        if truthy(parent.get("deletedAt")) {
+            return Err(MutationError::Deleted.into());
+        }
+        let root_id = parent
+            .get("rootId")
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?;
+        let root = load_agent_value(&db, root_id, validate)?.ok_or(MutationError::UnknownAgent)?;
+        let project = parent_project_binding(&db, &parent, &root)?;
+        (parent, root, project)
+    };
+    if !truthy(root.get("isLead"))
+        || root.get("id").and_then(Value::as_str) != root.get("rootId").and_then(Value::as_str)
+    {
+        return Err(MutationError::LeadRequired.into());
+    }
+    if !truthy(parent.get("autoWake")) || !truthy(root.get("autoWake")) {
+        return Err(OperationError::Invalid("This team is stopped"));
+    }
+    if root
+        .get("concurrency")
+        .and_then(Value::as_i64)
+        .unwrap_or(32)
+        == 0
+    {
+        return Err(OperationError::Invalid(
+            "Single agent mode disables new delegation",
+        ));
+    }
+    let parent_workspace = parent
+        .get("workspaceMode")
+        .and_then(Value::as_str)
+        .unwrap_or("worktree");
+    let (role, workspace, worktree) = child_role_workspace(
+        request.role.as_deref(),
+        request.workspace.as_deref(),
+        parent_workspace,
+        parent.get("executionMode").and_then(Value::as_str) == Some("vm"),
+    )?;
+    validate_vm_parent_for_create(workspace, &parent)?;
+    if matches!(workspace, "image" | "layr") && !cfg!(target_os = "macos") {
+        return Err(OperationError::Invalid(
+            "This server supports only worktree chats",
+        ));
+    }
+    let cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let host_cwd = if workspace == "layr" {
+        root.get("hostProjectPath")
+            .or_else(|| root.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or(cwd)
+    } else {
+        cwd
+    };
+    let defaults = root
+        .get("workerDefaults")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let account = request
+        .account
+        .as_deref()
+        .or_else(|| defaults.get("accountKey").and_then(Value::as_str))
+        .unwrap_or_else(|| {
+            parent
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+        });
+    let (identity, account_status, can_attempt_native_proof) =
+        account_identity_with_status(context, account)?;
+    let parent_account_key = parent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if account != parent_account_key
+        && account_status != AccountStatus::Ready
+        && !can_attempt_native_proof
+    {
+        return Err(OperationError::Unavailable("account-driver/unavailable"));
+    }
+    if defaults
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .is_some_and(|selected| selected != account)
+    {
+        return Err(MutationError::IdentityChanged.into());
+    }
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let model = execution_intent
+        .get("model")
+        .and_then(Value::as_str)
+        .or_else(|| defaults.get("model").and_then(Value::as_str))
+        .or_else(|| root.get("model").and_then(Value::as_str))
+        .unwrap_or(if provider == "claude" {
+            "default"
+        } else {
+            DEFAULT_LEAD_MODEL
+        });
+    let effort = execution_intent
+        .get("effort")
+        .and_then(Value::as_str)
+        .or_else(|| defaults.get("effort").and_then(Value::as_str));
+    let fast_mode = execution_intent
+        .get("fast_mode")
+        .and_then(Value::as_bool)
+        .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let daybreak = execution_intent
+        .get("daybreak_enabled")
+        .and_then(Value::as_bool)
+        .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let catalog = context
+        .catalog
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let (base_ref, base_commit) = if worktree {
+        crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?
+    } else {
+        (String::new(), String::new())
+    };
+    let body = json!({
+        "account_key":account,"name":request.name.as_deref().unwrap_or(model),
+        "model":model,"effort":effort,"fast_mode":fast_mode,
+        "daybreak_enabled":daybreak,"prompt":request.prompt,
+        "workspace_explicit":request.workspace.is_some()
+    });
+    let root_agent = root
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let epoch = parent.get("epoch").and_then(Value::as_i64).unwrap_or(0);
+    let parent_cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    // Python persists VM workers against the host project identity
+    // (`codex_runtime.py:5018-5020`), while `cwd` is guest-local. Freeze that
+    // same identity for the writer recheck in `host_worker_create`.
+    let parent_project_path = parent_project_path(&parent, &root, parent_cwd);
+    let parent_account_key = parent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let draft = crate::host_worker_create::prepare_work_item(
+        &body,
+        PathBuf::from(host_cwd).as_path(),
+        studio_runtime_store::AgentId::from(id),
+        studio_runtime_store::AgentId::from(root_agent),
+        studio_runtime_store::AgentId::from(parent_id),
+        &base_ref,
+        &base_commit,
+        epoch,
+        parent_cwd,
+        parent_project_path,
+        parent_account_key,
+        parent.get("projectId"),
+        parent.get("projectServerId"),
+        project_binding.as_ref(),
+        &identity,
+        catalog,
+        role,
+        worktree,
+        fast_mode,
+        daybreak,
+    )?;
+    let checked = crate::host_worker_create::persisted_record(&draft)?;
+    let mut record = checked.value();
+    if workspace == "layr" {
+        record["cwd"] = json!(cwd);
+        set_vm_workspace_fields(&mut record, host_cwd);
+        if role == "reviewer" {
+            record["worktree"] = json!(false);
+        }
+    }
+    if workspace == "image" {
+        set_image_workspace_fields(&mut record, cwd);
+    }
+    record["creationIntent"] = creation_intent.clone();
+    record["provider"] = json!(provider);
+    record["yoloMode"] = root.get("yoloMode").cloned().unwrap_or(json!(true));
+    record["maxAgents"] = root
+        .get("maxAgents")
+        .cloned()
+        .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
+    record["tokenBudget"] = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
+    let created = record
+        .get("created")
+        .and_then(Value::as_f64)
+        .ok_or(OperationError::Internal)?;
+    let prompt = request.prompt.trim();
+    let task_id = creation_intent
+        .get("task_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let result = mutate(context, |tx| {
+        crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
+        let result = super::create_agent_with_identity(tx, id, prompt, record, created, validate)?;
+        if let Some(task_id) = &task_id {
+            let actor = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .ok_or(OperationError::Internal)?;
+            let now = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
+            crate::work_assignment_runtime::assign_in_transaction(tx, task_id, id, &actor, now)
+                .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
+        }
+        Ok(result)
+    })?;
+    #[cfg(target_os = "macos")]
+    let result = if workspace == "image" {
+        provision_image_workspace(context, &result, id)?
+    } else {
+        result
+    };
+    Ok(result)
+}
+
+fn validate_vm_parent_for_create(workspace: &str, parent: &Value) -> Result<(), OperationError> {
+    if workspace == "layr" && parent.get("executionMode").and_then(Value::as_str) != Some("vm") {
+        return Err(OperationError::Invalid(
+            "A VM workspace requires a VM parent",
+        ));
+    }
+    Ok(())
+}
+
+/// Match Runtime.create's child defaults: implementers use the selected
+/// workspace, while reviewer children default to a shared, non-worktree cwd.
+/// Both roles still inherit the root's execution settings; provider permission
+/// preparation applies the reviewer's read-only policy when YOLO is disabled.
+fn child_role_workspace<'a>(
+    role: Option<&'a str>,
+    requested_workspace: Option<&'a str>,
+    parent_workspace: &'a str,
+    vm_parent: bool,
+) -> Result<(&'a str, &'a str, bool), OperationError> {
+    let role = role.unwrap_or("implementer");
+    if !matches!(role, "implementer" | "reviewer") {
+        return Err(OperationError::Invalid("Invalid agent role"));
+    }
+    if role == "reviewer" && vm_parent && requested_workspace.is_some_and(|mode| mode != "layr") {
+        return Err(OperationError::Invalid(
+            "A VM reviewer must use the parent's layr workspace",
+        ));
+    }
+    let workspace = requested_workspace.unwrap_or(if role == "reviewer" && !vm_parent {
+        "shared"
+    } else {
+        parent_workspace
+    });
+    let worktree = match workspace {
+        "worktree" => true,
+        "shared" => false,
+        "image" => false,
+        "layr" => false,
+        _ => return Err(OperationError::Invalid("Unknown workspace mode")),
+    };
+    Ok((role, workspace, worktree))
+}
+
+fn parent_project_path<'a>(parent: &'a Value, root: &'a Value, parent_cwd: &'a str) -> &'a str {
+    if parent.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        parent
+            .get("hostProjectPath")
+            .or_else(|| root.get("hostProjectPath"))
+            .or_else(|| root.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or(parent_cwd)
+    } else {
+        parent_cwd
+    }
+}
+
+fn parent_project_binding(
+    db: &rusqlite::Connection,
+    parent: &Value,
+    root: &Value,
+) -> Result<Option<Value>, OperationError> {
+    let parent_cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let project_path = parent_project_path(parent, root, parent_cwd);
+    Ok(
+        studio_runtime_store::ProjectsRepository::get(db, project_path)?
+            .map(|(_, project)| project),
+    )
+}
+
+pub(crate) fn image_provision_is_current(record: &Value, expected_epoch: i64) -> bool {
+    record.get("epoch").and_then(Value::as_i64) == Some(expected_epoch)
+        && record.get("deletedAt").is_none_or(Value::is_null)
+        && record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
+        && record.get("imageWorkspaceReady").and_then(Value::as_bool) != Some(true)
+        && matches!(
+            record.get("imageWorkspacePhase").and_then(Value::as_str),
+            Some("creating" | "read_only")
+        )
+        && !matches!(
+            record.get("status").and_then(Value::as_str),
+            Some("completed" | "cancelled" | "archived" | "deleted")
+        )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_resume_image_provisioning(record: &Value) -> bool {
+    // Cleanup archives remain unready by design; only pending states may remount
+    // (`workspace_cleanup_runtime.rs:706-710`).
+    record.get("workspaceMode").and_then(Value::as_str) == Some("image")
+        && record
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .is_some_and(|epoch| image_provision_is_current(record, epoch))
+}
+
+/// Record image intent so readiness can remount the durable ASIF state. On macOS,
+/// provisioning is queued like Python's `codex_runtime.py:5757` base-build callback;
+/// Python provisions with `create_workspace` at line 5878 after the base is ready.
+pub(crate) fn set_image_workspace_fields(record: &mut Value, root: &str) {
+    record["workspaceMode"] = json!("image");
+    record["imageWorkspace"] = json!(true);
+    record["imageWorkspaceReady"] = json!(false);
+    record["imageWorkspacePhase"] = json!("creating");
+    record["imageWorkspaceRepo"] = json!(root);
+    record["workspaceBackend"] = json!("asif");
+}
+
+/// Persist the host identity while the VM guest creates the project and line
+/// before its first turn. Python's `codex_runtime.py:5018-5026` stores these
+/// fields at creation; `codex_vm_agents.py:196-230` fills the guest association
+/// during preparation.
+pub(crate) fn set_vm_workspace_fields(record: &mut Value, host_root: &str) {
+    record["workspaceMode"] = json!("layr");
+    record["executionMode"] = json!("vm");
+    record["hostProjectPath"] = json!(host_root);
+    record["environment"] = json!("linux");
+    record["worktree"] = json!(false);
+    record["layrReady"] = json!(false);
+}
+
+#[cfg(target_os = "macos")]
+fn provision_image_workspace(
+    context: &Context<'_>,
+    result: &Value,
+    fallback_id: &str,
+) -> Result<Value, OperationError> {
+    let id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_id);
+    let root = result
+        .get("imageWorkspaceRepo")
+        .or_else(|| result.get("cwd"))
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let expected_epoch = result
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .ok_or(OperationError::Internal)?;
+    let workspace =
+        match crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), id) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let _ = crate::image_workspace::remove_workspace(id, true);
+                persist_image_provision_failure(
+                    context.store,
+                    id,
+                    expected_epoch,
+                    &error.to_string(),
+                )?;
+                return Err(OperationError::Unavailable(
+                    "workspace-state/image-provisioning",
+                ));
+            }
+        };
+    let Some(cwd) = workspace.get("path").and_then(Value::as_str) else {
+        let _ = crate::image_workspace::remove_workspace(id, true);
+        persist_image_provision_failure(
+            context.store,
+            id,
+            expected_epoch,
+            "Image workspace provider returned no path",
+        )?;
+        return Err(OperationError::Unavailable(
+            "workspace-state/image-provisioning",
+        ));
+    };
+    let projection = context.store.transaction(|tx| {
+        let Some(agent) = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(id),
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut value = agent.into_value();
+        if !image_provision_is_current(&value, expected_epoch) {
+            return Ok(None);
+        }
+        value["cwd"] = json!(cwd);
+        value["imageWorkspaceReady"] = json!(true);
+        value["imageWorkspacePhase"] = json!("ready");
+        let agent = studio_runtime_store::AgentRecord::from_value(value).map_err(|_| {
+            StoreError::InvalidStoredObject {
+                table: "runtime_agents",
+                id: id.to_owned(),
+            }
+        })?;
+        value = agent.value();
+        studio_runtime_store::AgentRepository::put(tx, &agent)?;
+        crate::agents_create::publish_agent(tx, &value)?;
+        Ok(Some(value))
+    })?;
+    if let Some(projection) = projection {
+        Ok(projection)
+    } else {
+        let _ = crate::image_workspace::remove_workspace(id, true);
+        Err(OperationError::Create(CreateError::IdentityChanged))
+    }
+}
+
+pub(crate) fn persist_image_provision_failure(
+    store: &RuntimeStore,
+    agent_id: &str,
+    expected_epoch: i64,
+    message: &str,
+) -> Result<(), OperationError> {
+    let message = message.chars().take(1200).collect::<String>();
+    store.transaction(|tx| {
+        let Some(agent) = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(agent_id),
+        )? else {
+            return Ok(());
+        };
+        let mut value = agent.into_value();
+        if image_provision_is_current(&value, expected_epoch) {
+            let notice = format!("[Studio workspace error] The requested image workspace failed: {message}. The worker remains read-only in the selected folder.");
+            value["imageWorkspacePhase"] = json!("failed");
+            value["imageWorkspaceError"] = json!(message);
+            value["status"] = json!("paused");
+            value["autoWake"] = json!(false);
+            value["error"] = json!(notice);
+            let record = studio_runtime_store::AgentRecord::from_value(value.clone()).map_err(|_| {
+                StoreError::InvalidStoredObject { table: "runtime_agents", id: agent_id.to_owned() }
+            })?;
+            studio_runtime_store::AgentRepository::put(tx, &record)?;
+            crate::agents_create::publish_agent(tx, &record.value())?;
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    if request
+        .max_agents
+        .is_some_and(|max_agents| !(1..=1024).contains(&max_agents))
+        || request
+            .token_budget
+            .is_some_and(|budget| budget.is_some_and(|budget| budget <= 0))
+    {
+        return Err(OperationError::Invalid(
+            "Team size must be 1 to 1024 and token budget must be positive or null",
+        ));
+    }
     if request.concurrency.is_some() {
         if request.max_agents.is_some() || request.token_budget.is_some() {
             return Err(OperationError::Invalid(
                 "Configure only team storage and token limits",
             ));
         }
-        return Err(OperationError::Unavailable(
-            "agent-management/agent-mode-settings",
-        ));
+        let limit = request.concurrency.ok_or(OperationError::Internal)?;
+        let revision = request
+            .expected_mode_revision
+            .filter(|revision| *revision >= 0)
+            .ok_or(OperationError::Invalid(
+                "A nonnegative expected mode revision is required",
+            ))?;
+        let request_id = request
+            .request_id
+            .as_deref()
+            .filter(|id| (1..=200).contains(&id.chars().count()))
+            .ok_or(OperationError::Invalid(
+                "A subagent concurrency request id is required",
+            ))?;
+        if !(0..=512).contains(&limit) {
+            return Err(OperationError::Invalid(
+                "Subagent concurrency must be an integer from 0 to 512",
+            ));
+        }
+        let signature = crate::event_write::request_signature(&json!({
+            "operation":"subagent_concurrency","agent":request.id,
+            "concurrency":limit,"expectedRevision":revision
+        }));
+        return mutate(context, |tx| {
+            let mut root =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if root.get("isLead").and_then(Value::as_bool) != Some(true)
+                || root.get("rootId").and_then(Value::as_str) != Some(request.id.as_str())
+            {
+                return Err(MutationError::LeadRequired.into());
+            }
+            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+                if receipt.signature != signature {
+                    return Err(MutationError::Conflict.into());
+                }
+                return serde_json::from_str(&receipt.result)
+                    .map_err(|_| MutationError::InvalidStoredObject {
+                        table: "runtime_operation_receipts",
+                        id: request_id.to_owned(),
+                    })
+                    .map_err(OperationError::from);
+            }
+            mode_fields(&mut root);
+            let current = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
+            let current_revision = root
+                .get("agentModeRevision")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if current_revision != revision {
+                return Err(MutationError::Stale.into());
+            }
+            let prior_max = root.get("maxAgents").and_then(Value::as_i64).unwrap_or(64);
+            if current != limit {
+                root["concurrency"] = json!(limit);
+                root["agentModeRevision"] = json!(revision + 1);
+                root["agentModeChangedAt"] =
+                    json!(crate::event_write::unix_time().map_err(|_| MutationError::Internal)?);
+                root["agentModeChangedBy"] = json!("user");
+            }
+            if root.get("maxAgentsExplicit").and_then(Value::as_bool) != Some(true) {
+                root["maxAgents"] = json!(prior_max.max(limit + 2));
+            }
+            mode_fields(&mut root);
+            let changed = current != limit || root["maxAgents"].as_i64() != Some(prior_max);
+            if changed {
+                save_agent(tx, &root, &validate)?;
+            }
+            let result = json!({"id":request.id,"concurrency":root["concurrency"],
+                "agentMode":root["agentMode"],"agentModeRevision":root["agentModeRevision"],
+                "maxAgents":root["maxAgents"],"tokenBudget":root.get("tokenBudget").cloned().unwrap_or(Value::Null)});
+            EventWriteRepository::put_receipt(
+                tx,
+                request_id,
+                &signature,
+                &serde_json::to_string(&result).map_err(StoreError::from)?,
+            )?;
+            Ok(result)
+        });
     }
-    if request.mode_receipt {
+    if request.expected_mode_revision.is_some() || request.request_id.is_some() {
         return Err(OperationError::Invalid(
             "Configure only team storage and token limits",
         ));
@@ -312,28 +1455,581 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
     })
 }
 pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Value, OperationError> {
-    if request.settings {
-        return Err(OperationError::Unavailable(
-            "agent-management/conversation-settings",
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    if (request.model_present && request.model.is_none())
+        || (request.fast_mode_present && request.fast_mode.is_none())
+    {
+        return Err(OperationError::Invalid(
+            "Model must be available and fast_mode must be a boolean",
         ));
     }
+    if request.worker_settings {
+        let initial = {
+            let db = context.store.read()?;
+            load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
+        };
+        if initial.get("isLead").and_then(Value::as_bool) != Some(true) {
+            return Err(MutationError::LeadRequired.into());
+        }
+        let account_key = initial
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if request
+            .expected_account
+            .as_deref()
+            .is_some_and(|expected| expected != account_key)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        let identity = account_identity(context, account_key)?;
+        let excluded_account_keys = initial
+            .get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let root_model = initial
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_LEAD_MODEL);
+        let worker_defaults = match request.worker_defaults.as_ref() {
+            Some(value) => resolve_worker_defaults(
+                context,
+                Some(value),
+                account_key,
+                &identity,
+                root_model,
+                &excluded_account_keys,
+            )?,
+            None => initial
+                .get("workerDefaults")
+                .cloned()
+                .unwrap_or_else(|| json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1})),
+        };
+        let review_defaults = match request.review_defaults.as_ref() {
+            Some(value) => {
+                let worker_account_key = request
+                    .worker_defaults
+                    .as_ref()
+                    .and_then(|defaults| defaults.get("account_key"))
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        request
+                            .worker_defaults
+                            .is_none()
+                            .then(|| {
+                                initial
+                                    .pointer("/workerDefaults/accountKey")
+                                    .and_then(Value::as_str)
+                            })
+                            .flatten()
+                    });
+                resolve_review_defaults(
+                    context,
+                    Some(value),
+                    account_key,
+                    &identity,
+                    worker_account_key,
+                    &excluded_account_keys,
+                )?
+            }
+            None => initial
+                .get("reviewDefaults")
+                .cloned()
+                .unwrap_or(json!({"model":null,"effort":null})),
+        };
+        return mutate(context, |tx| {
+            let mut target =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if target.get("accountKey").and_then(Value::as_str) != Some(account_key) {
+                return Err(MutationError::IdentityChanged.into());
+            }
+            target["workerDefaults"] = worker_defaults;
+            target["reviewDefaults"] = review_defaults;
+            Ok(save_agent(tx, &target, &validate)?)
+        });
+    }
+    if request.mode_settings {
+        let expected = request.mode_revision.ok_or(OperationError::Invalid(
+            "A nonnegative expected mode revision is required",
+        ))?;
+        if let Some(expected_account) = request.expected_account.as_deref() {
+            let connection = context.store.read()?;
+            let record = load_agent_value(&connection, &request.id, &validate)?
+                .ok_or(MutationError::UnknownAgent)?;
+            if record
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != expected_account
+            {
+                return Err(MutationError::Stale.into());
+            }
+        }
+        configure(
+            context,
+            Configuration {
+                id: request.id.clone(),
+                concurrency: Some(request.mode_limit.ok_or(OperationError::Invalid(
+                    "A subagent concurrency setting is required",
+                ))?),
+                max_agents: None,
+                token_budget: None,
+                expected_mode_revision: Some(expected),
+                request_id: request.mode_request_id.clone(),
+            },
+        )?;
+        let connection = context.store.read()?;
+        let record = load_agent_value(&connection, &request.id, &validate)?
+            .ok_or(MutationError::UnknownAgent)?;
+        return Ok(record);
+    }
+    if request.cwd.is_none()
+        && request.yolo_mode.is_none()
+        && request.model.is_none()
+        && request.effort.is_none()
+        && request.fast_mode.is_none()
+        && request.daybreak_enabled.is_none()
+        && request.next_turn.flatten().is_none()
+        && !request.worker_settings
+    {
+        return mutate(context, |tx| {
+            Ok(update_exclusions(
+                tx,
+                &request.id,
+                request.expected_account.as_deref(),
+                request.excluded.as_deref(),
+                request.non_defaults,
+                |schema, value| (context.validate)(schema, value),
+            )?)
+        });
+    }
+    if request.excluded.is_some() && request.non_defaults {
+        return Err(OperationError::Invalid(
+            "Save chat account exclusions separately from agent mode settings",
+        ));
+    }
+    let initial = {
+        let db = context.store.read()?;
+        load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
+    };
+    let old_account = initial
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    if request
+        .expected_account
+        .as_deref()
+        .is_some_and(|expected| expected != old_account)
+    {
+        return Err(MutationError::Stale.into());
+    }
+    let cwd = request
+        .cwd
+        .as_deref()
+        .map(project_directory)
+        .transpose()?
+        .or_else(|| {
+            initial
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or(OperationError::Internal)?;
+    let account = if request.cwd.is_some() {
+        account_key(context, None, &cwd)?
+    } else {
+        old_account.clone()
+    };
+    let identity = account_identity(context, &account)?;
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let provider_changed = initial.get("provider").and_then(Value::as_str) != Some(provider);
+    let execution_requested = request.model.is_some()
+        || request.model_present
+        || request.effort.is_some()
+        || request.effort_present
+        || request.fast_mode.is_some()
+        || request.fast_mode_present
+        || request.daybreak_enabled.is_some()
+        || request.daybreak_present;
+    let catalog_requested = request.model.is_some()
+        || request.effort.as_ref().is_some_and(Option::is_some)
+        || request.fast_mode.is_some()
+        || request.daybreak_enabled.is_some();
+    let base_pending = initial
+        .get("pendingSettings")
+        .filter(|_| {
+            initial
+                .get("pendingSettingsAccountKey")
+                .and_then(Value::as_str)
+                .unwrap_or(&account)
+                == account
+        })
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let model = request
+        .model
+        .as_deref()
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("model").and_then(Value::as_str))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("model").and_then(Value::as_str))
+                .flatten()
+        })
+        .unwrap_or(if provider == "claude" {
+            "default"
+        } else {
+            DEFAULT_LEAD_MODEL
+        });
+    let effort = if request.effort_present {
+        request.effort.as_ref().and_then(Option::as_deref)
+    } else {
+        (!provider_changed)
+            .then(|| base_pending.get("effort").and_then(Value::as_str))
+            .flatten()
+            .or_else(|| {
+                (!provider_changed)
+                    .then(|| initial.get("effort").and_then(Value::as_str))
+                    .flatten()
+            })
+    };
+    let fast_mode = request
+        .fast_mode
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("fastMode").and_then(Value::as_bool))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("fastMode").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(false);
+    let daybreak = request
+        .daybreak_enabled
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("daybreakEnabled").and_then(Value::as_bool))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("daybreakEnabled").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(false);
+    let settings = if catalog_requested {
+        Some(
+            context
+                .catalog
+                .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+                .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
+        )
+    } else if request.effort_present {
+        Some(ExecutionSettings {
+            model: model.to_owned(),
+            effort: None,
+            native_effort: initial
+                .get("nativeEffort")
+                .and_then(Value::as_str)
+                .unwrap_or("medium")
+                .to_owned(),
+            fast_mode,
+            daybreak_enabled: daybreak,
+            cyber_access_program: initial
+                .get("cyberAccessProgram")
+                .and_then(Value::as_str)
+                .unwrap_or("standard")
+                .to_owned(),
+        })
+    } else {
+        None
+    };
+    let next_turn = request.next_turn.flatten() == Some(true);
+    let request_id = request.request_id.flatten();
+    if next_turn {
+        if request.cwd.is_some()
+            || request.yolo_mode.is_some()
+            || request.excluded.is_some()
+            || request.worker_settings
+            || request.mode_settings
+        {
+            return Err(OperationError::Invalid(
+                "Only execution settings can apply to the next turn",
+            ));
+        }
+        let request_id = request_id
+            .as_deref()
+            .filter(|id| (1..=200).contains(&id.chars().count()))
+            .ok_or(OperationError::Invalid("A settings request id is required"))?;
+        let mut receipt_body = json!({
+            "operation": "next_turn_settings",
+            "agent": request.id,
+            "id": request.id,
+            "next_turn": true,
+            "request_id": request_id,
+        });
+        for (field, value) in [
+            ("model", request.model.as_ref().map(|value| json!(value))),
+            ("effort", request.effort.as_ref().map(|value| json!(value))),
+            (
+                "fast_mode",
+                request.fast_mode.as_ref().map(|value| json!(value)),
+            ),
+            (
+                "daybreak_enabled",
+                request.daybreak_enabled.as_ref().map(|value| json!(value)),
+            ),
+            (
+                "expected_account_key",
+                request.expected_account.as_ref().map(|value| json!(value)),
+            ),
+        ] {
+            if let Some(value) = value {
+                receipt_body[field] = value;
+            }
+        }
+        let signature = crate::event_write::request_signature(&receipt_body);
+        return mutate(context, |tx| {
+            let mut target =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if target
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != old_account
+            {
+                return Err(MutationError::IdentityChanged.into());
+            }
+            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+                if receipt.signature != signature {
+                    return Err(MutationError::Conflict.into());
+                }
+                return load_agent_value(tx, &request.id, &validate)?
+                    .ok_or(MutationError::UnknownAgent.into());
+            }
+            let resolved = settings.as_ref().ok_or(OperationError::Internal)?;
+            target["pendingSettings"] = json!({"model":resolved.model,"effort":resolved.effort,
+                "nativeEffort":resolved.native_effort,"fastMode":resolved.fast_mode,
+                "daybreakEnabled":resolved.daybreak_enabled,"cyberAccessProgram":resolved.cyber_access_program});
+            target["pendingSettingsAccountKey"] = json!(account);
+            save_agent(tx, &target, &validate)?;
+            EventWriteRepository::put_receipt(tx, request_id, &signature, "{\"applied\":true}")?;
+            Ok(target)
+        });
+    }
     mutate(context, |tx| {
-        Ok(update_exclusions(
-            tx,
-            &request.id,
-            request.expected_account.as_deref(),
-            request.excluded.as_deref(),
-            request.non_defaults,
-            |schema, value| (context.validate)(schema, value),
-        )?)
+        let mut target =
+            load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+        if target
+            .get("deletedAt")
+            .is_some_and(|value| truthy(Some(value)))
+        {
+            return Err(MutationError::Deleted.into());
+        }
+        if target
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != old_account
+        {
+            return Err(MutationError::IdentityChanged.into());
+        }
+        if request.expected_account.as_deref().is_some_and(|expected| {
+            target
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != expected
+        }) {
+            return Err(MutationError::Stale.into());
+        }
+        if (execution_requested || request.cwd.is_some() || request.yolo_mode.is_some())
+            && (truthy(target.get("inFlight"))
+                || matches!(
+                    target.get("status").and_then(Value::as_str),
+                    Some("running" | "starting" | "approval")
+                ))
+        {
+            return Err(MutationError::InFlight.into());
+        }
+        if settings.is_none()
+            && request.cwd.is_none()
+            && request.yolo_mode.is_none()
+            && request.excluded.is_none()
+        {
+            return Ok(sync_projection(tx, &target)?);
+        }
+        if let Some(excluded) = request.excluded.as_ref() {
+            if target.get("isLead").and_then(Value::as_bool) != Some(true) {
+                return Err(MutationError::LeadRequired.into());
+            }
+            if excluded.iter().any(|value| value == &account) {
+                return Err(MutationError::CurrentAccountExcluded.into());
+            }
+            target["excludedAccountKeys"] = json!(excluded);
+        }
+        if let Some(yolo) = request.yolo_mode {
+            if target.get("isLead").and_then(Value::as_bool) != Some(true) {
+                return Err(MutationError::LeadRequired.into());
+            }
+            target["yoloMode"] = json!(yolo);
+        }
+        if request.cwd.is_some() {
+            if target
+                .get("threadId")
+                .is_some_and(|thread| !thread.is_null())
+            {
+                return Err(OperationError::Invalid(
+                    "Choose the project before the first message, or create a new chat",
+                ));
+            }
+            target["cwd"] = json!(cwd);
+            target["hostProjectPath"] = json!(cwd);
+            target["accountKey"] = json!(account);
+            target["provider"] = json!(provider);
+            ensure_project(tx, &target)?;
+            if account != old_account {
+                target["daybreakEnabled"] = json!(false);
+                target["cyberAccessProgram"] = json!("standard");
+                target
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettings");
+                target
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettingsAccountKey");
+            }
+        }
+        if let Some(settings) = settings.as_ref() {
+            target["model"] = json!(settings.model);
+            target["effort"] = json!(settings.effort);
+            target["nativeEffort"] = json!(settings.native_effort);
+            target["fastMode"] = json!(settings.fast_mode);
+            target["daybreakEnabled"] = json!(settings.daybreak_enabled);
+            target["cyberAccessProgram"] = json!(settings.cyber_access_program);
+            target["executionSettingsAccountKey"] = json!(account);
+            target
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .remove("pendingSettings");
+            target
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .remove("pendingSettingsAccountKey");
+        }
+        let projection = save_agent(tx, &target, &validate)?;
+        if let Some(yolo) = request.yolo_mode {
+            update_team_yolo(tx, &request.id, yolo, &validate)?;
+        }
+        Ok(projection)
     })
 }
+
+fn update_team_yolo(
+    tx: &Transaction<'_>,
+    root_id: &str,
+    yolo: bool,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<(), OperationError> {
+    let mut statement = tx
+        .prepare("SELECT id,record FROM runtime_agents")
+        .map_err(StoreError::from)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)?;
+    drop(statement);
+    let mut team = Vec::new();
+    for (id, raw) in rows {
+        let record = decode_record(
+            "runtime_agents",
+            "PersistedAgentRecord",
+            &id,
+            &raw,
+            validate,
+        )?;
+        if record.get("rootId").and_then(Value::as_str) == Some(root_id) {
+            team.push((id, record));
+        }
+    }
+    let team_ids = team
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for (_, record) in &team {
+        if truthy(record.get("workspaceOperation"))
+            || truthy(record.get("inFlight"))
+            || matches!(
+                record.get("status").and_then(Value::as_str),
+                Some("running" | "starting" | "approval")
+            )
+        {
+            return Err(MutationError::InFlight.into());
+        }
+    }
+    for table in ["runtime_monitors", "runtime_tasks"] {
+        let query = if table == "runtime_monitors" {
+            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('starting','running','approval')"
+        } else {
+            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
+        };
+        let mut statement = tx.prepare(query).map_err(StoreError::from)?;
+        let records = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)?;
+        if records.iter().any(|raw| {
+            serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|record| {
+                    record
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|agent| team_ids.contains(agent.as_str()))
+        }) {
+            return Err(MutationError::InFlight.into());
+        }
+    }
+    for (id, mut record) in team {
+        if id == root_id {
+            continue;
+        }
+        record["yoloMode"] = json!(yolo);
+        save_agent(tx, &record, validate)?;
+    }
+    Ok(())
+}
+pub struct RenameOperationResult {
+    pub response: Value,
+    pub replayed: bool,
+}
+
 pub fn rename_operation(
     context: &Context<'_>,
     id: &str,
     name: Option<&str>,
     request_id: Option<&str>,
-) -> Result<Value, OperationError> {
+) -> Result<RenameOperationResult, OperationError> {
     let name = name.map(python_strip);
     if name.is_some_and(str::is_empty) {
         return Err(OperationError::Invalid(
@@ -341,7 +2037,27 @@ pub fn rename_operation(
         ));
     }
     let signature = rename_signature(id, name);
-    mutate(context, |tx| {
+    if let Some(request_id) = request_id {
+        let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+        let read = context.store.read()?;
+        load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+        if let Some(receipt) = EventWriteRepository::receipt(&read, request_id)? {
+            if receipt.signature != signature {
+                return Err(MutationError::Conflict.into());
+            }
+            let response = serde_json::from_str(&receipt.result).map_err(|_| {
+                OperationError::Create(MutationError::InvalidStoredObject {
+                    table: "runtime_operation_receipts",
+                    id: request_id.to_owned(),
+                })
+            })?;
+            return Ok(RenameOperationResult {
+                response,
+                replayed: true,
+            });
+        }
+    }
+    let response = mutate(context, |tx| {
         Ok(rename(
             tx,
             id,
@@ -350,14 +2066,15 @@ pub fn rename_operation(
             &signature,
             |schema, value| (context.validate)(schema, value),
         )?)
+    })?;
+    Ok(RenameOperationResult {
+        response,
+        replayed: false,
     })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
     let body = python_json(&json!({"chat": id, "name": name, "operation": "rename"}));
-    Sha256::digest(body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
 }
 
 fn previous_lead(
@@ -444,55 +2161,360 @@ fn account_key(
     Ok(selected.map_or(default, |(_, account)| account))
 }
 
-fn provider(context: &Context<'_>, account: &str) -> &'static str {
-    context
-        .accounts
-        .as_ref()
-        .and_then(|policy| {
-            policy
-                .accounts()
-                .accounts
-                .into_iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(account))
-        })
-        .and_then(|row| {
-            row.get("provider")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|provider| provider == "claude")
-        .map_or("codex", |_| "claude")
+fn account_identity(
+    context: &Context<'_>,
+    account_key: &str,
+) -> Result<AccountIdentity, OperationError> {
+    account_identity_with_status(context, account_key).map(|(identity, _, _)| identity)
 }
 
-fn refresh_account(context: &Context<'_>, account: &str) -> Result<(), OperationError> {
+fn account_identity_with_status(
+    context: &Context<'_>,
+    account_key: &str,
+) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
     let Some(driver) = &context.driver else {
-        return Err(OperationError::Unavailable("account-driver/unavailable"));
+        return Err(OperationError::Internal);
     };
-    match driver.inspect(account) {
-        Ok(AccountStatus::Unavailable) => {
-            let account = context.accounts.as_ref().and_then(|policy| {
-                policy
-                    .accounts()
-                    .accounts
-                    .into_iter()
-                    .find(|row| row.get("id").and_then(Value::as_str) == Some(account))
-            });
-            let message = if account
-                .as_ref()
-                .and_then(|row| row.get("deleted"))
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                "This account was deleted. Select another account for new chats"
-            } else {
-                "Reconnect this account before creating a chat"
-            };
-            Err(OperationError::Invalid(message))
-        }
-        Ok(_) => Ok(()),
-        Err(AccountDriverError::UnknownAccount) => Err(OperationError::Invalid("Unknown account")),
-        Err(_) => Err(OperationError::Internal),
+    let status = driver.get(account_key).map_err(|error| match error {
+        AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
+        _ => OperationError::Internal,
+    })?;
+    let snapshot = driver.snapshot().map_err(|_| OperationError::Internal)?;
+    let row = snapshot
+        .accounts
+        .into_iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .ok_or(OperationError::Invalid("Unknown account"))?;
+    if truthy(row.get("deleted")) {
+        return Err(OperationError::Invalid(
+            "This account was deleted. Select another account for new chats",
+        ));
     }
+    if truthy(row.get("disconnected")) {
+        return Err(OperationError::Invalid(
+            "Reconnect this account before creating a chat",
+        ));
+    }
+    let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
+    // AccountDriver snapshots expose the eligibility projection; private
+    // registry fields used to derive it are intentionally not in this row.
+    // This matches `codex_runtime.py:4843-4935`'s account read and gate.
+    let can_attempt_native_proof = can_attempt_native_proof_projection(&row);
+    Ok((
+        AccountIdentity {
+            provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
+            home: string_field("home"),
+            account_id: string_field("accountId"),
+            email: string_field("email"),
+        },
+        status,
+        can_attempt_native_proof,
+    ))
+}
+
+fn can_attempt_native_proof_projection(row: &Value) -> bool {
+    row.get("canAttemptNativeProof").and_then(Value::as_bool) == Some(true)
+}
+
+fn resolve_project_binding(
+    context: &Context<'_>,
+    cwd: &str,
+    project_id: Option<&str>,
+    home_server: Option<&str>,
+    folder: Option<&Value>,
+) -> Result<Value, OperationError> {
+    let local = local_server_id(context)?.ok_or(OperationError::Unavailable(
+        "cross-server-driver/local-identity",
+    ))?;
+    let connection = context.store.read()?;
+    resolve_project_binding_from(&connection, cwd, project_id, home_server, &local, folder)
+}
+
+fn resolve_worker_defaults(
+    context: &Context<'_>,
+    value: Option<&Value>,
+    account_key: &str,
+    account: &AccountIdentity,
+    root_model: &str,
+    excluded_account_keys: &[String],
+) -> Result<Value, OperationError> {
+    let Some(value) = value else {
+        return Ok(
+            json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1}),
+        );
+    };
+    let object = value
+        .as_object()
+        .ok_or(OperationError::Invalid("worker_defaults must be an object"))?;
+    if object.keys().any(|key| {
+        ![
+            "model",
+            "effort",
+            "fast_mode",
+            "daybreak_enabled",
+            "account_key",
+            "delegation_depth",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(OperationError::Invalid(
+            "worker_defaults has unknown fields",
+        ));
+    }
+    if !["model", "effort", "fast_mode"]
+        .iter()
+        .all(|field| object.contains_key(*field))
+    {
+        return Err(OperationError::Invalid(
+            "worker_defaults requires model, effort, and fast_mode",
+        ));
+    }
+    let requested_account_key = object.get("account_key").and_then(Value::as_str);
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(root_model);
+    let (worker_account_key, worker_account) =
+        if let Some(environment) = context.managed_creation_environment {
+            environment
+                .select_worker_account(
+                    account_key,
+                    requested_account_key,
+                    None,
+                    model,
+                    excluded_account_keys,
+                    None,
+                )
+                .map_err(|error| match error {
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                        message,
+                    ) => OperationError::Invalid(message),
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                        name,
+                    ) => OperationError::Unavailable(name),
+                })?
+        } else {
+            let worker_account_key = requested_account_key.unwrap_or(account_key);
+            let worker_account = if worker_account_key == account_key {
+                account.clone()
+            } else {
+                account_identity(context, worker_account_key)?
+            };
+            (worker_account_key.to_owned(), worker_account)
+        };
+    let effort = match object.get("effort") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+        _ => return Err(OperationError::Invalid("worker_defaults effort is invalid")),
+    };
+    let fast_mode =
+        object
+            .get("fast_mode")
+            .and_then(Value::as_bool)
+            .ok_or(OperationError::Invalid(
+                "worker_defaults fast_mode must be a boolean",
+            ))?;
+    let daybreak = object
+        .get("daybreak_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if object
+        .get("daybreak_enabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(OperationError::Invalid(
+            "worker_defaults daybreak_enabled must be a boolean",
+        ));
+    }
+    let depth = object
+        .get("delegation_depth")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
+    if !(1..=3).contains(&depth) {
+        return Err(OperationError::Invalid("delegation_depth must be 1 to 3"));
+    }
+    let catalog = context
+        .managed_creation_environment
+        .map(crate::managed_child_create::ManagedCreationEnvironment::catalog)
+        .or(context.catalog)
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let settings = catalog.resolve(
+        &worker_account_key,
+        &worker_account,
+        model,
+        effort,
+        fast_mode,
+        daybreak,
+    )?;
+    let mut defaults = json!({"model":object.get("model").cloned().unwrap_or(Value::Null),
+        "effort":settings.effort,"fastMode":settings.fast_mode,"daybreakEnabled":settings.daybreak_enabled,
+        "cyberAccessProgram":settings.cyber_access_program,"delegationDepth":depth});
+    if requested_account_key.is_some() {
+        defaults["accountKey"] = json!(worker_account_key);
+    }
+    Ok(defaults)
+}
+
+fn resolve_review_defaults(
+    context: &Context<'_>,
+    value: Option<&Value>,
+    account_key: &str,
+    account: &AccountIdentity,
+    worker_account_key: Option<&str>,
+    excluded_account_keys: &[String],
+) -> Result<Value, OperationError> {
+    let Some(value) = value else {
+        return Ok(json!({"model":null,"effort":null}));
+    };
+    let object = value
+        .as_object()
+        .ok_or(OperationError::Invalid("review_defaults must be an object"))?;
+    if object
+        .keys()
+        .any(|key| !["model", "effort"].contains(&key.as_str()))
+    {
+        return Err(OperationError::Invalid(
+            "review_defaults has unknown fields",
+        ));
+    }
+    let Some(model) = object.get("model").and_then(Value::as_str) else {
+        if object.get("effort").is_some_and(|effort| !effort.is_null()) {
+            return Err(OperationError::Invalid(
+                "Select a review model before setting its effort",
+            ));
+        }
+        return Ok(json!({"model":null,"effort":null}));
+    };
+    if !model.starts_with("gpt-") {
+        return Err(OperationError::Invalid("Native review needs a Codex model"));
+    }
+    let effort = match object.get("effort") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+        _ => return Err(OperationError::Invalid("review_defaults effort is invalid")),
+    };
+    let (catalog_account_key, catalog_account) =
+        if let Some(environment) = context.managed_creation_environment {
+            environment
+                .select_worker_account(
+                    account_key,
+                    worker_account_key,
+                    None,
+                    model,
+                    excluded_account_keys,
+                    None,
+                )
+                .map_err(|error| match error {
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                        message,
+                    ) => OperationError::Invalid(message),
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                        name,
+                    ) => OperationError::Unavailable(name),
+                })?
+        } else if let Some(worker_account_key) = worker_account_key {
+            (
+                worker_account_key.to_owned(),
+                account_identity(context, worker_account_key)?,
+            )
+        } else {
+            (account_key.to_owned(), account.clone())
+        };
+    let catalog = context
+        .managed_creation_environment
+        .map(|environment| environment.catalog())
+        .or(context.catalog)
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let settings = catalog.resolve(
+        &catalog_account_key,
+        &catalog_account,
+        model,
+        effort,
+        false,
+        false,
+    )?;
+    Ok(json!({"model":settings.model,"effort":settings.effort}))
+}
+
+fn resolve_project_binding_from(
+    connection: &Connection,
+    cwd: &str,
+    project_id: Option<&str>,
+    home_server: Option<&str>,
+    local: &str,
+    folder: Option<&Value>,
+) -> Result<Value, OperationError> {
+    let project_id = project_id
+        .filter(|value| !value.is_empty())
+        .ok_or(OperationError::Invalid("A project ID is required"))?;
+    let home_server = home_server
+        .filter(|value| !value.is_empty())
+        .unwrap_or(local);
+    if home_server != local {
+        let paired: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
+            [home_server],
+            |row| row.get(0),
+        ).map_err(StoreError::from)?;
+        if !paired {
+            return Err(OperationError::Forbidden(
+                "The project server is not paired or is revoked",
+            ));
+        }
+    }
+    let projects = studio_runtime_store::ProjectsRepository::list(connection)?;
+    for (_, project) in projects {
+        let direct = project.get("id").and_then(Value::as_str) == Some(project_id)
+            && project.get("homeServerId").and_then(Value::as_str) == Some(home_server)
+            && project
+                .get("locations")
+                .and_then(Value::as_array)
+                .is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row.get("serverId").and_then(Value::as_str) == Some(local)
+                            && row.get("path").and_then(Value::as_str) == Some(cwd)
+                    })
+                });
+        let alias = project.get("path").and_then(Value::as_str) == Some(cwd)
+            && project
+                .get("projectAliases")
+                .and_then(Value::as_array)
+                .is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row.get("serverId").and_then(Value::as_str) == Some(home_server)
+                            && row.get("projectId").and_then(Value::as_str) == Some(project_id)
+                    })
+                });
+        if direct || alias {
+            let folder_id = match folder {
+                None | Some(Value::Null) => Value::Null,
+                Some(Value::String(id)) => {
+                    if !project
+                        .get("folders")
+                        .and_then(Value::as_array)
+                        .is_some_and(|folders| {
+                            folders
+                                .iter()
+                                .any(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                        })
+                    {
+                        return Err(OperationError::Invalid(
+                            "This folder is not in the selected project",
+                        ));
+                    }
+                    json!(id)
+                }
+                Some(_) => return Err(OperationError::Invalid("Select a project folder")),
+            };
+            return Ok(
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id}),
+            );
+        }
+    }
+    Err(OperationError::Invalid(
+        "The selected folder is not a location of this project",
+    ))
 }
 
 fn project_directory_default() -> Result<String, OperationError> {
@@ -503,32 +2525,22 @@ fn project_directory_default() -> Result<String, OperationError> {
     project_directory(&path.to_string_lossy())
 }
 pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
-    let expand_home = |value: &str| {
-        if value == "~" || value.starts_with("~/") {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| {
-                    if value == "~" {
-                        home
-                    } else {
-                        home.join(&value[2..])
-                    }
-                })
-                .unwrap_or_else(|| PathBuf::from(value))
-        } else {
-            PathBuf::from(value)
-        }
+    let path = if value == "~" || value.starts_with("~/") {
+        std::env::var_os("HOME").map_or_else(
+            || PathBuf::from(value),
+            |home| {
+                let home = PathBuf::from(home);
+                if value == "~" {
+                    home
+                } else {
+                    home.join(&value[2..])
+                }
+            },
+        )
+    } else {
+        PathBuf::from(value)
     };
-    let path = expand_home(value);
-    let path = path
-        .canonicalize()
-        .map_err(|_| OperationError::Invalid("Select an existing project directory"))?;
-    if !path.is_dir() {
-        return Err(OperationError::Invalid(
-            "Select an existing project directory",
-        ));
-    }
-    Ok(path.to_string_lossy().into_owned())
+    super::canonical_project_directory(&path).map_err(OperationError::Invalid)
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
@@ -547,8 +2559,12 @@ fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> Stri
     python_json(&settings)
 }
 
+fn reusable_previous_workspace(prior: &Value, workspace: &str, cwd: &str) -> bool {
+    workspace != "image" || prior.get("imageWorkspaceRepo").and_then(Value::as_str) == Some(cwd)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn build_agent_record(
+pub(crate) fn build_agent_record(
     id: &str,
     name: &str,
     prompt: &str,
@@ -628,13 +2644,887 @@ fn mutate(
     })
 }
 
+fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationError> {
+    Ok(context.store.local_server_id()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_worker_create::CreationCatalog as _;
     use std::cell::{Cell, RefCell};
 
+    struct CatalogFixture {
+        models: std::collections::BTreeMap<String, Vec<String>>,
+    }
+
+    impl crate::host_worker_create::CreationCatalog for CatalogFixture {
+        fn resolve(
+            &self,
+            account_key: &str,
+            account: &AccountIdentity,
+            model: &str,
+            effort: Option<&str>,
+            fast_mode: bool,
+            daybreak_enabled: bool,
+        ) -> Result<ExecutionSettings, CreateError> {
+            if !self
+                .models
+                .get(account_key)
+                .is_some_and(|models| models.iter().any(|candidate| candidate == model))
+            {
+                return Err(CreateError::ModelUnavailable);
+            }
+            if daybreak_enabled && account.provider.as_deref() != Some("codex") {
+                return Err(CreateError::InvalidCreation("daybreak_enabled"));
+            }
+            Ok(ExecutionSettings {
+                model: model.to_owned(),
+                effort: effort.map(str::to_owned),
+                native_effort: effort.unwrap_or("medium").to_owned(),
+                fast_mode,
+                daybreak_enabled,
+                cyber_access_program: if daybreak_enabled {
+                    "daybreakBlue"
+                } else {
+                    "standard"
+                }
+                .to_owned(),
+            })
+        }
+    }
+
+    struct AccountFixture {
+        listing: crate::provider_callbacks::ManagedCreationAccountListing,
+    }
+
+    impl crate::provider_callbacks::ManagedCreationAccountRead for AccountFixture {
+        fn worker_accounts(
+            &self,
+        ) -> Result<
+            crate::provider_callbacks::ManagedCreationAccountListing,
+            crate::provider_callbacks::ManagedCreationAccountError,
+        > {
+            Ok(self.listing.clone())
+        }
+
+        fn resolve_identity(
+            &self,
+            account_key: &str,
+            _parent_account_key: &str,
+        ) -> Result<
+            crate::provider_callbacks::ManagedAccountIdentity,
+            crate::provider_callbacks::ManagedCreationAccountError,
+        > {
+            self.listing
+                .accounts
+                .iter()
+                .find(|candidate| candidate.account_key == account_key)
+                .map(|candidate| candidate.identity.clone())
+                .ok_or(crate::provider_callbacks::ManagedCreationAccountError::Unknown)
+        }
+    }
+
+    struct ManagedFixture {
+        accounts: AccountFixture,
+        catalog: CatalogFixture,
+    }
+
+    impl crate::managed_child_create::ManagedCreationEnvironment for ManagedFixture {
+        fn select_worker_account(
+            &self,
+            parent_account_key: &str,
+            requested_account_key: Option<&str>,
+            default_account_key: Option<&str>,
+            model: &str,
+            excluded_account_keys: &[String],
+            project_account_keys: Option<&[String]>,
+        ) -> Result<
+            (String, AccountIdentity),
+            crate::managed_child_create::ManagedCreationEnvironmentError,
+        > {
+            let mut available = |key: &str,
+                                 identity: &crate::provider_callbacks::ManagedAccountIdentity,
+                                 model: &str| {
+                let account = AccountIdentity {
+                    provider: identity.provider.clone(),
+                    home: identity.home.clone(),
+                    account_id: identity.account_id.clone(),
+                    email: identity.email.clone(),
+                };
+                match self
+                    .catalog
+                    .resolve(key, &account, model, None, false, false)
+                {
+                    Ok(_) => Ok(true),
+                    Err(CreateError::ModelUnavailable | CreateError::InvalidCreation(_)) => {
+                        Ok(false)
+                    }
+                    Err(CreateError::CapabilityUnavailable(name)) => Err(
+                        crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                            name,
+                        ),
+                    ),
+                    Err(_) => Err(
+                        crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                            "Worker account admission was refused",
+                        ),
+                    ),
+                }
+            };
+            let (key, identity) = crate::provider_callbacks::select_worker_account(
+                crate::provider_callbacks::WorkerAccountSelection {
+                    accounts: &self.accounts,
+                    parent_account_key,
+                    requested_account_key,
+                    default_account_key,
+                    model,
+                    excluded_account_keys,
+                    project_account_keys,
+                    model_available: &mut available,
+                },
+            )?;
+            Ok((
+                key,
+                AccountIdentity {
+                    provider: identity.provider,
+                    home: identity.home,
+                    account_id: identity.account_id,
+                    email: identity.email,
+                },
+            ))
+        }
+
+        fn validate_worker_choice(
+            &self,
+            _store: &RuntimeStore,
+            _account_key: &str,
+            _account: &AccountIdentity,
+            _requested: &str,
+            _default: &str,
+        ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+            Ok(())
+        }
+
+        fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
+            &self.catalog
+        }
+
+        fn prepare_workspace(
+            &self,
+            _store: &RuntimeStore,
+            _actor: &AgentRecord,
+            _args: &Value,
+            _request_id: &str,
+        ) -> Result<
+            Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+            crate::managed_child_create::ManagedCreationEnvironmentError,
+        > {
+            Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "workspace-state/host-preparation",
+                ),
+            )
+        }
+    }
+
+    fn managed_fixture() -> ManagedFixture {
+        use crate::provider_callbacks::{
+            ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
+            ManagedCreationAccountListing,
+        };
+        let candidate = |key: &str, provider: &str, ready: bool| Candidate {
+            account_key: key.to_owned(),
+            identity: ManagedAccountIdentity {
+                provider: Some(provider.to_owned()),
+                home: Some(format!("/profiles/{key}")),
+                account_id: None,
+                email: None,
+            },
+            ready,
+            can_attempt_native_proof: false,
+            disconnected: false,
+            deleted: false,
+            duplicate: false,
+        };
+        ManagedFixture {
+            accounts: AccountFixture {
+                listing: ManagedCreationAccountListing {
+                    default_account_key: Some("default".to_owned()),
+                    accounts: vec![
+                        candidate("claude-local", "claude", true),
+                        candidate("default", "codex", true),
+                    ],
+                },
+            },
+            catalog: CatalogFixture {
+                models: std::collections::BTreeMap::from([
+                    (
+                        "claude-local".to_owned(),
+                        vec!["default".to_owned(), "opus".to_owned()],
+                    ),
+                    (
+                        "default".to_owned(),
+                        vec![
+                            "gpt-6-luna".to_owned(),
+                            "gpt-6.1-sol".to_owned(),
+                            "gpt-6-astra".to_owned(),
+                        ],
+                    ),
+                ]),
+            },
+        }
+    }
+
+    fn worker_defaults_context<'a>(
+        store: &'a RuntimeStore,
+        environment: &'a dyn crate::managed_child_create::ManagedCreationEnvironment,
+        validate: &'a dyn Fn(&str, &Value) -> bool,
+    ) -> Context<'a> {
+        Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: Some(environment),
+            validate,
+        }
+    }
+
+    #[test]
+    fn managed_worker_settings_use_ordered_account_selection_and_keep_automatic_unpinned() {
+        let root = tempfile::tempdir().expect("isolated settings state");
+        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let environment = managed_fixture();
+        let validate = |_: &str, _: &Value| true;
+        let context = worker_defaults_context(&store, &environment, &validate);
+        let claude = AccountIdentity {
+            provider: Some("claude".to_owned()),
+            home: Some("/profiles/claude-local".to_owned()),
+            account_id: None,
+            email: None,
+        };
+        let automatic_luna = json!({
+            "account_key": null,
+            "model": "gpt-6-luna",
+            "effort": "high",
+            "fast_mode": false
+        });
+        let resolved = resolve_worker_defaults(
+            &context,
+            Some(&automatic_luna),
+            "claude-local",
+            &claude,
+            "default",
+            &[],
+        )
+        .expect("automatic Luna resolves through the eligible Codex account");
+        assert_eq!(resolved["model"], "gpt-6-luna");
+        assert_eq!(
+            resolved.get("accountKey"),
+            None,
+            "automatic choice stays unpinned"
+        );
+
+        let explicit_claude_luna = json!({
+            "account_key": "claude-local",
+            "model": "gpt-6-luna",
+            "effort": "high",
+            "fast_mode": false
+        });
+        assert!(matches!(
+            resolve_worker_defaults(
+                &context,
+                Some(&explicit_claude_luna),
+                "claude-local",
+                &claude,
+                "default",
+                &[],
+            ),
+            Err(OperationError::Invalid(_))
+        ));
+
+        let cleared_pin = json!({
+            "account_key": null,
+            "model": null,
+            "effort": null,
+            "fast_mode": false
+        });
+        let cleared = resolve_worker_defaults(
+            &context,
+            Some(&cleared_pin),
+            "claude-local",
+            &claude,
+            "gpt-6-astra",
+            &[],
+        )
+        .expect("null model inherits the current lead model");
+        assert_eq!(cleared["model"], Value::Null);
+        assert_eq!(
+            cleared.get("accountKey"),
+            None,
+            "null clears an old account pin"
+        );
+        assert_eq!(cleared["cyberAccessProgram"], "standard");
+    }
+
+    #[test]
+    fn lead_worker_and_review_models_validate_on_the_explicit_codex_worker_account() {
+        let root = tempfile::tempdir().expect("isolated create state");
+        let store = RuntimeStore::open(Some(root.path())).expect("state opens");
+        let environment = managed_fixture();
+        let validate = |_: &str, _: &Value| true;
+        let context = worker_defaults_context(&store, &environment, &validate);
+        let claude = AccountIdentity {
+            provider: Some("claude".to_owned()),
+            home: Some("/profiles/claude-local".to_owned()),
+            account_id: None,
+            email: None,
+        };
+        let payload = json!({
+            "account_key": "claude-local",
+            "model": "default",
+            "worker_defaults": {
+                "account_key": "default",
+                "model": "gpt-6-luna",
+                "effort": "high",
+                "fast_mode": false
+            },
+            "review_defaults": {"model": "gpt-6.1-sol", "effort": "high"}
+        });
+        let workers = resolve_worker_defaults(
+            &context,
+            Some(&payload["worker_defaults"]),
+            "claude-local",
+            &claude,
+            "default",
+            &[],
+        )
+        .expect("Codex worker model validates");
+        assert_eq!(workers["accountKey"], "default");
+        assert_eq!(workers["model"], "gpt-6-luna");
+        let review = resolve_review_defaults(
+            &context,
+            Some(&payload["review_defaults"]),
+            "claude-local",
+            &claude,
+            payload
+                .pointer("/worker_defaults/account_key")
+                .and_then(Value::as_str),
+            &[],
+        )
+        .expect("review model validates against the worker's Codex catalog");
+        assert_eq!(review, json!({"model":"gpt-6.1-sol","effort":"high"}));
+        assert_eq!(payload["account_key"], "claude-local");
+        assert_eq!(payload["model"], "default");
+    }
+
+    #[test]
+    fn image_provision_failure_persists_a_visible_paused_phase() {
+        let root = tempfile::tempdir().expect("temporary state root creates");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let mut value = build_agent_record(
+            "image-worker",
+            "Worker",
+            "Task",
+            "/workspace",
+            "default",
+            "codex",
+            false,
+            "implementer",
+            false,
+            "running",
+            "image",
+            None,
+            DEFAULT_MAX_TEAM_AGENTS,
+            Value::Null,
+            false,
+            1.0,
+            None,
+        );
+        value["epoch"] = json!(4);
+        set_image_workspace_fields(&mut value, "/workspace");
+        let record = AgentRecord::from_value(value).expect("image agent record validates");
+        store
+            .transaction(|tx| studio_runtime_store::AgentRepository::put(tx, &record))
+            .expect("image intent stores");
+
+        persist_image_provision_failure(&store, "image-worker", 4, "ASIF mount failed")
+            .expect("failure phase stores");
+        let read = store.read().expect("saved failure reads");
+        let saved = studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from("image-worker"),
+        )
+        .expect("agent lookup succeeds")
+        .expect("failed agent remains visible")
+        .into_value();
+        assert_eq!(saved["imageWorkspacePhase"], "failed");
+        assert_eq!(saved["imageWorkspaceError"], "ASIF mount failed");
+        assert_eq!(saved["status"], "paused");
+        assert_eq!(saved["autoWake"], false);
+        assert!(
+            saved["error"]
+                .as_str()
+                .is_some_and(|error| { error.contains("requested image workspace failed") })
+        );
+    }
+
+    #[test]
+    fn image_lead_reuse_requires_the_same_repository() {
+        let prior = json!({
+            "id":"reused","cwd":"/fake-mount/project-a",
+            "workspaceMode":"image","imageWorkspace":true,
+            "imageWorkspaceReady":true,"imageWorkspacePhase":"ready",
+            "imageWorkspaceRepo":"/project-a"
+        });
+        assert!(!reusable_previous_workspace(&prior, "image", "/project-b"));
+        assert!(reusable_previous_workspace(&prior, "image", "/project-a"));
+
+        let mut same_repository = prior;
+        set_image_workspace_fields(&mut same_repository, "/project-a");
+        assert_eq!(same_repository["imageWorkspaceRepo"], "/project-a");
+        assert_eq!(same_repository["imageWorkspaceReady"], false);
+        assert_eq!(same_repository["imageWorkspacePhase"], "creating");
+    }
+
+    #[test]
+    fn vm_child_recheck_freezes_host_project_path_not_guest_cwd() {
+        let parent = json!({
+            "cwd":"/guest/project/lines/main",
+            "executionMode":"vm",
+            "hostProjectPath":"/host/project"
+        });
+        let root = json!({"cwd":"/host/project","hostProjectPath":"/host/project"});
+        assert_eq!(
+            parent_project_path(&parent, &root, "/guest/project/lines/main"),
+            "/host/project"
+        );
+
+        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
+        assert!(python.contains("\"hostProjectPath\": (root.get(\"hostProjectPath\") or root[\"cwd\"]) if root and vm_execution else cwd"));
+    }
+
+    #[test]
+    fn vm_child_loads_project_binding_from_frozen_host_project_path() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
+        connection
+            .execute(
+                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+                [],
+            )
+            .expect("project table");
+        let project = json!({"id":"host-project","path":"/host/project"});
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                ("/host/project", project.to_string()),
+            )
+            .expect("save host project");
+
+        let parent = json!({
+            "cwd":"/guest/project/lines/main",
+            "executionMode":"vm",
+            "hostProjectPath":"/host/project"
+        });
+        let root = json!({"cwd":"/host/project","hostProjectPath":"/host/project"});
+        assert_eq!(
+            parent_project_binding(&connection, &parent, &root)
+                .expect("load frozen project binding")
+                .expect("host project exists"),
+            project
+        );
+
+        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
+        assert!(python.contains("\"hostProjectPath\": (root.get(\"hostProjectPath\") or root[\"cwd\"]) if root and vm_execution else cwd"));
+    }
+
+    #[test]
+    fn image_replay_resumes_pending_inherited_provisioning_from_persisted_mode() {
+        let pending = json!({
+            "epoch":7,
+            "deletedAt":null,
+            "workspaceMode":"image",
+            "imageWorkspace":true,
+            "imageWorkspaceReady":false,
+            "imageWorkspacePhase":"creating",
+            "status":"running"
+        });
+        let ready = json!({
+            "epoch":7,
+            "deletedAt":null,
+            "workspaceMode":"image",
+            "imageWorkspace":true,
+            "imageWorkspaceReady":true
+        });
+        let archived = json!({
+            "epoch":7,
+            "deletedAt":null,
+            "workspaceMode":"image",
+            "imageWorkspace":true,
+            "imageWorkspaceReady":false,
+            "imageWorkspacePhase":"archived"
+        });
+        let non_image = json!({"workspaceMode":"worktree", "imageWorkspace":false});
+        assert!(should_resume_image_provisioning(&pending));
+        assert!(!should_resume_image_provisioning(&ready));
+        assert!(!should_resume_image_provisioning(&archived));
+        let terminal = json!({"epoch":7,"deletedAt":null,"workspaceMode":"image",
+            "imageWorkspace":true,"imageWorkspaceReady":false,
+            "imageWorkspacePhase":"creating","status":"completed"});
+        assert!(!should_resume_image_provisioning(&terminal));
+        assert!(!should_resume_image_provisioning(&non_image));
+
+        let python = include_str!("../../../../apps/server/src/codex_runtime.py");
+        assert!(python.contains("not previous.get(\"layrReady\")"));
+        assert!(
+            python.contains("previous.get(\"workspaceMode\", \"worktree\") == selected_workspace")
+        );
+    }
+
+    #[test]
+    fn image_provision_completion_rejects_changed_tombstoned_or_terminal_agents() {
+        let pending = json!({"epoch":7,"deletedAt":null,"imageWorkspace":true,
+            "imageWorkspaceReady":false,"imageWorkspacePhase":"creating","status":"running"});
+        assert!(image_provision_is_current(&pending, 7));
+        assert!(!image_provision_is_current(&pending, 8));
+        let mut deleted = pending.clone();
+        deleted["deletedAt"] = json!(123);
+        assert!(!image_provision_is_current(&deleted, 7));
+        let mut terminal = pending;
+        terminal["status"] = json!("completed");
+        assert!(!image_provision_is_current(&terminal, 7));
+    }
+
+    #[test]
+    fn lead_project_folder_must_belong_to_selected_project() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
+        connection
+            .execute(
+                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+                [],
+            )
+            .expect("project table");
+        connection
+            .execute(
+                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+                [],
+            )
+            .expect("paired clients table");
+        let project = json!({
+            "id":"project:example",
+            "path":"project:example",
+            "name":"Example",
+            "homeServerId":"local-server",
+            "locations":[{"serverId":"local-server","path":"/work/example"}],
+            "folders":[{"id":"folder-a","name":"Nested","parentId":null}]
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                ("project:example", project.to_string()),
+            )
+            .expect("save local project");
+        let alias = json!({
+            "id":"/work/alias",
+            "path":"/work/alias",
+            "name":"Alias",
+            "homeServerId":"local-server",
+            "locations":[{"serverId":"local-server","path":"/work/alias"}],
+            "projectAliases":[{"serverId":"home-server","projectId":"project:remote","name":"Remote"}],
+            "folders":[{"id":"remote-folder","name":"Nested","parentId":null}]
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                ("/work/alias", alias.to_string()),
+            )
+            .expect("save remote project alias");
+        connection
+            .execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                (
+                    "home-server",
+                    json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
+                ),
+            )
+            .expect("paired home server");
+        let valid = resolve_project_binding_from(
+            &connection,
+            "/work/example",
+            Some("project:example"),
+            Some("local-server"),
+            "local-server",
+            Some(&json!("folder-a")),
+        )
+        .expect("accept folder in selected project");
+        assert_eq!(valid["projectFolder"], "folder-a");
+        let remote = resolve_project_binding_from(
+            &connection,
+            "/work/alias",
+            Some("project:remote"),
+            Some("home-server"),
+            "local-server",
+            Some(&json!("remote-folder")),
+        )
+        .expect("accept registered remote project alias");
+        assert_eq!(remote["projectServerId"], "home-server");
+        assert!(matches!(
+            resolve_project_binding_from(
+                &connection,
+                "/work/alias",
+                Some("project:remote"),
+                Some("revoked-server"),
+                "local-server",
+                None,
+            ),
+            Err(OperationError::Forbidden(
+                "The project server is not paired or is revoked"
+            ))
+        ));
+        assert!(matches!(
+            resolve_project_binding_from(
+                &connection,
+                "/work/example",
+                Some("project:example"),
+                Some("local-server"),
+                "local-server",
+                Some(&json!("another-project-folder")),
+            ),
+            Err(OperationError::Invalid(
+                "This folder is not in the selected project"
+            ))
+        ));
+    }
+
+    #[test]
+    fn native_proof_admission_uses_the_public_account_projection() {
+        assert!(can_attempt_native_proof_projection(
+            &json!({"id":"claude-account","canAttemptNativeProof":true})
+        ));
+        assert!(!can_attempt_native_proof_projection(
+            &json!({"id":"claude-account","_authErrorKind":"keychain"})
+        ));
+    }
+
+    #[test]
+    fn conversation_catalog_account_is_not_the_child_worker_default() {
+        let root = tempfile::tempdir().expect("temporary state");
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
+        ))
+        .expect("schema");
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            let connection = Connection::open(root.path().join(name)).expect("database");
+            connection
+                .execute_batch("PRAGMA journal_mode=WAL;")
+                .expect("WAL");
+            let mut entries = schema[name]["sqlite_master"]
+                .as_array()
+                .expect("schema entries")
+                .clone();
+            entries.sort_by_key(|entry| match entry["type"].as_str() {
+                Some("table") => 0,
+                Some("index") => 1,
+                Some("view") => 2,
+                _ => 3,
+            });
+            for entry in entries {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                        [entry["name"].as_str().expect("object name")],
+                        |row| row.get(0),
+                    )
+                    .expect("schema object lookup");
+                if let Some(sql) = entry["sql"].as_str().filter(|_| !exists) {
+                    connection.execute_batch(sql).expect("schema statement");
+                }
+            }
+        }
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let record = json!({
+            "id":"conversation",
+            "accountKey":"conversation-account",
+            "rootId":"conversation",
+            "workerDefaults":{"accountKey":"worker-default-account"}
+        });
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["conversation", record.to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("seed conversation");
+        let validate = |_: &str, _: &Value| true;
+        let context = Context {
+            store: &store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: &validate,
+        };
+        let request = Conversation {
+            id: "conversation".to_owned(),
+            expected_account: None,
+            excluded: None,
+            cwd: None,
+            yolo_mode: None,
+            model: None,
+            model_present: false,
+            effort: None,
+            effort_present: false,
+            fast_mode: None,
+            fast_mode_present: false,
+            daybreak_enabled: None,
+            daybreak_present: false,
+            next_turn: None,
+            request_id: None,
+            mode_settings: false,
+            mode_limit: None,
+            mode_revision: None,
+            mode_request_id: None,
+            worker_settings: false,
+            worker_defaults: None,
+            review_defaults: None,
+            non_defaults: false,
+        };
+        assert_eq!(
+            conversation_account_key(&context, &request.id, None, None)
+                .expect("conversation account"),
+            "conversation-account"
+        );
+    }
+
+    #[test]
+    fn account_admission_releases_snapshot_before_project_account_lookup() {
+        let state = tempfile::tempdir().expect("temporary state");
+        let project = tempfile::tempdir().expect("existing project directory");
+        let project_path = project.path().to_string_lossy().into_owned();
+        let store = RuntimeStore::open(Some(state.path())).expect("runtime store");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        project_path,
+                        json!({
+                            "id": project_path,
+                            "path": project_path,
+                            "accountKey": "project-account"
+                        })
+                        .to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "conversation",
+                        json!({"id":"conversation","accountKey":"old-account"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("seed project and conversation");
+        let accounts = AccountPolicyState::from_startup(
+            Some(
+                br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#,
+            ),
+            [],
+        )
+        .expect("valid account policy");
+        let validate = |_: &str, _: &Value| true;
+        let context = Context {
+            store: &store,
+            accounts: Some(&accounts),
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: &validate,
+        };
+
+        let creation = Creation {
+            cwd: Some(project_path.clone()),
+            ..Creation::default()
+        };
+        assert_eq!(
+            creation_account_key(&context, &creation).expect("creation account"),
+            "project-account"
+        );
+        assert_eq!(
+            conversation_account_key(&context, "conversation", None, Some(&project_path))
+                .expect("conversation account"),
+            "project-account"
+        );
+    }
+
+    #[test]
+    fn reviewer_child_defaults_to_shared_workspace() {
+        assert_eq!(
+            child_role_workspace(Some("reviewer"), None, "image", false)
+                .expect("host reviewer defaults to shared workspace"),
+            ("reviewer", "shared", false),
+        );
+        assert_eq!(
+            child_role_workspace(None, None, "image", false)
+                .expect("image implementer inherits image workspace"),
+            ("implementer", "image", false),
+        );
+        assert!(matches!(
+            child_role_workspace(Some("orchestrator"), None, "worktree", false),
+            Err(OperationError::Invalid("Invalid agent role"))
+        ));
+        let mut record = json!({"id":"worker","cwd":"/repo"});
+        set_image_workspace_fields(&mut record, "/repo");
+        assert_eq!(record["workspaceMode"], "image");
+        assert_eq!(record["imageWorkspace"], true);
+        assert_eq!(record["imageWorkspaceRepo"], "/repo");
+        let mut vm = json!({"id":"vm-worker","cwd":"/guest/project/lines/main"});
+        set_vm_workspace_fields(&mut vm, "/host/project");
+        assert_eq!(vm["workspaceMode"], "layr");
+        assert_eq!(vm["executionMode"], "vm");
+        assert_eq!(vm["environment"], "linux");
+        assert_eq!(vm["hostProjectPath"], "/host/project");
+        assert_eq!(vm["cwd"], "/guest/project/lines/main");
+        assert_eq!(vm["worktree"], false);
+        assert_eq!(
+            child_role_workspace(None, None, "layr", true)
+                .expect("VM implementer inherits layr workspace"),
+            ("implementer", "layr", false)
+        );
+        assert!(matches!(
+            validate_vm_parent_for_create("layr", &json!({"executionMode":"native"})),
+            Err(OperationError::Invalid(
+                "A VM workspace requires a VM parent"
+            ))
+        ));
+        assert!(validate_vm_parent_for_create("layr", &json!({"executionMode":"vm"})).is_ok());
+        assert_eq!(
+            child_role_workspace(Some("reviewer"), None, "layr", true)
+                .expect("VM reviewer inherits layr workspace"),
+            ("reviewer", "layr", false)
+        );
+        assert!(matches!(
+            child_role_workspace(Some("reviewer"), Some("shared"), "layr", true),
+            Err(OperationError::Invalid(
+                "A VM reviewer must use the parent's layr workspace"
+            ))
+        ));
+        assert!(
+            validate_vm_parent_for_create("worktree", &json!({"executionMode":"native"})).is_ok()
+        );
+    }
+
     fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
-        let connection = store.read().expect("snapshot connection");
+        // The controlled interleaving validator runs while the operation's
+        // pooled read lease is live. Observe its committed writer transaction
+        // through an independent test connection instead of checking out a
+        // nested pooled lease.
+        let connection = rusqlite::Connection::open(store.root().join("canvas.sqlite3"))
+            .expect("snapshot connection");
         let mut tables = connection
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .expect("tables");
@@ -691,6 +3581,23 @@ mod tests {
             }
         }
         let store = RuntimeStore::open(Some(&root)).expect("runtime store");
+        let registry_path = root.join("accounts/registry.json");
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        std::fs::write(
+            &registry_path,
+            json!({
+                "version":1,
+                "defaultAccountKey":"default",
+                "accounts":{"default":{"id":"default","home":root,"label":"Codex","source":"Codex CLI","status":"signedOut"}},
+                "logins":{},
+                "deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .expect("write fixture account registry");
+        let driver = crate::account_driver::AccountDriver::open(&registry_path)
+            .expect("open fixture account driver");
         for scenario in ["agent", "lead", "previous"] {
             let intent = if scenario == "agent" {
                 json!({"cwd":root,"name":"Lead","prompt":"Task"})
@@ -737,7 +3644,9 @@ mod tests {
             let context = Context {
                 store: &store,
                 accounts: None,
-                driver: None,
+                driver: Some(&driver),
+                catalog: None,
+                managed_creation_environment: None,
                 validate: &validate,
             };
             let request = Creation {

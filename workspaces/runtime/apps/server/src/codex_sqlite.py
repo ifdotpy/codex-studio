@@ -311,6 +311,7 @@ def diagnostics():
             if values:
                 public["p50TransactionMs"] = round(values[math.ceil(.50 * len(values)) - 1], 3)
                 public["p95TransactionMs"] = round(values[math.ceil(.95 * len(values)) - 1], 3)
+                public["p99TransactionMs"] = round(values[math.ceil(.99 * len(values)) - 1], 3)
             return public
 
         result = {}
@@ -335,4 +336,27 @@ def diagnostics():
                                      "locals": 0, "truncated": len(entries) > 64}
     from codex_sqlite_traces import history
     result["slowTransactions"] = history()
+    # Python does not use RuntimeStore's pooled reader or SQLite profiling
+    # hooks. Publish the same closed diagnostics shape with empty samples so
+    # both server implementations satisfy the shared HTTP contract.
+    empty_admission = {
+        "operations": 0,
+        "waits": 0,
+        "activeWaiters": 0,
+        "peakWaiters": 0,
+        "openedConnections": 0,
+        "waitMs": {
+            "samples": 0,
+            "p50Ms": None,
+            "p95Ms": None,
+            "p99Ms": None,
+            "maxMs": 0.0,
+        },
+    }
+    result["storeAdmission"] = {
+        "reads": dict(empty_admission),
+        "writes": dict(empty_admission),
+    }
+    result["sqlProfile"] = {}
+    result["commitProfile"] = {}
     return result

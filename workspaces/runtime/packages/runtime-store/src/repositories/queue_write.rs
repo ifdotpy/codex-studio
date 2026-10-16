@@ -48,7 +48,7 @@ impl QueueWriteRepository {
         agent: &str,
         epoch: i64,
     ) -> StoreResult<Vec<PendingEvent>> {
-        let mut statement = transaction.prepare(
+        let mut statement = transaction.prepare_cached(
             "SELECT id,kind,created FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
         )?;
         let rows = statement.query_map(params![agent, epoch], |row| {

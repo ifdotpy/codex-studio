@@ -21,7 +21,11 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    start_contract_backend,
+)
 
 
 def database_snapshot(path: Path):
@@ -33,6 +37,17 @@ def database_snapshot(path: Path):
             name: database.execute(f'SELECT * FROM "{name}"').fetchall()
             for (name,) in tables
         }
+
+
+def state_directory_snapshot(root: Path):
+    return sorted(
+        (
+            path.relative_to(root).as_posix(),
+            path.lstat().st_size,
+            path.lstat().st_mtime_ns,
+        )
+        for path in root.rglob("*")
+    )
 
 
 def seed_summary_agent(backend) -> str:
@@ -118,6 +133,19 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(database_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
+    def test_local_identity_directory_read_succeeds_unchanged_under_writer(self):
+        identity = json.loads(
+            (self.backend.state / "multi-server" / "identity.json").read_text(
+                encoding="utf-8"
+            )
+        )["serverId"]
+        path = "/api/directories?" + urlencode(
+            {"server": identity, "path": str(self.root)}
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self, self.backend, path, self.headers()
+        )
+
     def test_directory_home_forms_non_strict_resolution_and_symlink(self):
         before = database_snapshot(self.backend.state / "canvas.sqlite3")
         user = __import__("getpass").getuser()
@@ -177,17 +205,55 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(database_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
     def test_diagnostics_names_the_required_live_schema_fields(self):
-        response = self.backend.request("GET", "/api/diagnostics", headers=self.headers())
+        before = database_snapshot(self.backend.state / "canvas.sqlite3")
+        state_before = (
+            state_directory_snapshot(self.backend.state) if self.rust_backend else None
+        )
+        secret = "diagnostics-request-secret-marker"
+        response = self.backend.request(
+            "GET",
+            "/api/diagnostics",
+            headers={**self.headers(), "X-Test-Request-Value": secret},
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertNotIn(secret.encode(), response.body)
+        self.assertNotIn(self.backend.session["token"].encode(), response.body)
+        self.assertNotIn(secret, self.backend.stderr)
         if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            for field in ("process-tree", "host-resources", "native-accounts", "sqlite-contention",
-                          "request-metrics", "supervisor-status"):
-                self.assertIn(field, response.json()["error"])
-        else:
-            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(
+                state_directory_snapshot(self.backend.state),
+                state_before,
+                "diagnostics must not change state directory names, sizes, or mtimes",
+            )
+        expected_fields = {
+            "at",
+            "processTree",
+            "hostResources",
+            "resourceAttribution",
+            "nativeAccounts",
+            "studioLoadedThreads",
+            "queues",
+            "runtimeLockSamples",
+            "executions",
+            "sqliteContention",
+            "httpRequestMetrics",
+            "analyticsCapture",
+            "migrations",
+            "searchMigrationError",
+            "runtimeLockOperations",
+            "supervisor",
+        }
+        if self.rust_backend:
+            expected_fields.add("blockingPoolMetrics")
+        self.assertEqual(set(response.json()), expected_fields, response.body[:2000])
+        self.assertEqual(
+            database_snapshot(self.backend.state / "canvas.sqlite3"),
+            before,
+            "diagnostics must not write durable SQLite state",
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_remote_directory_browse_names_its_missing_driver(self):
+    def test_unpaired_remote_directory_browse_is_forbidden(self):
         response = self.backend.request(
             "GET", "/api/directories?" + urlencode({"server": "remote-server"}),
             headers=self.headers(),
@@ -206,10 +272,24 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_saved_local_server_id_uses_local_browse(self):
         self.backend.stop()
         identity_dir = self.backend.state / "multi-server"
-        identity_dir.mkdir(exist_ok=True)
-        (identity_dir / "identity.json").write_text(
-            '{"serverId":"local-server-contract"}', encoding="utf-8"
-        )
+        identity_dir.mkdir(mode=0o700, exist_ok=True)
+        identity_dir.chmod(0o700)
+        identity_path = identity_dir / "identity.json"
+        identity_path.write_text(json.dumps({
+            "serverId": "local-server-contract",
+            "label": "Contract server",
+            "privateKey": (
+                "-----BEGIN PRIVATE KEY-----\n"
+                "MC4CAQAwBQYDK2VwBCIEIE61KAT30Wa88aoE0mzaDqoSoQ4P7lPOk8hmxPsDG1FZ\n"
+                "-----END PRIVATE KEY-----\n"
+            ),
+            "publicKey": (
+                "-----BEGIN PUBLIC KEY-----\n"
+                "MCowBQYDK2VwAyEABPuG6SKDgrZWlm/D+iwjQAXlsZ2T/8cOLGt/g1IayQ0=\n"
+                "-----END PUBLIC KEY-----\n"
+            ),
+        }), encoding="utf-8")
+        identity_path.chmod(0o600)
         self.backend.start()
         response = self.backend.request(
             "GET", "/api/directories?" + urlencode({
@@ -257,7 +337,7 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",(json.dumps(value),self.summary_agent))
                 before=database_snapshot(path)
                 response=self.backend.request("GET","/api/ui-summary",headers=self.headers())
-                self.assertEqual(response.status,500,response.body)
+                self.assertEqual(response.status,503,response.body)
                 self.assertIn("sync_entities/"+self.summary_agent,response.json()["error"])
                 self.assertEqual(database_snapshot(path),before)
         finally:
@@ -293,10 +373,10 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertNotIn(secret_path,self.backend.stderr)
         finally:link.unlink()
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),"named remote dependencies")
-    def test_paired_revoked_and_discovered_directory_selection(self):
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),"Rust paired-server storage and transport")
+    def test_paired_unreachable_revoked_and_discovered_directory_selection(self):
         path=self.backend.state / "canvas.sqlite3"
-        for table,identity,record,expected in (("runtime_access_clients","paired",{"kind":"server","status":"paired"},501),("runtime_access_clients","revoked",{"kind":"server","status":"revoked","revoked":1.0},403),("runtime_access_discovered","discovered",{"status":"discovered"},501)):
+        for table,identity,record,expected in (("runtime_access_clients","paired",{"kind":"server","status":"paired"},503),("runtime_access_clients","revoked",{"kind":"server","status":"revoked","revoked":1.0},403),("runtime_access_discovered","discovered",{"status":"discovered"},403)):
             # Complete storage rows match Python's pairing/discovery writers;
             # the directory consumer only selects their pairing fields.
             stored={"id":identity,"clientId":identity,"kind":"server","label":identity,
@@ -304,7 +384,6 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with sqlite3.connect(path) as db:db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(identity,json.dumps(stored)))
             response=self.backend.request("GET","/api/directories?"+urlencode({"server":identity,"path":str(self.root)}),headers=self.headers())
             self.assertEqual(response.status,expected,response.body)
-            if identity=="discovered":self.assertIn("discovery-pairing",response.json()["error"])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-//! Existing usage continuation tables. This repository never creates them.
+//! Durable capacity retry and usage resume records.
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::StoreError;
 use crate::records::{AgentId, AgentRepository};
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 
 const CAPACITY_RETRY_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_capacity_retries",
@@ -19,20 +19,11 @@ const USAGE_RESUME_TABLE: &[TableRequirement] = &[TableRequirement {
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_capacity_retries",
-            tables: CAPACITY_RETRY_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_usage_resumes",
-            tables: USAGE_RESUME_TABLE,
-        },
-    ],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[CAPACITY_RETRY_TABLE[0], USAGE_RESUME_TABLE[0]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -205,6 +196,73 @@ pub fn disable_usage_resume(
     Ok(resume)
 }
 
+/// Cancel a pending resume when an agent moves accounts, preserving the user's
+/// automatic-resume preference. The caller owns the encompassing transaction.
+pub fn cancel_usage_resume(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    resume_id: &str,
+    reason: &str,
+    now: f64,
+) -> UsageRepositoryResult<Value> {
+    require_table(transaction, "runtime_usage_resumes")?;
+    let id = AgentId::from(agent_id);
+    let mut agent = AgentRepository::get(transaction, &id)
+        .map_err(|_| invalid("runtime_agents", agent_id))?
+        .ok_or(UsageRepositoryError::UnknownAgent)?;
+    if agent.id.0 != agent_id {
+        return Err(invalid("runtime_agents", agent_id));
+    }
+    let raw = transaction
+        .query_row(
+            "SELECT record FROM runtime_usage_resumes WHERE id=?1 AND agent=?2",
+            params![resume_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or(UsageRepositoryError::UnknownContinuation)?;
+    let mut resume: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid("runtime_usage_resumes", resume_id))?;
+    if !validate_resume(&resume, resume_id) {
+        return Err(invalid("runtime_usage_resumes", resume_id));
+    }
+    if agent
+        .extra
+        .get("usageResume")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+        != Some(resume_id)
+    {
+        return Ok(agent
+            .extra
+            .get("usageResume")
+            .cloned()
+            .unwrap_or(Value::Null));
+    }
+    if !matches!(
+        resume.get("status").and_then(Value::as_str),
+        Some("scheduled" | "started")
+    ) {
+        return Ok(resume);
+    }
+    resume["status"] = Value::String("cancelled".to_owned());
+    resume["dueAt"] = Value::Null;
+    resume["reason"] = Value::String(reason.to_owned());
+    resume["updatedAt"] = json!(now);
+    transaction.execute(
+        "UPDATE runtime_usage_resumes SET record=?1 WHERE id=?2 AND agent=?3",
+        params![
+            serde_json::to_string(&resume)
+                .map_err(|_| invalid("runtime_usage_resumes", resume_id))?,
+            resume_id,
+            agent_id
+        ],
+    )?;
+    agent.extra.insert("usageResume".to_owned(), resume.clone());
+    AgentRepository::put(transaction, &agent)?;
+    Ok(resume)
+}
+
 inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "usage",
@@ -220,137 +278,62 @@ fn invalid(table: &'static str, id: &str) -> UsageRepositoryError {
 }
 
 fn validate_retry(value: &Value, expected_id: &str) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    if object.get("id").and_then(Value::as_str) != Some(expected_id)
-        || !matches!(
-            object.get("status").and_then(Value::as_str),
-            Some(
-                "scheduled"
-                    | "starting"
-                    | "finished"
-                    | "cancelled"
-                    | "unknown"
-                    | "exhausted"
-                    | "failed"
-            )
-        )
-    {
-        return false;
-    }
-    for field in [
-        "acceptedTurnId",
-        "accountKey",
-        "cause",
-        "cwd",
-        "threadId",
-        "turnId",
-    ] {
-        if object.get(field).is_some_and(|value| !value.is_string()) {
-            return false;
-        }
-    }
-    for field in ["dueAt", "claimedAt", "updatedAt"] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_f64().is_none())
-        {
-            return false;
-        }
-    }
-    for field in ["attempt", "epoch", "maxAttempts", "waits"] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_u64().is_none())
-        {
-            return false;
-        }
-    }
-    if object
-        .get("reason")
-        .is_some_and(|value| !value.is_null() && !value.is_string())
-        || object.get("taskClaims").is_some_and(|value| {
-            value
-                .as_array()
-                .is_none_or(|items| items.iter().any(|item| !item.is_string()))
-        })
-        || object
-            .get("settings")
-            .is_some_and(|value| !value.is_object())
-    {
-        return false;
-    }
-    true
+    value.get("id").and_then(Value::as_str) == Some(expected_id)
+        && studio_runtime_schema::validate("continuation/CapacityContinuation", value)
+            .unwrap_or(false)
 }
 
 fn validate_resume(value: &Value, expected_id: &str) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    let required_string = |field: &str| object.get(field).and_then(Value::as_str).is_some();
-    if object.get("id").and_then(Value::as_str) != Some(expected_id)
-        || !matches!(
+    let number_or_null = |field: &str| {
+        object
+            .get(field)
+            .is_none_or(|value| value.is_null() || value.as_f64().is_some())
+    };
+    value.get("id").and_then(Value::as_str) == Some(expected_id)
+        && studio_runtime_schema::validate("PersistedUsageResumeRecord", value).unwrap_or(false)
+        && matches!(
             object.get("status").and_then(Value::as_str),
             Some("scheduled" | "started" | "cancelled" | "unknown")
         )
-        || !matches!(
+        && matches!(
             object.get("cause").and_then(Value::as_str),
             Some("usage_limit" | "rate_limit" | "auth")
         )
-        || !["accountKey", "threadId", "turnId"]
+        && ["accountKey", "threadId", "turnId"]
             .into_iter()
-            .all(required_string)
-        || object.get("epoch").and_then(Value::as_u64).is_none()
-        || object.get("failedAt").and_then(Value::as_f64).is_none()
-    {
-        return false;
-    }
-    for field in ["authRefreshMarker", "reason"] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && !value.is_string())
-        {
-            return false;
-        }
-    }
-    for field in [
-        "dueAt",
-        "lastCheckedAt",
-        "plannedAt",
-        "resetAt",
-        "updatedAt",
-    ] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_f64().is_none())
-        {
-            return false;
-        }
-    }
-    for field in ["failedAt", "proofAt", "startedAt"] {
-        if object
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_f64().is_none())
-        {
-            return false;
-        }
-    }
-    if object
-        .get("authAttempt")
-        .is_some_and(|value| !value.is_null() && value.as_u64().is_none())
-        || object
+            .all(|field| object.get(field).and_then(Value::as_str).is_some())
+        && object.get("epoch").and_then(Value::as_u64).is_some()
+        && object.get("failedAt").and_then(Value::as_f64).is_some()
+        && [
+            "dueAt",
+            "lastCheckedAt",
+            "plannedAt",
+            "resetAt",
+            "updatedAt",
+            "proofAt",
+            "startedAt",
+        ]
+        .into_iter()
+        .all(number_or_null)
+        && ["authRefreshMarker", "reason"].into_iter().all(|field| {
+            object
+                .get(field)
+                .is_none_or(|value| value.is_null() || value.is_string())
+        })
+        && object
+            .get("authAttempt")
+            .is_none_or(|value| value.is_null() || value.as_u64().is_some())
+        && object
             .get("waitingForAuth")
-            .is_some_and(|value| !value.is_null() && !value.is_boolean())
-        || object.get("taskClaims").is_some_and(|value| {
+            .is_none_or(|value| value.is_null() || value.is_boolean())
+        && object.get("taskClaims").is_none_or(|value| {
             value
                 .as_array()
-                .is_none_or(|items| items.iter().any(|item| !item.is_string()))
+                .is_some_and(|items| items.iter().all(Value::is_string))
         })
-    {
-        return false;
-    }
-    true
 }
 
 fn require_table(transaction: &Transaction<'_>, name: &str) -> UsageRepositoryResult<()> {

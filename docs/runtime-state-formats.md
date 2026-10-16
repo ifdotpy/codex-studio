@@ -2,6 +2,8 @@
 
 This inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-studio/issues/37). It describes the current Python runtime formats that the whole-runtime Rust replacement must preserve while opening the configured state directory in place. Source references below are code-verified; fresh SQLite schema and reader behavior are also observed in disposable test state.
 
+For desktop Rust selection, table dispositions, and the rollback owner/build fence, see [Rust desktop backend and state compatibility](rust-backend-state-compatibility.md). That matrix is a source-only review and does not claim full Python/Rust state parity.
+
 ## Findings that affect the Rust move
 
 - **The state identity is the directory, not a database filename.** `CODEX_AGENTS_STATE_DIR` selects it; otherwise the platform state root is used by [`codex_state.py`](../workspaces/runtime/apps/server/src/codex_state.py). The runtime acquires an exclusive OS lock at `runtime.lock` before opening either database. Preserve the same directory and do not start two owners.
@@ -61,6 +63,23 @@ The optional supervisor journal's source-declared schema is:
 The supervisor does not set `PRAGMA user_version`; migrations inspect existing columns and add missing fields. The journal configures WAL and FULL synchronous writes, then sets `wal_autocheckpoint=100` on its pooled connections. These facts are verified from [`codex_process_supervisor.py`](../workspaces/runtime/apps/server/src/codex_process_supervisor.py), not observed against a running supervisor database in this task.
 
 Python writes JSON with `json.dumps`; some writers use compact separators and `ensure_ascii=False`, while ordinary record writes use their local defaults. No reader should depend on whitespace, escaping choice, or object key order. `codex_time.py` also emits UTC RFC 3339-like strings with millisecond precision and `Z`; other externally sourced date strings may carry offsets. SQLite's primary persisted runtime timestamps are numeric Unix seconds, not Python `datetime` objects.
+
+### Connection recovery request receipt
+
+`runtime_agents.record.connectionRecovery` may include `requestId`,
+`requestState`, `requestBasis`, and `requestReceipt`. The record contract is owned by
+`studio_api.recovery_models.ConnectionRecoveryFields` and mirrored by
+`ConnectionRecoveryRecord` in `codex_records.py`; the generated Rust schema is
+`recovery-agent-record.schema.json`. `requestState` is `pending` before any
+retained provider history read and `result` after the synchronous recovery
+status is committed. The ID is a digest of the agent ID, epoch, account, thread,
+turn, and current disconnect or restart receipt. `requestBasis` retains those
+inputs so an identical HTTP retry can find its saved result after reconciliation
+changes the current turn fields. History read operation IDs are
+derived from this recovery ID, method, and query. A repeated request with the
+same ID returns its saved receipt; an uncertain history operation stays
+uncertain and is not resent. The final result is written in the same transaction
+as recovery effects, so there is no separate post-commit receipt write.
 
 ### External files read by the runtime, owned elsewhere
 

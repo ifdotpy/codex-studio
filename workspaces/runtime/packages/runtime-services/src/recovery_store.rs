@@ -81,6 +81,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     observation,
                     complete_history,
                     idle_twice,
+                    confirmed_not_applied,
                 } => {
                     use crate::recovery_absence::{StartAbsenceDecision, start_absence};
                     if !expected.eligibility().unconfirmed_start {
@@ -95,9 +96,12 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     {
                         return Ok(RecoveryOutcome::Superseded);
                     }
-                    let decision =
-                        start_absence(expected, &current, *complete_history, *idle_twice);
-                    let attempt = &a["startAttempt"];
+                    let decision = if *confirmed_not_applied {
+                        StartAbsenceDecision::Restore
+                    } else {
+                        start_absence(expected, &current, *complete_history, *idle_twice)
+                    };
+                    let attempt = expected.start_attempt();
                     match decision {
                         StartAbsenceDecision::Restore => {
                             let mut rows = Vec::new();
@@ -128,16 +132,29 @@ impl RecoveryEffects for RecoveryStore<'_> {
                                 row.error = None;
                                 QueueEventRepository::put(tx, &row)?;
                             }
-                            let object =
-                                updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
-                            object.remove("startAttempt");
-                            object.remove("startOutcomeHold");
-                            updated["status"] = json!("queued");
+                            if *confirmed_not_applied {
+                                let object =
+                                    updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+                                object.remove("startAttempt");
+                                object.remove("startOutcomeHold");
+                                object.remove("nativeFailureHold");
+                                object.remove("contextRepairWait");
+                                updated["status"] = json!("queued");
+                                updated["autoWake"] = json!(true);
+                                updated["restartRecovery"]["stage"] = json!("finished");
+                                updated["restartRecovery"]["reconciledAt"] = json!(current.at);
+                            } else {
+                                let object =
+                                    updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+                                object.remove("startAttempt");
+                                object.remove("startOutcomeHold");
+                                updated["status"] = json!("queued");
+                                updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
+                            }
                             updated["inFlight"] = json!(false);
                             updated["error"] = Value::Null;
                             updated["activity"] = Value::Null;
                             updated["activeTools"] = json!([]);
-                            updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
                             json!({"status":"input_restored"})
                         }
                         StartAbsenceDecision::Hold => {
@@ -152,7 +169,14 @@ impl RecoveryEffects for RecoveryStore<'_> {
                             updated["error"] = json!(reason);
                             updated["activity"] = Value::Null;
                             updated["activeTools"] = json!([]);
-                            updated["startAttempt"]["executionOutcome"] = json!("unknown");
+                            if a["restartRecovery"]["stage"] == "held"
+                                && !a["contextRepairWait"].is_null()
+                            {
+                                updated["restartRecovery"]["startAttempt"]["executionOutcome"] =
+                                    json!("unknown");
+                            } else {
+                                updated["startAttempt"]["executionOutcome"] = json!("unknown");
+                            }
                             updated["startOutcomeHold"] = json!({"stage":"held","at":current.at,"attemptId":attempt["id"],"threadId":a["threadId"],"connectionId":scope.connection,"evidence":"complete_history_absent_idle_twice_journal_drained"});
                             self.completion.start_held(
                                 tx,
@@ -284,6 +308,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                 }
                 _ => return self.completion.complete(tx, expected, scope, &action),
             };
+            persist_request_result(a, &mut updated, &result);
             RecoverySnapshot::from_record(updated.clone())
                 .map_err(|_| RecoveryError::CommitFailed)?;
             let record: AgentRecord =
@@ -292,6 +317,23 @@ impl RecoveryEffects for RecoveryStore<'_> {
             Ok(RecoveryOutcome::Applied(result))
         })
     }
+}
+
+fn persist_request_result(source: &Value, updated: &mut Value, result: &Value) {
+    let request_id = source["connectionRecovery"]["requestId"]
+        .as_str()
+        .filter(|id| !id.is_empty());
+    if source["connectionRecovery"]["requestState"] != "pending" || request_id.is_none() {
+        return;
+    }
+    if !updated["connectionRecovery"].is_object() {
+        updated["connectionRecovery"] = json!({});
+    }
+    updated["connectionRecovery"]["requestId"] = json!(request_id);
+    updated["connectionRecovery"]["requestState"] = json!("result");
+    updated["connectionRecovery"]["requestBasis"] =
+        source["connectionRecovery"]["requestBasis"].clone();
+    updated["connectionRecovery"]["requestReceipt"] = result.clone();
 }
 fn uncertain(tx: &Transaction<'_>, id: &str, epoch: i64) -> Result<bool, RecoveryError> {
     Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('reserved','dispatching','uncertain'))",rusqlite::params![id,epoch],|r|r.get(0))?)
@@ -365,7 +407,89 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
         let a = expected.record();
         let id = text(a, "id")?;
         let epoch = a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?;
-        let attempt = &a["startAttempt"];
+        let attempt = expected.start_attempt();
+        if let RecoveryAction::AdoptQueuedWait { turn } = action {
+            if !expected.eligibility().queued_active_wait
+                || !matches!(turn["status"].as_str(), Some("inProgress" | "running"))
+                || turn["id"] != a["turnId"]
+                || turn
+                    .get("threadId")
+                    .is_some_and(|thread| thread != &a["threadId"])
+            {
+                return Ok(RecoveryOutcome::Superseded);
+            }
+            let attempt_id = text(attempt, "id")?;
+            let Some(events) = attempt["events"].as_array() else {
+                return Ok(RecoveryOutcome::Unconfirmed);
+            };
+            let mut rows = Vec::new();
+            for event in events {
+                let Some(event_id) = event.as_str() else {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                };
+                let Some(row) = QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
+                else {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                };
+                if row.agent.0 != id
+                    || row.epoch != epoch
+                    || row.status != "pending"
+                    || row.turn_id.is_some()
+                {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                }
+                rows.push(event_id);
+            }
+            let pending_request: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_requests \
+                 WHERE json_extract(record,'$.agent')=?1 \
+                 AND json_extract(record,'$.status')='pending' \
+                 AND (json_extract(record,'$.turnId') IS NULL \
+                      OR json_extract(record,'$.turnId')=?2))",
+                rusqlite::params![id, a["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?],
+                |row| row.get(0),
+            )?;
+            if pending_request {
+                return Ok(RecoveryOutcome::Unconfirmed);
+            }
+            if uncertain(tx, id, epoch)? {
+                return Ok(RecoveryOutcome::Unconfirmed);
+            }
+            let mut updated = a.clone();
+            let mut wait = updated
+                .get("contextRepairWait")
+                .cloned()
+                .ok_or(RecoveryError::CommitFailed)?;
+            wait["status"] = json!("superseded");
+            wait["reason"] = json!("The exact native turn was confirmed");
+            wait["finishedAt"] = json!(self.at);
+            updated["lastContextRepairWait"] = wait;
+            let Some(fields) = updated.as_object_mut() else {
+                return Err(RecoveryError::CommitFailed);
+            };
+            fields.remove("contextRepairWait");
+            fields.remove("startAttempt");
+            updated["status"] = json!("running");
+            updated["inFlight"] = json!(true);
+            updated["error"] = Value::Null;
+            let mut connection = updated
+                .get("connectionRecovery")
+                .cloned()
+                .filter(Value::is_object)
+                .unwrap_or(json!({}));
+            connection["at"] = json!(self.at);
+            connection["turnId"] = turn["id"].clone();
+            connection["outcome"] = json!("active");
+            connection["source"] = json!("native_thread_read");
+            connection["queuedInputPreserved"] = json!(true);
+            connection["attemptId"] = json!(attempt_id);
+            connection["eventIds"] = json!(rows);
+            let result = json!({"status":"adopted","turnId":turn["id"]});
+            updated["connectionRecovery"] = connection;
+            persist_request_result(a, &mut updated, &result);
+            put_agent(tx, updated)?;
+            return Ok(RecoveryOutcome::Applied(result));
+        }
         match action {
             RecoveryAction::AcceptStart { turn } => {
                 if !expected.eligibility().unconfirmed_start || !valid_turn(turn, a, None) {
@@ -423,9 +547,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
             } => {
                 if matches!(
                     mode,
-                    CompletionMode::Restart
-                        | CompletionMode::QueuedRestart
-                        | CompletionMode::QueuedActiveWait
+                    CompletionMode::Restart | CompletionMode::QueuedRestart
                 ) {
                     return Err(RecoveryError::Dependency(
                         "turn-recovery/restart-completion",
@@ -570,18 +692,35 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     updated["turnRecovery"] = json!({"at":self.at,"turnId":turn_id,"outcome":turn["status"],"source":"native_thread_read"});
                 } else {
                     updated["connectionRecovery"] = json!({"at":self.at,"turnId":turn_id,"outcome":turn["status"],"source":"native_thread_read","previousError":a["error"]});
+                    if *mode == CompletionMode::QueuedActiveWait {
+                        updated["connectionRecovery"]["queuedInputPreserved"] = json!(true);
+                    }
                     if normal {
                         updated["connectionRecovery"]["automatic"] = json!(true);
                         updated["connectionRecovery"]["completionDelivered"] = json!(true);
                     }
                 }
+                let result =
+                    json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
+                persist_request_result(a, &mut updated, &result);
                 // This hook includes unresolved-operation holds and parent/work
                 // intents. A missing owner fails the whole transaction visibly.
                 self.delivery.terminal(tx, &mut updated, turn, *mode)?;
+                if let Some(streams) = self.stream_update.as_mut() {
+                    let batch = streams
+                        .take_post_commit()
+                        .map_err(|_| RecoveryError::CommitFailed)?;
+                    crate::account_worker::store::persist_publication_batch(
+                        tx,
+                        &scope.account,
+                        &batch,
+                    )
+                    .map_err(|_| RecoveryError::CommitFailed)?;
+                    crate::account_worker::store::persist_streams(tx, &scope.account, streams)
+                        .map_err(|_| RecoveryError::CommitFailed)?;
+                }
                 put_agent(tx, updated)?;
-                Ok(RecoveryOutcome::Applied(
-                    json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]}),
-                ))
+                Ok(RecoveryOutcome::Applied(result))
             }
             _ => Err(RecoveryError::EffectsUnavailable),
         }

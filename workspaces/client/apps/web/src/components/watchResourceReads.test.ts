@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api";
 import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
 const {
@@ -53,6 +54,7 @@ vi.mock("../sync/resume", () => ({
 import { watchResourceReads } from "./watchResourceReads";
 
 const terminals: ResourceRef = { kind: "terminals" };
+const multiServer: ResourceRef = { kind: "multi-server" };
 const limits: ResourceRef = { kind: "limits", accountKey: "default" };
 const output: ResourceRef = { kind: "terminal", terminalId: "terminal-1" };
 const notify = (resource: ResourceRef, version?: ResourceVersion) => {
@@ -119,6 +121,25 @@ describe("watchResourceReads", () => {
     expect(displayed).toEqual([20, 80]);
     expect(read).toHaveBeenCalledTimes(2);
     stop();
+  });
+
+  it("reads the multi-server snapshot only for its targeted resource event", async () => {
+    const read = vi.fn(async () => {});
+    const unrelatedRead = vi.fn(async () => {});
+    const stop = watchResourceReads(multiServer, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+    const stopUnrelated = watchResourceReads(terminals, unrelatedRead, vi.fn());
+    notify(terminals, { epoch: "workspace", revision: 1 });
+    await vi.waitFor(() => expect(unrelatedRead).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(read).not.toHaveBeenCalled();
+
+    notify(multiServer, { epoch: "workspace", revision: 2 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(read).toHaveBeenCalledWith({ epoch: "workspace", revision: 2 });
+    stop();
+    stopUnrelated();
   });
 
   it("passes the newest resource version through a coalesced read", async () => {
@@ -252,6 +273,31 @@ describe("watchResourceReads", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(read).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("does not back off and retry an unsupported read, but accepts a later event", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new ApiError("Not implemented", 501))
+      .mockResolvedValue(undefined);
+    const failed = vi.fn();
+    const stop = watchResourceReads(limits, read, failed);
+    notify(limits);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    notify(limits);
+    await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(2);
     stop();
   });

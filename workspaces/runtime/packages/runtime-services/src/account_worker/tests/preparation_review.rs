@@ -206,9 +206,12 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                 &context,
                 "default",
                 &request,
-                None,
-                prepared.submission.as_ref(),
-                Some(&prepared.guard)
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
             )?);
             Ok(())
         })
@@ -236,12 +239,8 @@ async fn missing_native_effort_uses_shared_catalog_published_after_construction(
             .to_string_lossy()
             .into_owned(),
     ));
-    let resources = preparation::PreparationResources::bundled(
-        String::new(),
-        service.clone(),
-        test_resources().unwrap().python_executable,
-    )
-    .unwrap();
+    let resources =
+        preparation::PreparationResources::bundled(String::new(), service.clone()).unwrap();
     crate::model_catalog::tests::publish_fixture(
         &service,
         "default",
@@ -341,9 +340,12 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                 &context,
                 "default",
                 &request,
-                None,
-                prepared.submission.as_ref(),
-                Some(&prepared.guard)
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
             )?);
             Ok(())
         })
@@ -385,12 +387,8 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());
             crate::model_catalog::tests::expire_fixture(&catalog);
         }
-        let resources = preparation::PreparationResources::bundled(
-            String::new(),
-            catalog.clone(),
-            test_resources().unwrap().python_executable,
-        )
-        .unwrap();
+        let resources =
+            preparation::PreparationResources::bundled(String::new(), catalog.clone()).unwrap();
         let mut peer = Peer::new();
         let mut worker = peer
             .open_worker_with_resources(state.bridge.clone(), resources.clone())
@@ -450,6 +448,7 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
                         error: event.error,
                         metadata,
                     }],
+                    radio_authorized: false,
                 };
                 drop(read_tx);
                 drop(db);
@@ -488,6 +487,42 @@ async fn continuation_gate_refuses_a_preexisting_admission_hold() {
                     .err()
                     .expect("turn admission hold");
             assert_eq!(error.to_string(), "thread-preparation/AccountTransfer");
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn radio_authorized_preparation_uses_the_radio_receipt_gate() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| {
+            let mut intent = store::claim(store, "default", &agent_id, epoch)?.unwrap();
+            store.transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_events SET kind='radio_turn' WHERE id='annotation:input'",
+                    [],
+                )?;
+                Ok(())
+            })?;
+            intent.events[0].kind = "radio_turn".into();
+            intent.radio_authorized = true;
+            let error =
+                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+                    .err()
+                    .expect("radio turns require a current active room receipt");
+            assert!(
+                error.to_string().contains("radio/turn-selection-changed"),
+                "radio-specific authorization should reject the missing receipt: {error}"
+            );
+            assert!(
+                !error.to_string().contains("RadioUnsupported"),
+                "radio-authorized turns must bypass the generic radio refusal"
+            );
             Ok(())
         })
         .await

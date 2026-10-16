@@ -19,6 +19,7 @@ SERVER = Path(__file__).resolve().parents[4] / "apps/server"
 sys.path.insert(0, str(SERVER / "tests"))
 sys.path.insert(0, str(SERVER / "src"))
 from http_backend_harness import BackendProcess
+from entity_test_support import capacity_retry
 
 scratch = Path(sys.argv[1])
 backend = BackendProcess(scratch, initialize_workspace=False)
@@ -100,7 +101,13 @@ def configure(runtime, db, case):
         runtime.put(db, "agents", mode_fields({**base, **fields}))
     agent = {**base, **case.get("agent", {})}
     if "capacity" in case:
-        retry = case["capacity"]
+        retry_case = case["capacity"]
+        retry = capacity_retry(
+            id=retry_case["id"],
+            status=retry_case["status"],
+            due_at=retry_case["dueAt"],
+            updatedAt=retry_case.get("updatedAt", 1.0),
+        )
         agent.update(capacityRetry=retry, capacityRetryCount=2)
         db.execute("INSERT OR REPLACE INTO runtime_capacity_retries VALUES(?,?,?)", (retry["id"], "agent", json.dumps(retry)))
     runtime.put(db, "agents", mode_fields(agent))

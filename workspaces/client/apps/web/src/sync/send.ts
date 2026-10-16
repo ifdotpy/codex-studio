@@ -47,6 +47,8 @@ const acknowledgedStatuses = {
   cancelled: true,
   stored_only: true,
 } satisfies Record<MessageDelivery["status"], true>;
+const AGENT_ENTITY_ID_PREFIX = "entity:agent:";
+const OUTBOX_RETRY_DELAY_MS = 5_000;
 
 export function matchesMessageDelivery(value: unknown, messageId: string) {
   if (!value || typeof value !== "object") return false;
@@ -370,14 +372,21 @@ export function createOutbox(options: {
     room: string,
     receipts: MessageReceipt[],
     workspaceId: string,
+    signal?: AbortSignal,
   ) {
+    if (signal?.aborted) return;
     const current = await syncDatabase();
+    if (signal?.aborted) return;
     if (current.workspaceId !== workspaceId) return;
     await current.verifyWorkspace();
+    if (signal?.aborted) return;
     for (const receipt of receipts) {
+      if (signal?.aborted) return;
       const doc = await current.db.outbox.findOne(receipt.id).exec();
+      if (signal?.aborted) return;
       if (!doc) continue;
       await doc.incrementalModify((record: any) => {
+        if (signal?.aborted) return record;
         const value = JSON.parse(record.payload);
         if (value.body.room !== room) return record;
         const next = receiptOutgoing(value, receipt);
@@ -392,7 +401,43 @@ export function createOutbox(options: {
       });
     }
   }
-
+  function confirmedDeletedAgentProjection(value: unknown, room: string) {
+    if (!value || typeof value !== "object") return false;
+    const document = value as {
+      id?: unknown;
+      seq?: unknown;
+      _deleted?: unknown;
+      payload?: unknown;
+    };
+    if (
+      document.id !== `${AGENT_ENTITY_ID_PREFIX}${room}` ||
+      !Number.isSafeInteger(document.seq) ||
+      (document.seq as number) <= 0
+    )
+      return false;
+    if (typeof document.payload !== "string") return false;
+    try {
+      const entity: unknown = JSON.parse(document.payload);
+      if (!entity || typeof entity !== "object") return false;
+      const record = entity as {
+        collection?: unknown;
+        id?: unknown;
+        value?: unknown;
+      };
+      if (
+        record.collection !== "agent" ||
+        record.id !== room ||
+        !record.value ||
+        typeof record.value !== "object"
+      )
+        return false;
+      if (document._deleted === true) return true;
+      const agent = record.value as { id?: unknown; deletedAt?: unknown };
+      return agent.id === room && Boolean(agent.deletedAt);
+    } catch {
+      return false;
+    }
+  }
   async function recoverAcknowledgedOutbox() {
     const { db, workspaceId, verifyWorkspace } = await syncDatabase();
     await verifyWorkspace();
@@ -408,37 +453,79 @@ export function createOutbox(options: {
       ids.push(doc.id);
       rooms.set(value.body.room, ids);
     }
-    const batches = [...rooms].flatMap(([room, ids]) =>
-      Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => ({
-        room,
-        ids: ids.slice(index * 100, (index + 1) * 100),
-      })),
+    const roomBatches = [...rooms].map(([room, ids]) => ({
+      room,
+      batches: Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>
+        ids.slice(index * 100, (index + 1) * 100),
+      ),
+    }));
+    const batchCount = roomBatches.reduce(
+      (count, item) => count + item.batches.length,
+      0,
     );
-    let next = 0;
+    if (!batchCount) return;
+
+    const deletedRooms = new Set<string>();
+    const controllers = new Map(
+      [...rooms.keys()].map((room) => [room, new AbortController()] as const),
+    );
+    const markDeleted = (document: unknown) => {
+      if (!document || typeof document !== "object") return;
+      const id = (document as { id?: unknown }).id;
+      if (typeof id !== "string" || !id.startsWith(AGENT_ENTITY_ID_PREFIX))
+        return;
+      const room = id.slice(AGENT_ENTITY_ID_PREFIX.length);
+      const controller = controllers.get(room);
+      if (!controller || !confirmedDeletedAgentProjection(document, room))
+        return;
+      deletedRooms.add(room);
+      controller.abort();
+    };
+    const projectionSubscription = db.projections.$.subscribe((event: any) =>
+      markDeleted(event.documentData),
+    );
+    let nextRoom = 0;
     let failure: unknown;
-    await Promise.all(
-      Array.from({ length: Math.min(4, batches.length) }, async () => {
-        while (next < batches.length) {
-          const { room, ids } = batches[next++];
-          try {
-            const response = await syncGet("/api/messages/receipts", {
-              query: { agent: room, ids: JSON.stringify(ids) },
-              workspaceId,
-            });
-            await reconcileOutboxReceipts(
-              room,
-              checkedMessageReceipts(response, room, ids, workspaceId),
-              workspaceId,
-            );
-          } catch (error) {
-            failure ??= error;
+    try {
+      const currentAgents =
+        await db.projections.storageInstance.findDocumentsById(
+          [...rooms.keys()].map((room) => `${AGENT_ENTITY_ID_PREFIX}${room}`),
+          true,
+        );
+      for (const document of currentAgents) markDeleted(document);
+
+      await Promise.all(
+        Array.from({ length: Math.min(4, roomBatches.length) }, async () => {
+          while (nextRoom < roomBatches.length) {
+            const { room, batches } = roomBatches[nextRoom++];
+            const controller = controllers.get(room)!;
+            for (const ids of batches) {
+              if (deletedRooms.has(room) || controller.signal.aborted) break;
+              try {
+                const response = await syncGet("/api/messages/receipts", {
+                  query: { agent: room, ids: JSON.stringify(ids) },
+                  workspaceId,
+                  signal: controller.signal,
+                });
+                if (deletedRooms.has(room) || controller.signal.aborted) break;
+                await reconcileOutboxReceipts(
+                  room,
+                  checkedMessageReceipts(response, room, ids, workspaceId),
+                  workspaceId,
+                  controller.signal,
+                );
+              } catch (error) {
+                if (!controller.signal.aborted) failure ??= error;
+              }
+            }
           }
-        }
-      }),
-    );
+        }),
+      );
+    } finally {
+      projectionSubscription.unsubscribe();
+    }
     if (failure) throw failure;
   }
-
   async function editOutboxDisplay(id: string, text: string) {
     const { db } = await syncDatabase();
     const doc = await db.outbox.findOne(id).exec();
@@ -509,6 +596,27 @@ export function createOutbox(options: {
       let unsubscribe = () => {};
       let queuedIdentity = "";
       let drainAgain = false;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearRetry = () => {
+        if (retryTimer === undefined) return;
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      };
+      const scheduleRetry = () => {
+        if (
+          retryTimer !== undefined ||
+          stop ||
+          isApiSchemaMismatch() ||
+          !navigator.onLine
+        )
+          return;
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
+          if (subscribed) void drain();
+          else void subscribe();
+        }, OUTBOX_RETRY_DELAY_MS);
+      };
       const drain = async () => {
         if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
         if (draining) {
@@ -541,6 +649,12 @@ export function createOutbox(options: {
                   // Per-message rejection is already stored beside that message.
                   if (!(e instanceof ApiError)) throw e;
                 });
+                if (
+                  result?.kind === "local" &&
+                  result.status === "queued" &&
+                  result.error
+                )
+                  scheduleRetry();
                 if (result?.queued) break;
               }
             }
@@ -551,10 +665,19 @@ export function createOutbox(options: {
           );
           if (!stop && !isApiSchemaMismatch()) setError("");
         } catch (e) {
-          if (!stop) setError(errorText(e));
+          if (!stop) {
+            setError(errorText(e));
+            scheduleRetry();
+          }
         } finally {
           draining = false;
-          if (drainAgain && !stop && !isApiSchemaMismatch()) void drain();
+          if (
+            drainAgain &&
+            retryTimer === undefined &&
+            !stop &&
+            !isApiSchemaMismatch()
+          )
+            void drain();
         }
       };
       let subscribing = false,
@@ -569,44 +692,77 @@ export function createOutbox(options: {
             recoveringReceipts = false;
           });
       };
+      const handleOutboxDocuments = (docs: any[]) => {
+        const nextQueued = JSON.stringify(
+          queuedDocuments(docs).map((doc) => doc.id),
+        );
+        const queuedChanged = nextQueued !== queuedIdentity;
+        if (queuedChanged) {
+          queuedIdentity = nextQueued;
+          clearRetry();
+          void drain();
+        }
+        setEntries(
+          docs
+            .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))
+            .sort((a, b) => a.created - b.created),
+        );
+        return queuedChanged;
+      };
       const subscribe = async () => {
         if (stop || subscribing || subscribed) return;
         subscribing = true;
         try {
           const { db } = await syncDatabase();
           if (stop) return;
-          const sub = db.outbox.find().$.subscribe((docs: any[]) => {
-            const nextQueued = JSON.stringify(
-              queuedDocuments(docs).map((doc) => doc.id),
-            );
-            if (nextQueued !== queuedIdentity) {
-              queuedIdentity = nextQueued;
-              void drain();
-            }
-            setEntries(
-              docs
-                .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))
-                .sort((a, b) => a.created - b.created),
-            );
-          });
+          let subscriptionReady = false;
+          let bufferedDocs: any[] | undefined;
+          const sub = db.outbox.find().$.subscribe(
+            (docs: any[]) => {
+              if (!subscriptionReady) bufferedDocs = docs;
+              else handleOutboxDocuments(docs);
+            },
+            (error: unknown) => {
+              subscribed = false;
+              unsubscribe();
+              unsubscribe = () => {};
+              if (!stop) {
+                setError(errorText(error));
+                scheduleRetry();
+              }
+            },
+          );
           unsubscribe = () => sub.unsubscribe();
+          if (sub.closed) {
+            unsubscribe();
+            unsubscribe = () => {};
+            subscribed = false;
+            scheduleRetry();
+            return;
+          }
           subscribed = true;
+          clearRetry();
+          subscriptionReady = true;
+          if (bufferedDocs) handleOutboxDocuments(bufferedDocs);
           void drain();
           recoverReceipts();
         } catch (error) {
-          if (!stop) setError(errorText(error));
+          if (!stop) {
+            setError(errorText(error));
+            scheduleRetry();
+          }
         } finally {
           subscribing = false;
         }
       };
       const resume = () => {
+        clearRetry();
         void subscribe();
         void drain();
       };
-      const timer = setInterval(resume, 5000);
       void subscribe();
       const stopForSchemaMismatch = onApiSchemaMismatch(() => {
-        clearInterval(timer);
+        clearRetry();
       });
       const stopResume = onResume(() => {
         resume();
@@ -614,7 +770,7 @@ export function createOutbox(options: {
       });
       return () => {
         stop = true;
-        clearInterval(timer);
+        clearRetry();
         unsubscribe();
         stopResume();
         stopForSchemaMismatch();

@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
-use axum::body::{Body, to_bytes};
+use axum::body::{Body, HttpBody, to_bytes};
+use axum::extract::MatchedPath;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
@@ -12,7 +14,9 @@ use futures_util::FutureExt;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
-use crate::error::{ApiError, error_response, with_api_headers};
+use crate::error::{
+    ApiError, InternalErrorCause, InternalErrorKind, error_response, with_api_headers,
+};
 use crate::http_body_limits_generated::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
@@ -27,6 +31,9 @@ pub(crate) async fn boundary(
     let path = request.uri().path().to_owned();
     let api = path.starts_with("/api/");
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+    let matched_operation = api
+        .then(|| state.validators.match_route(method.as_str(), &path))
+        .flatten();
     if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
         return crate::routes::incoming_multi_server::serve(state, request).await;
     }
@@ -134,14 +141,12 @@ pub(crate) async fn boundary(
         return response;
     }
     if write && matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-        let has_json_schema = state
-            .validators
-            .has_body_schema(method.as_str(), &path)
-            .unwrap_or(false);
-        let has_opaque_json_schema = state
-            .validators
-            .has_opaque_body(method.as_str(), &path)
-            .unwrap_or(false);
+        let has_json_schema = matched_operation
+            .as_ref()
+            .is_some_and(|operation| operation.has_body_schema);
+        let has_opaque_json_schema = matched_operation
+            .as_ref()
+            .is_some_and(|operation| operation.has_opaque_body);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -225,7 +230,7 @@ pub(crate) async fn boundary(
     }
 
     if api {
-        if let Some(template) = state.validators.template_for(method.as_str(), &path) {
+        if let Some(operation) = matched_operation.as_ref() {
             let query = query_values(request.uri().query().unwrap_or_default());
             let (header_values, invalid_headers) = validated_header_values(request.headers());
             let raw = RawRequest {
@@ -235,10 +240,7 @@ pub(crate) async fn boundary(
                 headers: header_values,
                 invalid_headers,
             };
-            match state
-                .validators
-                .validate_route(method.as_str(), &template, raw)
-            {
+            match state.validators.validate_matched(operation, raw) {
                 Ok(validated) => {
                     request.extensions_mut().insert(validated);
                 }
@@ -246,15 +248,40 @@ pub(crate) async fn boundary(
                     return ApiError::validation(errors.location).into_response();
                 }
             }
-        } else if method != Method::GET
-            && has_operation(None, &path)
-            && !has_operation(Some(method.as_str()), &path)
-        {
-            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+        } else if has_operation(None, &path) && !has_operation(Some(method.as_str()), &path) {
+            return crate::error::method_not_allowed_response(&path);
         }
     }
 
     next.run(request).await
+}
+
+/// Capture value-free HTTP timing under Axum's matched route template. This
+/// layer never reads request or response bodies and discards requests without
+/// a registered route template.
+pub(crate) async fn diagnostics_http_timing(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().as_str().to_owned();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned());
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    if let Some(route) = route {
+        let response_bytes = response
+            .body()
+            .size_hint()
+            .exact()
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or_default();
+        studio_runtime_services::diagnostics::record_http_request(
+            &method,
+            &route,
+            started.elapsed(),
+            response_bytes,
+        );
+    }
+    response
 }
 
 pub(crate) fn validated_header_values(
@@ -293,9 +320,28 @@ pub(crate) async fn response_safety(
     next: Next,
 ) -> Response {
     let api = request.uri().path().starts_with("/api/");
-    let request_id = request.headers().get("x-studio-request-id").cloned();
+    let response_request_id = request.headers().get("x-studio-request-id").cloned();
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
+    let route = crate::schema::operations()
+        .ok()
+        .and_then(|operations| {
+            crate::schema::matching_template(
+                operations.iter().map(|(operation_method, template)| {
+                    (operation_method.as_str(), template.as_str())
+                }),
+                Some(&method),
+                &path,
+            )
+        })
+        .map(|template| format!("{method} {template}"))
+        .unwrap_or_else(|| "unmatched route".to_owned());
+    let request_id = request
+        .headers()
+        .get("x-studio-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| safe_request_id(value))
+        .map(str::to_owned);
     let if_none_match = request
         .headers()
         .get_all(header::IF_NONE_MATCH)
@@ -313,14 +359,25 @@ pub(crate) async fn response_safety(
             &path,
         )
         .is_some();
-    let mut response = AssertUnwindSafe(next.run(request))
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|_| {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-        });
+    let (mut response, fallback_cause) =
+        match AssertUnwindSafe(next.run(request)).catch_unwind().await {
+            Ok(response) => (response, None),
+            Err(_) => (
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+                Some(InternalErrorKind::HandlerPanic),
+            ),
+        };
     if api {
-        response = with_api_headers(response, request_id.as_ref());
+        response = with_api_headers(response, response_request_id.as_ref());
+    }
+    if response.status() == StatusCode::INTERNAL_SERVER_ERROR {
+        let cause = response
+            .extensions()
+            .get::<InternalErrorCause>()
+            .map(|cause| cause.0)
+            .or(fallback_cause)
+            .unwrap_or(InternalErrorKind::Unclassified);
+        log_internal_error(&route, request_id.as_deref(), cause);
     }
     if etag_route
         && response.status() == StatusCode::OK
@@ -334,10 +391,15 @@ pub(crate) async fn response_safety(
         let body = match to_bytes(body, usize::MAX).await {
             Ok(body) => body,
             Err(_) => {
+                log_internal_error(
+                    &route,
+                    request_id.as_deref(),
+                    InternalErrorKind::ResponseBodyRead,
+                );
                 let response =
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
                 return if api {
-                    with_api_headers(response, request_id.as_ref())
+                    with_api_headers(response, response_request_id.as_ref())
                 } else {
                     response
                 };
@@ -367,6 +429,38 @@ pub(crate) async fn response_safety(
     response
 }
 
+fn safe_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+}
+
+fn write_internal_error_log(
+    writer: &mut impl Write,
+    route: &str,
+    request_id: Option<&str>,
+    cause: InternalErrorKind,
+) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "ERROR internal HTTP error route={} request_id={} class={}",
+        route,
+        request_id.unwrap_or("unavailable"),
+        cause.log_class()
+    )
+}
+
+fn log_internal_error(route: &str, request_id: Option<&str>, cause: InternalErrorKind) {
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if let Err(error) = write_internal_error_log(&mut stderr, route, request_id, cause) {
+        // The response must remain generic even if the diagnostic sink is unavailable.
+        drop(error);
+    }
+}
+
 #[cfg(test)]
 mod response_safety_tests {
     use axum::Json;
@@ -388,12 +482,55 @@ mod response_safety_tests {
         Json(json!({"value": 1}))
     }
 
-    fn state() -> HttpState {
+    #[test]
+    fn logs_store_error_class_once_without_error_details() {
+        let mut output = Vec::new();
+        let error = studio_runtime_store::StoreError::SchemaMismatch(
+            "password=fixture-secret api_key=fixture-token".to_owned(),
+        );
+        super::write_internal_error_log(
+            &mut output,
+            "POST /api/agents",
+            Some("request-123"),
+            crate::error::InternalErrorKind::from_store_error(&error),
+        )
+        .expect("diagnostic log writes");
+        let output = String::from_utf8(output).expect("log is UTF-8");
+        assert_eq!(output.lines().count(), 1);
+        assert_eq!(
+            output.trim_end(),
+            "ERROR internal HTTP error route=POST /api/agents request_id=request-123 class=store_schema"
+        );
+        assert!(!output.contains("password"));
+        assert!(!output.contains("fixture-secret"));
+        assert!(!output.contains("fixture-token"));
+    }
+
+    #[test]
+    fn writes_one_handler_panic_cause_line() {
+        let mut output = Vec::new();
+        super::write_internal_error_log(
+            &mut output,
+            "GET /api/session",
+            Some("request-456"),
+            crate::error::InternalErrorKind::HandlerPanic,
+        )
+        .expect("diagnostic log writes");
+        let output = String::from_utf8(output).expect("log is UTF-8");
+        assert_eq!(output.lines().count(), 1);
+        assert_eq!(
+            output.trim_end(),
+            "ERROR internal HTTP error route=GET /api/session request_id=request-456 class=handler_panic"
+        );
+    }
+
+    fn state() -> (HttpState, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
         let mut state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
             None,
-            "state".to_owned(),
+            directory.path().to_string_lossy().into_owned(),
             1,
             None,
             None,
@@ -402,12 +539,12 @@ mod response_safety_tests {
         state
             .etag_operations
             .insert(("GET".to_owned(), "/api/rules".to_owned()));
-        state
+        (state, directory)
     }
 
     #[tokio::test]
     async fn declared_read_etag_supports_weak_if_none_match_and_304() {
-        let state = state();
+        let (state, _directory) = state();
         let app = Router::new()
             .route("/api/rules", get(rules))
             .layer(from_fn_with_state(state, response_safety));
@@ -445,9 +582,10 @@ mod response_safety_tests {
 
     #[tokio::test]
     async fn unregistered_etag_route_keeps_its_regular_json_response() {
+        let (state, _directory) = state();
         let app = Router::new()
             .route("/api/session", get(untagged))
-            .layer(from_fn_with_state(state(), response_safety));
+            .layer(from_fn_with_state(state, response_safety));
         let response = app
             .oneshot(
                 Request::builder()
@@ -662,7 +800,7 @@ fn frame_account_origin(headers: &HeaderMap, host: &str, port: u16) -> bool {
 mod tests {
     use axum::Router;
     use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::Request;
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use serde_json::Value;
@@ -687,6 +825,7 @@ mod tests {
 
     #[tokio::test]
     async fn panic_is_converted_to_the_common_server_error_envelope() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
         let app = Router::new()
             .route("/api/panic", get(panic_handler))
             .layer(from_fn_with_state(
@@ -694,7 +833,7 @@ mod tests {
                     "token".to_owned(),
                     "workspace".to_owned(),
                     None,
-                    "state".to_owned(),
+                    directory.path().to_string_lossy().into_owned(),
                     1,
                     None,
                     None,
@@ -708,7 +847,6 @@ mod tests {
             .body(Body::empty())
             .expect("request builds");
         let response = app.oneshot(request).await.expect("response");
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.headers()["x-studio-request-id"], "request-1");
         assert!(
             response

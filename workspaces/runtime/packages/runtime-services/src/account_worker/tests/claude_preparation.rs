@@ -1,5 +1,45 @@
 use super::*;
 
+#[cfg(unix)]
+pub(super) fn claude_resources(state: &State) -> preparation::PreparationResources {
+    let mut resources = super::test_resources().unwrap();
+    let home = state.root.join("claude-home");
+    let registry = state.root.join("accounts/registry.json");
+    let binary = state.root.join("fake-claude");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"fixture@example.test\",\"subscriptionType\":\"max\"}'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = "claude:fixture@example.test";
+    std::fs::write(
+        &registry,
+        json!({
+            "version": 1,
+            "defaultAccountKey": "default",
+            "accounts": {"default": {
+                "id": "default", "home": home, "label": "Fixture Claude",
+                "source": "Claude Code", "status": "ready", "provider": "claude",
+                "email": "fixture@example.test", "accountId": identity,
+                "_credentialIdentity": identity, "plan": "max",
+                "claudeOptions": {"binaryPath": binary, "configDir": home, "customModels": []}
+            }},
+            "logins": {}, "deleteReceipts": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let driver = Arc::new(crate::account_driver::AccountDriver::open(&registry).unwrap());
+    resources.claude_account_pin = driver.internal_record("default").unwrap();
+    resources.account_driver = Some(driver);
+    resources
+}
+
+#[cfg(unix)]
 #[tokio::test(start_paused = true)]
 async fn claude_turn_freezes_exact_input_before_native_write() {
     let state = State::new().await;
@@ -20,14 +60,19 @@ async fn claude_turn_freezes_exact_input_before_native_write() {
         .unwrap();
     let mut peer = Peer::new();
     peer.claude = true;
-    let mut worker = peer.worker(state.bridge.clone()).await;
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), claude_resources(&state))
+        .await;
     let start = state.start(&mut peer, &worker).await;
     let record = state.record().await;
     assert_eq!(
         record["startAttempt"]["claudeInputRequest"]["input"],
         start["params"]["input"]
     );
-    assert_eq!(record["startAttempt"]["connectionId"], "1");
+    assert_eq!(
+        record["startAttempt"]["connectionId"],
+        worker.scope.connection
+    );
     assert!(start["params"]["dynamicTools"].is_array());
     assert!(start["params"].get("cyberAccessProgram").is_none());
     peer.accepted(&start).await;

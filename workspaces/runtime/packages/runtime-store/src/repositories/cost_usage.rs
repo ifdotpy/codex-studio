@@ -43,7 +43,7 @@ pub fn read_cost_usage(
     if !exists {
         return Err(CostUsageRepositoryError::MissingFamily);
     }
-    let mut statement = db.prepare(
+    let mut statement = db.prepare_cached(
         "SELECT seq,agent,thread,turn,at,id,length(record),record FROM analytics_usage WHERE root=?1 ORDER BY seq LIMIT ?2",
     )?;
     let mapped = statement.query_map((root, MAX_RECORDS), |row| {

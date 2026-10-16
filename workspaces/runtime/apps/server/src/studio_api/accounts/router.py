@@ -420,6 +420,11 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": str(error)}, status=403)
         except SidebarOrderConflict as error:
             return context.send(request, {"error": str(error)}, status=409)
+        if isinstance(body, SidebarReorderRequest):
+            # The sidebar response is its durable receipt on first apply and
+            # exact retry. Request-specific sync decoration would change that
+            # receipt shape; the workspace entity remains available to pulls.
+            request.scope.pop("studio_sync_entities_after", None)
         return context.send(request, result)
 
     return router
