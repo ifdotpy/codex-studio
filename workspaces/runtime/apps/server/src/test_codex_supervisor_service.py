@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import codex_supervisor_service as service
+from codex_layout import REPOSITORY_ROOT
 
 
 class Services(unittest.TestCase):
@@ -93,7 +94,7 @@ class Services(unittest.TestCase):
         return server
 
     def test_backend_selection_matches_the_desktop_owner(self) -> None:
-        owner = (service.REPOSITORY_ROOT / 'workspaces/client/apps/desktop/backend.cjs').read_text()
+        owner = (REPOSITORY_ROOT / 'workspaces/client/apps/desktop/backend.cjs').read_text()
         self.assertIn(f'const backendSelectionEnv = "{service.BACKEND_SELECTION_ENV}";', owner)
         self.assertIn('selected !== "python" && selected !== "rust"', owner)
         self.assertEqual(service.backend_selection({}), 'python')
