@@ -158,11 +158,34 @@ impl RemoteClient {
                         .map(|v| v.touched.elapsed() < Duration::from_secs(120))
                         .unwrap_or(true)
                 });
-                let permit = self
-                    .response_slots
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| "Too many open server responses. The request was not sent.")?;
+                let permit = match self.response_slots.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        let bodies = self.bodies.lock().await;
+                        let mut idle = 0;
+                        let mut reading = 0;
+                        let mut paths = std::collections::BTreeMap::new();
+                        for (_, body) in bodies.values() {
+                            if let Ok(body) = body.try_lock() {
+                                idle += 1;
+                                // Exclude queries, headers and credentials from diagnostics.
+                                *paths
+                                    .entry(body.response.url().path().to_owned())
+                                    .or_insert(0) += 1;
+                            } else {
+                                reading += 1;
+                            }
+                        }
+                        let detail = format!(
+                            "idle={idle}, reading={reading}, pending={}, paths={paths:?}",
+                            MAX_OPEN_SERVER_RESPONSES.saturating_sub(bodies.len())
+                        );
+                        eprintln!("Server response capacity: {detail}");
+                        return Err(format!(
+                            "Too many open server responses. The request was not sent. ({detail})"
+                        ));
+                    }
+                };
                 let response = self
                     .signed(
                         credential,
