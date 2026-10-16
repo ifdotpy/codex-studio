@@ -462,6 +462,20 @@ operations adapter before discovery, which reports the build instruction for a
 missing or mismatched native module. It keeps run state private.
 
 Use `pnpm --filter codex-agents-web run test:performance` for the browser performance group.
+
+The explicit `just benchmark-client-interactions BASELINE_COMMIT /absolute/output`
+command compares cumulative renderer optimizations in fresh browser contexts.
+It builds five variants outside the checkout, then runs three samples per variant
+with one browser worker. Allow about three minutes, with no competing builds or
+tests during measurement. It adds no synthetic load and does not use a live server
+or profile. The baseline replaces the five measured source modules from the given
+commit; all other sources, dependencies, fixture data, and settings stay identical.
+The output includes source hashes and per-action timing, frame gaps, DOM counts,
+and storage writes. This measures the renderer and a loopback fixture, not native
+application launch, remote server latency, or real account operations. See
+[the performance report](performance/client-interactions-20261016.md) for scope
+and interpretation. The interaction benchmark is skipped in the generic performance
+group unless its explicit baseline/output configuration is supplied.
 To inspect the optional installed-environment group, enable
 `PLAYWRIGHT_INCLUDE_SPECIAL=1` and select the `installed-only` project explicitly.
 

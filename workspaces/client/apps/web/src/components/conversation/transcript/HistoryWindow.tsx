@@ -201,7 +201,8 @@ export default function HistoryWindow({
         restoringAnchor.current = null;
         viewportAnchor.current = null;
         storedAnchor.current = null;
-        save(`${storageKey}:window-anchor`, null);
+        // persistAnchor below writes the actual position. A provisional null
+        // doubles durable writes and prevents identical-anchor deduplication.
       }
       captureAnchorAfterUpdate.current = true;
       schedule();

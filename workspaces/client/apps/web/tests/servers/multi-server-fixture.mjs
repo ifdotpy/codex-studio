@@ -537,8 +537,7 @@ export async function fixture(
     }
     try {
       const filename = path.join(
-        root,
-        "workspaces/client/apps/web/dist",
+        options.dist || path.join(root, "workspaces/client/apps/web/dist"),
         url.pathname === "/" ? "index.html" : url.pathname,
       );
       const file = await readFile(filename);

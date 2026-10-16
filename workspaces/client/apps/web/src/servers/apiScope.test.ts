@@ -49,6 +49,24 @@ const response = (value: unknown, hash = API_SCHEMA_HASH) =>
   });
 
 describe("concurrent servers in one interface", () => {
+  it("persists changed UI values once per owner and observes intervening storage edits", () => {
+    const disk = memory();
+    const write = vi.spyOn(disk, "setItem");
+    const a = scope("a", async () => response({}), disk);
+    const b = scope("b", async () => response({}), disk);
+    const position = { top: 120, following: false, distance: 240 };
+    a.save("studio-chat-scroll:chat", position);
+    a.save("studio-chat-scroll:chat", { ...position });
+    b.save("studio-chat-scroll:chat", position);
+    expect(write).toHaveBeenCalledTimes(2);
+    a.save("studio-chat-scroll:chat", { ...position, top: 121 });
+    expect(write).toHaveBeenCalledTimes(3);
+    disk.setItem("a:studio-chat-scroll:chat", "null");
+    a.save("studio-chat-scroll:chat", { ...position, top: 121 });
+    expect(write).toHaveBeenCalledTimes(5);
+    expect(b.saved("studio-chat-scroll:chat", null)).toEqual(position);
+  });
+
   afterEach(() => vi.unstubAllGlobals());
   it("keeps tokens, workspaces and late mutation persistence with their owner", async () => {
     vi.stubGlobal("window", new EventTarget());

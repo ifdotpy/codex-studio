@@ -221,6 +221,9 @@ export class NativePreferenceStorage implements Storage {
     value = String(value);
     if (reserved(key)) throw new Error("Invalid preference key.");
     scopedKey(this.scope, key);
+    // The current value is already durable or has an exact receipt in the journal.
+    // Leave that receipt in place, including after an uncertain native reply.
+    if (this.values.get(key) === value) return;
     this.enqueue([
       {
         id: crypto.randomUUID(),

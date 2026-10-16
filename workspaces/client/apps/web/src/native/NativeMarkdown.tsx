@@ -94,29 +94,40 @@ export default function NativeMarkdown({
   streaming: boolean;
 } & Context) {
   const [parsed, setParsed] = useState<
-    { text: string; blocks: Block[] } | undefined
+    { text: string; blocks: Block[]; complete: boolean } | undefined
   >(() => {
     const blocks = !streaming
       ? (completedMarkdown.get(text) as Block[] | undefined)
       : undefined;
-    return blocks ? { text, blocks } : undefined;
+    return blocks ? { text, blocks, complete: true } : undefined;
   });
+  const parsedRef = useRef(parsed);
+  parsedRef.current = parsed;
   const [error, setError] = useState("");
-  const initial = useRef<number | undefined>(undefined);
+  const initial = useRef<number | undefined>(parsed?.blocks.length);
   useEffect(() => {
     let current = true;
     setError("");
+    // A cache hit on mount is already the complete tree rendered by this instance.
+    // Streaming output still needs a final parse when the turn completes.
+    if (
+      !streaming &&
+      parsedRef.current?.complete &&
+      parsedRef.current.text === text
+    )
+      return;
     const cached = !streaming
       ? (completedMarkdown.get(text) as Block[] | undefined)
       : undefined;
     if (cached) {
       initial.current ??= cached.length;
-      setParsed({ text, blocks: cached });
+      setParsed({ text, blocks: cached, complete: true });
       return;
     }
-    // Coalesce changes in the same frame. Late replies cannot replace newer text.
+    // Coalesce live tokens only. Completed history must not wait another frame.
+    // Late replies cannot replace newer text.
     const controller = new AbortController();
-    const timer = setTimeout(() => {
+    const parse = () => {
       const request = hasNativeClient()
         ? nativeRequest<Block[]>(
             "markdown.parse",
@@ -130,14 +141,16 @@ export default function NativeMarkdown({
           if (!streaming) completedMarkdown.set(text, blocks);
           if (!current) return;
           initial.current ??= streaming ? 0 : blocks.length;
-          setParsed({ text, blocks });
+          setParsed({ text, blocks, complete: !streaming });
         },
         (reason: unknown) => {
           if (current)
             setError(reason instanceof Error ? reason.message : String(reason));
         },
       );
-    }, 16);
+    };
+    const timer = streaming ? setTimeout(parse, 16) : undefined;
+    if (!streaming) parse();
     return () => {
       current = false;
       clearTimeout(timer);

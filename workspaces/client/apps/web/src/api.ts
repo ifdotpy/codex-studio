@@ -971,7 +971,9 @@ export function createApiScope(options: ApiScopeOptions) {
 
   function save(key: string, value: unknown) {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      const raw = JSON.stringify(value);
+      // Keep the storage adapter's pending journal intact when the UI repeats a value.
+      if (localStorage.getItem(key) !== raw) localStorage.setItem(key, raw);
     } catch {
       /* Server data remains available if browser storage is full. */
     }

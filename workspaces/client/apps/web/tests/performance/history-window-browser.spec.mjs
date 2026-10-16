@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,12 +29,24 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         "@mantine/core",
         "marked",
         "dompurify",
+        "dexie",
       ],
     },
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {
         name: "history-window-audit",
+        enforce: "pre",
+        async transform(_code, id) {
+          if (
+            process.env.STUDIO_HISTORY_BASELINE &&
+            id.endsWith("/transcript/HistoryWindow.tsx")
+          )
+            return {
+              code: await readFile(process.env.STUDIO_HISTORY_BASELINE, "utf8"),
+              map: null,
+            };
+        },
         configureServer(s) {
           s.middlewares.use("/audit", (_q, r) => {
             r.setHeader("Content-Type", "text/html");

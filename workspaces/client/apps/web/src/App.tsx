@@ -220,7 +220,7 @@ const ClaudeSettings = lazy(() =>
   })),
 );
 const TerminalDock = lazy(() => import("./components/TerminalDock"));
-const Workspace = lazy(() => import("./components/shell/Workspace"));
+import Workspace from "./components/shell/DeferredWorkspace";
 const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );

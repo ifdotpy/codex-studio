@@ -258,3 +258,30 @@ it("enumerates owner journals without rescanning or copying all native keys per 
   expect(b.length).toBe(41);
   await storage.flush();
 });
+
+it("does not enqueue an unchanged native value or discard its uncertain receipt", async () => {
+  const journal = memory();
+  const core = backend();
+  const storage = await NativePreferenceStorage.open(
+    journal,
+    preferenceScope(core.invoke, "root"),
+    vi.fn(),
+  );
+  core.loseNext();
+  storage.setItem("theme", "dark");
+  await expect(storage.flush()).rejects.toThrow("lost reply");
+  const pending = journal.getItem("studio-native-preferences-journal-v1");
+  storage.setItem("theme", "dark");
+  expect(journal.getItem("studio-native-preferences-journal-v1")).toBe(pending);
+  await storage.flush();
+  storage.setItem("theme", "dark");
+  await storage.flush();
+  const writes = core.invoke.mock.calls.filter(
+    ([method]) => method === "preferences.raw_set",
+  );
+  expect(writes).toHaveLength(2);
+  expect(writes[0][2]).toBe(writes[1][2]);
+  storage.setItem("theme", "light");
+  await storage.flush();
+  expect(storage.getItem("theme")).toBe("light");
+});
