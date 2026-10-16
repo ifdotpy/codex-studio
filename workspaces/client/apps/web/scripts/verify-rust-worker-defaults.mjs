@@ -136,6 +136,117 @@ function agentSnapshot(document) {
   };
 }
 
+async function readServerIdentity(page, expectedOrigin) {
+  const result = await page.evaluate(
+    async ({ origin, timeoutMs }) => {
+      if (location.origin !== origin)
+        throw new Error("The page origin changed before server readback.");
+      const response = await fetch(new URL("/api/multi-server", origin), {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {}
+      return {
+        origin: location.origin,
+        status: response.status,
+        serverId: body?.identity?.serverId,
+      };
+    },
+    { origin: expectedOrigin, timeoutMs: READBACK_TIMEOUT_MS },
+  );
+  assert.equal(
+    result.origin,
+    expectedOrigin,
+    "Server read used another origin.",
+  );
+  assert.equal(result.status, 200, "Could not read the local server identity.");
+  assert.ok(
+    typeof result.serverId === "string" && result.serverId,
+    "Local server identity has no server ID.",
+  );
+  return result.serverId;
+}
+
+async function readAuthoritativeLead(page, chatId, expectedOrigin, serverId) {
+  const result = await page.evaluate(
+    async ({ agentId, origin, expectedServerId, timeoutMs }) => {
+      if (location.origin !== origin)
+        throw new Error("The page origin changed before lead readback.");
+      const identityResponse = await fetch(
+        new URL("/api/multi-server", origin),
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: AbortSignal.timeout(timeoutMs),
+        },
+      );
+      let identity = null;
+      try {
+        identity = await identityResponse.json();
+      } catch {}
+      if (
+        identityResponse.status !== 200 ||
+        identity?.identity?.serverId !== expectedServerId
+      )
+        throw new Error("Server identity changed before lead readback.");
+      const url = new URL("/api/sync/pull", origin);
+      url.searchParams.set("after", "0");
+      url.searchParams.set("fresh", "1");
+      url.searchParams.set("reset", "1");
+      url.searchParams.set("priorityId", agentId);
+      const response = await fetch(url, {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {}
+      return {
+        origin: url.origin,
+        serverId: identity.identity.serverId,
+        status: response.status,
+        documents: body?.documents || [],
+      };
+    },
+    {
+      agentId: chatId,
+      origin: expectedOrigin,
+      expectedServerId: serverId,
+      timeoutMs: READBACK_TIMEOUT_MS,
+    },
+  );
+  assert.equal(result.origin, expectedOrigin, "Lead read used another origin.");
+  assert.equal(result.serverId, serverId, "Lead read used another server.");
+  assert.equal(
+    result.status,
+    200,
+    `Authoritative lead read returned HTTP ${result.status}.`,
+  );
+  const document = result.documents.find((item) => {
+    if (item.id === chatId || item.id?.endsWith(`:${chatId}`)) return true;
+    if (typeof item.payload !== "string") return false;
+    try {
+      const entity = JSON.parse(item.payload);
+      return entity?.collection === "agent" && entity.id === chatId;
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(document, "Authoritative read did not include the target lead.");
+  assert.equal(document._deleted, false, "The target lead is deleted.");
+  assert.equal(typeof document.payload, "string", "Lead read has no payload.");
+  return agentSnapshot({
+    ...JSON.parse(document.payload),
+    seq: document.seq,
+  });
+}
+
 function validateLead(snapshot, chatId, leadAccountKey, expected = null) {
   const agent = snapshot?.agent;
   assert.equal(agent?.id, chatId, "Sync snapshot belongs to another chat.");
@@ -324,17 +435,6 @@ function responseSummary(body) {
   };
 }
 
-async function waitUntil(read, predicate, description, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let value;
-  while (Date.now() < deadline) {
-    value = await read();
-    if (predicate(value)) return value;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Timed out waiting for ${description}.`);
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -413,30 +513,8 @@ async function main() {
   page.setDefaultTimeout(ACTION_TIMEOUT_MS);
   page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
 
-  let latestSnapshot = null;
   let postedBody = null;
   let blockedWrite = null;
-  page.on("response", async (response) => {
-    if (
-      new URL(response.url()).pathname !== "/api/sync/pull" ||
-      response.status() >= 400
-    )
-      return;
-    try {
-      const body = await response.json();
-      for (const document of body.documents || []) {
-        if (typeof document.payload !== "string") continue;
-        const entity = JSON.parse(document.payload);
-        if (entity?.collection !== "agent" || entity.id !== chatId) continue;
-        const next = agentSnapshot({
-          ...entity,
-          seq: document.seq,
-        });
-        if (next && (!latestSnapshot || next.seq >= latestSnapshot.seq))
-          latestSnapshot = next;
-      }
-    } catch {}
-  });
 
   await page.route("**/api/conversation", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -505,14 +583,23 @@ async function main() {
       waitUntil: "domcontentloaded",
     });
     await assertLocalClassicView(page, origin);
-    const chat = page.locator(safeChatSelector(chatId));
-    await chat.waitFor();
-    const snapshot = await waitUntil(
-      async () => latestSnapshot,
-      (value) => !!value,
-      "the target lead in a server sync response",
-      READBACK_TIMEOUT_MS,
+    const serverId = await readServerIdentity(page, origin);
+    if (journal.serverId)
+      assert.equal(
+        journal.serverId,
+        serverId,
+        "Evidence belongs to another local server identity.",
+      );
+    else {
+      journal.serverId = serverId;
+    }
+    const snapshot = await readAuthoritativeLead(
+      page,
+      chatId,
+      origin,
+      serverId,
     );
+    if (!existing?.serverId) saveJournal(journalPath, journal);
     const lead = validateLead(
       snapshot,
       chatId,
@@ -528,16 +615,11 @@ async function main() {
         "Target lead identity and intended worker defaults confirmed before UI write.";
       saveJournal(journalPath, journal);
     }
+    const chat = page.locator(safeChatSelector(chatId));
+    await chat.waitFor();
 
     if (options.resume) {
-      latestSnapshot = null;
-      await page.reload({ waitUntil: "domcontentloaded" });
-      const readback = await waitUntil(
-        async () => latestSnapshot,
-        (value) => !!value && value.seq > (journal.baseline.seq || 0),
-        "an updated authoritative lead snapshot",
-        READBACK_TIMEOUT_MS,
-      ).catch(() => latestSnapshot);
+      const readback = snapshot;
       const currentLead = validateLead(
         readback,
         chatId,
@@ -580,7 +662,11 @@ async function main() {
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    await page
+    const settingsDialog = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    await settingsDialog
       .getByRole("button", { name: "Subagent defaults", exact: true })
       .click();
     await page.getByRole("button", { name: "Worker", exact: true }).click();
@@ -645,13 +731,11 @@ async function main() {
     journal.write.canonical = canonical;
     saveJournal(journalPath, journal);
 
-    latestSnapshot = null;
-    await page.reload({ waitUntil: "domcontentloaded" });
-    const refreshed = await waitUntil(
-      async () => latestSnapshot,
-      (value) => !!value && value.seq > (journal.baseline.seq || 0),
-      "the updated authoritative lead snapshot",
-      READBACK_TIMEOUT_MS,
+    const refreshed = await readAuthoritativeLead(
+      page,
+      chatId,
+      origin,
+      serverId,
     );
     const readbackLead = validateLead(
       refreshed,

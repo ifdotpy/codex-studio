@@ -818,12 +818,17 @@ async function main() {
       .getByRole("button", { name: "Orchestrator", exact: true });
     await orchestrator.click();
     const defaultLeadModel = page.locator(
-      '[role="option"][data-value="default"]',
+      '[role="listbox"][aria-label="Main agent model"] [role="option"][data-value="default"]',
     );
     await defaultLeadModel.waitFor();
     await defaultLeadModel.click();
-
     await page
+      .locator(
+        '[role="listbox"][aria-label="Main agent model"][data-value="default"]',
+      )
+      .waitFor();
+
+    await dialog
       .getByRole("button", { name: "Subagent defaults", exact: true })
       .click();
     const roles = page.getByRole("group", { name: "Agent role", exact: true });
@@ -846,12 +851,26 @@ async function main() {
       "Default Codex account tile is missing or duplicated.",
     );
     await codexAccount.click();
+    const selectedCodexAccount = workerAccount.locator(
+      `[data-account-key="${workerAccountKey}"][aria-pressed="true"]`,
+    );
+    await selectedCodexAccount.waitFor();
     assert.equal(
-      await codexAccount.getAttribute("aria-pressed"),
+      await selectedCodexAccount.getAttribute("aria-pressed"),
       "true",
       "Worker account is not pinned to Default.",
     );
     await page.locator(`[role="option"][data-value="${WORKER_MODEL}"]`).click();
+    await page
+      .locator(
+        `[role="listbox"][aria-label="Default subagent model"] [role="option"][data-value="${WORKER_MODEL}"][aria-selected="true"]`,
+      )
+      .waitFor();
+    await page
+      .locator(
+        `[role="radiogroup"][aria-label="Default subagent reasoning"][data-value="${EFFORT}"]`,
+      )
+      .waitFor();
     assert.equal(
       await page
         .getByLabel("Default subagent reasoning", { exact: true })
@@ -866,10 +885,20 @@ async function main() {
     );
     await reviewModel.waitFor();
     await reviewModel.click();
+    await page
+      .locator(
+        `[role="listbox"][aria-label="Default review model"] [role="option"][data-value="${REVIEW_MODEL}"][aria-selected="true"]`,
+      )
+      .waitFor();
     const reviewEffort = page.getByLabel("Default review reasoning", {
       exact: true,
     });
     await reviewEffort.locator(`[data-value="${EFFORT}"]`).click();
+    await page
+      .locator(
+        `[role="radiogroup"][aria-label="Default review reasoning"][data-value="${EFFORT}"]`,
+      )
+      .waitFor();
 
     assert.ok(!blockedWrite, blockedWrite || undefined);
     journal.preflight =
