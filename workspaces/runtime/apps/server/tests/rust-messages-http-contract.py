@@ -256,23 +256,6 @@ def agent_projection_snapshot(path: Path, agent_id: str):
         return record, payload["value"]
 
 
-def wait_for_agent_thread_projection(
-    backend, agent_id: str, expected_identity: dict[str, object],
-) -> None:
-    """Wait for the runtime record's thread identity to reach its canonical projection."""
-    def projection_settled() -> bool:
-        record, projection = agent_projection_snapshot(
-            backend.state / "canvas.sqlite3", agent_id,
-        )
-        return (
-            native_name_identity(record) == expected_identity
-            and record.get("nativeNameSynced") == expected_identity
-            and projection.get("threadId") == expected_identity.get("threadId")
-        )
-
-    backend.wait_until(projection_settled, f"agent {agent_id} native thread projection")
-
-
 def python_direct_message(
     backend, agent_id: str, message_id: str, text: str, delivery: str,
     *, hold_for_dispatch: bool = False,
@@ -384,77 +367,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
 
-    def create_chat(self, name="Team room"):
-        body = {
-            "id": "12345678-1234-1234-1234-123456789abc",
-            "name": name,
-            "members": [self.agent_id],
-        }
-        response = self.backend.request("POST", "/api/chats", body=body, headers=self.headers())
-        self.assertEqual(response.status, 200, response.body[:1000])
-        return body
-
-    def test_chat_create_replay_conflict_and_refusal_have_no_extra_rows(self):
-        body = self.create_chat()
-        first = no_write_snapshot(self.backend.state)
-        replay = self.backend.request("POST", "/api/chats", body=body, headers=self.headers())
-        self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), first)
-
-        conflict = self.backend.request("POST", "/api/chats", body={**body, "name": "Different"}, headers=self.headers())
-        self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), first)
-
-        refusal = self.backend.request("POST", "/api/chats", body={**body, "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "members": ["missing-agent"]}, headers=self.headers())
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(refusal.status, 501, refusal.body[:1000])
-            self.assertIn("agent-discovery/launcher-status", refusal.json()["error"])
-        else:
-            self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), first)
-
-    def test_connections_keep_stable_identity_and_refusal_has_no_write(self):
-        chat = self.create_chat()
-        body = {"source": self.agent_id, "target": chat["id"], "connected": True}
-        response = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
-        self.assertEqual(response.status, 200, response.body[:1000])
-        edge_id = hashlib.sha256(json.dumps(("chat", self.agent_id, chat["id"])).encode()).hexdigest()[:24]
-        self.assertEqual(response.json(), {"id": edge_id, "connected": True})
-        replay = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
-        self.assertEqual(replay.json(), response.json())
-
-        before = no_write_snapshot(self.backend.state)
-        refusal = self.backend.request("POST", "/api/connections", body={**body, "target": "missing-chat"}, headers=self.headers())
-        self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-
-        removed = self.backend.request("POST", "/api/connections", body={**body, "connected": False}, headers=self.headers())
-        self.assertEqual(removed.status, 200, removed.body[:1000])
-        self.assertFalse(removed.json()["connected"])
-
-    def test_group_message_replay_conflict_and_history(self):
-        chat = self.create_chat()
-        body = {"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "room": chat["id"], "text": "Hello team"}
-        posted = self.backend.request("POST", "/api/messages", body=body, headers=self.headers())
-        self.assertEqual(posted.status, 200, posted.body[:1000])
-        self.assertEqual(posted.json()["id"], body["id"])
-        self.assertIn(posted.json()["status"], {"queued", "delivered"})
-
-        replay = self.backend.request("POST", "/api/messages", body={**body, "delivery": "queue"}, headers=self.headers())
-        self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(replay.json()["id"], body["id"])
-        self.assertEqual(replay.json()["text"], "Hello team")
-
-        history = self.backend.request("GET", f"/api/messages?room={chat['id']}", headers=self.headers())
-        self.assertEqual(history.status, 200, history.body[:1000])
-        self.assertEqual(len(history.json()), 1)
-        self.assertEqual(history.json()[0]["id"], body["id"])
-
-        before = no_write_snapshot(self.backend.state)
-        conflict = self.backend.request("POST", "/api/messages", body={**body, "text": "Changed"}, headers=self.headers())
-        self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-
     def test_parsed_write_set_matches_python_canvas(self):
         from codex_canvas import Canvas
 
@@ -485,62 +397,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 parsed_coordination_snapshot(self.backend.state / "canvas.sqlite3"),
                 parsed_coordination_snapshot(reference_root / "canvas.sqlite3"),
             )
-
-    def test_historical_room_cannot_be_taken_over_by_another_team(self):
-        path = self.backend.state / "canvas.sqlite3"
-        room = "12121212-1212-1212-1212-121212121212"
-        with sqlite3.connect(path) as database:
-            other = json.loads(database.execute(
-                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
-            ).fetchone()[0])
-            other.update({"id": "other-team", "rootId": "other-team", "parentId": None})
-            database.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES(?,?)",
-                ("other-team", json.dumps(other)),
-            )
-            database.execute(
-                "INSERT INTO messages(id,room,author,text,at,deliveries) VALUES(?,?,?,?,?,?)",
-                ("13131313-1313-1313-1313-131313131313", room, "other-team", "old", 1.0, "{}"),
-            )
-        before = no_write_snapshot(path.parent)
-        response = self.backend.request("POST", "/api/chats", body={
-            "id": room, "name": "Takeover", "members": [self.agent_id],
-        }, headers=self.headers())
-        self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertIn("another team", response.json()["error"])
-        self.assertEqual(no_write_snapshot(path.parent), before)
-
-    def test_registered_child_inherits_parent_team_and_managed_alias_is_hidden(self):
-        path = self.backend.state / "canvas.sqlite3"
-        with sqlite3.connect(path) as database:
-            agent = json.loads(database.execute(
-                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
-            ).fetchone()[0])
-            agent["threadId"] = "same-managed-thread"
-            expected_identity = native_name_identity(agent)
-            agent["nativeNameSynced"] = expected_identity
-            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
-                "registered-child", json.dumps({"id": "registered-child", "parentId": self.agent_id}),
-            ))
-            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
-                "managed-alias", json.dumps({"id": "managed-alias", "threadId": "same-managed-thread"}),
-            ))
-        inherited = self.backend.request("POST", "/api/chats", body={
-            "id": "14141414-1414-1414-1414-141414141414",
-            "name": "Inherited team", "members": [self.agent_id, "registered-child"],
-        }, headers=self.headers())
-        self.assertEqual(inherited.status, 200, inherited.body[:1000])
-        # This direct record fixture bypasses projection publishing; settle that
-        # background-owned write before proving the next request made no writes.
-        wait_for_agent_thread_projection(self.backend, self.agent_id, expected_identity)
-        before = no_write_snapshot(path.parent)
-        alias = self.backend.request("POST", "/api/chats", body={
-            "id": "15151515-1515-1515-1515-151515151515",
-            "name": "Hidden alias", "members": ["managed-alias"],
-        }, headers=self.headers())
-        self.assertEqual(alias.status, 400, alias.body[:1000])
-        self.assertEqual(no_write_snapshot(path.parent), before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_long_and_empty_python_written_messages_are_read_and_bad_deliveries_name_row(self):
@@ -781,41 +637,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertNotEqual((saved_agent.get("startAttempt") or {}).get("capacityRetryId"), retry_id)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
-        update_agent(self.backend, self.agent_id, {"autoWake": False, "error": "old error"})
-        message_id = "46464646-4646-4646-4646-464646464646"
-        path = self.backend.state / "canvas.sqlite3"
-        with closing(sqlite3.connect(path)) as database:
-            database.execute(
-                "CREATE TRIGGER fail_agent_projection_update BEFORE UPDATE ON sync_entities "
-                "WHEN OLD.collection='agent' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
-            )
-            database.execute(
-                "CREATE TRIGGER fail_event_projection_insert BEFORE INSERT ON sync_entities "
-                "WHEN NEW.collection='event' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
-            )
-            database.commit()
-        before = no_write_snapshot(self.backend.state)
-        try:
-            response = self.backend.request("POST", "/api/messages", body={
-                "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
-            }, headers=self.headers())
-            self.assertFalse(200 <= response.status < 300, response.body[:1000])
-            self.assertIn("error", response.json())
-            after = no_write_snapshot(self.backend.state)
-            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
-        finally:
-            with closing(sqlite3.connect(path)) as database:
-                database.execute("DROP TRIGGER IF EXISTS fail_agent_projection_update")
-                database.execute("DROP TRIGGER IF EXISTS fail_event_projection_insert")
-                database.commit()
-            # The injected SQLite failure is fatal to the fixture's account
-            # worker. Restart only after removing the fault so later contracts
-            # use a healthy backend and startup recovery sees clean schema.
-            self.backend.stop()
-            self.backend.start()
-
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_agent_error_names_runtime_agents_row(self):
         path = self.backend.state / "canvas.sqlite3"
         with closing(sqlite3.connect(path)) as database:
@@ -909,6 +730,173 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def create_chat(self, name="Team room", *, members=None):
+        body = {
+            "id": "12345678-1234-1234-1234-123456789abc",
+            "name": name,
+            "members": [] if members is None else members,
+        }
+        response = self.backend.request("POST", "/api/chats", body=body, headers=self.headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return body
+
+    def test_chat_create_replay_conflict_and_refusal_have_no_extra_rows(self):
+        body = self.create_chat()
+        first = no_write_snapshot(self.backend.state)
+        replay = self.backend.request("POST", "/api/chats", body=body, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
+
+        conflict = self.backend.request("POST", "/api/chats", body={**body, "name": "Different"}, headers=self.headers())
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
+
+        refusal = self.backend.request("POST", "/api/chats", body={**body, "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "members": ["missing-agent"]}, headers=self.headers())
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(refusal.status, 501, refusal.body[:1000])
+            self.assertIn("agent-discovery/launcher-status", refusal.json()["error"])
+        else:
+            self.assertEqual(refusal.status, 400, refusal.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
+
+    def test_connections_keep_stable_identity_and_refusal_has_no_write(self):
+        chat = self.create_chat()
+        body = {"source": self.agent_id, "target": chat["id"], "connected": True}
+        response = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        edge_id = hashlib.sha256(json.dumps(("chat", self.agent_id, chat["id"])).encode()).hexdigest()[:24]
+        self.assertEqual(response.json(), {"id": edge_id, "connected": True})
+        replay = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
+        self.assertEqual(replay.json(), response.json())
+
+        before = no_write_snapshot(self.backend.state)
+        refusal = self.backend.request("POST", "/api/connections", body={**body, "target": "missing-chat"}, headers=self.headers())
+        self.assertEqual(refusal.status, 400, refusal.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+        removed = self.backend.request("POST", "/api/connections", body={**body, "connected": False}, headers=self.headers())
+        self.assertEqual(removed.status, 200, removed.body[:1000])
+        self.assertFalse(removed.json()["connected"])
+
+    def test_group_message_replay_conflict_and_history(self):
+        chat = self.create_chat()
+        body = {"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "room": chat["id"], "text": "Hello team"}
+        posted = self.backend.request("POST", "/api/messages", body=body, headers=self.headers())
+        self.assertEqual(posted.status, 200, posted.body[:1000])
+        self.assertEqual(posted.json()["id"], body["id"])
+        self.assertIn(posted.json()["status"], {"queued", "delivered"})
+
+        replay = self.backend.request("POST", "/api/messages", body={**body, "delivery": "queue"}, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], body["id"])
+        self.assertEqual(replay.json()["text"], "Hello team")
+
+        history = self.backend.request("GET", f"/api/messages?room={chat['id']}", headers=self.headers())
+        self.assertEqual(history.status, 200, history.body[:1000])
+        self.assertEqual(len(history.json()), 1)
+        self.assertEqual(history.json()[0]["id"], body["id"])
+
+        before = no_write_snapshot(self.backend.state)
+        conflict = self.backend.request("POST", "/api/messages", body={**body, "text": "Changed"}, headers=self.headers())
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_historical_room_cannot_be_taken_over_by_another_team(self):
+        path = self.backend.state / "canvas.sqlite3"
+        room = "12121212-1212-1212-1212-121212121212"
+        with sqlite3.connect(path) as database:
+            other = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()[0])
+            other.update({"id": "other-team", "rootId": "other-team", "parentId": None})
+            database.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?,?)",
+                ("other-team", json.dumps(other)),
+            )
+            database.execute(
+                "INSERT INTO messages(id,room,author,text,at,deliveries) VALUES(?,?,?,?,?,?)",
+                ("13131313-1313-1313-1313-131313131313", room, "other-team", "old", 1.0, "{}"),
+            )
+        before = no_write_snapshot(path.parent)
+        response = self.backend.request("POST", "/api/chats", body={
+            "id": room, "name": "Takeover", "members": [self.agent_id],
+        }, headers=self.headers())
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("another team", response.json()["error"])
+        self.assertEqual(no_write_snapshot(path.parent), before)
+
+    def test_registered_child_inherits_parent_team_and_managed_alias_is_hidden(self):
+        path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as database:
+            agent = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()[0])
+            agent["threadId"] = "same-managed-thread"
+            expected_identity = native_name_identity(agent)
+            agent["nativeNameSynced"] = expected_identity
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+            payload = json.loads(database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (self.agent_id,),
+            ).fetchone()[0])
+            payload["value"].update({
+                "threadId": "same-managed-thread",
+                "nativeNameSynced": expected_identity,
+            })
+            database.execute(
+                "UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",
+                (json.dumps(payload), self.agent_id),
+            )
+            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
+                "registered-child", json.dumps({"id": "registered-child", "parentId": self.agent_id}),
+            ))
+            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
+                "managed-alias", json.dumps({"id": "managed-alias", "threadId": "same-managed-thread"}),
+            ))
+        inherited = self.backend.request("POST", "/api/chats", body={
+            "id": "14141414-1414-1414-1414-141414141414",
+            "name": "Inherited team", "members": [self.agent_id, "registered-child"],
+        }, headers=self.headers())
+        self.assertEqual(inherited.status, 200, inherited.body[:1000])
+        before = no_write_snapshot(path.parent)
+        alias = self.backend.request("POST", "/api/chats", body={
+            "id": "15151515-1515-1515-1515-151515151515",
+            "name": "Hidden alias", "members": ["managed-alias"],
+        }, headers=self.headers())
+        self.assertEqual(alias.status, 400, alias.body[:1000])
+        self.assertEqual(no_write_snapshot(path.parent), before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
+        update_agent(self.backend, self.agent_id, {"autoWake": False, "error": "old error"})
+        message_id = "46464646-4646-4646-4646-464646464646"
+        path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(path)) as database:
+            database.execute(
+                "CREATE TRIGGER fail_agent_projection_update BEFORE UPDATE ON sync_entities "
+                "WHEN OLD.collection='agent' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
+            )
+            database.execute(
+                "CREATE TRIGGER fail_event_projection_insert BEFORE INSERT ON sync_entities "
+                "WHEN NEW.collection='event' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
+            )
+            database.commit()
+        before = no_write_snapshot(self.backend.state)
+        try:
+            response = self.backend.request("POST", "/api/messages", body={
+                "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
+            }, headers=self.headers())
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
+            after = no_write_snapshot(self.backend.state)
+            self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
+        finally:
+            with closing(sqlite3.connect(path)) as database:
+                database.execute("DROP TRIGGER IF EXISTS fail_agent_projection_update")
+                database.execute("DROP TRIGGER IF EXISTS fail_event_projection_insert")
+                database.commit()
+            self.backend.stop()
+            self.backend.start()
 
     def test_request_ids_use_the_python_schema_pattern(self):
         room = "a" * 36
