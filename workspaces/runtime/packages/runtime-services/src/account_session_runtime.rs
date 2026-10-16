@@ -1865,7 +1865,7 @@ mod limits_runtime_tests {
             let gate = (call == 1).then(|| self.first_read_gate.clone()).flatten();
             Box::pin(async move {
                 if let Some(gate) = gate {
-                    let _ = gate.entered.send(());
+                    drop(gate.entered.send(()));
                     let mut released = gate.released.lock().unwrap();
                     while !*released {
                         released = gate.wake.wait(released).unwrap();
@@ -2005,7 +2005,7 @@ mod limits_runtime_tests {
         let (started, started_rx) = mpsc::channel();
         let runtime = Arc::clone(&fixture.runtime);
         let second = thread::spawn(move || {
-            let _ = started.send(());
+            drop(started.send(()));
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
         });
         let second_started = started_rx.recv_timeout(Duration::from_secs(2));

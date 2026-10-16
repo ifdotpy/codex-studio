@@ -996,13 +996,15 @@ async fn create_lead_with_model(
     // (`codex_runtime.py:5124-5131`).
     wait_for_agent_catalog(
         &state,
-        None,
-        None,
-        catalog_account.as_deref(),
-        requested_model,
-        needs_catalog,
-        false,
-        requested_model.is_some(),
+        AgentCatalogWaitRequest {
+            parent_id: None,
+            preferred_parent_account: None,
+            requested_account: catalog_account.as_deref(),
+            requested_model,
+            needs_catalog,
+            ignore_stored_worker_account: false,
+            require_model_match: requested_model.is_some(),
+        },
     )
     .await?;
     if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
@@ -1010,13 +1012,15 @@ async fn create_lead_with_model(
         let worker_account = defaults.account_key.as_ref().and_then(Option::as_deref);
         wait_for_agent_catalog(
             &state,
-            None,
-            catalog_account.as_deref(),
-            worker_account,
-            worker_model,
-            true,
-            true,
-            true,
+            AgentCatalogWaitRequest {
+                parent_id: None,
+                preferred_parent_account: catalog_account.as_deref(),
+                requested_account: worker_account,
+                requested_model: worker_model,
+                needs_catalog: true,
+                ignore_stored_worker_account: true,
+                require_model_match: true,
+            },
         )
         .await?;
     }
@@ -1029,13 +1033,15 @@ async fn create_lead_with_model(
             .and_then(Option::as_deref);
         wait_for_agent_catalog(
             &state,
-            None,
-            catalog_account.as_deref(),
-            review_account,
-            review.model.as_deref(),
-            true,
-            true,
-            review.model.is_some(),
+            AgentCatalogWaitRequest {
+                parent_id: None,
+                preferred_parent_account: catalog_account.as_deref(),
+                requested_account: review_account,
+                requested_model: review.model.as_deref(),
+                needs_catalog: true,
+                ignore_stored_worker_account: true,
+                require_model_match: review.model.is_some(),
+            },
         )
         .await?;
     }
@@ -1104,13 +1110,15 @@ async fn create_agent_with_import(
     // (`codex_runtime.py:4859-4888`).
     wait_for_agent_catalog(
         &state,
-        request.parent.as_deref(),
-        None,
-        admission.account.as_deref().or(request.account.as_deref()),
-        admission.model.as_deref(),
-        admission.needs_catalog,
-        false,
-        admission.model.is_some(),
+        AgentCatalogWaitRequest {
+            parent_id: request.parent.as_deref(),
+            preferred_parent_account: None,
+            requested_account: admission.account.as_deref().or(request.account.as_deref()),
+            requested_model: admission.model.as_deref(),
+            needs_catalog: admission.needs_catalog,
+            ignore_stored_worker_account: false,
+            require_model_match: admission.model.is_some(),
+        },
     )
     .await?;
     dispatch::<generated::AgentResponse>(state, move |context| {
@@ -1154,17 +1162,21 @@ fn catalog_admission_candidates(
         .collect()
 }
 
-async fn wait_for_agent_catalog(
-    state: &HttpState,
-    parent_id: Option<&str>,
-    preferred_parent_account: Option<&str>,
-    requested_account: Option<&str>,
-    requested_model: Option<&str>,
+struct AgentCatalogWaitRequest<'a> {
+    parent_id: Option<&'a str>,
+    preferred_parent_account: Option<&'a str>,
+    requested_account: Option<&'a str>,
+    requested_model: Option<&'a str>,
     needs_catalog: bool,
     ignore_stored_worker_account: bool,
     require_model_match: bool,
+}
+
+async fn wait_for_agent_catalog(
+    state: &HttpState,
+    request: AgentCatalogWaitRequest<'_>,
 ) -> Result<(), ApiError> {
-    if !needs_catalog {
+    if !request.needs_catalog {
         return Ok(());
     }
     let (Some(driver), Some(session)) = (&state.account_driver, &state.account_session) else {
@@ -1179,10 +1191,12 @@ async fn wait_for_agent_catalog(
         );
     let driver = std::sync::Arc::clone(driver);
     let store = state.store.clone();
-    let parent_id = parent_id.map(str::to_owned);
-    let requested_account = requested_account.map(str::to_owned);
-    let requested_model = requested_model.map(str::to_owned);
-    let preferred_parent_account = preferred_parent_account.map(str::to_owned);
+    let parent_id = request.parent_id.map(str::to_owned);
+    let requested_account = request.requested_account.map(str::to_owned);
+    let requested_model = request.requested_model.map(str::to_owned);
+    let preferred_parent_account = request.preferred_parent_account.map(str::to_owned);
+    let ignore_stored_worker_account = request.ignore_stored_worker_account;
+    let require_model_match = request.require_model_match;
     let candidate_data = tokio::time::timeout_at(
         deadline,
         tokio::task::spawn_blocking(move || {
@@ -1496,13 +1510,15 @@ async fn conversation(
     // outside defaults-only updates (`codex_runtime.py:5481-5483`).
     wait_for_agent_catalog(
         &state,
-        parent_id,
-        None,
-        catalog_account.as_deref(),
-        requested_model,
-        needs_conversation_catalog,
-        false,
-        requested_model.is_some(),
+        AgentCatalogWaitRequest {
+            parent_id,
+            preferred_parent_account: None,
+            requested_account: catalog_account.as_deref(),
+            requested_model,
+            needs_catalog: needs_conversation_catalog,
+            ignore_stored_worker_account: false,
+            require_model_match: requested_model.is_some(),
+        },
     )
     .await?;
     if let Some(defaults) = value
@@ -1516,13 +1532,15 @@ async fn conversation(
         if worker_model.is_some() || worker_account.is_some() {
             wait_for_agent_catalog(
                 &state,
-                Some(&request.id),
-                None,
-                worker_account.as_deref(),
-                worker_model,
-                true,
-                true,
-                true,
+                AgentCatalogWaitRequest {
+                    parent_id: Some(&request.id),
+                    preferred_parent_account: None,
+                    requested_account: worker_account.as_deref(),
+                    requested_model: worker_model,
+                    needs_catalog: true,
+                    ignore_stored_worker_account: true,
+                    require_model_match: true,
+                },
             )
             .await?;
         }
@@ -1550,13 +1568,15 @@ async fn conversation(
             .and_then(Value::as_str);
         wait_for_agent_catalog(
             &state,
-            Some(&request.id),
-            None,
-            review_account.as_deref(),
-            review_model,
-            true,
-            true,
-            review_model.is_some(),
+            AgentCatalogWaitRequest {
+                parent_id: Some(&request.id),
+                preferred_parent_account: None,
+                requested_account: review_account.as_deref(),
+                requested_model: review_model,
+                needs_catalog: true,
+                ignore_stored_worker_account: true,
+                require_model_match: review_model.is_some(),
+            },
         )
         .await?;
     }
