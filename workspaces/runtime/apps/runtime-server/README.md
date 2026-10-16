@@ -27,6 +27,11 @@ bounded service in `studio-runtime-services::analytics_history`;
 runtime-server owns its Tokio task and supplies account profile resolution and
 durable budget capture.
 
+Monitor startup recovery runs once after the store opens and before routes or
+runtime admissions start. The retained monitor task handles queued results,
+rule events, and durable deadlines; its first tick does not repeat startup
+recovery after new monitor work may have been admitted.
+
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the
 async listener and signal handling.

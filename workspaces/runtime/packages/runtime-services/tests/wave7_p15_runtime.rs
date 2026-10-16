@@ -18,6 +18,7 @@ use studio_runtime_services::{
     monitor_lifecycle::MonitorLifecyclePorts,
     monitor_policy::{Effect, Input},
     monitor_receipts::{self, ResultReceipt},
+    monitor_runtime,
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
 use studio_runtime_store::{
@@ -91,6 +92,7 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let store = Arc::new(fixtures::store(root.path(), "ticks"));
+    monitor_runtime::recover_on_startup(&store, 2000.0).expect("server startup recovery");
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
     let mut count = 0;
@@ -1066,6 +1068,7 @@ fn committed_managed_start_is_dispatched_after_admission() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = Arc::new(fixtures::store(root.path(), "managed-monitor-start"));
+    monitor_runtime::recover_on_startup(&store, 1999.0).expect("server startup recovery");
     fixtures::seed(&store, &case);
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
@@ -1347,6 +1350,8 @@ async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
     let first_ack_attempt = Arc::new(Notify::new());
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     *port.fail_ack_gate.lock().expect("ack gate") = Some((first_ack_attempt.clone(), release_rx));
+    let acknowledged = Arc::new(tokio::sync::Semaphore::new(0));
+    *port.acknowledged.lock().expect("acknowledged") = Some(acknowledged.clone());
     let wake = Arc::new(Notify::new());
     let runtime = Arc::new(MonitorRuntime::new(
         store.clone(),
@@ -1360,32 +1365,16 @@ async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
         .expect("first ACK attempt");
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 1);
     release_tx.send(()).expect("release failed ACK");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while runtime.last_tick_error().is_none() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("failed tick is observable");
-    tokio::time::advance(Duration::from_secs(1)).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !port.deliveries.lock().expect("deliveries").is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("retry tick");
+    let ack = tokio::time::timeout(Duration::from_secs(5), acknowledged.acquire())
+        .await
+        .expect("retry tick acknowledges the retained delivery")
+        .expect("acknowledgement semaphore remains open");
+    drop(ack);
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while runtime.last_tick_error().is_some() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("successful retry clears diagnostic");
     assert_eq!(record(&store, &id)["bytes"], 6);
     stop.send(true).expect("shutdown request");
     task.await.expect("task join").expect("clean stop");
+    assert_eq!(runtime.last_tick_error(), None);
     let events = fixtures::events(&store);
     assert!(events.as_array().expect("events").is_empty());
 }

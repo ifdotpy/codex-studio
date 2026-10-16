@@ -99,7 +99,6 @@ struct Scan {
     monitor: String,
     stall_monitor: Option<String>,
     rule: i64,
-    startup_recovery: bool,
     recovering_rules: bool,
     recovering_receipts: bool,
 }
@@ -151,7 +150,6 @@ impl MonitorRuntime {
             output: MonitorOutput::default(),
             dispatch_wake,
             scan: Mutex::new(Scan {
-                startup_recovery: true,
                 recovering_rules: true,
                 recovering_receipts: true,
                 ..Scan::default()
@@ -413,11 +411,6 @@ impl MonitorRuntime {
             .scan
             .try_lock()
             .map_err(|_| MonitorError::Refused("Monitor tick already running"))?;
-        if scan.startup_recovery {
-            monitor_runtime::recover_on_startup(&self.store, now)?;
-            scan.startup_recovery = false;
-            scan.recovering_receipts = false;
-        }
         // Receipt files are scanned only at startup or on a native filesystem event.
         // Full batches remain scheduled immediately so recovery is bounded per pass.
         let result_batch_full = if scan.recovering_receipts {
@@ -1628,7 +1621,6 @@ mod tests {
                 .scan
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            scan.startup_recovery = false;
             scan.recovering_rules = false;
         }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1978,7 +1970,6 @@ mod tests {
                 .scan
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            scan.startup_recovery = false;
             scan.recovering_rules = false;
         }
         let registry_initial_waiter = tokio::spawn({
@@ -2074,7 +2065,6 @@ mod tests {
                 .scan
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            scan.startup_recovery = false;
             scan.recovering_rules = false;
         }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

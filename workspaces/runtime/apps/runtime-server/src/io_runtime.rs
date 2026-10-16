@@ -30,12 +30,6 @@ const MAX_NOTIFICATION_PERSIST_ATTEMPTS: usize = 5;
 #[cfg(unix)]
 impl IoRuntime {
     pub fn start(store: Arc<RuntimeStore>) -> Result<Self, TerminalError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| TerminalError::StartupRecovery("system clock unavailable".into()))?
-            .as_secs_f64();
-        studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
-            .map_err(|error| TerminalError::StartupRecovery(error.to_string()))?;
         let session = PtyTerminalSession::new();
         let terminals = Arc::new(TerminalDriver::new(store, session.clone()));
         let weak: Weak<_> = Arc::downgrade(&terminals);

@@ -291,6 +291,8 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             .expect("monitor record")
             .remove("operation");
         let store = Arc::new(fixtures::store(root.path(), decision));
+        studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
+            .expect("server startup recovery");
         fixtures::seed(&store, &case);
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");

@@ -313,6 +313,8 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .expect("monitor record")
         .remove("operation");
     let store = Arc::new(monitor_fixtures::store(root.path(), "voice-monitor"));
+    studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
+        .expect("server startup recovery");
     monitor_fixtures::seed(&store, &case);
     let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
     let monitor_id = case["before"]["id"].as_str().expect("monitor id");
