@@ -829,7 +829,7 @@ class MultiServerService:
                 # reconcile a running receipt; no second execution is allowed.
                 if (row['state'] == 'waiting'
                         or action in UPDATE_ACTIONS
-                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt', 'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_activate', 'move_home_validate', 'move_route_ready', 'move_route_status', 'move_home_event', 'location_matches', 'location_info'}
+                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt', 'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_pull', 'move_activate', 'move_home_validate', 'move_route_ready', 'move_route_status', 'move_home_event', 'location_matches', 'location_info'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
                     # Reads have no effect. Slot admission is a compare-and-set reservation, with no
@@ -974,7 +974,7 @@ class MultiServerService:
         return None
 
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
-        if action in {'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_prepare', 'move_activate', 'move_home_validate', 'move_home_relocate', 'move_home_event', 'move_route_ready', 'move_route_status'}:
+        if action in {'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_pull', 'move_prepare', 'move_activate', 'move_home_validate', 'move_home_relocate', 'move_home_event', 'move_route_ready', 'move_route_status'}:
             return cast(dict[str, Any], self.moves().receive(principal, action, p, key))
         if action == 'browser_callback':
             # One sign-in redirect that a window's own server received (codex_browser_bridge.py).
