@@ -18,8 +18,35 @@ use tokio::{
     time::timeout,
 };
 
+const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
+const MAX_STARTUP_STDERR_BYTES: u64 = 4096;
+
+async fn startup_stderr(child: &mut tokio::process::Child) -> String {
+    use tokio::io::AsyncReadExt;
+
+    let Some(stream) = child.stderr.take() else {
+        return String::new();
+    };
+    let mut bytes = Vec::new();
+    stream
+        .take(MAX_STARTUP_STDERR_BYTES)
+        .read_to_end(&mut bytes)
+        .await
+        .unwrap();
+    let mut output = String::from_utf8_lossy(&bytes).into_owned();
+    if bytes.len() as u64 == MAX_STARTUP_STDERR_BYTES {
+        output.push_str("\n[stderr capture limit reached]");
+    }
+    output
+}
+
 #[tokio::test]
 async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
+    assert!(include_str!("../src/main.rs").contains(concat!(
+        "const STARTUP_TRACE_ENV: &str = \"",
+        STARTUP_TRACE_ENV,
+        "\";"
+    )));
     let prefix = tempdir().unwrap();
     let workspace = prefix.path().join("workspace");
     let binary_dir = workspace.join("bin");
@@ -108,6 +135,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .current_dir(prefix.path())
         .env_clear()
         .env("HOME", &home)
+        .env(STARTUP_TRACE_ENV, "1")
         .env(
             "XDG_CACHE_HOME",
             std::env::var_os("XDG_CACHE_HOME").expect("isolated prepared Python cache"),
@@ -146,22 +174,14 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         }
         Ok(Ok(_)) => {
             let status = child.wait().await.unwrap();
-            let mut stderr = String::new();
-            if let Some(mut stream) = child.stderr.take() {
-                use tokio::io::AsyncReadExt;
-                stream.read_to_string(&mut stderr).await.unwrap();
-            }
+            let stderr = startup_stderr(&mut child).await;
             panic!("installed server exited with {status}: {stderr}");
         }
         Ok(Err(error)) => panic!("reading installed server startup output failed: {error}"),
         Err(_) => {
             child.kill().await.unwrap();
             let status = child.wait().await.unwrap();
-            let mut stderr = String::new();
-            if let Some(mut stream) = child.stderr.take() {
-                use tokio::io::AsyncReadExt;
-                stream.read_to_string(&mut stderr).await.unwrap();
-            }
+            let stderr = startup_stderr(&mut child).await;
             panic!("installed server did not start ({status}): {stderr}");
         }
     }

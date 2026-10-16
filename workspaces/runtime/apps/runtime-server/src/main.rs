@@ -45,6 +45,13 @@ const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
 const CONTINUATION_IDLE_RECHECK_SECONDS: u64 = 24 * 60 * 60;
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
+const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
+
+fn startup_trace(checkpoint: &'static str) {
+    if env::var_os(STARTUP_TRACE_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!("runtime server startup checkpoint: {checkpoint}");
+    }
+}
 
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
@@ -205,18 +212,23 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
     let port = parse_port(args.into_iter())?;
+    startup_trace("backend-identity-started");
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/backend-identity",
         studio_runtime_http::initialize_backend_identity,
     )
     .await??;
+    startup_trace("backend-identity-completed");
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
     let address = listener.local_addr()?;
+    startup_trace("listener-bound");
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
+    startup_trace("store-open-started");
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    startup_trace("store-open-completed");
     // This guard drops before `store`, so the runtime lock remains held while
     // the PID file is checked and removed on every post-open exit path.
     let _canvas_pid_cleanup = CanvasPidCleanup {
@@ -239,6 +251,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         credentials.identity(&store, None)?;
     }
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store)?;
+    startup_trace("store-recovery-completed");
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
     let state_root = store.root().canonicalize()?;
@@ -278,7 +291,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             },
         )?,
     );
+    startup_trace("account-registry-open-started");
     let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
+    startup_trace("account-registry-open-completed");
     for diagnostic in account_policy.limits_diagnostics() {
         eprintln!(
             "invalid persisted limits at {}/{}/{} ({})",
@@ -314,6 +329,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )?);
     let runtime_for_check = Arc::clone(&native_runtime);
     let discovery = native_discovery_inputs(native_path.as_deref());
+    startup_trace("native-runtime-check-started");
     if let Some(platform) = native_platform() {
         match studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/main",
@@ -328,6 +344,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     } else {
         eprintln!("native runtime compatibility check skipped: unsupported platform");
     }
+    startup_trace("native-runtime-check-completed");
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(&state_dir));
@@ -363,6 +380,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         session: Arc::clone(&account_session),
         session_binaries: Arc::clone(&session_binaries),
     });
+    startup_trace("provider-version-monitor-started");
     let provider_versions =
         studio_runtime_services::provider_versions::ProviderVersionMonitor::start(
             studio_runtime_services::provider_versions::runtime_provider_version_store(
@@ -374,6 +392,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             Arc::new(studio_runtime_services::provider_versions::NpmReleaseFetcher),
             Arc::new(studio_runtime_services::provider_versions::SystemClock),
         )?;
+    startup_trace("provider-version-monitor-completed");
     let multi_server_boundary = public_origin
         .as_deref()
         .map(|origin| {
@@ -502,7 +521,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             state_dir: PathBuf::from(&state_dir),
         }));
     #[cfg(unix)]
+    startup_trace("io-runtime-started");
+    #[cfg(unix)]
     let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
+    #[cfg(unix)]
+    startup_trace("io-runtime-completed");
     #[cfg(unix)]
     {
         let runtime = Arc::clone(&io_runtime);
@@ -511,6 +534,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             .with_terminal_write_gate(Arc::new(move || runtime.reconcile_before_write()));
     }
     #[cfg(unix)]
+    startup_trace("claude-login-attach-started");
+    #[cfg(unix)]
     claude_login::attach(
         &mut state,
         PathBuf::from(&state_dir),
@@ -518,6 +543,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         account_driver.clone(),
     )
     .await?;
+    startup_trace("provider-and-io-setup-completed");
     let monitor_wake = state.event_wake_handle();
     let continuation_scheduler_wake = state.continuation_wake_handle();
     let monitor_port = Arc::new(monitor_port::RetainedMonitorPort::new(
@@ -561,6 +587,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             creation_environment,
         );
     #[cfg(unix)]
+    startup_trace("host-runtime-started");
+    #[cfg(unix)]
     let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
         Arc::clone(&store),
@@ -584,6 +612,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             return Err(error.into());
         }
     };
+    #[cfg(unix)]
+    startup_trace("host-runtime-completed");
     monitor_port.set_preparation_resources(
         runtime
             .preparation_resources()
@@ -645,6 +675,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             return Err(error);
         }
     };
+    startup_trace("http-router-completed");
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,
     );
@@ -736,6 +767,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         }
     });
+    startup_trace("readiness-output-started");
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
