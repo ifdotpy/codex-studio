@@ -3,13 +3,13 @@ mod close;
 mod desktop_menu;
 #[cfg(desktop)]
 mod desktop_recovery;
-#[cfg(desktop)]
-mod window_state;
 mod frame_assets;
 mod local_backend;
 #[cfg(feature = "native-check")]
 mod native_check;
 mod profile;
+#[cfg(desktop)]
+mod window_state;
 
 use std::sync::Arc;
 use studio_client_core::{

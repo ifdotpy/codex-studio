@@ -681,7 +681,10 @@ mod tests {
             std::env::var("PATH").expect("test PATH exists")
         );
         let prefix: String = expected.chars().take(1200).collect();
-        assert!(message.starts_with(&prefix), "unexpected Git stderr: {message:?}");
+        assert!(
+            message.starts_with(&prefix),
+            "unexpected Git stderr: {message:?}"
+        );
         assert!(message.contains("--porcelain=v1"));
         std::fs::remove_dir_all(root).expect("Git fixture removed");
     }

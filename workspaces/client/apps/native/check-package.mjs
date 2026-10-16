@@ -30,6 +30,20 @@ for (const key of [
 const executable = plist("CFBundleExecutable");
 assert.equal(path.basename(executable), executable);
 await access(path.join(bundle, "Contents/MacOS", executable));
+const iconName = plist("CFBundleIconFile");
+assert.equal(path.basename(iconName), iconName);
+assert.deepEqual(
+  await readFile(
+    path.join(
+      resources,
+      iconName.endsWith(".icns") ? iconName : `${iconName}.icns`,
+    ),
+  ),
+  await readFile(
+    new URL("../desktop/assets/codex-studio.icns", import.meta.url),
+  ),
+  "The native application must use the canonical desktop icon.",
+);
 for (const file of [
   "workspace/scripts/codex-canvas",
   "workspace/scripts/codex_process_supervisor.py",
@@ -75,6 +89,7 @@ console.log(
     bundle,
     executable,
     commit: stamp.commit,
-    checks: "bundle resources, native Python adapter import, code signature",
+    checks:
+      "bundle resources, desktop icon, native Python adapter import, code signature",
   }),
 );
