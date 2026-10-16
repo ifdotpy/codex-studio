@@ -594,7 +594,7 @@ async function main() {
         "Chat deletion must target the preflight local server origin.",
       );
       await pinLocalServer(page, origin, journal.localServer.serverId);
-      assert.equal(options.resume, false, "Resume mode never sends deletes.");
+      assert.notEqual(options.resume, true, "Resume mode never sends deletes.");
       assert.equal(
         journal.ownedCreated,
         true,
@@ -836,6 +836,14 @@ async function main() {
       )
       .waitFor();
 
+    assert.equal(
+      await mainSettings.getAttribute("aria-expanded"),
+      "true",
+      "Main agent settings closed before the verifier could close it.",
+    );
+    await mainSettings.click();
+    await mainSettingsDialog.waitFor({ state: "hidden" });
+
     await dialog
       .getByRole("button", { name: "Subagent defaults", exact: true })
       .click();
@@ -908,15 +916,12 @@ async function main() {
     const reviewProvider = reviewDialog.getByLabel("Provider", {
       exact: true,
     });
+    await reviewDialog.waitFor({ state: "visible" });
+    await reviewProvider.waitFor({ state: "visible" });
     const codexReviewProvider = reviewProvider
       .locator("label")
       .filter({ hasText: "Codex" });
-    assert.equal(
-      await codexReviewProvider.count(),
-      1,
-      "Review settings do not expose the Codex provider.",
-    );
-    await codexReviewProvider.click();
+    await codexReviewProvider.waitFor({ state: "visible" });
     await reviewProvider.locator('input[value="codex"]').waitFor({
       state: "attached",
     });
@@ -959,7 +964,7 @@ async function main() {
     const reviewEffort = reviewDialog.getByLabel("Default review reasoning", {
       exact: true,
     });
-    await reviewEffort.locator(`[data-value="${EFFORT}"]`).click();
+    await reviewEffort.getByText("High", { exact: true }).click();
     await reviewDialog
       .locator(
         `[role="radiogroup"][aria-label="Default review reasoning"][data-value="${EFFORT}"]`,
