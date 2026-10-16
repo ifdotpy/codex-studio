@@ -256,7 +256,10 @@ def agent_projection_snapshot(path: Path, agent_id: str):
         return record, payload["value"]
 
 
-def python_direct_message(backend, agent_id: str, message_id: str, text: str, delivery: str):
+def python_direct_message(
+    backend, agent_id: str, message_id: str, text: str, delivery: str,
+    *, hold_for_dispatch: bool = False,
+):
     with tempfile.TemporaryDirectory(prefix="messages-python-reference-") as directory:
         state = Path(directory) / "state"
         state.mkdir()
@@ -269,6 +272,11 @@ def python_direct_message(backend, agent_id: str, message_id: str, text: str, de
                 pass
         runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
         try:
+            if hold_for_dispatch:
+                with runtime.db() as database:
+                    agent = runtime.agent(agent_id, database)
+                    agent.update(status="approval", autoWake=True, inFlight=False)
+                    runtime.put(database, "agents", agent)
             result = runtime.send(agent_id, text, message_id, delivery=delivery)
             with runtime.db() as database:
                 database.execute(
@@ -287,26 +295,9 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = start_contract_backend(cls)
         cls.agent_id = seed_agent(cls.backend)
         cls.other_agent_id = seed_agent(cls.backend)
-        # An in-flight native review excludes this recipient from dispatch while
-        # the contract compares every stored field, including dispatcher-owned
-        # agent status and attempt projections.
-        cls.busy_agent_id = seed_agent(cls.backend, {
-            "status": "running",
-            "inFlight": True,
-            # A submitted native review resumes an existing provider thread.
-            # Without its thread identity, Rust correctly repairs preparation
-            # state asynchronously while the replay assertion is taking a
-            # snapshot, obscuring the message write's no-op behavior.
-            "threadId": "messages-contract-held-thread",
-            "startAttempt": {
-                "id": "messages-contract-held-review",
-                "epoch": 0,
-                "threadId": "messages-contract-held-thread",
-                "events": [],
-                "action": "review",
-                "submitted": True,
-            },
-        })
+        # This recipient is held after backend startup for exact row snapshots;
+        # the dedicated busy-agent case below covers an in-flight worker.
+        cls.delivery_matrix_agent_id = seed_agent(cls.backend)
         cls.stopped_agent_id = seed_agent(cls.backend, {
             "status": "idle",
         })
@@ -339,6 +330,11 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # row snapshots observe the same durable turn state.
         cls.backend.hold_provider("thread/start")
         cls.backend.start()
+        # Keep this matrix recipient out of scheduler dispatch after startup
+        # recovery. The separate busy-agent case below retains a live worker.
+        update_agent(cls.backend, cls.delivery_matrix_agent_id, {
+            "status": "approval", "autoWake": True, "inFlight": False,
+        })
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             def scheduler_admissions_settled() -> bool:
                 with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
@@ -579,7 +575,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(rows[empty_id]["text"], "")
 
     def test_managed_send_matches_python_rows_for_every_delivery_and_replay(self):
-        agent_id = self.busy_agent_id
+        agent_id = self.delivery_matrix_agent_id
         modes = ("queue", "steer", "after_tool", "after_turn")
         ids = (
             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
@@ -596,14 +592,23 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             }
             expected = python_direct_message(
                 self.backend, agent_id, message_id, body["text"], delivery,
+                hold_for_dispatch=True,
             )
             response = self.backend.request("POST", "/api/messages", body=body, headers=self.headers())
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json().get("id"), message_id)
             self.assertEqual(response.json().get("status"), "queued")
-            self.backend.wait_until(
-                self.backend.provider_gate_started,
-                "accepted message held at the provider thread/start boundary",
+            record, projection = agent_projection_snapshot(
+                self.backend.state / "canvas.sqlite3", agent_id,
+            )
+            expected_hold = ("approval", True, False)
+            self.assertEqual(
+                (record.get("status"), record.get("autoWake"), record.get("inFlight")),
+                expected_hold,
+            )
+            self.assertEqual(
+                (projection.get("status"), projection.get("autoWake"), projection.get("inFlight")),
+                expected_hold,
             )
             self.assertEqual(
                 managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
