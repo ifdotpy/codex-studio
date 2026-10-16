@@ -413,24 +413,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(refusal.status, 400, refusal.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), first)
 
-    def test_request_ids_use_the_python_schema_pattern(self):
-        room = "a" * 36
-        created = self.backend.request("POST", "/api/chats", body={
-            "id": room, "name": "Pattern room", "members": [],
-        }, headers=self.headers())
-        self.assertEqual(created.status, 200, created.body[:1000])
-        message = self.backend.request("POST", "/api/messages", body={
-            "id": "b" * 36, "room": room, "text": "Pattern message",
-        }, headers=self.headers())
-        self.assertEqual(message.status, 200, message.body[:1000])
-        before = no_write_snapshot(self.backend.state)
-        for invalid in ("A" * 36, "a" * 35, "g" * 36):
-            response = self.backend.request("POST", "/api/chats", body={
-                "id": invalid, "name": "Invalid identity", "members": [],
-            }, headers=self.headers())
-            self.assertEqual(response.status, 400, response.body[:1000])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
-
     def test_connections_keep_stable_identity_and_refusal_has_no_write(self):
         chat = self.create_chat()
         body = {"source": self.agent_id, "target": chat["id"], "connected": True}
@@ -927,6 +909,24 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def test_request_ids_use_the_python_schema_pattern(self):
+        room = "a" * 36
+        created = self.backend.request("POST", "/api/chats", body={
+            "id": room, "name": "Pattern room", "members": [],
+        }, headers=self.headers())
+        self.assertEqual(created.status, 200, created.body[:1000])
+        message = self.backend.request("POST", "/api/messages", body={
+            "id": "b" * 36, "room": room, "text": "Pattern message",
+        }, headers=self.headers())
+        self.assertEqual(message.status, 200, message.body[:1000])
+        before = no_write_snapshot(self.backend.state)
+        for invalid in ("A" * 36, "a" * 35, "g" * 36):
+            response = self.backend.request("POST", "/api/chats", body={
+                "id": invalid, "name": "Invalid identity", "members": [],
+            }, headers=self.headers())
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_managed_send_deleted_agent_refuses_without_writes(self):
         before = no_write_snapshot(self.backend.state)
