@@ -59,7 +59,7 @@ Ubuntu's global user namespace restriction stays enabled. Codex still enforces
 its read-only filesystem and network policies. The installer repairs ownership
 of older release archives before it loads the profile. It does not restart any
 provider. Check the installer with `python3 -B -m unittest discover -s
-workspaces/runtime/apps/vm-guest -p test_install_codex_sandbox.py`.
+workspaces/runtime/apps/server/src -p test_codex_sandbox_install.py`.
 Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
 `user_subvol_rm_allowed` and `compress=zstd:3` mount options. Run `install.sh` as root.
 

@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
+from codex_layout import VM_GUEST_ROOT
+
 
 class InstallCodexSandboxTests(unittest.TestCase):
     def setUp(self):
@@ -30,7 +32,7 @@ class InstallCodexSandboxTests(unittest.TestCase):
         self.restriction = self.root / "proc/sys/kernel/apparmor_restrict_unprivileged_userns"
         self.restriction.parent.mkdir(parents=True)
         self.restriction.write_text("1\n")
-        source = Path(__file__).with_name("install-codex-sandbox.sh").read_text()
+        source = (VM_GUEST_ROOT / "install-codex-sandbox.sh").read_text()
         for prefix in ("/opt/codex-studio", "/proc/sys/kernel", "/etc/apparmor.d"):
             source = source.replace(prefix, str(self.root) + prefix)
         self.script = self.root / "install-codex-sandbox.sh"
