@@ -73,3 +73,6 @@ rustls = { version = "=0.23.45", default-features = false, features = ["ring", "
 rustls-pki-types = { version = "=1.15.1", features = ["std"] }
 spki = { version = "=0.7.3", features = ["std"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+
+[profile.test.package.sha2]
+opt-level = 3
