@@ -254,6 +254,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     startup_trace("store-open-started");
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref()).await?);
+    store
+        .set_diagnostics_callback(Some(
+            studio_runtime_services::diagnostics::observe_store_event,
+        ))
+        .await?;
     startup_trace("store-open-completed");
     // This guard drops before `store`, so the runtime lock remains held while
     // the PID file is checked and removed on every post-open exit path.

@@ -224,9 +224,6 @@ impl HttpState {
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
-            store.set_diagnostics_callback(Some(
-                studio_runtime_services::diagnostics::observe_store_event,
-            ));
         }
         Self {
             message_admission: None,

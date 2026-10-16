@@ -255,7 +255,7 @@ pub(crate) async fn pull(
                 reset_support,
                 priority_id,
                 generation,
-                || {},
+                || Box::pin(async {}),
             )
             .await?
         }
