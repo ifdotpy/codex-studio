@@ -46,10 +46,32 @@ function fixture(entries: Entry[]) {
       }),
     };
   });
+  const projectionListeners = new Set<
+    (event: { documentData: unknown }) => void
+  >();
+  const projections = {
+    storageInstance: {
+      findDocumentsById: vi.fn(
+        async (
+          _ids: string[],
+          _withDeleted?: boolean,
+        ): Promise<unknown[]> => [],
+      ),
+    },
+    $: {
+      subscribe: vi.fn(
+        (listener: (event: { documentData: unknown }) => void) => {
+          projectionListeners.add(listener);
+          return { unsubscribe: () => projectionListeners.delete(listener) };
+        },
+      ),
+    },
+  };
   const database = {
     workspaceId: "workspace",
     verifyWorkspace: vi.fn().mockResolvedValue(undefined),
     db: {
+      projections,
       outbox: {
         find: () => ({ exec: async () => docs }),
         findOne: (id: string) => ({
@@ -59,7 +81,14 @@ function fixture(entries: Entry[]) {
     },
   };
   mocks.syncDatabase.mockResolvedValue(database);
-  return { docs, database };
+  return {
+    docs,
+    database,
+    projections,
+    emitProjection(documentData: unknown) {
+      for (const listener of projectionListeners) listener({ documentData });
+    },
+  };
 }
 
 afterEach(() => vi.resetAllMocks());
@@ -221,6 +250,164 @@ it("bounds receipt batches and parallel requests", async () => {
   await recoverAcknowledgedOutbox();
   expect(maximum).toBe(4);
   expect(mocks.syncGet).toHaveBeenCalledTimes(12);
+});
+
+it("skips receipt recovery only for an explicitly deleted agent projection", async () => {
+  const { docs, projections } = fixture([
+    { id: "deleted-message", room: "deleted-chat", status: "uncertain" },
+  ]);
+  const original = docs[0].getLatest().payload;
+  projections.storageInstance.findDocumentsById.mockResolvedValue([
+    {
+      id: "entity:agent:deleted-chat",
+      seq: 7,
+      payload: JSON.stringify({
+        collection: "agent",
+        id: "deleted-chat",
+        value: { id: "deleted-chat", deletedAt: 123 },
+      }),
+    },
+  ]);
+
+  await recoverAcknowledgedOutbox();
+
+  expect(mocks.syncGet).not.toHaveBeenCalled();
+  expect(docs[0].getLatest().payload).toBe(original);
+});
+
+it("does not mistake a sequence-zero stream reset tombstone for agent deletion", async () => {
+  const { docs, projections } = fixture([
+    { id: "reset-message", room: "reset-chat", status: "uncertain" },
+  ]);
+  const original = docs[0].getLatest().payload;
+  projections.storageInstance.findDocumentsById.mockResolvedValue([
+    {
+      id: "entity:agent:reset-chat",
+      seq: 0,
+      _deleted: true,
+      payload: JSON.stringify({
+        collection: "agent",
+        id: "reset-chat",
+        value: { id: "reset-chat", deletedAt: null },
+      }),
+    },
+  ]);
+  mocks.syncGet.mockResolvedValue({
+    agent: "reset-chat",
+    workspaceId: "workspace",
+    items: [],
+  });
+
+  await recoverAcknowledgedOutbox();
+
+  expect(mocks.syncGet).toHaveBeenCalledTimes(1);
+  expect(docs[0].getLatest().payload).toBe(original);
+});
+
+it("recognizes a positive-sequence agent tombstone with an empty value", async () => {
+  const { docs, projections } = fixture([
+    { id: "deleted-message", room: "deleted-chat", status: "uncertain" },
+  ]);
+  const original = docs[0].getLatest().payload;
+  projections.storageInstance.findDocumentsById.mockResolvedValue([
+    {
+      id: "entity:agent:deleted-chat",
+      seq: 9,
+      _deleted: true,
+      payload: JSON.stringify({
+        collection: "agent",
+        id: "deleted-chat",
+        value: {},
+      }),
+    },
+  ]);
+
+  await recoverAcknowledgedOutbox();
+
+  expect(mocks.syncGet).not.toHaveBeenCalled();
+  expect(docs[0].getLatest().payload).toBe(original);
+});
+
+it("aborts in-flight receipt recovery when the agent deletion projection arrives", async () => {
+  const entries = Array.from({ length: 101 }, (_, index) => ({
+    id: `message-${index}`,
+    room: "deleted-chat",
+    status: "uncertain",
+  }));
+  const { docs, emitProjection } = fixture(entries);
+  const originals = docs.map((doc) => doc.getLatest().payload);
+  mocks.syncGet.mockImplementation(
+    (_path, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      }),
+  );
+
+  const recovery = recoverAcknowledgedOutbox();
+  await vi.waitFor(() => expect(mocks.syncGet).toHaveBeenCalledTimes(1));
+  const signal = mocks.syncGet.mock.calls[0]?.[1]?.signal as AbortSignal;
+  expect(signal.aborted).toBe(false);
+  emitProjection({
+    id: "entity:agent:deleted-chat",
+    seq: 8,
+    payload: JSON.stringify({
+      collection: "agent",
+      id: "deleted-chat",
+      value: { id: "deleted-chat", deletedAt: 456 },
+    }),
+  });
+
+  await expect(recovery).resolves.toBeUndefined();
+
+  expect(signal.aborted).toBe(true);
+  expect(mocks.syncGet).toHaveBeenCalledTimes(1);
+  expect(docs.map((doc) => doc.getLatest().payload)).toEqual(originals);
+});
+
+it("does not reconcile a receipt if deletion arrives during the outbox write", async () => {
+  const { docs, emitProjection } = fixture([
+    { id: "message", room: "deleted-chat", status: "uncertain" },
+  ]);
+  const original = docs[0].getLatest().payload;
+  let enteredModify!: () => void;
+  let resumeModify!: () => void;
+  const modifying = new Promise<void>((resolve) => (enteredModify = resolve));
+  const continueModify = new Promise<void>(
+    (resolve) => (resumeModify = resolve),
+  );
+  const doc = docs[0];
+  doc.incrementalModify.mockImplementation(async (change) => {
+    enteredModify();
+    await continueModify;
+    const record = doc.getLatest();
+    Object.assign(record, change({ ...record }));
+    return record;
+  });
+  mocks.syncGet.mockResolvedValue({
+    agent: "deleted-chat",
+    workspaceId: "workspace",
+    items: [{ id: "message", status: "delivered", materialized: true }],
+  });
+
+  const recovery = recoverAcknowledgedOutbox();
+  await modifying;
+  emitProjection({
+    id: "entity:agent:deleted-chat",
+    seq: 10,
+    payload: JSON.stringify({
+      collection: "agent",
+      id: "deleted-chat",
+      value: { id: "deleted-chat", deletedAt: 789 },
+    }),
+  });
+  resumeModify();
+  await recovery;
+
+  expect(docs[0].getLatest().payload).toBe(original);
 });
 
 it("preserves copies after a lost read and rejects foreign receipt identities", async () => {

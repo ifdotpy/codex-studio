@@ -24,18 +24,24 @@ export function useMessageReceipts(
   useEffect(() => {
     if (!room || !workspaceId) return;
     let active = true;
+    const controller = new AbortController();
     const stop = watchResourceReads(
       { kind: "receipts", agentId: room },
       async () => {
         const current = requested.current;
-        for (let offset = 0; offset < current.length; offset += 100) {
+        for (
+          let offset = 0;
+          active && !controller.signal.aborted && offset < current.length;
+          offset += 100
+        ) {
           const batch = current.slice(offset, offset + 100);
           if (!batch.length) continue;
           const result = await get("/api/messages/receipts", {
             query: { agent: room, ids: JSON.stringify(batch) },
             workspaceId,
+            signal: controller.signal,
           });
-          if (!active) return;
+          if (!active || controller.signal.aborted) return;
           const receipts = checkedMessageReceipts(
             result,
             room,
@@ -67,7 +73,12 @@ export function useMessageReceipts(
               return previous;
             return { scope, receipts: next };
           });
-          await reconcileOutboxReceipts(room, receipts, workspaceId);
+          await reconcileOutboxReceipts(
+            room,
+            receipts,
+            workspaceId,
+            controller.signal,
+          );
         }
       },
       () => {
@@ -76,6 +87,7 @@ export function useMessageReceipts(
     );
     return () => {
       active = false;
+      controller.abort();
       stop();
     };
   }, [room, scope, workspaceId, requestedKey]);
