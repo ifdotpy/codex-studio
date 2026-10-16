@@ -795,7 +795,11 @@ async function main() {
       exact: true,
     });
     await mainSettings.click();
-    const mainAccount = page.getByRole("group", {
+    const mainSettingsDialog = page.getByRole("dialog", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    const mainAccount = mainSettingsDialog.getByRole("group", {
       name: "Main agent account",
       exact: true,
     });
@@ -813,16 +817,20 @@ async function main() {
       "Expected exactly one requested Claude account tile.",
     );
     await claudeAccount.click();
-    const orchestrator = page
+    const orchestrator = mainSettingsDialog
       .getByRole("group", { name: "Agent role", exact: true })
       .getByRole("button", { name: "Orchestrator", exact: true });
     await orchestrator.click();
-    const defaultLeadModel = page.locator(
-      '[role="listbox"][aria-label="Main agent model"] [role="option"][data-value="default"]',
+    const mainModel = mainSettingsDialog.getByRole("listbox", {
+      name: "Main agent model",
+      exact: true,
+    });
+    const defaultLeadModel = mainModel.locator(
+      '[role="option"][data-value="default"]',
     );
     await defaultLeadModel.waitFor();
     await defaultLeadModel.click();
-    await page
+    await mainSettingsDialog
       .locator(
         '[role="listbox"][aria-label="Main agent model"][data-value="default"]',
       )
@@ -831,9 +839,16 @@ async function main() {
     await dialog
       .getByRole("button", { name: "Subagent defaults", exact: true })
       .click();
-    const roles = page.getByRole("group", { name: "Agent role", exact: true });
+    const subagentDialog = page.getByRole("dialog", {
+      name: "Subagent defaults",
+      exact: true,
+    });
+    const roles = subagentDialog.getByRole("group", {
+      name: "Agent role",
+      exact: true,
+    });
     await roles.getByRole("button", { name: "Worker", exact: true }).click();
-    const workerAccount = page.getByRole("group", {
+    const workerAccount = subagentDialog.getByRole("group", {
       name: "Subagent account",
       exact: true,
     });
@@ -860,19 +875,25 @@ async function main() {
       "true",
       "Worker account is not pinned to Default.",
     );
-    await page.locator(`[role="option"][data-value="${WORKER_MODEL}"]`).click();
-    await page
+    const workerModel = subagentDialog.getByRole("listbox", {
+      name: "Default subagent model",
+      exact: true,
+    });
+    await workerModel
+      .locator(`[role="option"][data-value="${WORKER_MODEL}"]`)
+      .click();
+    await workerModel
       .locator(
-        `[role="listbox"][aria-label="Default subagent model"] [role="option"][data-value="${WORKER_MODEL}"][aria-selected="true"]`,
+        `[role="option"][data-value="${WORKER_MODEL}"][aria-selected="true"]`,
       )
       .waitFor();
-    await page
+    await subagentDialog
       .locator(
         `[role="radiogroup"][aria-label="Default subagent reasoning"][data-value="${EFFORT}"]`,
       )
       .waitFor();
     assert.equal(
-      await page
+      await subagentDialog
         .getByLabel("Default subagent reasoning", { exact: true })
         .getAttribute("data-value"),
       EFFORT,
@@ -880,21 +901,29 @@ async function main() {
     );
 
     await roles.getByRole("button", { name: "Review", exact: true }).click();
-    const reviewModel = page.locator(
+    const reviewDialog = page.getByRole("dialog", {
+      name: "Review settings",
+      exact: true,
+    });
+    const reviewModelList = reviewDialog.getByRole("listbox", {
+      name: "Default review model",
+      exact: true,
+    });
+    const reviewModel = reviewModelList.locator(
       `[role="option"][data-value="${REVIEW_MODEL}"]`,
     );
     await reviewModel.waitFor();
     await reviewModel.click();
-    await page
+    await reviewModelList
       .locator(
-        `[role="listbox"][aria-label="Default review model"] [role="option"][data-value="${REVIEW_MODEL}"][aria-selected="true"]`,
+        `[role="option"][data-value="${REVIEW_MODEL}"][aria-selected="true"]`,
       )
       .waitFor();
-    const reviewEffort = page.getByLabel("Default review reasoning", {
+    const reviewEffort = reviewDialog.getByLabel("Default review reasoning", {
       exact: true,
     });
     await reviewEffort.locator(`[data-value="${EFFORT}"]`).click();
-    await page
+    await reviewDialog
       .locator(
         `[role="radiogroup"][aria-label="Default review reasoning"][data-value="${EFFORT}"]`,
       )
