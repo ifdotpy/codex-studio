@@ -34,6 +34,7 @@ pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
 pub(crate) mod queue_write;
 pub(crate) mod remote_transport;
+pub(crate) mod reviewer_archive;
 pub(crate) mod rules;
 pub mod rules_tick;
 pub(crate) mod scheduler;

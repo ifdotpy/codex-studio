@@ -2139,7 +2139,93 @@ pub(super) fn deliver_attempt_events(
     let changed = transaction.execute(
         "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?1))",
         params![turn_id, agent_id, epoch, event_ids.0])?;
-    require_membership(changed, event_ids.1, agent_id)
+    require_membership(changed, event_ids.1, agent_id)?;
+    let event_ids: Vec<String> = serde_json::from_str(&event_ids.0)?;
+    SchedulerRepository::project_delivered_chat_events(
+        transaction,
+        agent_id,
+        epoch,
+        turn_id,
+        &event_ids,
+    )
+}
+
+/// Keep the durable chat projection in the same transaction as scheduler
+/// acceptance, whether acceptance came from a turn/start response or a native
+/// userMessage receipt. Only an exact submitted event may advance its recipient.
+impl SchedulerRepository {
+    /// Idempotently project chat deliveries for events proven delivered to a turn.
+    pub fn project_delivered_chat_events(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        turn_id: &str,
+        event_ids: &[String],
+    ) -> StoreResult<()> {
+        let messages_table_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_chat_messages')",
+        [],
+        |row| row.get(0),
+    )?;
+        if !messages_table_exists {
+            return Ok(());
+        }
+        for event_id in event_ids {
+            let Some(event) = crate::QueueEventRepository::get(
+                transaction,
+                &crate::QueueEventId::from(event_id.as_str()),
+            )?
+            else {
+                continue;
+            };
+            if event.agent.0 != agent_id
+                || event.epoch != epoch
+                || event.status != "delivered"
+                || event.turn_id.as_deref() != Some(turn_id)
+                || event.kind != "agent_message"
+            {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<Value>(&event.text) else {
+                continue;
+            };
+            let (Some(message_id), Some(room_id), Some(sender), Some(text)) = (
+                payload.get("message_id").and_then(Value::as_str),
+                payload.get("room").and_then(Value::as_str),
+                payload.get("sender").and_then(Value::as_str),
+                payload.get("text").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if message_id.is_empty()
+                || room_id.is_empty()
+                || sender.is_empty()
+                || event.id.0 != format!("chat:{message_id}:{agent_id}")
+            {
+                continue;
+            }
+            let Some(mut message) = crate::MessageRepository::get(
+                transaction,
+                &crate::ChatMessageId::from(message_id),
+            )?
+            else {
+                continue;
+            };
+            if message.room != room_id || message.sender != sender || message.text != text {
+                continue;
+            }
+            if let Some(delivery) = message
+                .deliveries
+                .as_object_mut()
+                .and_then(|deliveries| deliveries.get_mut(agent_id))
+                && matches!(delivery.as_str(), Some("queued" | "pending"))
+            {
+                *delivery = json!("delivered");
+                crate::MessageRepository::put(transaction, &message)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn require_membership(changed: usize, expected: usize, agent: &str) -> StoreResult<()> {

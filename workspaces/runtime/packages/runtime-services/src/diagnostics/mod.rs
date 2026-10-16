@@ -30,6 +30,28 @@ mod sqlite;
 mod startup;
 mod store;
 
+/// Record one fixed-name runtime stage duration only when explicitly enabled.
+/// The flag is evaluated once; measurements contain no request, account, or
+/// record identities. Unit for `elapsed_ms`: milliseconds.
+pub(crate) fn measure_runtime_stage<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| {
+        std::env::var("CODEX_RUNTIME_STAGE_TIMINGS").is_ok_and(|value| value == "1")
+    }) {
+        return operation();
+    }
+    let started = Instant::now();
+    let result = operation();
+    eprintln!(
+        "runtime_stage name={name} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    result
+}
+
 pub use host::{current_process_id, process_kind, system_snapshot};
 pub use http::{http_request_metrics, record_http_request};
 pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtime_lock_samples};

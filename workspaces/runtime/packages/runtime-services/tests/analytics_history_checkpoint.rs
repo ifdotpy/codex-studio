@@ -629,6 +629,161 @@ fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
 }
 
 #[test]
+fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity_strict() {
+    use studio_runtime_services::analytics_history::{
+        HistoryClock, HistoryCollector, StoreHistoryBudgetSink,
+    };
+    use studio_runtime_services::budget::{BudgetError, CaptureSource};
+    use studio_runtime_services::budget_service;
+
+    let (root, mut agent) = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    agent["turnId"] = json!("current-turn");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.turnId',?1) WHERE id=?2",
+                rusqlite::params!["current-turn", agent["id"].as_str()],
+            )?;
+            Ok(())
+        })
+        .expect("persist current turn");
+
+    let usage = json!({
+        "input_tokens": 10,
+        "cached_input_tokens": 0,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 15
+    });
+    let lines = vec![
+        json!({"type":"session_meta","timestamp":1,"payload":{"id":"thread"}}),
+        json!({"type":"event_msg","timestamp":2,"payload":{"type":"task_started","turn_id":"earlier-turn"}}),
+        json!({"type":"event_msg","timestamp":3,"payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}),
+        json!({"type":"event_msg","timestamp":4,"payload":{"type":"task_complete","turn_id":"earlier-turn","status":"completed"}}),
+        json!({"type":"event_msg","timestamp":5,"payload":{"type":"task_started","turn_id":"current-turn"}}),
+        json!({"type":"event_msg","timestamp":6,"payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}),
+        json!({"type":"token_usage_record","timestamp":6.5,"payload":{"thread_id":"thread","turn_id":"earlier-turn","response_id":"delayed-earlier-response","usage":{"total_tokens":4},"thread_token_usage":{"total_tokens":19}}}),
+        json!({"type":"event_msg","timestamp":7,"payload":{"type":"task_complete","turn_id":"current-turn","status":"completed"}}),
+    ];
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).expect("fixture sessions");
+    let path = file(&sessions, &lines, b"");
+    let cancel = AtomicBool::new(false);
+    let budget = StoreHistoryBudgetSink::new(&store);
+    let mut collector = HistoryCollector::default();
+    let profile = |_: &str| Ok(root.path().to_path_buf());
+    assert!(
+        collector
+            .step(
+                &store,
+                std::slice::from_ref(&agent),
+                profile,
+                HistoryClock {
+                    observed_at: 200.0,
+                    monotonic: 10.0,
+                },
+                &cancel,
+                &budget,
+            )
+            .expect("import notices and delayed prior-turn response")
+    );
+
+    let read_budget = || {
+        store
+            .read_transaction(|tx| {
+                Ok((
+                    tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                    tx.query_row(
+                        "SELECT COALESCE(sum(tokens),0) FROM runtime_budget_usage",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                ))
+            })
+            .expect("budget receipts")
+    };
+    assert_eq!(read_budget(), (3, 34));
+    let stored_checkpoint = checkpoint(&store).expect("history checkpoint");
+    assert_eq!(
+        stored_checkpoint["offset"],
+        fs::metadata(&path).expect("stat").len()
+    );
+    assert_eq!(stored_checkpoint["importedRecords"], lines.len() as u64);
+
+    let replay = history::prepare(
+        HistorySnapshot::from_records(agent.clone(), Some(stored_checkpoint.clone()))
+            .expect("checkpoint snapshot"),
+        root.path(),
+        RolloutPath::Found(path),
+        BatchLimits::default(),
+        201.0,
+        &cancel,
+    )
+    .expect("replay historical turns");
+    assert!(!replay.advanced());
+    replay
+        .commit(&store, &budget, 201.0)
+        .expect("idempotent historical replay");
+    assert_eq!(checkpoint(&store), Some(stored_checkpoint));
+    assert_eq!(read_budget(), (3, 34));
+
+    let params = json!({
+        "threadId":"thread",
+        "turnId":"earlier-turn",
+        "responseId":"live-wrong-turn",
+        "rawTokenUsageRecord":{"response_id":"live-wrong-turn"},
+        "requestUsage":{"totalTokens":5},
+        "tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5}}
+    });
+    let mut wrong_live_agent = agent.clone();
+    wrong_live_agent["turnId"] = json!("earlier-turn");
+    let result = store.transaction_with::<_, BudgetError>(|tx| {
+        budget_service::capture(
+            tx,
+            &mut wrong_live_agent,
+            &params,
+            202.0,
+            CaptureSource::Live,
+            202.0,
+        )
+        .map(|_| ())
+    });
+    assert!(matches!(
+        result,
+        Err(BudgetError::Invalid(location)) if location == "runtime_agents/turnId/identity"
+    ));
+
+    for (field, value) in [
+        ("rootId", json!("foreign-root")),
+        ("accountKey", json!("foreign-account")),
+        ("threadId", json!("foreign-thread")),
+        ("epoch", json!(9_999)),
+    ] {
+        let mut wrong_history_agent = agent.clone();
+        wrong_history_agent["turnId"] = json!("earlier-turn");
+        wrong_history_agent[field] = value;
+        let result = store.transaction_with::<_, BudgetError>(|tx| {
+            budget_service::capture(
+                tx,
+                &mut wrong_history_agent,
+                &params,
+                203.0,
+                CaptureSource::History,
+                203.0,
+            )
+            .map(|_| ())
+        });
+        assert!(matches!(
+            result,
+            Err(BudgetError::Invalid(location)) if location == format!("runtime_agents/{field}/identity")
+        ));
+    }
+}
+
+#[test]
 fn active_import_quota_notification_and_timer_budget() {
     use studio_runtime_services::analytics_history_schedule::HistorySchedule;
     let (_, mut active) = fixture();

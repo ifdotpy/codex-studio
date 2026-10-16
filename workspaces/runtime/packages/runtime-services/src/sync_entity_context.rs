@@ -24,7 +24,6 @@ pub(crate) fn agent_view_contexts(
     transaction: &Transaction<'_>,
     agents: &[(String, String)],
     work_records: &[(String, String)],
-    monitor_records: &[(String, String)],
     project_server_id: Option<&str>,
 ) -> StoreResult<(HashMap<String, AgentViewContext>, AgentContextWork)> {
     let parsed_agents = agents
@@ -44,17 +43,6 @@ pub(crate) fn agent_view_contexts(
                 .map(str::to_owned)
         })
         .collect::<std::collections::HashSet<_>>();
-    let monitor_agents = monitor_records
-        .iter()
-        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
-        .filter_map(|record| {
-            record
-                .get("agent")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect::<std::collections::HashSet<_>>();
-
     let lead_ids = parsed_agents
         .iter()
         .filter_map(|(id, record)| {
@@ -67,6 +55,55 @@ pub(crate) fn agent_view_contexts(
             eligible.then_some(id.as_str())
         })
         .collect::<Vec<_>>();
+    // `empty_lead` only needs to know whether each eligible lead owns any
+    // monitor. The agent-key index bounds this lookup to the small lead set;
+    // capturing every historical monitor row would rescan the full journal on
+    // each unrelated lifecycle write.
+    let mut monitor_agents = std::collections::HashSet::new();
+    if !lead_ids.is_empty() && table_exists(transaction, "runtime_monitors")? {
+        let has_owner_index = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='runtime_monitor_agent_status')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if has_owner_index {
+            // The indexed JSON expression rejects malformed rows at write
+            // time, so this bounded owner lookup is safe and index-backed.
+            for chunk in lead_ids.chunks(500) {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+                let mut statement = transaction.prepare(&format!(
+                    "SELECT DISTINCT json_extract(record,'$.agent') FROM runtime_monitors \
+                     WHERE json_extract(record,'$.agent') IN ({placeholders})"
+                ))?;
+                monitor_agents.extend(
+                    statement
+                        .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                            row.get::<_, String>(0)
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+        } else {
+            // Legacy/test schemas without the expression index may contain
+            // invalid JSON. Preserve the former decode-and-skip behavior.
+            let lead_set = lead_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            let mut statement = transaction.prepare("SELECT record FROM runtime_monitors")?;
+            for raw in statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+            {
+                if let Ok(record) = serde_json::from_str::<Value>(&raw)
+                    && let Some(owner) = record.get("agent").and_then(Value::as_str)
+                    && lead_set.contains(owner)
+                {
+                    monitor_agents.insert(owner.to_owned());
+                }
+            }
+        }
+    }
     let mut event_agents = std::collections::HashSet::new();
     let mut event_rows_scanned = 0;
     if !lead_ids.is_empty() && table_exists(transaction, "runtime_events")? {
@@ -543,7 +580,7 @@ mod room_preparation_tests {
         }
         let before_elapsed = before_started.elapsed();
         let after_started = std::time::Instant::now();
-        let (after, work) = agent_view_contexts(&transaction, &agents, &work, &[], None)
+        let (after, work) = agent_view_contexts(&transaction, &agents, &work, None)
             .expect("bulk contexts are built");
         let after_elapsed = after_started.elapsed();
         assert_eq!(work.agents_computed, AGENT_COUNT);
@@ -570,5 +607,51 @@ mod room_preparation_tests {
             work.event_rows_scanned,
             work.item_agents_matched,
         );
+    }
+
+    #[test]
+    fn bulk_agent_contexts_use_indexed_monitor_owner_lookup() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
+                     json_extract(record,'$.agent'),json_extract(record,'$.status'));
+                 CREATE TABLE runtime_events(agent TEXT NOT NULL);
+                 CREATE TABLE runtime_items(agent TEXT NOT NULL);
+                 INSERT INTO runtime_monitors VALUES
+                     ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');",
+            )
+            .expect("context fixture");
+        let agents = [
+            (
+                "lead-busy".to_owned(),
+                json!({"id":"lead-busy","status":"idle","isLead":true}).to_string(),
+            ),
+            (
+                "lead-empty".to_owned(),
+                json!({"id":"lead-empty","status":"idle","isLead":true}).to_string(),
+            ),
+        ];
+        let transaction = connection.transaction().expect("context transaction");
+        let plan = transaction
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(record,'$.agent') \
+                 FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (?1,?2)",
+            )
+            .expect("owner lookup explain plan")
+            .query_map(["lead-busy", "lead-empty"], |row| row.get::<_, String>(3))
+            .expect("owner plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("owner plan read");
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("runtime_monitor_agent_status")),
+            "monitor owner lookup must use the owner index: {plan:?}"
+        );
+        let (contexts, _) =
+            agent_view_contexts(&transaction, &agents, &[], None).expect("bulk contexts are built");
+        assert!(!contexts["lead-busy"].empty_lead);
+        assert!(contexts["lead-empty"].empty_lead);
     }
 }

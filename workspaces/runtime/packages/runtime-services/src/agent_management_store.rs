@@ -4,6 +4,7 @@ use crate::agent_management::{
 };
 use rusqlite::OptionalExtension;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, Transaction, agent_management as repository,
 };
@@ -215,9 +216,19 @@ fn execute_decision(
             ));
         }
     }
-    let records = Records {
-        tables: repository::read(transaction)?,
+    let tables = if let Action::Delete { target } = action {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "runtime_agents".to_owned(),
+            repository::read_agent_directory(transaction)?,
+        );
+        let directory = ManagementSnapshot::from_records(Records { tables: agents })?;
+        let owners = directory.delete_owner_scope(target)?;
+        repository::read_for_agents(transaction, Some(&owners))?
+    } else {
+        repository::read(transaction)?
     };
+    let records = Records { tables };
     let snapshot = ManagementSnapshot::from_records(records.clone())?;
     let decision = if ports.is_some() {
         decide_with_effects(&snapshot, action, now)?

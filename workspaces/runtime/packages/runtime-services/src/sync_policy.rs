@@ -22,8 +22,13 @@ pub const ENTITY_PAGE_LIMIT: i64 = SYNC_ENTITY_PAGE_LIMIT;
 pub const OTHER_PAGE_LIMIT: i64 = SYNC_BATCH_LIMIT;
 const PREFERENCE_FIELD_CAP: usize = 3000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
+// Python owner: codex_entity_contracts.MONITOR_TERMINAL_WINDOW and
+// MONITOR_FINAL_WINDOW. A parity test below keeps both independently named
+// caps aligned; the caps have separate meanings despite sharing a value.
 const MONITOR_TERMINAL_WINDOW: usize = 100;
 const MONITOR_FINAL_WINDOW: usize = 100;
+const MONITOR_ACTIVE_STATUSES: [&str; 3] = ["running", "starting", "approval"];
+const MONITOR_TERMINAL_STATUSES: [&str; 4] = ["completed", "failed", "cancelled", "lost"];
 const TASK_RETIRE_BATCH: usize = 100;
 const SYNC_SEEDED_MARKER: &str = "seeded";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
@@ -238,22 +243,25 @@ pub fn maintain_entity_projections_with_server_id(
     rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
-    let source_records = [
-        "runtime_agents",
-        "runtime_rooms",
-        "runtime_complaints",
-        "runtime_projects",
-        "runtime_requests",
-        "runtime_rules",
-        "runtime_work",
-        "runtime_tasks",
-        "runtime_monitors",
-        "runtime_federation_rooms",
-    ]
-    .into_iter()
-    .map(|table| projection_records(transaction, table).map(|records| (table, records)))
-    .collect::<StoreResult<HashMap<_, _>>>()?;
-    vault_snapshot.recheck(transaction)?;
+    let source_records =
+        crate::diagnostics::measure_runtime_stage("projection.source_snapshot", || {
+            [
+                "runtime_agents",
+                "runtime_rooms",
+                "runtime_complaints",
+                "runtime_projects",
+                "runtime_requests",
+                "runtime_rules",
+                "runtime_work",
+                "runtime_federation_rooms",
+            ]
+            .into_iter()
+            .map(|table| projection_records(transaction, table).map(|records| (table, records)))
+            .collect::<StoreResult<HashMap<_, _>>>()
+        })?;
+    crate::diagnostics::measure_runtime_stage("projection.vault_recheck", || {
+        vault_snapshot.recheck(transaction)
+    })?;
     let peer_agents = source_records
         .get("runtime_agents")
         .ok_or(StoreError::RecordContract(
@@ -265,117 +273,120 @@ pub fn maintain_entity_projections_with_server_id(
             .ok_or(StoreError::RecordContract(
                 "entity projection source snapshot is incomplete",
             ))?;
-    let agent_contexts = crate::sync_entity_context::agent_view_contexts(
-        transaction,
-        peer_agents,
-        source_records
-            .get("runtime_work")
-            .ok_or(StoreError::RecordContract(
-                "entity projection source snapshot is incomplete",
-            ))?,
-        source_records
-            .get("runtime_monitors")
-            .ok_or(StoreError::RecordContract(
-                "entity projection source snapshot is incomplete",
-            ))?,
-        project_server_id,
-    )?
-    .0;
-    maintain_peer_team_entities(
-        transaction,
-        peer_agents,
-        peer_projects,
-        &validate_projection,
-    )?;
-    let mut current_rooms = BTreeSet::new();
-    for (table, collection) in [
-        ("runtime_agents", "agent"),
-        ("runtime_rooms", "room"),
-        ("runtime_complaints", "complaint"),
-        ("runtime_projects", "project"),
-        ("runtime_requests", "request"),
-        ("runtime_rules", "rule"),
-        ("runtime_work", "work"),
-    ] {
-        let records = source_records.get(table).ok_or(StoreError::RecordContract(
-            "entity projection source snapshot is incomplete",
-        ))?;
-        for (id, raw) in records {
-            let record = serde_json::from_str::<Value>(raw)?;
-            if collection == "agent" && truthy(record.get("deletedAt")) {
-                retire_if_live(transaction, collection, id, &validate_projection)?;
-                continue;
-            }
-            if collection == "request"
-                && record.get("status").and_then(Value::as_str) != Some("pending")
-            {
-                retire_if_live(transaction, collection, id, &validate_projection)?;
-                continue;
-            }
-            let projected = match collection {
-                "agent" => agent_entity_view(
-                    &record,
-                    agent_contexts.get(id).ok_or(StoreError::RecordContract(
-                        "agent projection context snapshot is incomplete",
+    let agent_contexts =
+        crate::diagnostics::measure_runtime_stage("projection.agent_contexts", || {
+            crate::sync_entity_context::agent_view_contexts(
+                transaction,
+                peer_agents,
+                source_records
+                    .get("runtime_work")
+                    .ok_or(StoreError::RecordContract(
+                        "entity projection source snapshot is incomplete",
                     ))?,
-                ),
-                "room" => {
-                    let context = rooms.for_room(transaction, &record, true)?;
-                    room_entity_view(&record, &context)
+                project_server_id,
+            )
+        })?
+        .0;
+    crate::diagnostics::measure_runtime_stage("projection.peer_team_entities", || {
+        maintain_peer_team_entities(
+            transaction,
+            peer_agents,
+            peer_projects,
+            &validate_projection,
+        )
+    })?;
+    let mut current_rooms = BTreeSet::new();
+    crate::diagnostics::measure_runtime_stage("projection.direct_entities", || {
+        for (table, collection) in [
+            ("runtime_agents", "agent"),
+            ("runtime_rooms", "room"),
+            ("runtime_complaints", "complaint"),
+            ("runtime_projects", "project"),
+            ("runtime_requests", "request"),
+            ("runtime_rules", "rule"),
+            ("runtime_work", "work"),
+        ] {
+            let records = source_records.get(table).ok_or(StoreError::RecordContract(
+                "entity projection source snapshot is incomplete",
+            ))?;
+            for (id, raw) in records {
+                let record = serde_json::from_str::<Value>(raw)?;
+                if collection == "agent" && truthy(record.get("deletedAt")) {
+                    retire_if_live(transaction, collection, id, &validate_projection)?;
+                    continue;
                 }
-                "complaint" => complaint_entity_view(
-                    &record,
-                    &ComplaintViewContext {
-                        agents: rooms.agents().to_vec(),
-                    },
-                ),
-                "project" => {
-                    let prior = transaction.query_row(
+                if collection == "request"
+                    && record.get("status").and_then(Value::as_str) != Some("pending")
+                {
+                    retire_if_live(transaction, collection, id, &validate_projection)?;
+                    continue;
+                }
+                let projected = match collection {
+                    "agent" => agent_entity_view(
+                        &record,
+                        agent_contexts.get(id).ok_or(StoreError::RecordContract(
+                            "agent projection context snapshot is incomplete",
+                        ))?,
+                    ),
+                    "room" => {
+                        let context = rooms.for_room(transaction, &record, true)?;
+                        room_entity_view(&record, &context)
+                    }
+                    "complaint" => complaint_entity_view(
+                        &record,
+                        &ComplaintViewContext {
+                            agents: rooms.agents().to_vec(),
+                        },
+                    ),
+                    "project" => {
+                        let prior = transaction.query_row(
                         "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
                         [&id],
                         |row| row.get::<_, Option<String>>(0),
                     ).optional()?.flatten();
-                    let prior =
-                        prior.and_then(|payload| serde_json::from_str::<Value>(&payload).ok());
-                    let value = prior.as_ref().and_then(|payload| payload.get("value"));
-                    let readiness = value.and_then(|value| value.get("layrReadiness"));
-                    let readiness_is_ready = readiness.is_some_and(|value| {
-                        value.get("state").and_then(Value::as_str) == Some("ready")
-                    });
-                    let cached_vault = if readiness_is_ready {
-                        vault_snapshot.view(id, &record)?
-                    } else {
-                        None
-                    };
-                    let vault = if readiness_is_ready && !state_dir.is_empty() {
-                        cached_vault.as_ref()
-                    } else {
-                        value.and_then(|value| value.get("vault"))
-                    };
-                    project_entity_view(
-                        &record,
-                        readiness,
-                        value.and_then(|value| value.get("layrSync")),
-                        vault,
-                    )
+                        let prior =
+                            prior.and_then(|payload| serde_json::from_str::<Value>(&payload).ok());
+                        let value = prior.as_ref().and_then(|payload| payload.get("value"));
+                        let readiness = value.and_then(|value| value.get("layrReadiness"));
+                        let readiness_is_ready = readiness.is_some_and(|value| {
+                            value.get("state").and_then(Value::as_str) == Some("ready")
+                        });
+                        let cached_vault = if readiness_is_ready {
+                            vault_snapshot.view(id, &record)?
+                        } else {
+                            None
+                        };
+                        let vault = if readiness_is_ready && !state_dir.is_empty() {
+                            cached_vault.as_ref()
+                        } else {
+                            value.and_then(|value| value.get("vault"))
+                        };
+                        project_entity_view(
+                            &record,
+                            readiness,
+                            value.and_then(|value| value.get("layrSync")),
+                            vault,
+                        )
+                    }
+                    _ => project_persisted_record(collection, &record),
+                };
+                if let Some(projected) = projected {
+                    if collection == "room" {
+                        current_rooms.insert(id.clone());
+                    }
+                    put_projection(
+                        transaction,
+                        collection,
+                        id,
+                        projected,
+                        false,
+                        &validate_projection,
+                    )?;
                 }
-                _ => project_persisted_record(collection, &record),
-            };
-            if let Some(projected) = projected {
-                if collection == "room" {
-                    current_rooms.insert(id.clone());
-                }
-                put_projection(
-                    transaction,
-                    collection,
-                    id,
-                    projected,
-                    false,
-                    &validate_projection,
-                )?;
             }
         }
-    }
+        Ok::<(), StoreError>(())
+    })?;
     if table_exists(transaction, "runtime_rooms")? {
         retire_unkept(
             transaction,
@@ -386,10 +397,18 @@ pub fn maintain_entity_projections_with_server_id(
         )?;
     }
 
-    maintain_task_window(transaction, &validate_projection)?;
-    maintain_monitor_window(transaction, &validate_projection)?;
-    maintain_event_window(transaction, &validate_projection)?;
-    maintain_canvas_chat_entities(transaction, &validate_projection)?;
+    crate::diagnostics::measure_runtime_stage("projection.task_window", || {
+        maintain_task_window(transaction, &validate_projection)
+    })?;
+    crate::diagnostics::measure_runtime_stage("projection.monitor_window", || {
+        maintain_monitor_window(transaction, &validate_projection)
+    })?;
+    crate::diagnostics::measure_runtime_stage("projection.event_window", || {
+        maintain_event_window(transaction, &validate_projection)
+    })?;
+    crate::diagnostics::measure_runtime_stage("projection.canvas_chat_entities", || {
+        maintain_canvas_chat_entities(transaction, &validate_projection)
+    })?;
 
     // Python refreshes workspace/current after entity mutations only when a
     // workspace projection already exists. Initial creation belongs to seed
@@ -687,70 +706,168 @@ pub fn maintain_monitor_window(
     if !table_exists(transaction, "runtime_monitors")? {
         return Ok(());
     }
-    let mut records = Vec::new();
     let mut preserved_invalid_monitor_ids = BTreeSet::new();
-    let mut statement =
-        transaction.prepare("SELECT id,record FROM runtime_monitors ORDER BY rowid")?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    for (id, raw) in rows {
-        match serde_json::from_str::<Value>(&raw) {
-            Ok(record) if record.is_object() => records.push(record),
-            _ => {
-                eprintln!("monitor projection recovery skipped row id={id}: invalid record");
-                preserved_invalid_monitor_ids.insert(id);
-            }
-        }
-    }
     let mut kept = BTreeMap::<String, Value>::new();
-    for status in ["running", "starting", "approval"] {
-        for record in records
-            .iter()
-            .filter(|record| record.get("status").and_then(Value::as_str) == Some(status))
-        {
+    let has_status_index = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='runtime_monitor_status')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if has_status_index {
+        // This expression index can only contain rows accepted by json_extract,
+        // so indexed predicates are safe and cannot encounter malformed JSON.
+        let active_placeholders = (1..=MONITOR_ACTIVE_STATUSES.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT record FROM runtime_monitors \
+             WHERE json_extract(record,'$.status') IN ({active_placeholders})"
+        ))?;
+        let active_records = statement
+            .query_map(rusqlite::params_from_iter(MONITOR_ACTIVE_STATUSES), |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for raw in active_records {
+            if let Ok(record) = serde_json::from_str::<Value>(&raw)
+                && let Some(id) = record.get("id").and_then(Value::as_str)
+            {
+                kept.insert(id.to_owned(), record);
+            }
+        }
+
+        let mut terminals = Vec::new();
+        for status in MONITOR_TERMINAL_STATUSES {
+            // The runtime_monitor_status expression index supports this
+            // status predicate and newest-first bounded scan.
+            let mut statement = transaction.prepare(
+                "SELECT record FROM runtime_monitors \
+                 WHERE json_extract(record,'$.status')=?1 \
+                 ORDER BY json_extract(record,'$.created') DESC LIMIT ?2",
+            )?;
+            let status_rows = statement
+                .query_map(
+                    rusqlite::params![status, MONITOR_TERMINAL_WINDOW as i64],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            for raw in status_rows {
+                if let Ok(record) = serde_json::from_str::<Value>(&raw) {
+                    terminals.push(record);
+                }
+            }
+        }
+        terminals.sort_by(compare_created_desc);
+        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) {
             if let Some(id) = record.get("id").and_then(Value::as_str) {
-                kept.insert(id.to_owned(), record.clone());
+                kept.insert(id.to_owned(), record);
+            }
+        }
+
+        // Malformed source rows cannot have entered the expression index, but
+        // a legacy or test schema may still contain one. Hold its current
+        // canonical entity without scanning all historical rows.
+        let mut statement = transaction.prepare(
+            "SELECT source.id FROM sync_entities AS entity \
+             CROSS JOIN runtime_monitors AS source \
+             WHERE entity.collection='monitor' AND entity.deleted=0 \
+               AND source.id=entity.id \
+               AND CASE WHEN json_valid(source.record) \
+                        THEN json_type(source.record)!='object' ELSE 1 END",
+        )?;
+        preserved_invalid_monitor_ids.extend(
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        drop(statement);
+    } else {
+        // Compatibility path for legacy/test databases without the owner
+        // expression index. Decode each row safely and preserve malformed ids.
+        let mut statement =
+            transaction.prepare("SELECT id,record FROM runtime_monitors ORDER BY rowid")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let mut records = Vec::new();
+        for (id, raw) in rows {
+            match serde_json::from_str::<Value>(&raw) {
+                Ok(record) if record.is_object() => records.push(record),
+                _ => {
+                    eprintln!("monitor projection recovery skipped row id={id}: invalid record");
+                    preserved_invalid_monitor_ids.insert(id);
+                }
+            }
+        }
+        for status in MONITOR_ACTIVE_STATUSES {
+            for record in records
+                .iter()
+                .filter(|record| record.get("status").and_then(Value::as_str) == Some(status))
+            {
+                if let Some(id) = record.get("id").and_then(Value::as_str) {
+                    kept.insert(id.to_owned(), record.clone());
+                }
+            }
+        }
+        let mut terminals = Vec::new();
+        for status in MONITOR_TERMINAL_STATUSES {
+            let mut status_rows = records
+                .iter()
+                .filter(|record| record.get("status").and_then(Value::as_str) == Some(status))
+                .cloned()
+                .collect::<Vec<_>>();
+            status_rows.sort_by(compare_created_desc);
+            terminals.extend(status_rows.into_iter().take(MONITOR_TERMINAL_WINDOW));
+        }
+        terminals.sort_by(compare_created_desc);
+        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) {
+            if let Some(id) = record.get("id").and_then(Value::as_str) {
+                kept.insert(id.to_owned(), record);
             }
         }
     }
-    let mut terminals = Vec::new();
-    for status in ["completed", "failed", "cancelled", "lost"] {
-        let mut status_rows = records
-            .iter()
-            .filter(|record| record.get("status").and_then(Value::as_str) == Some(status))
-            .cloned()
-            .collect::<Vec<_>>();
-        status_rows.sort_by(compare_created_desc);
-        terminals.extend(status_rows.into_iter().take(MONITOR_TERMINAL_WINDOW));
-    }
-    terminals.sort_by(compare_created_desc);
-    for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) {
-        if let Some(id) = record.get("id").and_then(Value::as_str) {
-            kept.insert(id.to_owned(), record);
-        }
-    }
+
+    let owner_ids = kept
+        .values()
+        .filter_map(|record| record.get("agent").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     let mut agents = BTreeMap::new();
     let mut invalid_agent_ids = BTreeSet::new();
-    let mut statement =
-        transaction.prepare("SELECT id,record FROM runtime_agents ORDER BY rowid")?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    for (id, raw) in rows {
-        match serde_json::from_str::<Value>(&raw) {
-            Ok(record) if record.is_object() => {
-                agents.insert(id, record.get("deletedAt").is_none_or(Value::is_null));
-            }
-            _ => {
-                eprintln!("monitor projection recovery skipped owner row id={id}: invalid record");
-                invalid_agent_ids.insert(id);
+    for chunk in owner_ids.iter().collect::<Vec<_>>().chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT id,record FROM runtime_agents WHERE id IN ({placeholders})"
+        ))?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(chunk.iter().copied()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (id, raw) in rows {
+            match serde_json::from_str::<Value>(&raw) {
+                Ok(record) if record.is_object() => {
+                    agents.insert(id, record.get("deletedAt").is_none_or(Value::is_null));
+                }
+                _ => {
+                    eprintln!(
+                        "monitor projection recovery skipped owner row id={id}: invalid record"
+                    );
+                    invalid_agent_ids.insert(id);
+                }
             }
         }
     }
@@ -1472,8 +1589,327 @@ pub fn push_preferences(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::cell::RefCell;
     use std::fs;
     use studio_runtime_store::ProjectsRepository;
+
+    thread_local! {
+        static TRACED_SQL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn trace_sql(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(statement, _) = event {
+            TRACED_SQL.with_borrow_mut(|statements| {
+                statements.push(statement.sql().into_owned());
+            });
+        }
+    }
+
+    #[test]
+    fn monitor_window_contract_matches_python_owner() {
+        let python = include_str!("../../../apps/server/src/codex_entity_contracts.py");
+        for expected in [
+            format!("MONITOR_TERMINAL_WINDOW = {MONITOR_TERMINAL_WINDOW}"),
+            format!("MONITOR_FINAL_WINDOW = {MONITOR_FINAL_WINDOW}"),
+            format!(
+                "MONITOR_TERMINAL_STATUSES = ({})",
+                MONITOR_TERMINAL_STATUSES
+                    .iter()
+                    .map(|status| format!("\"{status}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            format!(
+                "ACTIVE_MONITOR_STATUSES = ({})",
+                MONITOR_ACTIVE_STATUSES
+                    .iter()
+                    .map(|status| format!("\"{status}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ] {
+            assert!(
+                python.lines().any(|line| line.trim() == expected),
+                "Python owner codex_entity_contracts.py must declare {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_window_uses_indexed_status_ranges() {
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE INDEX runtime_monitor_status ON runtime_monitors(
+                     json_extract(record,'$.status'),json_extract(record,'$.created'));",
+            )
+            .expect("monitor fixture and owner index");
+        let plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT record FROM runtime_monitors \
+                 WHERE json_extract(record,'$.status')=?1 \
+                 ORDER BY json_extract(record,'$.created') DESC LIMIT ?2",
+            )
+            .expect("selector explain plan")
+            .query_map(rusqlite::params!["completed", 100], |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("selector plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("selector plan read");
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("runtime_monitor_status")),
+            "terminal status window must use the owner index: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn monitor_window_keeps_active_rows_and_holds_invalid_rows_without_projecting_inactive_owners()
+    {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE sync_entities(
+                     collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,
+                     hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
+                     PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                 INSERT INTO runtime_agents VALUES
+                     ('active','{\"id\":\"active\",\"deletedAt\":null}'),
+                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}'),
+                     ('broken','{');",
+            )
+            .expect("projection fixture");
+        let insert_monitor =
+            |connection: &Connection, id: &str, agent: &str, status: &str, created: i64| {
+                connection
+                    .execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"agent":agent,"status":status,"created":created})
+                                .to_string()
+                        ],
+                    )
+                    .expect("monitor row");
+            };
+        for index in 0..105 {
+            let id = format!("active-{index}");
+            insert_monitor(&connection, &id, "active", "running", index);
+        }
+        for index in 0..104 {
+            let id = format!("terminal-{index}");
+            let owner = if index == 50 { "deleted" } else { "active" };
+            insert_monitor(&connection, &id, owner, "completed", 10);
+        }
+        insert_monitor(&connection, "deleted-owner", "deleted", "starting", 200);
+        insert_monitor(&connection, "invalid-owner", "broken", "approval", 201);
+        insert_monitor(&connection, "missing-owner", "missing", "running", 202);
+        // Python owner selector: codex_entity_contracts.monitor_records.
+        // Equal timestamps intentionally exercise the SQL tie behavior at the
+        // terminal window boundary, including owner filtering after selection.
+        let expected_terminal_ids = connection
+            .prepare(
+                "SELECT id FROM runtime_monitors \
+                 WHERE json_extract(record,'$.status')='completed' \
+                 ORDER BY json_extract(record,'$.created') DESC LIMIT ?1",
+            )
+            .expect("canonical terminal selector")
+            .query_map([MONITOR_TERMINAL_WINDOW as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("canonical terminal ids")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("canonical terminal selection");
+        assert_eq!(expected_terminal_ids.len(), MONITOR_TERMINAL_WINDOW);
+        assert!(expected_terminal_ids.contains("terminal-50"));
+        connection
+            .execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','{')",
+                [],
+            )
+            .expect("malformed monitor row");
+        let malformed_hold_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT source.id FROM sync_entities AS entity \
+                 CROSS JOIN runtime_monitors AS source \
+                 WHERE entity.collection='monitor' AND entity.deleted=0 \
+                   AND source.id=entity.id \
+                   AND CASE WHEN json_valid(source.record) \
+                            THEN json_type(source.record)!='object' ELSE 1 END",
+            )
+            .expect("malformed monitor hold plan")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("malformed monitor hold plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("malformed monitor hold plan read");
+        assert!(
+            malformed_hold_plan
+                .iter()
+                .any(|line| line.contains("SEARCH source")),
+            "malformed-row protection must probe by source id: {malformed_hold_plan:?}"
+        );
+
+        let transaction = connection.transaction().expect("projection transaction");
+        for (id, value) in [
+            ("stale", json!({"agent":"active"})),
+            ("invalid-monitor", json!({"preserve":"prior"})),
+            ("invalid-owner", json!({"preserve":"owner-prior"})),
+        ] {
+            SyncDocumentsRepository::put_entity(&transaction, "monitor", id, value, false)
+                .expect("prior canonical monitor entity");
+        }
+        maintain_monitor_window(&transaction, &|_, _, _, _| true)
+            .expect("bounded monitor projection");
+
+        let count: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entities WHERE collection='monitor' AND deleted=0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("live projected monitors");
+        assert_eq!(count, 206);
+        for id in ["deleted-owner", "missing-owner"] {
+            let exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='monitor' AND id=?1 AND deleted=0)",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("owner-filtered projection query");
+            assert!(!exists, "inactive or missing owner must not project {id}");
+        }
+        for id in ["active-0", "active-104", "invalid-owner", "invalid-monitor"] {
+            let exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='monitor' AND id=?1 AND deleted=0)",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("retained monitor query");
+            assert!(exists, "active or malformed source must retain {id}");
+        }
+        let actual_terminal_ids = transaction
+            .prepare(
+                "SELECT id FROM sync_entities WHERE collection='monitor' AND id GLOB 'terminal-*' AND deleted=0",
+            )
+            .expect("projected terminal ids")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("projected terminal rows")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("projected terminal selection");
+        let expected_active_terminal_ids = expected_terminal_ids
+            .into_iter()
+            .filter(|id| id != "terminal-50")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_terminal_ids, expected_active_terminal_ids);
+        let stale_deleted: bool = transaction
+            .query_row(
+                "SELECT deleted=1 FROM sync_entities WHERE collection='monitor' AND id='stale'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stale canonical tombstone");
+        assert!(stale_deleted, "unselected canonical rows still tombstone");
+        let invalid_payload: String = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='monitor' AND id='invalid-monitor' AND deleted=0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("invalid source keeps existing canonical entity");
+        assert_eq!(
+            serde_json::from_str::<Value>(&invalid_payload).expect("prior payload")["value"],
+            json!({"preserve":"prior"})
+        );
+        let invalid_owner_payload: String = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='monitor' AND id='invalid-owner' AND deleted=0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("invalid owner keeps existing canonical entity");
+        assert_eq!(
+            serde_json::from_str::<Value>(&invalid_owner_payload).expect("prior payload")["value"],
+            json!({"preserve":"owner-prior"})
+        );
+    }
+
+    #[test]
+    fn indexed_monitor_window_matches_python_tie_boundary_and_filters_owner_after_selection() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE INDEX runtime_monitor_status ON runtime_monitors(
+                     json_extract(record,'$.status'),json_extract(record,'$.created'));
+                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE sync_entities(
+                     collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,
+                     hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
+                     PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                 INSERT INTO runtime_agents VALUES
+                     ('active','{\"id\":\"active\",\"deletedAt\":null}'),
+                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}');",
+            )
+            .expect("indexed projection fixture");
+        for index in 0..104 {
+            let id = format!("terminal-{index}");
+            let agent = if index == 50 { "deleted" } else { "active" };
+            connection
+                .execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        id,
+                        json!({"id":id,"agent":agent,"status":"completed","created":10})
+                            .to_string()
+                    ],
+                )
+                .expect("indexed monitor row");
+        }
+        let expected_terminal_ids = connection
+            .prepare(
+                "SELECT id FROM runtime_monitors \
+                 WHERE json_extract(record,'$.status')='completed' \
+                 ORDER BY json_extract(record,'$.created') DESC LIMIT ?1",
+            )
+            .expect("canonical terminal selector")
+            .query_map([MONITOR_TERMINAL_WINDOW as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("canonical terminal ids")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("canonical terminal selection");
+        assert_eq!(expected_terminal_ids.len(), MONITOR_TERMINAL_WINDOW);
+        assert!(expected_terminal_ids.contains("terminal-50"));
+
+        let transaction = connection.transaction().expect("projection transaction");
+        maintain_monitor_window(&transaction, &|_, _, _, _| true)
+            .expect("indexed monitor projection");
+        let actual_ids = transaction
+            .prepare("SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0")
+            .expect("projected terminal ids")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("projected terminal rows")
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("projected terminal set");
+        let expected_active_ids = expected_terminal_ids
+            .into_iter()
+            .filter(|id| id != "terminal-50")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_ids, expected_active_ids);
+    }
 
     #[test]
     fn sync_projection_skips_malformed_persisted_rows() {
@@ -1499,6 +1935,114 @@ mod tests {
             Err(StoreError::InvalidSyncObject { scope, id })
                 if scope == "runtime_agents" && id == "broken-agent"
         ));
+    }
+
+    #[test]
+    fn entity_projection_skips_unused_task_snapshot_and_keeps_task_window_behavior() {
+        let root = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
+        let agent = json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let snapshot = ProjectVaultSnapshot::default();
+
+        store
+            .transaction(|transaction| {
+                let agent = studio_runtime_store::AgentRecord::from_value(agent.clone())?;
+                studio_runtime_store::AgentRepository::put(transaction, &agent)?;
+                transaction.execute(
+                    "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "task",
+                        json!({"id":"task","agent":"agent","status":"running","created":1})
+                            .to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("seed task-window fixture");
+
+        TRACED_SQL.with_borrow_mut(Vec::clear);
+        store
+            .transaction(|transaction| {
+                transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
+                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                maintain_entity_projections_with_server_id(
+                    transaction,
+                    root.path().to_string_lossy().as_ref(),
+                    None,
+                    &snapshot,
+                    &rooms,
+                    |_, _, _, _| true,
+                )?;
+                let payload: String = transaction.query_row(
+                    "SELECT payload FROM sync_entities WHERE collection='task' AND id='task' AND deleted=0",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let payload: Value = serde_json::from_str(&payload)?;
+                assert_eq!(payload["value"]["status"], "running");
+                Ok(())
+            })
+            .expect("maintain canonical task projection");
+
+        TRACED_SQL.with_borrow(|statements| {
+            assert!(statements.iter().any(|sql| {
+                sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents")
+            }));
+            assert!(
+                !statements
+                    .iter()
+                    .any(|sql| { sql == "SELECT id,record FROM runtime_tasks ORDER BY rowid" })
+            );
+        });
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE runtime_tasks SET record=?1 WHERE id='task'",
+                    [json!({"id":"task","agent":"agent","status":"completed","created":2}).to_string()],
+                )?;
+                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                maintain_entity_projections_with_server_id(
+                    transaction,
+                    root.path().to_string_lossy().as_ref(),
+                    None,
+                    &snapshot,
+                    &rooms,
+                    |_, _, _, _| true,
+                )?;
+                let payload: String = transaction.query_row(
+                    "SELECT payload FROM sync_entities WHERE collection='task' AND id='task' AND deleted=0",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let payload: Value = serde_json::from_str(&payload)?;
+                assert_eq!(payload["value"]["status"], "completed");
+
+                let mut deleted_agent = studio_runtime_store::AgentRepository::get(
+                    transaction,
+                    &studio_runtime_store::AgentId::from("agent"),
+                )?
+                .expect("fixture agent exists");
+                deleted_agent.extra.insert("deletedAt".to_owned(), json!(3));
+                studio_runtime_store::AgentRepository::put(transaction, &deleted_agent)?;
+                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                maintain_entity_projections_with_server_id(
+                    transaction,
+                    root.path().to_string_lossy().as_ref(),
+                    None,
+                    &snapshot,
+                    &rooms,
+                    |_, _, _, _| true,
+                )?;
+                let deleted: bool = transaction.query_row(
+                    "SELECT deleted FROM sync_entities WHERE collection='task' AND id='task'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert!(deleted);
+                Ok(())
+            })
+            .expect("task-window eligibility transition remains canonical");
     }
 
     #[test]

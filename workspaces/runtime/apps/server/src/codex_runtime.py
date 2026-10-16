@@ -44,7 +44,12 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
-from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
+from codex_shared_values import (
+    ACCOUNT_LIMITS_ERROR_RETRY_SECONDS,
+    ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
+    ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
+    MAX_MANAGED_MESSAGE_CODEPOINTS,
+)
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
@@ -9660,10 +9665,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # credits, so a full read is still due after ten minutes.
                 read_at = cached.get("readAt")
                 if not force and (
-                        (not cached.get("error") and cached["at"] and now - cached["at"] < 60
-                         and read_at and now - read_at < 600)
+                        (not cached.get("error") and cached["at"]
+                         and now - cached["at"] < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS
+                         and read_at and now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS)
                         or (cached.get("error") and cached.get("checkedAt")
-                            and now - cached["checkedAt"] < 30)):
+                            and now - cached["checkedAt"] < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS)):
                     return cached
             for attempt in range(2):
                 error = None

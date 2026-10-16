@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   prefetchTranscript,
   TRANSCRIPT_PREFETCH_LIMIT,
@@ -27,6 +27,8 @@ export function useChatPrefetch(
   const control = useRef<{
     request: (id: string) => void;
     changed: () => void;
+    suspend: (ids: ReadonlySet<string>) => void;
+    resume: (ids: ReadonlySet<string>) => void;
   } | null>(null);
 
   useEffect(() => {
@@ -42,6 +44,7 @@ export function useChatPrefetch(
     const refreshGate = new TranscriptRefreshGate();
     const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
+    const suppressed = new Set<string>();
     let foregroundId: string | null | undefined;
     let foregroundReady = false;
     let stopForegroundCache: (() => void) | undefined;
@@ -53,7 +56,10 @@ export function useChatPrefetch(
     const watchForegroundTranscript = () => {
       const snapshot = current.current;
       const id = snapshot.data?.threads.some(
-        (agent) => agent.id === snapshot.opened && agent.source === "managed",
+        (agent) =>
+          agent.id === snapshot.opened &&
+          agent.source === "managed" &&
+          !suppressed.has(agent.id),
       )
         ? snapshot.opened
         : null;
@@ -154,7 +160,10 @@ export function useChatPrefetch(
       const root = selected?.isLead ? selected.id : selected?.rootId;
       const pool = data.threads.filter(
         (agent) =>
-          agent.source === "managed" && agent.id !== opened && !agent.archived,
+          agent.source === "managed" &&
+          agent.id !== opened &&
+          !agent.archived &&
+          !suppressed.has(agent.id),
       );
       const ranked = [...pool].sort(
         (a, b) =>
@@ -231,12 +240,37 @@ export function useChatPrefetch(
       pendingProgress.add(id);
       schedule();
     };
+    const suspend = (ids: ReadonlySet<string>) => {
+      for (const id of ids) {
+        suppressed.add(id);
+        running.get(id)?.abort();
+        transcriptStops.get(id)?.();
+        transcriptStops.delete(id);
+        pendingHistory.delete(id);
+        pendingVersions.delete(id);
+        pendingProgress.delete(id);
+        refreshGate.forget(id);
+        failedHistory.delete(id);
+        if (foregroundId === id) {
+          stopForegroundCache?.();
+          stopForegroundCache = undefined;
+          foregroundId = null;
+          foregroundReady = true;
+        }
+      }
+    };
+    const resume = (ids: ReadonlySet<string>) => {
+      for (const id of ids) suppressed.delete(id);
+      schedule();
+    };
     control.current = {
       request,
       changed: () => {
         watchForegroundTranscript();
         schedule();
       },
+      suspend,
+      resume,
     };
     schedule(1000);
     const stopInvalidations = watchSyncInvalidations("state", () => schedule());
@@ -274,5 +308,17 @@ export function useChatPrefetch(
   useEffect(() => {
     control.current?.changed();
   }, [data, opened]);
-  return useCallback((id: string) => control.current?.request(id), []);
+  const request = useCallback((id: string) => control.current?.request(id), []);
+  const suspend = useCallback(
+    (ids: ReadonlySet<string>) => control.current?.suspend(ids),
+    [],
+  );
+  const resume = useCallback(
+    (ids: ReadonlySet<string>) => control.current?.resume(ids),
+    [],
+  );
+  return useMemo(
+    () => Object.assign(request, { suspend, resume }),
+    [request, resume, suspend],
+  );
 }

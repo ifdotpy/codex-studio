@@ -22,6 +22,31 @@ export type NewChatSettings = Pick<
   | "review_defaults"
 > & { account_key?: string; workspaceMode: "layr" | "image" | "worktree" };
 
+export type NewChatSettingsDraft = Omit<NewChatSettings, "workspaceMode">;
+
+export function settingsForNewChatAccount(
+  settings: NewChatSettingsDraft,
+  accountKey: string,
+  inheritedWorkerModel?: string,
+): NewChatSettingsDraft {
+  const workerDefaults = settings.worker_defaults;
+  const pinnedWorkerDefaults = workerDefaults?.account_key
+    ? workerDefaults.model == null && inheritedWorkerModel
+      ? { ...workerDefaults, model: inheritedWorkerModel, effort: null }
+      : workerDefaults
+    : undefined;
+  return {
+    ...settings,
+    account_key: accountKey,
+    model: undefined,
+    effort: null,
+    fast_mode: false,
+    daybreak_enabled: false,
+    worker_defaults: pinnedWorkerDefaults,
+    review_defaults: undefined,
+  };
+}
+
 export function defaultWorkspaceMode(system?: string) {
   return system === "Darwin" ? "layr" : "worktree";
 }

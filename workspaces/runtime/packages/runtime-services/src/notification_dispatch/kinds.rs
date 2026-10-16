@@ -151,7 +151,48 @@ pub(super) fn apply(
                     .as_str()
                     .is_some_and(|s| !s.is_empty())
             {
-                return Ok(Some(required(NotificationDependency::UserMessageReceipt)));
+                let (Some(thread_id), Some(turn_id), Some(event_id)) = (
+                    p["threadId"].as_str().filter(|value| !value.is_empty()),
+                    p["turnId"].as_str().filter(|value| !value.is_empty()),
+                    p["item"]["clientId"]
+                        .as_str()
+                        .filter(|value| !value.is_empty()),
+                ) else {
+                    return Err(NotificationDispatchError::InvalidNotification);
+                };
+                if !crate::scheduler::settle_user_message_receipt_in_transaction(
+                    tx,
+                    agent,
+                    event_id,
+                    account,
+                    identity.generation,
+                    thread_id,
+                    turn_id,
+                )
+                .map_err(|error| match error {
+                    crate::scheduler::SchedulerError::Store(error) => {
+                        NotificationDispatchError::Store(error)
+                    }
+                    error => NotificationDispatchError::Store(StoreError::SchemaMismatch(
+                        error.to_string(),
+                    )),
+                })? {
+                    return Ok(Some(DispatchOutcome::Ignored {
+                        reason: "stale-user-message-receipt".into(),
+                    }));
+                }
+                let Some(accepted_agent) =
+                    super::NotificationDispatchRepository::agent_record(tx, &id)?
+                else {
+                    return Err(NotificationDispatchError::InvalidStoredObject {
+                        table: "runtime_agents".into(),
+                        id: id.clone(),
+                    });
+                };
+                *agent = accepted_agent;
+                update_common_agent_fields(agent, method, p, at)?;
+                persist_agent(tx, &id, agent, publication)?;
+                return Ok(Some(DispatchOutcome::Written));
             }
             if stale {
                 if snapshot

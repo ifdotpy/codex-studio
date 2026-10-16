@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(test)]
@@ -235,6 +236,7 @@ struct CatalogInner {
     refresh_factory: Mutex<Option<Arc<dyn ProviderTaskFactory>>>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     accounts: Mutex<HashMap<String, (String, String)>>,
+    accounts_initialized: AtomicBool,
     account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
@@ -343,6 +345,7 @@ impl ModelCatalogService {
             refresh_factory: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
             accounts: Mutex::new(HashMap::new()),
+            accounts_initialized: AtomicBool::new(false),
             account_session: Mutex::new(None),
             next_generation: Mutex::new(0),
             on_change,
@@ -403,6 +406,20 @@ impl ModelCatalogService {
         // this guard is held, so cancellation cannot strand an unowned refresh.
         let mut tasks = self.0.tasks.lock().await;
         if *self.0.stop.subscribe().borrow() {
+            return CatalogRead::Unavailable;
+        }
+        // Keep the retained identity stable while reserving a refresh. A route
+        // that captured an old account snapshot must not restart its old catalog
+        // after retain_accounts has rotated the account home or provider.
+        let profiles = match self.0.accounts.lock() {
+            Ok(profiles) => profiles,
+            Err(_) => return CatalogRead::Unavailable,
+        };
+        if self.0.accounts_initialized.load(Ordering::Acquire)
+            && !profiles
+                .get(account_key)
+                .is_some_and(|identity| identity.0 == home && identity.1 == provider)
+        {
             return CatalogRead::Unavailable;
         }
         // Registry acquisition and completed-task cleanup can suspend. Sample
@@ -519,6 +536,65 @@ impl ModelCatalogService {
         stale.map_or(CatalogRead::Pending, CatalogRead::Ready)
     }
 
+    /// Wait for a cold display read to publish, while returning stale display
+    /// data immediately when the cache already has a value.
+    pub async fn read_until_ready(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+        retry: bool,
+    ) -> CatalogRead {
+        let deadline = Instant::now() + CATALOG_TIMEOUT;
+        match tokio::time::timeout_at(deadline, self.read(account_key, home, provider, retry)).await
+        {
+            Ok(CatalogRead::Ready(value)) => {
+                return if self.account_identity_is_current(account_key, home, provider) {
+                    CatalogRead::Ready(value)
+                } else {
+                    CatalogRead::Unavailable
+                };
+            }
+            Ok(CatalogRead::Unavailable) => return CatalogRead::Unavailable,
+            Ok(CatalogRead::Pending) => {}
+            Err(_) => return CatalogRead::Pending,
+        }
+
+        loop {
+            let changed = self.0.refresh_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match tokio::time::timeout_at(deadline, self.read(account_key, home, provider, false))
+                .await
+            {
+                Ok(CatalogRead::Ready(value)) => {
+                    return if self.account_identity_is_current(account_key, home, provider) {
+                        CatalogRead::Ready(value)
+                    } else {
+                        CatalogRead::Unavailable
+                    };
+                }
+                Ok(CatalogRead::Unavailable) => return CatalogRead::Unavailable,
+                Ok(CatalogRead::Pending) => {}
+                Err(_) => return CatalogRead::Pending,
+            }
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                return CatalogRead::Pending;
+            }
+        }
+    }
+
+    fn account_identity_is_current(&self, account_key: &str, home: &str, provider: &str) -> bool {
+        if !self.0.accounts_initialized.load(Ordering::Acquire) {
+            return true;
+        }
+        self.0.accounts.lock().ok().is_some_and(|profiles| {
+            profiles
+                .get(account_key)
+                .is_some_and(|identity| identity.0 == home && identity.1 == provider)
+        })
+    }
+
     /// Start or join a catalog refresh and wait for its completion notification.
     /// Admission paths use this before durable provider effects so they never
     /// create a child from stale or pending model metadata.
@@ -575,6 +651,7 @@ impl ModelCatalogService {
                     .to_owned();
                 Some((id, (home, provider)))
             }));
+            self.0.accounts_initialized.store(true, Ordering::Release);
         }
         self.0
             .cache
@@ -587,6 +664,7 @@ impl ModelCatalogService {
                         && account["provider"].as_str().unwrap_or("codex") == key.2
                 })
             });
+        self.0.refresh_changed.notify_waiters();
     }
 
     /// Return the registered provider/home identity for transfer validation.
@@ -1194,6 +1272,159 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn cold_display_read_waits_for_shared_refresh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let service = ModelCatalogService::new(None);
+        let opens = Arc::new(AtomicUsize::new(0));
+        set_refresh_factory(
+            &service,
+            Arc::new(CountingFactory {
+                opens: opens.clone(),
+                script: Script::new(vec![json!({"data":[{"model":"fixture"}]})], 0),
+            }),
+        );
+
+        let (first, second) = tokio::join!(
+            service.read_until_ready("account", "/home", "codex", false),
+            service.read_until_ready("account", "/home", "codex", false),
+        );
+        let ready = CatalogRead::Ready(json!({
+            "data":[{"model":"fixture"}],
+            "nextCursor":null
+        }));
+        assert_eq!(first, ready);
+        assert_eq!(second, ready);
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        service.shutdown().await.expect("catalog task shutdown");
+    }
+
+    #[tokio::test]
+    async fn cold_display_read_reports_failed_refresh_as_unavailable() {
+        let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: None,
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        let waiting = service.clone();
+        let read = tokio::spawn(async move {
+            waiting
+                .read_until_ready("account", "/home", "codex", false)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(store_result(&service.0, &key, 7, Err(())));
+        assert_eq!(
+            read.await.expect("catalog waiter"),
+            CatalogRead::Unavailable
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cold_display_read_keeps_its_bounded_pending_result() {
+        let service = ModelCatalogService::new(None);
+        service.0.cache.lock().expect("cache").insert(
+            ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
+            CacheEntry {
+                generation: 7,
+                value: None,
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        let waiting = service.clone();
+        let read = tokio::spawn(async move {
+            waiting
+                .read_until_ready("account", "/home", "codex", false)
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(CATALOG_TIMEOUT).await;
+        assert_eq!(read.await.expect("catalog waiter"), CatalogRead::Pending);
+    }
+
+    #[tokio::test]
+    async fn stale_display_value_returns_without_waiting_for_refresh() {
+        let service = ModelCatalogService::new(None);
+        service.0.cache.lock().expect("cache").insert(
+            ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
+            CacheEntry {
+                generation: 7,
+                value: Some(json!({"data":[{"model":"stale"}]})),
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+
+        assert_eq!(
+            service
+                .read_until_ready("account", "/home", "codex", false)
+                .await,
+            CatalogRead::Ready(json!({"data":[{"model":"stale"}]}))
+        );
+    }
+
+    #[tokio::test]
+    async fn account_rotation_rejects_waiter_and_does_not_repopulate_old_identity() {
+        let service = ModelCatalogService::new(None);
+        let key = (
+            "account".to_owned(),
+            "/old-home".to_owned(),
+            "codex".to_owned(),
+        );
+        service.retain_accounts(&[json!({
+            "id":"account",
+            "home":"/old-home",
+            "provider":"codex"
+        })]);
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: None,
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+
+        let waiting = service.clone();
+        let read = tokio::spawn(async move {
+            waiting
+                .read_until_ready("account", "/old-home", "codex", false)
+                .await
+        });
+        tokio::task::yield_now().await;
+        service.retain_accounts(&[json!({
+            "id":"account",
+            "home":"/new-home",
+            "provider":"claude"
+        })]);
+
+        assert_eq!(
+            read.await.expect("catalog waiter"),
+            CatalogRead::Unavailable
+        );
+        assert!(!service.0.cache.lock().expect("cache").contains_key(&key));
+        assert_eq!(
+            service
+                .read_until_ready("account", "/old-home", "codex", false)
+                .await,
+            CatalogRead::Unavailable
+        );
+        assert!(!service.0.cache.lock().expect("cache").contains_key(&key));
+    }
+
+    #[tokio::test]
     async fn cancelled_shutdown_keeps_refresh_join_ownership() {
         let service = ModelCatalogService::new(None);
         let (release, wait) = tokio::sync::oneshot::channel::<()>();
@@ -1375,6 +1606,24 @@ pub(crate) mod tests {
         flood: usize,
         panic_on_exit: bool,
     }
+
+    struct CountingFactory {
+        opens: Arc<std::sync::atomic::AtomicUsize>,
+        script: Script,
+    }
+
+    impl ProviderTaskFactory for CountingFactory {
+        fn open(
+            &self,
+            handle: ProviderHandle,
+            options: OpenOptions,
+            shutdown: Shutdown,
+        ) -> OpenFuture<'_> {
+            self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.script.open(handle, options, shutdown)
+        }
+    }
+
     impl ProviderTaskFactory for Script {
         fn open(
             &self,

@@ -146,6 +146,28 @@ impl BudgetSnapshot {
         state: Option<&Value>,
         now: f64,
     ) -> Result<Self, BudgetError> {
+        Self::from_records_with_history_turn(agent, durable_agent, state, now, false)
+    }
+
+    /// Build a budget snapshot while importing historical usage. The supplied
+    /// agent's turn may be rollout context newer than the event turn; all other
+    /// supplied identity fields remain assertions against the durable agent.
+    pub(crate) fn from_history_records(
+        agent: &Value,
+        durable_agent: &Value,
+        state: Option<&Value>,
+        now: f64,
+    ) -> Result<Self, BudgetError> {
+        Self::from_records_with_history_turn(agent, durable_agent, state, now, true)
+    }
+
+    fn from_records_with_history_turn(
+        agent: &Value,
+        durable_agent: &Value,
+        state: Option<&Value>,
+        now: f64,
+        historical: bool,
+    ) -> Result<Self, BudgetError> {
         validate("PersistedBudgetAgent", agent, "runtime_agents")?;
         validate("PersistedBudgetAgent", durable_agent, "runtime_agents")?;
         if let Some(state) = state {
@@ -157,6 +179,9 @@ impl BudgetSnapshot {
             return Err(invalid("runtime_agents/id"));
         }
         for name in ["rootId", "accountKey", "threadId", "turnId", "epoch"] {
+            if name == "turnId" && historical {
+                continue;
+            }
             let expected = durable_agent.get(name).cloned().unwrap_or_else(|| {
                 if name == "accountKey" {
                     json!("default")
@@ -273,6 +298,11 @@ impl UsageObservation {
         if amount.is_none() && !exact {
             amount = counter;
         }
+        let observed_turn = params.get("turnId").filter(|v| truthy(Some(v)));
+        let identity_turn = match (source, params.get("turnId")) {
+            (CaptureSource::History, Some(turn)) => turn.clone(),
+            _ => observed_turn.cloned().unwrap_or(json!(a.turn_id)),
+        };
         let identity = if exact {
             json!([a.id, "response", params["responseId"]])
         } else {
@@ -280,11 +310,7 @@ impl UsageObservation {
                 a.id,
                 a.account_key,
                 "notice",
-                params
-                    .get("turnId")
-                    .filter(|v| truthy(Some(v)))
-                    .cloned()
-                    .unwrap_or(json!(a.turn_id)),
+                identity_turn,
                 usage.get("total"),
                 usage.get("last")
             ])

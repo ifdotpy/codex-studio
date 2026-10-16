@@ -99,7 +99,7 @@ async fn account_catalog(
             )
         })?;
     match catalog
-        .read(&account.key, &account.home, &account.provider, retry)
+        .read_until_ready(&account.key, &account.home, &account.provider, retry)
         .await
     {
         CatalogRead::Ready(value) => Ok(value),
@@ -306,6 +306,7 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_services::account_policy::AccountsSnapshot;
     use studio_runtime_services::model_catalog::ModelCatalogService;
 
@@ -349,6 +350,74 @@ mod tests {
                         generation: 1,
                     },
                 )
+            })
+        }
+    }
+
+    struct CatalogSession {
+        pages: std::sync::Mutex<Vec<Value>>,
+        requests: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort for CatalogSession {
+        fn ensure_session(
+            &self,
+            account: &str,
+        ) -> Result<
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+            studio_runtime_services::account_session_runtime::AccountSessionError,
+        > {
+            Ok(
+                studio_runtime_services::account_session_runtime::ConnectionScope {
+                    account: account.to_owned(),
+                    connection: "fixture-connection".into(),
+                    generation: 1,
+                },
+            )
+        }
+
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
+            Some(
+                studio_runtime_services::account_session_runtime::ConnectionScope {
+                    account: account.to_owned(),
+                    connection: "fixture-connection".into(),
+                    generation: 1,
+                },
+            )
+        }
+
+        fn provider_request(
+            &self,
+            request: studio_runtime_services::account_session_runtime::ProviderRequest,
+        ) -> Result<
+            studio_runtime_services::account_session_runtime::SessionReceipt,
+            studio_runtime_services::account_session_runtime::AccountSessionError,
+        > {
+            use studio_runtime_services::account_session_runtime::{
+                ProviderResponse, RequestCertainty, SessionReceipt,
+            };
+
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            let page = self.pages.lock().expect("pages").pop().ok_or_else(|| {
+                studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(
+                    "/".into(),
+                )
+            })?;
+            Ok(SessionReceipt {
+                scope: self.current_scope(&request.account).expect("scope"),
+                operation: request.operation,
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                    generation: 1,
+                    method: studio_runtime_providers::Method::ModelList,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(page)),
+                not_sent_reason: None,
+                replayed: false,
             })
         }
     }
@@ -421,10 +490,81 @@ mod tests {
         .expect_err("model catalog provider service is absent in this fixture");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            error.1,
-            json!({"error":PENDING_MESSAGE,"catalogPending":true})
+        assert_eq!(error.1, json!({"error":super::UNAVAILABLE_MESSAGE}));
+    }
+
+    #[tokio::test]
+    async fn cold_account_catalog_waits_for_one_shared_provider_read() {
+        let account = json!({
+            "id":"claude-account",
+            "home":"/fixture",
+            "provider":"claude",
+            "status":"ready"
+        });
+        let snapshot = snapshot(account);
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let session: std::sync::Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = std::sync::Arc::new(CatalogSession {
+            pages: std::sync::Mutex::new(vec![json!({
+                "data":[{"model":"fixture-model"}],
+                "nextCursor":null
+            })]),
+            requests: calls.clone(),
+        });
+        let catalog = ModelCatalogService::new(None);
+        catalog.set_account_session(Some(session.clone()));
+
+        let (first, second) = tokio::join!(
+            account_catalog(
+                &catalog,
+                &snapshot,
+                "claude-account",
+                false,
+                Some(session.clone())
+            ),
+            account_catalog(&catalog, &snapshot, "claude-account", false, Some(session)),
         );
+
+        let expected = json!({
+            "data":[{"model":"fixture-model"}],
+            "nextCursor":null
+        });
+        assert_eq!(
+            first.expect("cold catalog waits for 200 response"),
+            expected
+        );
+        assert_eq!(second.expect("concurrent catalog shares result"), expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        catalog.shutdown().await.expect("catalog task shutdown");
+    }
+
+    #[tokio::test]
+    async fn failed_cold_account_catalog_remains_unavailable() {
+        let snapshot = snapshot(json!({
+            "id":"claude-account",
+            "home":"/fixture",
+            "provider":"claude",
+            "status":"ready"
+        }));
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let session: std::sync::Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = std::sync::Arc::new(CatalogSession {
+            pages: std::sync::Mutex::new(Vec::new()),
+            requests: calls.clone(),
+        });
+        let catalog = ModelCatalogService::new(None);
+        catalog.set_account_session(Some(session.clone()));
+
+        let error = account_catalog(&catalog, &snapshot, "claude-account", false, Some(session))
+            .await
+            .expect_err("failed provider read stays unavailable");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, json!({"error":super::UNAVAILABLE_MESSAGE}));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        catalog.shutdown().await.expect("catalog task shutdown");
     }
 
     #[test]

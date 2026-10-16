@@ -8,7 +8,11 @@ import {
   ModelCatalogReader,
   useWorkerModels,
 } from "./agents/WorkerModelPicker";
-import { readNewChatResource, type NewChatSettings } from "./newChatSettings";
+import {
+  readNewChatResource,
+  settingsForNewChatAccount,
+  type NewChatSettings,
+} from "./newChatSettings";
 
 type Props = {
   server?: StudioServer;
@@ -161,8 +165,8 @@ function ModelDraft({
   const ready =
     !!accounts && !catalog.loading && !modelError && !!model && !error;
   useEffect(() => {
-    onChange(ready ? { ...settings, model } : null);
-  }, [ready, settings, model, onChange]);
+    onChange(ready ? { ...settings, account_key: accountKey, model } : null);
+  }, [ready, settings, accountKey, model, onChange]);
   const patch = useCallback(
     (value: Partial<import("../api").PostBody<"/api/conversation">>) => {
       const { id: _id, expected_account_key: _expected, ...values } = value;
@@ -190,14 +194,9 @@ function ModelDraft({
             onDraftChange={patch}
             onAccountChange={(key) => {
               setAccountKey(key);
-              setSettings((previous) => ({
-                ...previous,
-                account_key: key,
-                model: undefined,
-                effort: null,
-                fast_mode: false,
-                daybreak_enabled: false,
-              }));
+              setSettings((previous) =>
+                settingsForNewChatAccount(previous, key, model),
+              );
             }}
           />
         </div>

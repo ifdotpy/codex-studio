@@ -34,6 +34,11 @@ MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS = 30
 MODEL_CATALOG_ADMISSION_WAIT_SECONDS = 5
 MODEL_CATALOG_CACHE_TTL_SECONDS = 300
 
+# Codex account limits are refreshed on separate window and complete-read ages.
+ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS = 60
+ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS = 600
+ACCOUNT_LIMITS_ERROR_RETRY_SECONDS = 30
+
 
 def user_attachment_limit_label() -> str:
     """Return the display label derived from the byte-valued attachment cap."""

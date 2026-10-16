@@ -834,6 +834,7 @@ async fn dispatch(request: Request<Body>) -> Response {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::body::to_bytes;
@@ -845,6 +846,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::middleware;
+    use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 
     use super::{HttpState, router};
 
@@ -903,6 +905,118 @@ mod tests {
             .expect("request builds");
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn sync_preferences_write_is_registered_in_the_production_router() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
+        let state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            Some("https://studio-test.ts.net".to_owned()),
+            Some(Arc::clone(&store)),
+            None,
+        );
+        let app = router(state).expect("production router starts");
+        let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
+        let forwarded_request =
+            |request_id: &str, origin: &str, token: Option<&str>, body: &str| {
+                let builder = Request::builder()
+                    .method("POST")
+                    .uri("/api/sync/preferences")
+                    .header("host", "127.0.0.1:4620")
+                    .header("origin", origin)
+                    .header("x-forwarded-for", "100.64.0.1")
+                    .header("x-forwarded-host", "studio-test.ts.net")
+                    .header("x-forwarded-proto", "https")
+                    .header("content-type", "application/json")
+                    .header("x-studio-request-id", request_id)
+                    .header(
+                        crate::schema::API_SCHEMA_HASH_HEADER,
+                        crate::schema::api_schema_hash(),
+                    );
+                let builder = match token {
+                    Some(token) => builder.header("x-canvas-token", token),
+                    None => builder,
+                };
+                builder
+                    .extension(peer)
+                    .body(Body::from(body.to_owned()))
+                    .expect("forwarded preference request builds")
+            };
+        let request = forwarded_request(
+            "request-1",
+            "https://studio-test.ts.net",
+            Some("token"),
+            r#"{"scope":"user","fields":{"[\"codex-studio-preferences-v1\",\"theme\"]":{"value":"dark","timestamp":1,"writer":"router-test"}}}"#,
+        );
+        let response = app.clone().oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 1024)
+                .await
+                .expect("response body reads"),
+        )
+        .expect("response body is JSON");
+        let theme_key = r#"["codex-studio-preferences-v1","theme"]"#;
+        assert_eq!(response_body["fields"][theme_key]["value"], "dark");
+
+        let reader = store.read().expect("stored preferences can be read");
+        let stored = SyncDocumentsRepository::preference_payload(&reader, "user")
+            .expect("preference payload reads")
+            .expect("preference payload was persisted");
+        let stored: Value = serde_json::from_str(&stored).expect("stored payload is JSON");
+        assert_eq!(stored["value"]["fields"][theme_key]["value"], "dark");
+        drop(reader);
+
+        let generation_before_invalid = store.committed_change_generation();
+        let invalid_request = forwarded_request(
+            "request-2",
+            "https://studio-test.ts.net",
+            Some("token"),
+            r#"{"scope":"user","fields":{"[\"unknown\"]":{"value":true,"timestamp":2,"writer":"router-test"}}}"#,
+        );
+        let response = app
+            .clone()
+            .oneshot(invalid_request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            store.committed_change_generation(),
+            generation_before_invalid
+        );
+
+        let request_without_token = forwarded_request(
+            "request-3",
+            "https://studio-test.ts.net",
+            None,
+            r#"{"scope":"user","fields":{}}"#,
+        );
+        let response = app
+            .clone()
+            .oneshot(request_without_token)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let request_with_invalid_origin = forwarded_request(
+            "request-4",
+            "https://attacker.ts.net",
+            Some("token"),
+            r#"{"scope":"user","fields":{}}"#,
+        );
+        let response = app
+            .clone()
+            .oneshot(request_with_invalid_origin)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

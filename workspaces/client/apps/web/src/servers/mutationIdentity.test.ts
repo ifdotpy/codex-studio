@@ -17,9 +17,17 @@ vi.mock("./transport", () => ({
   apiOrigin: () => "http://localhost",
   serverFetch: (request: Request) => globalThis.fetch(request),
 }));
-import { beginServerMutation } from "./mutationIdentity";
+import {
+  beginServerMutation,
+  serverMutationResponseIsUncertain,
+} from "./mutationIdentity";
 import { post } from "../api";
 beforeEach(() => rows.clear());
+it.each([408, 429])("keeps HTTP %i outcomes uncertain", (status) => {
+  expect(serverMutationResponseIsUncertain(status, { error: "Timeout" })).toBe(
+    true,
+  );
+});
 it("preserves an unresolved write across retries and releases only a confirmed write", async () => {
   const first = (await beginServerMutation("/api/settings", {
     id: "account",

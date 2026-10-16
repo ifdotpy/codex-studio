@@ -36,6 +36,8 @@ pub enum MutationError {
     RequestIdRequired,
     #[error("Invalid host agent creation field: {0}")]
     InvalidCreation(&'static str),
+    #[error("The selected model is not available for the selected account")]
+    ModelUnavailable,
     #[error("Not implemented: requires {0}")]
     CapabilityUnavailable(&'static str),
     #[error("The account or project changed; reload before creating the agent")]

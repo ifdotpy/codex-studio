@@ -95,6 +95,10 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
                 limit: Some(1),
                 ..Default::default()
             };
+            let before_snapshot =
+                transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
+                    .expect("page and revision before append");
+            assert_eq!(before_snapshot.0, append["before"]);
             std::thread::scope(|scope| {
                 let writer = scope.spawn(|| {
                     barrier.wait();
@@ -104,19 +108,19 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
                     }).expect("concurrent append");
                 });
                 barrier.wait();
-                let page = transcript_runtime::page_at(&store, "agent", &request, 1000.0)
-                    .expect("snapshot page");
-                assert!(
-                    page == append["before"] || page == append["after"],
-                    "page mixed two committed snapshots: {page}"
-                );
+                let snapshot =
+                    transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
+                        .expect("snapshot page and revision");
                 writer.join().expect("writer joined");
+                let after_snapshot =
+                    transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
+                        .expect("page and revision after append");
+                assert_eq!(after_snapshot.0, append["after"]);
+                assert!(
+                    snapshot == before_snapshot || snapshot == after_snapshot,
+                    "page and transcript revision came from different committed snapshots"
+                );
             });
-            assert_eq!(
-                transcript_runtime::page_at(&store, "agent", &request, 1000.0)
-                    .expect("after append"),
-                append["after"]
-            );
         }
         for page in case["pages"].as_array().expect("pages") {
             let req = &page["request"];

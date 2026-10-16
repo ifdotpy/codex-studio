@@ -15,6 +15,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use studio_runtime_providers::Method;
 use studio_runtime_providers::RequestTicket;
+use studio_runtime_schema::shared_values::{
+    ACCOUNT_LIMITS_ERROR_RETRY_SECONDS, ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
+    ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
+};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -203,6 +207,12 @@ pub trait AccountSessionPort: Send + Sync {
     fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(LIMITS_REQUIRED))
     }
+    /// Read only when the latest account snapshot is outside its provider
+    /// freshness window. Explicit callers such as reset preflight keep using
+    /// `read_limits` to demand a fresh provider result.
+    fn read_limits_if_stale(&self, account: &str) -> Result<Value, AccountSessionError> {
+        self.read_limits(account)
+    }
 }
 
 pub const LIMITS_REQUIRED: &str = "provider-session/account-rate-limits";
@@ -231,14 +241,44 @@ impl LimitsSnapshot {
         }
         Ok(Self(value))
     }
-    pub fn decision(&self, cached: bool) -> LimitsDecision {
+    fn is_fresh_for_provider(&self, now: f64) -> bool {
+        let error = self
+            .0
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty());
+        if error {
+            return self
+                .0
+                .get("checkedAt")
+                .and_then(Value::as_f64)
+                .is_some_and(|checked_at| {
+                    checked_at > 0.0 && now - checked_at < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS
+                });
+        }
+        let at_is_fresh = self
+            .0
+            .get("at")
+            .and_then(Value::as_f64)
+            .is_some_and(|at| at > 0.0 && now - at < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS);
+        let read_at_is_fresh =
+            self.0
+                .get("readAt")
+                .and_then(Value::as_f64)
+                .is_some_and(|read_at| {
+                    read_at > 0.0 && now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS
+                });
+        at_is_fresh && read_at_is_fresh
+    }
+
+    pub fn decision(&self, cached: bool, now: f64) -> LimitsDecision {
         let data = self.0.get("data").is_some_and(|value| !value.is_null());
         let error = self
             .0
             .get("error")
             .and_then(Value::as_str)
             .is_some_and(|value| !value.is_empty());
-        if cached && (data || error) {
+        if (cached && (data || error)) || self.is_fresh_for_provider(now) {
             LimitsDecision::Cached
         } else if data {
             LimitsDecision::Refresh
@@ -251,23 +291,156 @@ impl LimitsSnapshot {
     }
 }
 
-/// Same read timing as the Python HTTP edge: cached responses perform no effect,
-/// existing data queues refresh, and an empty cache waits for the bounded read.
+/// Same provider freshness window as the Python account runtime. A cold cache
+/// waits for the bounded read; stale data is returned while one refresh queues.
 pub fn limits(
     port: &dyn AccountSessionPort,
     account: &str,
     cached: bool,
 ) -> Result<Value, AccountSessionError> {
     let snapshot = LimitsSnapshot::read(account, port.limits_snapshot(account)?)?;
-    match snapshot.decision(cached) {
+    let now = timestamp()?;
+    match snapshot.decision(cached, now) {
         LimitsDecision::Cached => Ok(snapshot.into_value()),
         LimitsDecision::Refresh => {
             port.refresh_limits(account)?;
             Ok(snapshot.into_value())
         }
         LimitsDecision::Read => {
-            Ok(LimitsSnapshot::read(account, port.read_limits(account)?)?.into_value())
+            Ok(LimitsSnapshot::read(account, port.read_limits_if_stale(account)?)?.into_value())
         }
+    }
+}
+
+#[cfg(test)]
+mod limits_freshness_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{AccountSessionError, AccountSessionPort, LimitsDecision, LimitsSnapshot, limits};
+    use serde_json::{Value, json};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    const NOW: f64 = 1_000.0;
+
+    fn snapshot(at: Value, read_at: Value, data: Value, error: Value, checked_at: Value) -> Value {
+        json!({
+            "accountKey":"default",
+            "at":at,
+            "readAt":read_at,
+            "data":data,
+            "error":error,
+            "checkedAt":checked_at
+        })
+    }
+
+    #[test]
+    fn provider_freshness_requires_both_window_and_complete_read_ages() {
+        let notification_fresh_but_full_read_stale = LimitsSnapshot::read(
+            "default",
+            snapshot(
+                json!(NOW - 1.0),
+                json!(NOW - 601.0),
+                json!({"accountId":"fixture"}),
+                Value::Null,
+                Value::Null,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            notification_fresh_but_full_read_stale.decision(false, NOW),
+            LimitsDecision::Refresh
+        );
+
+        let full_read_fresh = LimitsSnapshot::read(
+            "default",
+            snapshot(
+                json!(NOW - 1.0),
+                json!(NOW - 1.0),
+                json!({"accountId":"fixture"}),
+                Value::Null,
+                Value::Null,
+            ),
+        )
+        .unwrap();
+        assert_eq!(full_read_fresh.decision(false, NOW), LimitsDecision::Cached);
+    }
+
+    #[test]
+    fn fresh_null_success_and_recent_error_do_not_retry_provider_reads() {
+        let null_success = LimitsSnapshot::read(
+            "default",
+            snapshot(
+                json!(NOW - 1.0),
+                json!(NOW - 1.0),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ),
+        )
+        .unwrap();
+        assert_eq!(null_success.decision(true, NOW), LimitsDecision::Cached);
+        assert_eq!(null_success.decision(false, NOW), LimitsDecision::Cached);
+
+        let recent_error = LimitsSnapshot::read(
+            "default",
+            snapshot(
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                json!("read failed"),
+                json!(NOW - 1.0),
+            ),
+        )
+        .unwrap();
+        assert_eq!(recent_error.decision(false, NOW), LimitsDecision::Cached);
+    }
+
+    struct ColdCachePort {
+        snapshot: Mutex<Value>,
+        reads: AtomicUsize,
+    }
+
+    impl AccountSessionPort for ColdCachePort {
+        fn limits_snapshot(&self, _account: &str) -> Result<Value, AccountSessionError> {
+            Ok(self.snapshot.lock().unwrap().clone())
+        }
+
+        fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let now = super::timestamp().unwrap();
+            let result = snapshot(
+                json!(now),
+                json!(now),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            );
+            *self.snapshot.lock().unwrap() = result.clone();
+            Ok(result)
+        }
+    }
+
+    #[test]
+    fn cached_cold_fill_is_not_repeated_after_a_null_success() {
+        let port = ColdCachePort {
+            snapshot: Mutex::new(snapshot(
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            )),
+            reads: AtomicUsize::new(0),
+        };
+
+        for _ in 0..5 {
+            limits(&port, "default", true).unwrap();
+        }
+
+        assert_eq!(port.reads.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -426,6 +599,8 @@ pub struct AccountSessionRuntime {
     store: Option<Arc<studio_runtime_store::RuntimeStore>>,
     refreshed_limits: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Value>>>,
     pending_limit_refreshes: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    limits_read_locks:
+        Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<std::sync::Mutex<()>>>>>,
     continuation_wake: Option<Arc<Notify>>,
 }
 
@@ -523,6 +698,7 @@ impl AccountSessionRuntime {
             pending_limit_refreshes: Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeSet::new(),
             )),
+            limits_read_locks: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             continuation_wake: None,
         }
     }
@@ -550,6 +726,20 @@ impl AccountSessionRuntime {
             value,
             self.continuation_wake.as_deref(),
         )
+    }
+    fn limits_read_lock(
+        &self,
+        account: &str,
+    ) -> Result<Arc<std::sync::Mutex<()>>, AccountSessionError> {
+        let mut locks = self
+            .limits_read_locks
+            .lock()
+            .map_err(|_| AccountSessionError::Persistence)?;
+        Ok(Arc::clone(
+            locks
+                .entry(account.to_owned())
+                .or_insert_with(|| Arc::new(std::sync::Mutex::new(()))),
+        ))
     }
     fn exchange(
         &self,
@@ -911,59 +1101,10 @@ impl AccountSessionPort for AccountSessionRuntime {
         }
     }
     fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-        let snapshot = self.driver.snapshot().map_err(account_error)?;
-        if !snapshot
-            .accounts
-            .iter()
-            .chain(&snapshot.archived_accounts)
-            .any(|row| row["id"] == account)
-        {
-            return Err(AccountSessionError::Refused("Unknown Codex account"));
-        }
-        let scope = self.ensure_session(account)?;
-        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let operation = format!(
-            "limits-read:{account}:{}:{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| AccountSessionError::Persistence)?
-                .as_nanos(),
-            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let receipt = self.provider_request(ProviderRequest {
-            account: account.to_owned(),
-            operation: operation.clone(),
-            actor: None,
-            expected_scope: Some(scope.clone()),
-            deleted_actor_session: None,
-            method: Method::AccountRateLimitsRead,
-            params: serde_json::json!({}),
-            deadline: std::time::Instant::now() + Duration::from_secs(10),
-        })?;
-        if receipt.scope != scope
-            || receipt.operation != operation
-            || receipt.certainty != RequestCertainty::Written
-            || receipt.ticket.is_none()
-        {
-            return Err(AccountSessionError::Unknown);
-        }
-        let data = match receipt.result {
-            Some(ProviderResponse::Reply(data)) => data,
-            Some(ProviderResponse::Rejected(_)) | None => {
-                return Err(AccountSessionError::Refused("Account limits read failed"));
-            }
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| AccountSessionError::Persistence)?
-            .as_secs_f64();
-        let value = LimitsSnapshot::read(
-            account,
-            serde_json::json!({"accountKey":account,"data":data,"at":now,"readAt":now,"error":null}),
-        )?
-        .into_value();
-        self.persist_limits(account, &value)?;
-        Ok(value)
+        read_limits_with_freshness(self, account, false)
+    }
+    fn read_limits_if_stale(&self, account: &str) -> Result<Value, AccountSessionError> {
+        read_limits_with_freshness(self, account, true)
     }
     fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
         if let Some(value) = self
@@ -995,7 +1136,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         self.runtime.spawn(async move {
             let refresh_account = account.clone();
             match tokio::task::spawn_blocking(move || {
-                AccountSessionPort::read_limits(&runtime, &refresh_account)
+                AccountSessionPort::read_limits_if_stale(&runtime, &refresh_account)
             })
             .await
             {
@@ -1204,6 +1345,125 @@ impl AccountSessionPort for AccountSessionRuntime {
         self.accounts()
     }
 }
+
+fn read_limits_with_freshness(
+    runtime: &AccountSessionRuntime,
+    account: &str,
+    skip_if_fresh: bool,
+) -> Result<Value, AccountSessionError> {
+    let snapshot = runtime.driver.snapshot().map_err(account_error)?;
+    if !snapshot
+        .accounts
+        .iter()
+        .chain(&snapshot.archived_accounts)
+        .any(|row| row["id"] == account)
+    {
+        return Err(AccountSessionError::Refused("Unknown Codex account"));
+    }
+    let read_lock = runtime.limits_read_lock(account)?;
+    let _read_guard = read_lock
+        .lock()
+        .map_err(|_| AccountSessionError::Persistence)?;
+    let before = runtime.limits_snapshot(account)?;
+    let before = LimitsSnapshot::read(account, before)?;
+    if skip_if_fresh && before.is_fresh_for_provider(timestamp()?) {
+        return Ok(before.into_value());
+    }
+    let before_value = before.into_value();
+    let provider_read = (|| {
+        let scope = runtime.ensure_session(account)?;
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let operation = format!(
+            "limits-read:{account}:{}:{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| AccountSessionError::Persistence)?
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let receipt = runtime.provider_request(ProviderRequest {
+            account: account.to_owned(),
+            operation: operation.clone(),
+            actor: None,
+            expected_scope: Some(scope.clone()),
+            deleted_actor_session: None,
+            method: Method::AccountRateLimitsRead,
+            params: serde_json::json!({}),
+            deadline: std::time::Instant::now() + Duration::from_secs(10),
+        })?;
+        if receipt.scope != scope
+            || receipt.operation != operation
+            || receipt.certainty != RequestCertainty::Written
+            || receipt.ticket.is_none()
+        {
+            return Err(AccountSessionError::Unknown);
+        }
+        match receipt.result {
+            Some(ProviderResponse::Reply(data)) => Ok(data),
+            Some(ProviderResponse::Rejected(_)) | None => {
+                Err(AccountSessionError::Refused("Account limits read failed"))
+            }
+        }
+    })();
+    let data = match provider_read {
+        Ok(data) => data,
+        Err(error) => {
+            let current = runtime.limits_snapshot(account)?;
+            if current != before_value
+                && current.get("error").is_none_or(Value::is_null)
+                && current.get("data").is_some_and(Value::is_object)
+            {
+                return Ok(current);
+            }
+            let mut failed = current;
+            failed["error"] = Value::String(error.to_string());
+            failed["checkedAt"] = serde_json::json!(timestamp()?);
+            let failed = LimitsSnapshot::read(account, failed)?.into_value();
+            runtime.persist_limits(account, &failed)?;
+            return Err(error);
+        }
+    };
+    let now = timestamp()?;
+    let current = LimitsSnapshot::read(account, runtime.limits_snapshot(account)?)?.into_value();
+    let mut value = serde_json::json!({
+        "accountKey":account,
+        "data":data,
+        "at":now,
+        "readAt":now,
+        "error":null
+    });
+    if current != before_value
+        && current.get("error").is_none_or(Value::is_null)
+        && current.get("data").is_some_and(|data| !data.is_null())
+    {
+        let Some(current_data) = current.get("data").and_then(Value::as_object) else {
+            return Ok(current.clone());
+        };
+        let Some(read_data) = value.get_mut("data").and_then(Value::as_object_mut) else {
+            return Ok(current.clone());
+        };
+        if let Some(rate_limits) = current_data.get("rateLimits")
+            && !rate_limits.is_null()
+        {
+            read_data.insert("rateLimits".into(), rate_limits.clone());
+        }
+        if let Some(live_by_id) = current_data
+            .get("rateLimitsByLimitId")
+            .and_then(Value::as_object)
+        {
+            let read_by_id = read_data
+                .entry("rateLimitsByLimitId")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(read_by_id) = read_by_id.as_object_mut() {
+                read_by_id.extend(live_by_id.clone());
+            }
+        }
+    }
+    let value = LimitsSnapshot::read(account, value)?.into_value();
+    runtime.persist_limits(account, &value)?;
+    Ok(value)
+}
+
 fn timestamp() -> Result<f64, AccountSessionError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1530,5 +1790,260 @@ mod persistence_tests {
 
         assert_eq!(stored_workspace(&store), before);
         assert!(cache.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod limits_runtime_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{
+        AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
+        ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture,
+        SessionFutureScope, SessionReceipt,
+    };
+    use crate::{account_driver::AccountDriver, account_policy::AccountPolicyState};
+    use serde_json::{Value, json};
+    use std::{
+        collections::VecDeque,
+        fs,
+        sync::{
+            Arc, Condvar, Mutex,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        thread,
+        time::Duration,
+    };
+    use studio_runtime_providers::{RequestId, RequestTicket};
+    use studio_runtime_store::RuntimeStore;
+
+    enum Reply {
+        Data(Value),
+        Rejected,
+    }
+
+    struct FirstReadGate {
+        released: Mutex<bool>,
+        wake: Condvar,
+        entered: mpsc::Sender<()>,
+    }
+
+    impl FirstReadGate {
+        fn release(&self) {
+            *self.released.lock().unwrap() = true;
+            self.wake.notify_all();
+        }
+    }
+
+    struct ReleaseFirstReadGate(Arc<FirstReadGate>);
+
+    impl Drop for ReleaseFirstReadGate {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    struct FakeLimitsSession {
+        calls: AtomicUsize,
+        replies: Mutex<VecDeque<Reply>>,
+        scope: ConnectionScope,
+        first_read_gate: Option<Arc<FirstReadGate>>,
+    }
+
+    impl FakeLimitsSession {
+        fn response(&self, request: ProviderRequest, call: usize) -> SessionFuture {
+            let scope = self.scope.clone();
+            let operation = request.operation.clone();
+            let method = request.method;
+            let reply = self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Reply::Data(json!({"accountId":"fixture-account"})));
+            let gate = (call == 1).then(|| self.first_read_gate.clone()).flatten();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    let _ = gate.entered.send(());
+                    let mut released = gate.released.lock().unwrap();
+                    while !*released {
+                        released = gate.wake.wait(released).unwrap();
+                    }
+                }
+                let result = match reply {
+                    Reply::Data(data) => ProviderResponse::Reply(data),
+                    Reply::Rejected => ProviderResponse::Rejected(json!({"message":"fixture"})),
+                };
+                Ok(SessionReceipt {
+                    ticket: Some(RequestTicket {
+                        generation: scope.generation,
+                        id: RequestId::String(operation.clone()),
+                        method,
+                    }),
+                    scope,
+                    operation,
+                    certainty: RequestCertainty::Written,
+                    result: Some(result),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    impl RetainedAccountSession for FakeLimitsSession {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            (account == self.scope.account).then(|| self.scope.clone())
+        }
+
+        fn ensure_session(&self, account: String) -> SessionFutureScope {
+            let result = if account == self.scope.account {
+                Ok(self.scope.clone())
+            } else {
+                Err(AccountSessionError::Refused("Unknown Codex account"))
+            };
+            Box::pin(async move { result })
+        }
+
+        fn request(&self, request: ProviderRequest) -> SessionFuture {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.response(request, call)
+        }
+    }
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        _tokio: tokio::runtime::Runtime,
+        runtime: Arc<AccountSessionRuntime>,
+        provider: Arc<FakeLimitsSession>,
+    }
+
+    fn fixture(
+        replies: impl IntoIterator<Item = Reply>,
+        gate: bool,
+    ) -> (Fixture, mpsc::Receiver<()>) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("codex-home");
+        fs::create_dir_all(&home).unwrap();
+        let registry_path = root.path().join("accounts/registry.json");
+        fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+        let registry = serde_json::to_vec(&json!({
+            "version":1,
+            "defaultAccountKey":"default",
+            "accounts":{"default":{
+                "id":"default","home":home,"label":"Codex","source":"Codex CLI","status":"signedOut"
+            }},
+            "logins":{},"deleteReceipts":{}
+        }))
+        .unwrap();
+        fs::write(&registry_path, &registry).unwrap();
+        let driver = Arc::new(AccountDriver::open(&registry_path).unwrap());
+        let policy = Arc::new(AccountPolicyState::from_startup(Some(&registry), []).unwrap());
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let scope = ConnectionScope {
+            account: "default".into(),
+            connection: "fixture-connection".into(),
+            generation: 1,
+        };
+        let (entered, entered_rx) = mpsc::channel();
+        let first_read_gate = gate.then(|| {
+            Arc::new(FirstReadGate {
+                released: Mutex::new(false),
+                wake: Condvar::new(),
+                entered,
+            })
+        });
+        let provider = Arc::new(FakeLimitsSession {
+            calls: AtomicUsize::new(0),
+            replies: Mutex::new(replies.into_iter().collect()),
+            scope,
+            first_read_gate,
+        });
+        let store_path = root.path().join("store");
+        fs::create_dir_all(&store_path).unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(&store_path)).unwrap());
+        let runtime = Arc::new(
+            AccountSessionRuntime::new(
+                driver,
+                Some(provider.clone()),
+                tokio.handle().clone(),
+                root.path().join("accounts"),
+                home.clone(),
+                home,
+            )
+            .with_limits(policy)
+            .with_store(store),
+        );
+        (
+            Fixture {
+                _root: root,
+                _tokio: tokio,
+                runtime,
+                provider,
+            },
+            entered_rx,
+        )
+    }
+
+    #[test]
+    fn concurrent_stale_cold_reads_share_one_native_request() {
+        let (fixture, entered) =
+            fixture([Reply::Data(json!({"accountId":"fixture-account"}))], true);
+        let gate = Arc::clone(fixture.provider.first_read_gate.as_ref().unwrap());
+        let _release_on_exit = ReleaseFirstReadGate(Arc::clone(&gate));
+        let runtime = Arc::clone(&fixture.runtime);
+        let first = thread::spawn(move || {
+            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
+        });
+        let first_entered = entered.recv_timeout(Duration::from_secs(2));
+
+        let (started, started_rx) = mpsc::channel();
+        let runtime = Arc::clone(&fixture.runtime);
+        let second = thread::spawn(move || {
+            let _ = started.send(());
+            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
+        });
+        let second_started = started_rx.recv_timeout(Duration::from_secs(2));
+        gate.release();
+
+        let first_result = first.join().unwrap();
+        let second_result = second.join().unwrap();
+        assert!(first_entered.is_ok());
+        assert!(second_started.is_ok());
+        first_result.unwrap();
+        second_result.unwrap();
+        assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_provider_read_is_persisted_and_cooled_down_but_forced_read_runs() {
+        let (fixture, _) = fixture(
+            [
+                Reply::Rejected,
+                Reply::Data(json!({"accountId":"fixture-account"})),
+            ],
+            false,
+        );
+        assert!(
+            AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default").is_err()
+        );
+        let failed =
+            AccountSessionPort::limits_snapshot(fixture.runtime.as_ref(), "default").unwrap();
+        assert_eq!(failed["error"], "Account limits read failed");
+        assert!(failed["checkedAt"].as_f64().unwrap() > 0.0);
+
+        let cooled =
+            AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default").unwrap();
+        assert_eq!(cooled["error"], "Account limits read failed");
+        assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
+
+        let forced = AccountSessionPort::read_limits(fixture.runtime.as_ref(), "default").unwrap();
+        assert_eq!(forced["data"]["accountId"], "fixture-account");
+        assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 2);
     }
 }

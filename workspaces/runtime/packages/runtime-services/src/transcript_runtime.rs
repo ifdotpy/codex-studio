@@ -35,6 +35,18 @@ pub fn page_at(
     request: &PageRequest,
     now: f64,
 ) -> Result<Value, TranscriptError> {
+    page_at_snapshot(store, agent, request, now).map(|(page, _)| page)
+}
+
+/// Project a page and its transcript revision from the same SQLite snapshot.
+/// The revision lets callers persist a derived view without pairing it with a
+/// revision observed before the projection began.
+pub fn page_at_snapshot(
+    store: &RuntimeStore,
+    agent: &str,
+    request: &PageRequest,
+    now: f64,
+) -> Result<(Value, i64), TranscriptError> {
     if !now.is_finite() || now < 0.0 {
         return Err(TranscriptError::Store);
     }
@@ -44,9 +56,17 @@ pub fn page_at(
         .map_err(|_| TranscriptError::Store)?;
     let transaction = connection.transaction()?;
     let mut value = project(&transaction, &analytics, agent, request, now)?;
+    let revision = transaction
+        .query_row(
+            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+            [agent],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
     drop(transaction);
     project_tool_results(store, &mut value, now)?;
-    Ok(value)
+    Ok((value, revision))
 }
 
 struct PageRow {

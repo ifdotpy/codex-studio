@@ -1853,7 +1853,11 @@ mod tests {
         record_user_submission, sha256_json,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
-    use studio_runtime_store::{NotificationDispatchRepository, TranscriptRepository};
+    use studio_runtime_store::{
+        AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, MessageRepository,
+        NotificationDispatchRepository, QueueEvent, QueueEventId, QueueEventRepository,
+        RuntimeStore, SchedulerRepository, TranscriptRepository,
+    };
 
     #[test]
     fn borrowed_notification_signature_matches_owned_payload_with_unknown_fields() {
@@ -2013,6 +2017,211 @@ mod tests {
             result.stream_update.is_none(),
             "a fresh receipt without stream changes must not replace the buffer"
         );
+    }
+
+    fn submitted_chat_runtime() -> (tempfile::TempDir, RuntimeStore) {
+        let directory = tempfile::tempdir().expect("temporary runtime");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let event_id = "chat:message-1:agent";
+        let message_text = "answer this prompt";
+        let event_text = json!({
+            "room":"room-1",
+            "message_id":"message-1",
+            "sender":"user",
+            "sender_name":"User",
+            "text":message_text
+        })
+        .to_string();
+        store
+            .transaction(|tx| {
+                let agent = AgentRecord::from_value(json!({
+                    "id":"agent",
+                    "rootId":"agent",
+                    "epoch":1,
+                    "status":AgentStatus::Starting.as_str(),
+                    "threadId":"thread",
+                    "accountKey":"default",
+                    "turnEpoch":1,
+                    "autoWake":true,
+                    "inFlight":true,
+                    "events":0,
+                    "startAttempt":{
+                        "id":"attempt-1",
+                        "epoch":1,
+                        "submitted":false,
+                        "events":[event_id]
+                    }
+                }))?;
+                AgentRepository::put(tx, &agent)?;
+                QueueEventRepository::put(
+                    tx,
+                    &QueueEvent {
+                        id: QueueEventId::from(event_id),
+                        agent: "agent".into(),
+                        kind: "agent_message".into(),
+                        text: event_text.clone(),
+                        status: "reserved".into(),
+                        created: 1.0,
+                        epoch: 1,
+                        turn_id: None,
+                        error: None,
+                    },
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        event_id,
+                        json!({"contextManifest":{"epoch":[null,0],"versions":{"worktreeReminder":"v1"},"sequence":1}}).to_string()
+                    ],
+                )?;
+                MessageRepository::put(
+                    tx,
+                    &ChatMessage {
+                        sequence: 1,
+                        id: ChatMessageId::from("message-1"),
+                        room: "room-1".into(),
+                        sender: "user".into(),
+                        text: message_text.into(),
+                        created: 1.0,
+                        deliveries: json!({"agent":"queued"}),
+                    },
+                )?;
+                assert!(SchedulerRepository::mark_submitted_identity(
+                    tx,
+                    "agent",
+                    1,
+                    "attempt-1",
+                    "ticket-1",
+                    "default",
+                    7,
+                    "connection-1",
+                    "thread",
+                )?);
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("submitted attempt is durable");
+        (directory, store)
+    }
+
+    #[test]
+    fn user_message_receipt_binds_exact_submitted_turn_and_chat_delivery_once() {
+        let (directory, store) = submitted_chat_runtime();
+        let event_id = "chat:message-1:agent";
+        let notification = frame(&json!({
+            "method":"item/started",
+            "params":{
+                "threadId":"thread",
+                "turnId":"turn-1",
+                "item":{"id":"input-1","type":"userMessage","clientId":event_id}
+            }
+        }));
+        let identity = identity(1);
+        let first = store
+            .transaction(|tx| {
+                super::dispatch_notification_with_effects(
+                    tx,
+                    "agent",
+                    &PublicationContext::default(),
+                    &NotificationStreamBuffer::default(),
+                    &identity,
+                    &notification,
+                    2.0,
+                    &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                )
+                .map(|result| result.outcome)
+                .map_err(|error| {
+                    studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                })
+            })
+            .expect("positive native receipt commits");
+        assert_eq!(first, DispatchOutcome::Written);
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime reopens");
+
+        store
+            .transaction(|tx| {
+                let event = QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
+                    .expect("submitted event remains");
+                assert_eq!(event.status, "delivered");
+                assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
+                let agent =
+                    AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
+                assert_eq!(agent.extra["turnId"], "turn-1");
+                assert_eq!(agent.extra["events"], 1);
+                assert!(agent.extra["lastEvent"].is_string());
+                let message = MessageRepository::get(tx, &ChatMessageId::from("message-1"))?
+                    .expect("chat message remains");
+                assert_eq!(message.deliveries["agent"], "delivered");
+                let (manifest_event, manifest): (String, String) = tx.query_row(
+                    "SELECT event_id,record FROM runtime_context_manifests WHERE agent='agent' AND thread_id='' AND compactions=0",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(manifest_event, event_id);
+                assert_eq!(
+                    serde_json::from_str::<Value>(&manifest)?["versions"]["worktreeReminder"],
+                    "v1"
+                );
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("settled receipt state reads");
+
+        let replay = store
+            .transaction(|tx| {
+                super::dispatch_notification_with_effects(
+                    tx,
+                    "agent",
+                    &PublicationContext::default(),
+                    &NotificationStreamBuffer::default(),
+                    &identity,
+                    &notification,
+                    3.0,
+                    &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                )
+                .map(|result| result.outcome)
+                .map_err(|error| {
+                    studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                })
+            })
+            .expect("lost acknowledgement replays its saved receipt");
+        assert_eq!(replay, DispatchOutcome::Written);
+        store
+            .transaction(|tx| {
+                let agent =
+                    AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
+                assert_eq!(agent.extra["events"], 1);
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("receipt replay does not count the notification twice");
+    }
+
+    #[test]
+    fn turn_start_acceptance_projects_chat_delivery_in_its_transaction() {
+        let (_directory, store) = submitted_chat_runtime();
+        store
+            .transaction(|tx| {
+                let accepted = SchedulerRepository::settle_started_provider(
+                    tx,
+                    "agent",
+                    1,
+                    "attempt-1",
+                    "ticket-1",
+                    "default",
+                    7,
+                    "thread",
+                    "turn-1",
+                )?;
+                assert_eq!(accepted, Some(false));
+                let event =
+                    QueueEventRepository::get(tx, &QueueEventId::from("chat:message-1:agent"))?
+                        .expect("submitted event remains");
+                assert_eq!(event.status, "delivered");
+                let message = MessageRepository::get(tx, &ChatMessageId::from("message-1"))?
+                    .expect("chat message remains");
+                assert_eq!(message.deliveries["agent"], "delivered");
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("turn/start acceptance commits chat delivery");
     }
 
     #[test]

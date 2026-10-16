@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository, RuntimeStore,
-    Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository,
+    ReviewerArchiveRepository, RuntimeStore, Transaction, WorkItemsRepository,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
@@ -323,40 +323,11 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
 /// identity for every retry; scheduling commits before the archive operation.
 fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWriteError> {
     store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
-        let mut statement = tx
-            .prepare(
-                "SELECT id,agent,text FROM runtime_events \
-                 WHERE id LIKE 'child:%' AND kind='child_result' AND status='delivered' \
-                 ORDER BY id",
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let events = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(studio_runtime_store::StoreError::from)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(studio_runtime_store::StoreError::from)?;
-        drop(statement);
-        for (event_id, parent_id, text) in events {
-            let Ok(payload) = serde_json::from_str::<Value>(&text) else {
-                continue;
-            };
-            let Some(child_id) = payload.get("agent_id").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(mut child) = AgentRepository::get(tx, &AgentId::from(child_id))? else {
-                continue;
-            };
-            let mut record = child.value();
-            if record.get("role").and_then(Value::as_str) != Some("reviewer")
-                || record.get("parentId").and_then(Value::as_str) != Some(parent_id.as_str())
-                || record.get("status").and_then(Value::as_str) != Some("completed")
-                || event_write::truthy(record.get("agentArchive"))
+        let candidates = ReviewerArchiveRepository::candidates(tx)?;
+        for (child_id, encoded) in candidates {
+            let mut record: Value =
+                serde_json::from_str(&encoded).map_err(studio_runtime_store::StoreError::from)?;
+            if event_write::truthy(record.get("agentArchive"))
                 || event_write::truthy(record.get("reviewArchiveError"))
                 || record
                     .get("reviewArchiveScheduled")
@@ -365,8 +336,15 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
             {
                 continue;
             }
+            let Some(parent_id) = record.get("parentId").and_then(Value::as_str) else {
+                continue;
+            };
+            let event_id = ReviewerArchiveRepository::child_result_id(tx, parent_id, &child_id)?;
+            let Some(event_id) = event_id else {
+                continue;
+            };
             record["reviewArchiveScheduled"] = json!(event_id);
-            child = AgentRecord::from_value(record).map_err(|_| {
+            let child = AgentRecord::from_value(record).map_err(|_| {
                 studio_runtime_store::StoreError::InvalidStoredObject {
                     table: "runtime_agents",
                     id: child_id.to_owned(),
@@ -379,21 +357,7 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
 
     let due = {
         let connection = store.read()?;
-        let mut statement = connection
-            .prepare(
-                "SELECT id,record FROM runtime_agents \
-                 WHERE json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL \
-                   AND coalesce(json_extract(record,'$.reviewArchiveNextAt'),0)<=?1 \
-                 ORDER BY id",
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        statement
-            .query_map([now], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(studio_runtime_store::StoreError::from)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(studio_runtime_store::StoreError::from)?
+        ReviewerArchiveRepository::due_retries(&connection, now)?
     };
 
     for (child_id, encoded) in due {
@@ -3192,6 +3156,75 @@ mod actor_tests {
             "Reviewer result delivered to parent"
         );
         assert_eq!(reviewer["agentArchive"]["by"], "lead");
+    }
+
+    #[test]
+    fn reviewer_archive_uses_earliest_matching_parent_event_id() {
+        let (store, _root) = reviewer_archive_store("reviewer");
+        store
+            .transaction(|tx| {
+                for (id, parent) in [
+                    ("child:z-result", "lead"),
+                    ("child:a-result", "lead"),
+                    ("child:0-wrong-parent", "other-lead"),
+                ] {
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                         VALUES (?1,?2,'child_result',?3,'delivered',2,1,'lead-turn',NULL)",
+                        rusqlite::params![
+                            id,
+                            parent,
+                            json!({"agent_id":"child","result":"review complete"}).to_string()
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("review events insert");
+
+        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+
+        let reviewer = reviewer_record(&store);
+        assert_eq!(reviewer["reviewArchiveScheduled"], "child:a-result");
+        assert_eq!(
+            reviewer["agentArchive"]["reason"],
+            "Reviewer result delivered to parent"
+        );
+    }
+
+    #[test]
+    fn reviewer_archive_skips_existing_archive_markers_before_event_lookup() {
+        for marker in [
+            json!({"reviewArchiveError":"previous terminal error"}),
+            json!({"reviewArchiveScheduled":"child:existing-result"}),
+            json!({"agentArchive":{"at":1.0,"epoch":2,"reason":"already archived"}}),
+        ] {
+            let (store, _root) = reviewer_archive_store("reviewer");
+            store
+                .transaction(|tx| {
+                    let mut child =
+                        AgentRepository::get(tx, &AgentId::from("child"))?.expect("reviewer loads");
+                    let mut record = child.value();
+                    for (key, value) in marker.as_object().expect("marker object") {
+                        record[key] = value.clone();
+                    }
+                    child = AgentRecord::from_value(record)?;
+                    AgentRepository::put(tx, &child)?;
+                    Ok(())
+                })
+                .expect("marker inserts");
+
+            accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+
+            let reviewer = reviewer_record(&store);
+            for (key, value) in marker.as_object().expect("marker object") {
+                assert_eq!(reviewer.get(key), Some(value));
+            }
+            assert_eq!(
+                reviewer.get("reviewArchiveScheduled"),
+                marker.get("reviewArchiveScheduled")
+            );
+        }
     }
 
     #[test]

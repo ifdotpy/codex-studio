@@ -8,6 +8,19 @@ export function retryableReadError(error: unknown): boolean {
   );
 }
 
+export function retryableTranscriptPullConflict(
+  error: unknown,
+  scope: string,
+): boolean {
+  // The transcript pull route maps only SnapshotChanged to HTTP 409; keep that
+  // optimistic-read retry scoped so conflicts on other reads stay permanent.
+  return (
+    scope.startsWith("transcript:") &&
+    error instanceof ApiError &&
+    error.status === 409
+  );
+}
+
 export function readRetryDelay(attempt: number): number {
   return Math.min(1_000 * 2 ** Math.min(attempt, 5), 30_000);
 }

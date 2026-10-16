@@ -21,12 +21,12 @@ inventory::submit! {
 }
 
 pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
+    // Ordinary authenticated browser writes carry request IDs too; signed
+    // identity headers select this boundary.
     !path.starts_with("/api/federation/")
         && ((path == "/api/multi-server/v1/identity" && headers.contains_key("x-forwarded-for"))
             || (path.starts_with("/api/multi-server")
                 && headers.contains_key("access-control-request-headers"))
-            || (headers.contains_key("x-forwarded-for")
-                && headers.contains_key("x-studio-request-id"))
             || [
                 "x-studio-client",
                 "x-studio-server",
@@ -345,6 +345,88 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         },
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use axum::http::HeaderMap;
+    use studio_runtime_services::multi_server_auth::SignedRequest;
+
+    use super::needed;
+
+    #[test]
+    fn request_identity_alone_keeps_forwarded_browser_writes_on_the_local_api_route() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-request-id",
+            "request-1".parse().expect("header value"),
+        );
+
+        assert!(!needed(&headers, "/api/sync/preferences"));
+    }
+
+    #[test]
+    fn partial_signed_credentials_still_use_the_fail_closed_signed_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-request-id",
+            "request-1".parse().expect("header value"),
+        );
+        headers.insert(
+            "x-studio-signature",
+            "partial".parse().expect("header value"),
+        );
+
+        assert!(needed(&headers, "/api/sync/preferences"));
+        let signed_headers = headers
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_owned(), value.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        let error = SignedRequest::from_headers(
+            "POST",
+            "/api/sync/preferences",
+            &signed_headers,
+            br#"{"scope":"user","fields":{}}"#,
+        )
+        .err()
+        .expect("partial signed headers are rejected");
+        assert_eq!(error.status(), 401);
+    }
+
+    #[test]
+    fn remote_discovery_identity_still_uses_the_incoming_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "100.64.0.1".parse().expect("header value"),
+        );
+
+        assert!(needed(&headers, "/api/multi-server/v1/identity"));
+    }
+
+    #[test]
+    fn federation_paths_do_not_enter_the_multi_server_boundary() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-studio-signature",
+            "partial".parse().expect("header value"),
+        );
+
+        assert!(!needed(&headers, "/api/federation/v1/message"));
     }
 }
 

@@ -18,6 +18,9 @@ from codex_process_supervisor import MAX_FRAME_BYTES, PROTOCOL
 from codex_layout import REPOSITORY_ROOT
 from codex_http_body_limits import REQUEST_BODY_READ_TIMEOUT_SECONDS
 from codex_shared_values import (
+    ACCOUNT_LIMITS_ERROR_RETRY_SECONDS,
+    ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
+    ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
     MAX_PROJECT_SECRET_VALUE_BYTES,
     MAX_SYNC_RESOURCE_COUNT,
     MAX_SYNC_RESOURCE_QUERY_BYTES,
@@ -41,6 +44,40 @@ from studio_api.sync.models import DraftPushRequest
 class SharedValuesContract(unittest.TestCase):
     def test_generated_cross_language_values_match_the_authority(self):
         self.assertEqual(main(["--check"]), 0)
+
+    def test_account_limits_freshness_uses_generated_rust_and_python_values(self):
+        rust_values = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
+        ).read_text(encoding="utf-8")
+        rust_reader = (
+            REPOSITORY_ROOT
+            / "workspaces/runtime/packages/runtime-services/src/account_session_runtime.rs"
+        ).read_text(encoding="utf-8")
+        python_reader = (
+            REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex_runtime.py"
+        ).read_text(encoding="utf-8")
+        web_values = (
+            REPOSITORY_ROOT / "workspaces/client/apps/web/src/generated/sharedValues.ts"
+        ).read_text(encoding="utf-8")
+        web_readers = (
+            REPOSITORY_ROOT / "workspaces/client/apps/web/src/usage/accountUsage.ts",
+            REPOSITORY_ROOT / "workspaces/client/apps/web/src/App.tsx",
+        )
+        values = (
+            ("ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS", ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS),
+            ("ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS", ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS),
+            ("ACCOUNT_LIMITS_ERROR_RETRY_SECONDS", ACCOUNT_LIMITS_ERROR_RETRY_SECONDS),
+        )
+        self.assertEqual(tuple(value for _, value in values), (60, 600, 30))
+        for name, value in values:
+            with self.subTest(contract=name):
+                self.assertIn(f"pub const {name}: f64 = {value}.0;", rust_values)
+                self.assertIn(name, rust_reader)
+                self.assertIn(name, python_reader)
+                if name == "ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS":
+                    self.assertIn(f"export const {name} = {value};", web_values)
+                    for web_reader in web_readers:
+                        self.assertIn(name, web_reader.read_text(encoding="utf-8"))
 
     def test_javascript_safe_integer_ceiling_has_generated_rust_and_web_consumers(self):
         self.assertEqual(MAX_SAFE_INTEGER, 9_007_199_254_740_991)

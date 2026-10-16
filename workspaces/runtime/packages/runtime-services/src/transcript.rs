@@ -10,6 +10,8 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
+const TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES: usize = 1;
+
 #[derive(Debug, Error)]
 pub enum TranscriptError {
     #[error("unknown message in this conversation")]
@@ -111,41 +113,48 @@ pub fn pull_scope(
     after: i64,
 ) -> Result<Value, TranscriptError> {
     let now = crate::transcript_runtime::observed_at()?;
-    let reader = store.read()?;
-    let actor = TranscriptRepository::agent(&reader, agent)?;
-    let deleted = actor
-        .as_ref()
-        .is_none_or(|value| truthy(value.get("deletedAt")));
-    let expected_revision = reader
-        .query_row(
-            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-            [agent],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-    drop(reader);
-    let fresh_payload = if deleted {
-        None
-    } else {
-        Some(crate::transcript_runtime::page_at(
-            store,
-            agent,
-            &crate::transcript_runtime::PageRequest::default(),
-            now,
-        )?)
-    };
-    match store.read_transaction_with_error(|transaction| {
-        pull_scope_in(
-            transaction,
-            scope,
-            agent,
-            after,
-            expected_revision,
-            fresh_payload.as_ref(),
-        )
-    }) {
-        Err(TranscriptError::ReadOnlyRepair) => store.transaction_with(|transaction| {
+    for attempt in 0..=TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES {
+        let mut reader = store.read()?;
+        let snapshot = reader.transaction()?;
+        let actor = TranscriptRepository::agent(&snapshot, agent)?;
+        let deleted = actor
+            .as_ref()
+            .is_none_or(|value| truthy(value.get("deletedAt")));
+        let deleted_revision = if deleted {
+            snapshot
+                .query_row(
+                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                    [agent],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        drop(snapshot);
+        drop(reader);
+        let (expected_revision, fresh_payload) = if deleted {
+            (deleted_revision, None)
+        } else {
+            let snapshot = crate::transcript_runtime::page_at_snapshot(
+                store,
+                agent,
+                &crate::transcript_runtime::PageRequest::default(),
+                now,
+            );
+            let (payload, revision) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(TranscriptError::DeletedConversation)
+                    if attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            (revision, Some(payload))
+        };
+        let result = match store.read_transaction_with_error(|transaction| {
             pull_scope_in(
                 transaction,
                 scope,
@@ -154,9 +163,27 @@ pub fn pull_scope(
                 expected_revision,
                 fresh_payload.as_ref(),
             )
-        }),
-        result => result,
+        }) {
+            Err(TranscriptError::ReadOnlyRepair) => store.transaction_with(|transaction| {
+                pull_scope_in(
+                    transaction,
+                    scope,
+                    agent,
+                    after,
+                    expected_revision,
+                    fresh_payload.as_ref(),
+                )
+            }),
+            result => result,
+        };
+        if matches!(&result, Err(TranscriptError::SnapshotChanged))
+            && attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES
+        {
+            continue;
+        }
+        return result;
     }
+    unreachable!("the transcript snapshot retry loop always returns or continues")
 }
 
 fn pull_scope_in(

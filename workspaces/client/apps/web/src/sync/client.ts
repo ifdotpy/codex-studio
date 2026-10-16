@@ -41,7 +41,11 @@ import {
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
-import { readRetryDelay, retryableReadError } from "./readRetry";
+import {
+  readRetryDelay,
+  retryableReadError,
+  retryableTranscriptPullConflict,
+} from "./readRetry";
 import { refreshAfterCurrentPull } from "./refreshAfterCurrentPull";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
@@ -918,51 +922,61 @@ async function acquireProjection(
     let invalidationBlocked = false;
     let readFailed = false;
     let connectionStatus: ResourceConnectionState = "connecting";
+    const retryAbort = new AbortController();
     let stopConnection: (() => void) | undefined;
     const report = (error: unknown | null) => {
+      const retryableScopeRead =
+        isTransientSyncReadFailure(error) ||
+        retryableTranscriptPullConflict(error, scope);
       invalidationBlocked =
         error instanceof WorkspaceMismatchError ||
-        (error instanceof ApiError && !isTransientSyncReadFailure(error));
+        (error instanceof ApiError && !retryableScopeRead);
       if (error === null) readFailed = false;
-      else readFailed = isTransientSyncReadFailure(error);
+      else readFailed = retryableScopeRead;
       listeners.forEach((listener) => listener(error));
     };
     const retryRead = async <T>(
       request: () => Promise<T>,
       signal?: AbortSignal,
     ): Promise<T> => {
-      // A request sent before the stream reaches live gets one attempt. If it
-      // fails, the stream baseline will schedule the retry with its sequence.
-      const retryStartedLive = connectionStatus === "live";
       for (let attempt = 0; ; attempt++) {
         try {
           return await request();
         } catch (error) {
           const canRetry =
-            retryStartedLive &&
-            isTransientSyncReadFailure(error) &&
+            (isTransientSyncReadFailure(error) ||
+              retryableTranscriptPullConflict(error, scope)) &&
             connectionStatus === "live" &&
             !document.hidden &&
             navigator.onLine !== false &&
+            !stopped &&
             !signal?.aborted;
           if (!canRetry) throw error;
           // Keep the pull on the shared bounded backoff while the stream stays live.
           const delay = readRetryDelay(attempt);
           await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
+            const cleanup = () => {
               signal?.removeEventListener("abort", abort);
+              retryAbort.signal.removeEventListener("abort", abort);
+            };
+            const timer = setTimeout(() => {
+              cleanup();
               resolve();
             }, delay);
             const abort = () => {
               clearTimeout(timer);
+              cleanup();
               reject(new DOMException("Aborted", "AbortError"));
             };
             signal?.addEventListener("abort", abort, { once: true });
+            retryAbort.signal.addEventListener("abort", abort, { once: true });
+            if (signal?.aborted || retryAbort.signal.aborted) abort();
           });
           if (
             connectionStatus !== "live" ||
             document.hidden ||
-            navigator.onLine === false
+            navigator.onLine === false ||
+            stopped
           )
             throw error;
         }
@@ -1393,10 +1407,11 @@ async function acquireProjection(
       stopConnection = watchResourceConnection((status) => {
         connectionStatus = status;
         if (status === "live" && readFailed && !invalidationBlocked)
-          void refresh().catch(() => {});
+          void refreshAfterCurrent().catch(() => {});
       });
       stopResume = onResume(() => {
-        if (readFailed && !invalidationBlocked) void refresh().catch(() => {});
+        if (readFailed && !invalidationBlocked)
+          void refreshAfterCurrent().catch(() => {});
       });
     };
     let stopResume: (() => void) | undefined;
@@ -1410,6 +1425,7 @@ async function acquireProjection(
       activateInvalidation,
       stop: async () => {
         stopped = true;
+        retryAbort.abort();
         stopInvalidation?.();
         stopAccountsBaseline?.();
         stopCoverageFallback?.();
@@ -1517,7 +1533,10 @@ async function watchTranscriptProjection(
 
 /** Pull and return the current entity projection for state reconciliation. */
 export async function refreshProjection(
-  options: { afterCurrentPull?: boolean } = {},
+  options: {
+    afterCurrentPull?: boolean;
+    onWorkspaceId?: (workspaceId: string) => void;
+  } = {},
 ): Promise<Snapshot> {
   const handle = await acquireProjection("state");
   try {
@@ -1537,6 +1556,7 @@ export async function refreshProjection(
       true,
     );
     if (!snapshot) throw new Error("The entity projection is unavailable.");
+    options.onWorkspaceId?.(handle.workspaceId);
     return snapshot;
   } finally {
     await handle.release();

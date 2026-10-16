@@ -496,20 +496,40 @@ impl LifecyclePorts for ProductionLifecyclePorts {
     }
 
     fn committed(&self) -> Result<(), ManagementError> {
-        self.monitor_wake.notify_one();
-        self.lifecycle_wake.notify_one();
-        if let Some(wake) = &self.continuation_wake {
-            wake.notify_one();
-        }
-        self.reconcile_deleted_tombstones()?;
-        self.dispatch_prepared()?;
-        self.reconcile_deleted_tombstones()?;
-        self.dispatch_deleted_voice_sessions()?;
-        self.dispatch_active_voice_stops()?;
-        self.dispatch_remote_stops()?;
-        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
-            .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))?;
-        Ok(())
+        crate::diagnostics::measure_runtime_stage("ports.committed", || {
+            self.monitor_wake.notify_one();
+            self.lifecycle_wake.notify_one();
+            if let Some(wake) = &self.continuation_wake {
+                wake.notify_one();
+            }
+            crate::diagnostics::measure_runtime_stage(
+                "ports.committed.reconcile_tombstones_before",
+                || self.reconcile_deleted_tombstones(),
+            )?;
+            crate::diagnostics::measure_runtime_stage("ports.committed.dispatch_prepared", || {
+                self.dispatch_prepared()
+            })?;
+            crate::diagnostics::measure_runtime_stage(
+                "ports.committed.reconcile_tombstones_after",
+                || self.reconcile_deleted_tombstones(),
+            )?;
+            crate::diagnostics::measure_runtime_stage(
+                "ports.committed.dispatch_deleted_voice",
+                || self.dispatch_deleted_voice_sessions(),
+            )?;
+            crate::diagnostics::measure_runtime_stage(
+                "ports.committed.dispatch_active_voice",
+                || self.dispatch_active_voice_stops(),
+            )?;
+            crate::diagnostics::measure_runtime_stage("ports.committed.dispatch_remote", || {
+                self.dispatch_remote_stops()
+            })?;
+            crate::diagnostics::measure_runtime_stage("ports.committed.workspace_cleanup", || {
+                crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
+                    .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))
+            })?;
+            Ok(())
+        })
     }
 }
 

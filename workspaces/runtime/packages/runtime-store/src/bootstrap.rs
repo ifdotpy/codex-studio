@@ -59,6 +59,8 @@ pub(crate) fn prepare_runtime_event_indexes(transaction: &Transaction<'_>) -> St
         "CREATE INDEX IF NOT EXISTS runtime_events_agent_epoch_status_created \
          ON runtime_events(agent,epoch,status,created,id)",
     )?;
+    crate::SchedulerRepository::prepare_account_wake_index(transaction)?;
+    crate::repositories::reviewer_archive::ReviewerArchiveRepository::prepare_indexes(transaction)?;
     Ok(())
 }
 

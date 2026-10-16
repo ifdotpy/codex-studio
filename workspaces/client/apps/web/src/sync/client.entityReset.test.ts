@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TranscriptPageData } from "../types";
+import { readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
+  ApiError: class extends Error {
+    constructor(
+      message: string,
+      public status: number,
+    ) {
+      super(message);
+    }
+  },
   createRxDatabase: vi.fn(),
   syncGet: vi.fn(),
   watchResourceChanges: vi.fn(),
@@ -11,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   cachedWorkspace: "",
   schemaHash: "a".repeat(64),
   matchingSchemaListener: undefined as (() => void) | undefined,
+  transcriptInvalidation: undefined as (() => void) | undefined,
+  connectionListener: undefined as ((status: string) => void) | undefined,
   invalidation: undefined as
     | ((version?: {
         epoch: string;
@@ -40,14 +52,7 @@ vi.mock("rxdb/plugins/replication", () => ({
   replicateRxCollection: vi.fn(),
 }));
 vi.mock("../api", () => ({
-  ApiError: class ApiError extends Error {
-    constructor(
-      message: string,
-      public status: number,
-    ) {
-      super(message);
-    }
-  },
+  ApiError: mocks.ApiError,
   registerSyncEntityPersister: mocks.registerPersister,
   isApiSchemaMismatch: mocks.isApiSchemaMismatch,
   onMatchingApiSchemaResponse: vi.fn((listener: () => void) => {
@@ -69,7 +74,13 @@ vi.mock("../api", () => ({
 vi.mock("./resourceEvents", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
-  watchResourceConnection: vi.fn(() => () => {}),
+  watchResourceConnection: vi.fn((listener: (status: string) => void) => {
+    mocks.connectionListener = listener;
+    return () => {
+      if (mocks.connectionListener === listener)
+        mocks.connectionListener = undefined;
+    };
+  }),
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 vi.mock("./entityCacheStorage", () => ({
@@ -81,6 +92,7 @@ vi.mock("./entityCacheStorage", () => ({
 
 describe("entity pull reset wiring", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -96,6 +108,8 @@ describe("entity pull reset wiring", () => {
     mocks.cachedWorkspace = "";
     mocks.schemaHash = "a".repeat(64);
     mocks.matchingSchemaListener = undefined;
+    mocks.transcriptInvalidation = undefined;
+    mocks.connectionListener = undefined;
     mocks.invalidation = undefined;
   });
 
@@ -277,6 +291,243 @@ describe("entity pull reset wiring", () => {
     stop();
   });
 
+  it.each([
+    { liveBeforeConflict: false, stopDuringBackoff: false },
+    { liveBeforeConflict: true, stopDuringBackoff: false },
+    { liveBeforeConflict: true, stopDuringBackoff: true },
+  ])(
+    "recovers transcript conflicts with live=$liveBeforeConflict stop=$stopDuringBackoff",
+    async ({ liveBeforeConflict, stopDuringBackoff }) => {
+      const workspaceId = "9".repeat(32);
+      const rows = new Map<string, Record<string, unknown>>();
+      const storageInstance = {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: Array<{ document: Record<string, unknown> }>) => {
+            for (const { document } of writes)
+              rows.set(String(document.id), document);
+            return { error: [] };
+          },
+        ),
+      };
+      const subscription = { unsubscribe: vi.fn() };
+      const projections = {
+        database: { name: `studio-entity-projection-${workspaceId}` },
+        storageInstance,
+        $: { subscribe: vi.fn(() => subscription) },
+        findOne: vi.fn(() => ({
+          exec: vi.fn(async () => null),
+          $: { subscribe: vi.fn(() => subscription) },
+        })),
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      let releaseFirstPull!: () => void;
+      let firstPullStarted!: () => void;
+      const firstPullGate = new Promise<void>((resolve) => {
+        releaseFirstPull = resolve;
+      });
+      const firstPull = new Promise<void>((resolve) => {
+        firstPullStarted = resolve;
+      });
+      let releaseLivePull!: () => void;
+      let livePullStarted!: () => void;
+      const livePullGate = new Promise<void>((resolve) => {
+        releaseLivePull = resolve;
+      });
+      const livePull = new Promise<void>((resolve) => {
+        livePullStarted = resolve;
+      });
+      let retryTimerScheduled!: () => void;
+      const retryTimer = new Promise<void>((resolve) => {
+        retryTimerScheduled = resolve;
+      });
+      let secondPullStarted!: () => void;
+      const secondPull = new Promise<void>((resolve) => {
+        secondPullStarted = resolve;
+      });
+      let thirdPullStarted!: () => void;
+      const thirdPull = new Promise<void>((resolve) => {
+        thirdPullStarted = resolve;
+      });
+      let pullCount = 0;
+      const assistant = {
+        id: "agent:assistant-turn",
+        role: "assistant",
+        title: "Agent",
+        text: "STUDIO_RUST_LUNA_OK",
+        at: 10,
+      };
+      mocks.syncGet.mockImplementation(async (path: string) => {
+        if (path === "/api/sync/identity") return { workspaceId };
+        if (path !== "/api/sync/pull")
+          throw new Error(`unexpected syncGet path: ${path}`);
+        pullCount++;
+        if (pullCount === 1) {
+          firstPullStarted();
+          await firstPullGate;
+          throw new mocks.ApiError("Conflict", 409);
+        }
+        if (pullCount === 2 && !stopDuringBackoff) {
+          livePullStarted();
+          await livePullGate;
+          throw new mocks.ApiError("Conflict", 409);
+        }
+        if (pullCount === 2) secondPullStarted();
+        else thirdPullStarted();
+        return {
+          workspaceId,
+          documents: [
+            {
+              id: "transcript:agent",
+              payload: JSON.stringify({
+                items: [assistant],
+                truncated: false,
+                nextCursor: null,
+                nextAfterCursor: null,
+                historyVersion: "thread:checkpoint",
+                unavailable: null,
+                agent: { id: "agent", status: "completed" },
+              }),
+              seq: 1,
+              _deleted: false,
+            },
+          ],
+          checkpoint: { seq: 1 },
+          maxSeq: 1,
+        };
+      });
+      mocks.watchResourceChanges.mockImplementation(
+        (resource: unknown, listener: typeof mocks.invalidation) => {
+          if ((resource as { kind?: string }).kind === "transcript")
+            mocks.transcriptInvalidation = listener;
+          return () => {};
+        },
+      );
+      vi.stubGlobal("window", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        matchMedia: vi.fn(() => ({ matches: false })),
+      });
+      vi.stubGlobal("document", { hidden: false });
+      vi.stubGlobal("navigator", { onLine: true });
+      vi.stubGlobal("location", { origin: "http://studio.test" });
+
+      const client = await import("./client");
+      const accepted: Array<TranscriptPageData | null> = [];
+      const failures: unknown[] = [];
+      let resolveConflictReported!: () => void;
+      const conflictReported = new Promise<void>((resolve) => {
+        resolveConflictReported = resolve;
+      });
+      const stop = client.subscribeTranscriptProjection(
+        "transcript:agent",
+        (payload) => {
+          accepted.push(payload);
+        },
+        (error) => {
+          failures.push(error);
+          if (error instanceof mocks.ApiError && error.status === 409)
+            resolveConflictReported();
+        },
+      );
+      await vi.waitFor(() => {
+        expect(mocks.transcriptInvalidation).toBeTypeOf("function");
+        expect(mocks.connectionListener).toBeTypeOf("function");
+        expect(projections.findOne).toHaveBeenCalledWith("transcript:agent");
+      });
+      mocks.transcriptInvalidation?.();
+      await vi.waitFor(() => expect(pullCount).toBe(1), {
+        interval: 1,
+        timeout: 100,
+      });
+      await firstPull;
+      if (liveBeforeConflict) mocks.connectionListener?.("live");
+      vi.useFakeTimers();
+      if (stopDuringBackoff) {
+        const originalSetTimeout = globalThis.setTimeout;
+        vi.spyOn(globalThis, "setTimeout").mockImplementation(
+          (handler, timeout, ...args) => {
+            if (timeout === readRetryDelay(0)) retryTimerScheduled();
+            return originalSetTimeout(handler, timeout, ...args);
+          },
+        );
+      }
+      releaseFirstPull();
+      if (stopDuringBackoff) {
+        await retryTimer;
+        stop();
+        await vi.advanceTimersByTimeAsync(readRetryDelay(0));
+        expect(pullCount).toBe(1);
+
+        const stopReopened = client.subscribeTranscriptProjection(
+          "transcript:agent",
+          (payload) => accepted.push(payload),
+          (error) => failures.push(error),
+        );
+        await vi.waitFor(() =>
+          expect(projections.findOne).toHaveBeenCalledTimes(2),
+        );
+        mocks.transcriptInvalidation?.();
+        await secondPull;
+        await vi.waitFor(() =>
+          expect(
+            accepted.some((payload) =>
+              payload?.items.some(
+                (item) => item.text === "STUDIO_RUST_LUNA_OK",
+              ),
+            ),
+          ).toBe(true),
+        );
+        expect(pullCount).toBe(2);
+        stopReopened();
+        return;
+      }
+      if (liveBeforeConflict) {
+        await vi.advanceTimersByTimeAsync(readRetryDelay(0));
+      } else {
+        await conflictReported;
+        mocks.connectionListener?.("live");
+      }
+      await livePull;
+      releaseLivePull();
+      await vi.advanceTimersByTimeAsync(
+        readRetryDelay(liveBeforeConflict ? 1 : 0),
+      );
+      await thirdPull;
+      await vi.waitFor(
+        () =>
+          expect(
+            accepted.some((payload) =>
+              payload?.items.some(
+                (item) => item.text === "STUDIO_RUST_LUNA_OK",
+              ),
+            ),
+          ).toBe(true),
+        { interval: 1, timeout: 100 },
+      );
+
+      expect(pullCount).toBe(3);
+      expect(
+        accepted.some((payload) =>
+          payload?.items.some((item) => item.text === "STUDIO_RUST_LUNA_OK"),
+        ),
+      ).toBe(true);
+      expect(
+        failures.some(
+          (error) => error instanceof mocks.ApiError && error.status === 409,
+        ),
+      ).toBe(!liveBeforeConflict);
+      expect(failures.at(-1)).toBeNull();
+      stop();
+    },
+  );
+
   it("pulls into the schema-keyed projection acquired after a schema change", async () => {
     const workspaceId = "f".repeat(32);
     const firstHash = "a".repeat(64);
@@ -380,7 +631,12 @@ describe("entity pull reset wiring", () => {
     mocks.schemaHash = nextHash;
     vi.resetModules();
     const updatedClient = await import("./client");
-    const updatedSnapshot = await updatedClient.refreshProjection();
+    let projectedWorkspaceId = "";
+    const updatedSnapshot = await updatedClient.refreshProjection({
+      onWorkspaceId: (id) => {
+        projectedWorkspaceId = id;
+      },
+    });
     const nextDatabase = `studio-entity-projection-${workspaceId}-${nextHash}`;
 
     expect(pulledAfter).toEqual([0, 0]);
@@ -390,5 +646,6 @@ describe("entity pull reset wiring", () => {
     expect(updatedSnapshot.runtime.agents.map((agent) => agent.id)).toContain(
       "new-build-agent",
     );
+    expect(projectedWorkspaceId).toBe(workspaceId);
   });
 });

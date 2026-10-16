@@ -32,14 +32,31 @@ fn atomic<T>(
         }
     }
 }
-fn snapshot(tx: &Transaction<'_>, agent: &Value, now: f64) -> Result<BudgetSnapshot, BudgetError> {
+enum SnapshotIdentity {
+    Live,
+    History,
+}
+
+fn snapshot(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    identity: SnapshotIdentity,
+    now: f64,
+) -> Result<BudgetSnapshot, BudgetError> {
     let id = agent
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| BudgetError::Invalid("runtime_agents/id".into()))?;
     let durable = BudgetRepository::agent(tx, id)?;
     let state = Table::<BudgetRecord>::new(tx).get(&AgentId::from(id))?;
-    BudgetSnapshot::from_records(agent, &durable, state.as_ref().map(|s| &s.0), now)
+    match identity {
+        SnapshotIdentity::Live => {
+            BudgetSnapshot::from_records(agent, &durable, state.as_ref().map(|s| &s.0), now)
+        }
+        SnapshotIdentity::History => {
+            BudgetSnapshot::from_history_records(agent, &durable, state.as_ref().map(|s| &s.0), now)
+        }
+    }
 }
 fn save_state(
     tx: &Transaction<'_>,
@@ -52,10 +69,10 @@ fn save_state(
 }
 /// Live notification and historical capture share the same durable response key.
 /// `now` is collection time (initial cutoff); `at` is the usage record timestamp.
-/// The transaction's durable agent owns identity. The supplied copy needs only
-/// `id`; any supplied root/account/thread/turn/epoch must still match that row.
-/// Observation fields in `params` belong to the usage record, including historical
-/// response/turn IDs. They never replace the supplied copy's ownership assertions.
+/// The transaction's durable agent owns identity. Live capture requires every
+/// supplied identity field to match it. History capture allows the supplied
+/// rollout-context turn to differ; params carries the historical event turn.
+/// All other supplied identity fields must still match the durable row.
 /// Only budget fields in the supplied copy are changed, after all writes succeed.
 pub fn capture(
     tx: &Transaction<'_>,
@@ -66,7 +83,11 @@ pub fn capture(
     now: f64,
 ) -> Result<u64, BudgetError> {
     let (state, changed) = atomic(tx, || {
-        let snapshot = snapshot(tx, agent, now)?;
+        let identity = match source {
+            CaptureSource::Live => SnapshotIdentity::Live,
+            CaptureSource::History => SnapshotIdentity::History,
+        };
+        let snapshot = snapshot(tx, agent, identity, now)?;
         let observation = UsageObservation::from_record(&snapshot, params, at, source)?;
         let previous = BudgetRepository::usage(tx, observation.key())?;
         let decision = budget::capture(&snapshot, &observation, previous.as_ref())?;
@@ -208,7 +229,7 @@ fn team_snapshots(
 ) -> Result<Vec<BudgetSnapshot>, BudgetError> {
     let mut members = Vec::new();
     for member in BudgetRepository::team(tx, root_id)? {
-        let snapshot = snapshot(tx, &member, now)?;
+        let snapshot = snapshot(tx, &member, SnapshotIdentity::Live, now)?;
         if snapshot.initialized() {
             save_state(tx, snapshot.agent_id(), snapshot.state())?;
         }

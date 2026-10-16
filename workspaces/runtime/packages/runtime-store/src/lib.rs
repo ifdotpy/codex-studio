@@ -86,6 +86,7 @@ pub use repositories::projects::ProjectsRepository;
 pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
+pub use repositories::reviewer_archive::ReviewerArchiveRepository;
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{

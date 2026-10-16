@@ -1,6 +1,359 @@
 use super::*;
 
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates";
+
+/// Owns the agent-only superset of all rows the account wake page may return.
+/// Event existence and invalid-agent hold receipts are checked after this
+/// indexed candidate selection because SQLite partial indexes cannot use them.
+fn account_wake_candidate_predicate(record: &str) -> String {
+    format!(
+        "({} OR {} OR {})",
+        account_wake_queued_candidate(record),
+        account_wake_capacity_candidate(record),
+        account_wake_recovery(record)
+    )
+}
+
+#[cfg(test)]
+mod account_wake_index_tests {
+    use super::{
+        ACCOUNT_WAKE_INDEX, SchedulerRepository, account_wake_accounts_query,
+        account_wake_index_eligibility,
+    };
+    use rusqlite::Connection;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn old_schema() -> Connection {
+        let connection = Connection::open_in_memory().expect("memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_events(
+                   id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,
+                   status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,
+                   turn_id TEXT,error TEXT);
+                 CREATE TABLE runtime_operation_receipts(
+                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+                 ",
+            )
+            .expect("pre-index schema creates");
+        connection
+    }
+
+    fn put_agent(connection: &Connection, id: &str, value: serde_json::Value) {
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, value.to_string()],
+            )
+            .expect("agent fixture inserts");
+    }
+
+    fn install_index(connection: &mut Connection) {
+        let transaction = connection
+            .transaction()
+            .expect("candidate-index transaction begins");
+        SchedulerRepository::prepare_account_wake_index(&transaction)
+            .expect("candidate index prepares on existing schema");
+        transaction
+            .commit()
+            .expect("candidate-index transaction commits");
+    }
+
+    #[test]
+    fn account_wake_candidates_preserve_pending_recovery_and_cursor_semantics_after_upgrade() {
+        let mut connection = old_schema();
+        put_agent(
+            &connection,
+            "aaa",
+            json!({
+                "accountKey":"account-a", "epoch":1, "status":"queued",
+                "autoWake":true, "inFlight":false, "nativeFailureHold":false
+            }),
+        );
+        put_agent(
+            &connection,
+            "zzz",
+            json!({
+                "accountKey":"account-a", "epoch":2, "status":"queued",
+                "autoWake":true, "inFlight":false, "nativeFailureHold":false
+            }),
+        );
+        put_agent(
+            &connection,
+            "bbb",
+            json!({
+                "accountKey":"account-b", "epoch":3, "status":"interrupted",
+                "provider":"codex", "restartRecovery":{"stage":"held"}
+            }),
+        );
+        put_agent(
+            &connection,
+            "no-event",
+            json!({
+                "accountKey":"account-c", "epoch":4, "status":"queued",
+                "autoWake":true, "inFlight":false, "nativeFailureHold":false
+            }),
+        );
+        put_agent(
+            &connection,
+            "remote",
+            json!({
+                "accountKey":"account-d", "epoch":5, "status":"interrupted",
+                "remoteWorker":true, "restartRecovery":{"stage":"pending"}
+            }),
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_events VALUES
+                   ('event-aaa','aaa','user','input','pending',1,1,NULL,NULL),
+                   ('event-zzz','zzz','user','input','pending',2,2,NULL,NULL);",
+            )
+            .expect("pending events insert");
+        connection
+            .execute_batch(
+                "CREATE INDEX runtime_agent_live_root ON runtime_agents(id)
+                   WHERE json_extract(record,'$.deletedAt') IS NULL;",
+            )
+            .expect("legacy live-agent index creates before upgrade");
+
+        install_index(&mut connection);
+
+        let page = SchedulerRepository::account_wake_page(
+            &connection,
+            "account-a",
+            &BTreeMap::new(),
+            1,
+            1,
+        )
+        .expect("account cursor advances to recovery account");
+        assert_eq!(page, BTreeMap::from([("account-b".to_owned(), vec![])]));
+
+        let wrapped = SchedulerRepository::account_wake_page(
+            &connection,
+            "account-z",
+            &BTreeMap::new(),
+            1,
+            1,
+        )
+        .expect("account cursor wraps");
+        assert_eq!(
+            wrapped,
+            BTreeMap::from([("account-a".to_owned(), vec![("aaa".to_owned(), 1, None)])])
+        );
+
+        let mut after_agent = BTreeMap::new();
+        after_agent.insert("account-a".to_owned(), "aaa".to_owned());
+        let next_agent =
+            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1)
+                .expect("agent cursor advances");
+        assert_eq!(next_agent["account-a"], vec![("zzz".to_owned(), 2, None)]);
+
+        after_agent.insert("account-a".to_owned(), "zzz".to_owned());
+        let wrapped_agent =
+            SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1)
+                .expect("agent cursor wraps");
+        assert_eq!(
+            wrapped_agent["account-a"],
+            vec![("aaa".to_owned(), 1, None)]
+        );
+    }
+
+    #[test]
+    fn account_wake_index_query_uses_candidate_index_and_guards_invalid_json() {
+        let mut connection = old_schema();
+        put_agent(
+            &connection,
+            "recoverable",
+            json!({
+                "epoch":1, "status":"interrupted", "restartRecovery":{"stage":"held"}
+            }),
+        );
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES('malformed','{bad json')",
+                [],
+            )
+            .expect("malformed record fixture inserts");
+        connection
+            .execute_batch(
+                "CREATE INDEX runtime_agent_live_root ON runtime_agents(id)
+                   WHERE json_valid(record) AND json_extract(record,'$.deletedAt') IS NULL;",
+            )
+            .expect("guarded legacy live-agent index creates");
+        install_index(&mut connection);
+
+        let index_exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                [ACCOUNT_WAKE_INDEX],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("installed index is visible");
+        assert!(
+            index_exists,
+            "index installation upgrades existing databases"
+        );
+
+        let details = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                account_wake_accounts_query()
+            ))
+            .expect("candidate query prepares against its partial index")
+            .query_map(
+                rusqlite::params![
+                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                    "",
+                    4_i64
+                ],
+                |row| row.get::<_, String>(3),
+            )
+            .expect("query plan loads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query plan rows load")
+            .join(" ");
+        assert!(details.contains(ACCOUNT_WAKE_INDEX), "{details}");
+        assert!(
+            !details.contains("SCAN a USING INDEX runtime_agent_live_root"),
+            "{details}"
+        );
+
+        let page = SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 4, 4)
+            .expect("guarded candidate selection skips malformed JSON");
+        assert_eq!(page.keys().cloned().collect::<Vec<_>>(), vec!["default"]);
+    }
+
+    #[test]
+    fn account_wake_index_predicate_keeps_invalid_agent_receipt_exclusion_outside_index() {
+        let predicate = account_wake_index_eligibility("record");
+        assert!(predicate.starts_with("CASE WHEN json_valid(record) THEN"));
+        assert!(!predicate.contains("runtime_operation_receipts"));
+        assert!(!predicate.contains("runtime_events"));
+    }
+}
+
+fn account_wake_index_eligibility(record: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({record}) THEN ( \
+           json_extract({record},'$.deletedAt') IS NULL \
+           AND COALESCE(json_extract({record},'$.remoteWorker'),0)=0 \
+           AND COALESCE(json_extract({record},'$.remoteAnchor'),0)=0 \
+           AND {} ) ELSE 0 END",
+        account_wake_candidate_predicate(record)
+    )
+}
+
+fn account_wake_queued_candidate(record: &str) -> String {
+    format!(
+        "(json_extract({record},'$.status')='queued' \
+         AND json_extract({record},'$.autoWake')=1 \
+         AND COALESCE(json_extract({record},'$.inFlight'),0)=0 \
+         AND COALESCE(json_extract({record},'$.nativeFailureHold'),0)=0)"
+    )
+}
+
+fn account_wake_capacity_candidate(record: &str) -> String {
+    format!(
+        "(json_extract({record},'$.startAttempt.action')='capacity' \
+         AND json_extract({record},'$.startAttempt.submitted')=0 \
+         AND json_extract({record},'$.capacityRetry.id')= \
+             json_extract({record},'$.startAttempt.capacityRetryId') \
+         AND json_extract({record},'$.status')='starting')"
+    )
+}
+
+fn account_wake_pending(record: &str) -> String {
+    format!(
+        "(({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
+             AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending')) \
+         OR {})",
+        account_wake_queued_candidate(record),
+        account_wake_capacity_candidate(record)
+    )
+}
+
+fn account_wake_recovery(record: &str) -> String {
+    format!(
+        "((COALESCE(json_extract({record},'$.provider'),'codex')='codex' \
+           AND json_extract({record},'$.startAttempt.submitted')=1 \
+           AND json_extract({record},'$.startAttempt.connectionGeneration') IS NOT NULL \
+           AND json_extract({record},'$.status') IN \
+               ('starting','running','waiting','paused','interrupted')) \
+         OR (json_type({record},'$.disconnectRecovery')='object' AND ( \
+           COALESCE(json_extract({record},'$.status'),'') \
+               NOT IN ('completed','waiting','paused','parked') \
+           OR json_extract({record},'$.disconnectRecovery.stage') IS NOT NULL)) \
+         OR (json_type({record},'$.restartRecovery')='object' AND ( \
+           COALESCE(json_extract({record},'$.status'),'') \
+               NOT IN ('completed','waiting','paused','parked') \
+           OR COALESCE(json_extract({record},'$.restartRecovery.stage'),'') \
+               NOT IN ('finished','continued','reattached','input_restored'))))"
+    )
+}
+
+fn account_wake_target_filter(record: &str) -> String {
+    let eligibility = account_wake_index_eligibility(record);
+    let pending = account_wake_pending(record);
+    let recovery = account_wake_recovery(record);
+    format!(
+        "{eligibility} \
+         AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h \
+           WHERE h.id=?1 || a.id AND h.signature=?2) \
+         AND (({pending}) OR ({recovery}))"
+    )
+}
+
+fn account_wake_invalid_target_query() -> String {
+    let target_filter = account_wake_target_filter("a.record");
+    format!(
+        "SELECT a.id FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
+         WHERE {target_filter} \
+           AND (COALESCE(json_extract(a.record,'$.accountKey'),'default')='' \
+             OR json_type(a.record,'$.accountKey') NOT IN ('null','text')) LIMIT 1"
+    )
+}
+
+fn account_wake_accounts_query() -> String {
+    let target_filter = account_wake_target_filter("a.record");
+    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    format!(
+        "SELECT DISTINCT {account} FROM runtime_agents AS a \
+         INDEXED BY {ACCOUNT_WAKE_INDEX} WHERE {target_filter} \
+         AND {account}>?3 ORDER BY {account} LIMIT ?4"
+    )
+}
+
+fn account_wake_pending_agents_query() -> String {
+    let pending = account_wake_pending("a.record");
+    let eligibility = account_wake_index_eligibility("a.record");
+    let account = "COALESCE(json_extract(a.record,'$.accountKey'),'default')";
+    format!(
+        "SELECT a.id,json_extract(a.record,'$.epoch'),json_extract(a.record,'$.workspaceMode') \
+         FROM runtime_agents AS a INDEXED BY {ACCOUNT_WAKE_INDEX} \
+         WHERE {eligibility} AND {account}=?1 AND a.id>?2 \
+           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h \
+             WHERE h.id=?3 || a.id AND h.signature=?4) \
+           AND ({pending}) ORDER BY a.id LIMIT ?5"
+    )
+}
+
 impl SchedulerRepository {
+    /// Install the candidate index used by worker reconciliation. This index
+    /// deliberately contains only agent-record predicates; pending-event and
+    /// invalid-agent-hold receipt checks remain in the consuming queries.
+    pub(crate) fn prepare_account_wake_index(transaction: &Transaction<'_>) -> StoreResult<()> {
+        let eligibility = account_wake_index_eligibility("record");
+        transaction.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS {ACCOUNT_WAKE_INDEX} \
+             ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default'),id) \
+             WHERE {eligibility}"
+        ))?;
+        Ok(())
+    }
+
     /// Return one bounded account/agent page for worker startup and recovery.
     /// The account cursor wraps when it reaches the final account; per-account
     /// agent cursors are supplied by the caller and wrap at the final agent.
@@ -11,87 +364,58 @@ impl SchedulerRepository {
         account_limit: usize,
         agent_limit: usize,
     ) -> StoreResult<AccountWakePage> {
-        let targets = format!(
-            "WITH targets AS (
- SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
- json_type(a.record,'$.accountKey') account_type,
- json_extract(a.record,'$.epoch') epoch,
- json_extract(a.record,'$.workspaceMode') workspace_mode,
- (json_extract(a.record,'$.status')='queued'
-  AND json_extract(a.record,'$.autoWake')=1
-  AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
-  AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0
-  AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id
-     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending'))
- OR (json_extract(a.record,'$.startAttempt.action')='capacity'
-     AND json_extract(a.record,'$.startAttempt.submitted')=0
-     AND json_extract(a.record,'$.capacityRetry.id')=json_extract(a.record,'$.startAttempt.capacityRetryId')
-     AND json_extract(a.record,'$.status')='starting') pending,
- ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
-   AND json_extract(a.record,'$.startAttempt.submitted')=1
-   AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
-   AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
- OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
-   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-   OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
- OR (json_type(a.record,'$.restartRecovery')='object' AND (
-   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-   OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
-      NOT IN ('finished','continued','reattached','input_restored')))) recovery
- FROM runtime_agents a WHERE json_extract(a.record,'$.deletedAt') IS NULL
- AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
- AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
- AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts h
-   WHERE h.id='{}' || a.id AND h.signature='{}'))
-",
-            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-        );
-        let invalid: Option<String> = connection
+        if let Some(id) = connection
             .query_row(
-                &format!(
-                    "{targets} SELECT id FROM targets WHERE (pending OR recovery)
-        AND (account='' OR account_type NOT IN ('null','text')) LIMIT 1"
-                ),
-                [],
-                |row| row.get(0),
+                &account_wake_invalid_target_query(),
+                rusqlite::params![
+                    crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                ],
+                |row| row.get::<_, String>(0),
             )
-            .optional()?;
-        if let Some(id) = invalid {
+            .optional()?
+        {
             return Err(crate::StoreError::InvalidStoredObject {
                 table: "runtime_agents",
                 id,
             });
         }
 
-        let mut account_statement = connection.prepare_cached(&format!(
-            "{targets} SELECT DISTINCT account FROM targets
-             WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
-        ))?;
+        let mut account_statement = connection.prepare_cached(&account_wake_accounts_query())?;
         let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
             account_statement
-                .query_map(rusqlite::params![after, account_limit as i64], |row| {
-                    row.get(0)
-                })?
+                .query_map(
+                    rusqlite::params![
+                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                        after,
+                        account_limit as i64
+                    ],
+                    |row| row.get(0),
+                )?
                 .collect()
         };
-        let mut accounts = read_accounts(after_account)?;
-        if accounts.is_empty() && !after_account.is_empty() {
-            accounts = read_accounts("")?;
+        let mut selected_accounts = read_accounts(after_account)?;
+        if selected_accounts.is_empty() && !after_account.is_empty() {
+            selected_accounts = read_accounts("")?;
         }
+        drop(account_statement);
 
-        let mut agent_statement = connection.prepare_cached(&format!(
-            "{targets} SELECT id,epoch,workspace_mode FROM targets
-             WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
-        ))?;
+        let mut agent_statement = connection.prepare_cached(&account_wake_pending_agents_query())?;
         let mut result = BTreeMap::new();
-        for account in accounts {
+        for account in selected_accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
             let mut read_agents =
                 |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
                     agent_statement
                         .query_map(
-                            rusqlite::params![account, after, agent_limit as i64],
+                            rusqlite::params![
+                                account,
+                                after,
+                                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                                agent_limit as i64
+                            ],
                             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                         )?
                         .collect()

@@ -128,7 +128,7 @@ mod tests {
         }
     }
     fn database() -> Connection {
-        let connection = Connection::open_in_memory().expect("memory database opens");
+        let mut connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
@@ -139,6 +139,8 @@ mod tests {
                  CREATE TABLE runtime_events(
                    id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                    created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+                 CREATE TABLE runtime_operation_receipts(
+                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
@@ -146,6 +148,14 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER);",
             )
             .expect("scheduler tables create");
+        let transaction = connection
+            .transaction()
+            .expect("candidate-index transaction begins");
+        SchedulerRepository::prepare_account_wake_index(&transaction)
+            .expect("account wake candidate index prepares");
+        transaction
+            .commit()
+            .expect("candidate-index transaction commits");
         let mut extra = BTreeMap::new();
         extra.insert("threadId".into(), json!("thread"));
         extra.insert("autoWake".to_owned(), json!(true));
@@ -528,13 +538,6 @@ mod tests {
     #[test]
     fn invalid_agent_hold_receipt_excludes_agent_from_wake_page() {
         let connection = database();
-        connection
-            .execute_batch(
-                "CREATE TABLE runtime_operation_receipts(
-                   id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL
-                 );",
-            )
-            .expect("receipt table creates");
         connection
             .execute(
                 "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",

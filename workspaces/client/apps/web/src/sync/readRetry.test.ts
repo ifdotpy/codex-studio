@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, NetworkTimeoutError } from "../api";
-import { readRetryDelay, retryableReadError } from "./readRetry";
+import {
+  readRetryDelay,
+  retryableReadError,
+  retryableTranscriptPullConflict,
+} from "./readRetry";
 
 describe("failed resource reads", () => {
   it.each([
@@ -29,5 +33,20 @@ describe("failed resource reads", () => {
     expect(
       Array.from({ length: 8 }, (_, attempt) => readRetryDelay(attempt)),
     ).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+  });
+
+  it("retries 409 only for transcript pulls, not other reads", () => {
+    const conflict = new ApiError("Conflict", 409);
+    expect(retryableTranscriptPullConflict(conflict, "transcript:agent")).toBe(
+      true,
+    );
+    expect(retryableReadError(conflict)).toBe(false);
+    expect(retryableTranscriptPullConflict(conflict, "state")).toBe(false);
+    expect(
+      retryableTranscriptPullConflict(
+        new ApiError("Unavailable", 503),
+        "transcript:agent",
+      ),
+    ).toBe(false);
   });
 });

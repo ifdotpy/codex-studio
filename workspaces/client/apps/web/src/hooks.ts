@@ -186,7 +186,10 @@ export function useSnapshot(
   );
   const credentialFailures = useRef(0);
   const refresh = useCallback(
-    async (credentialsOnly = replicated.current): Promise<void> => {
+    async (
+      credentialsOnly = replicated.current,
+      onProjection?: (projection: Snapshot, workspaceId: string) => void,
+    ): Promise<void> => {
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
       const request = ++generation.current;
@@ -200,9 +203,15 @@ export function useSnapshot(
             : old,
         );
         if (!credentialsOnly) {
-          const projection = await refreshProjection();
+          let projectionWorkspaceId = "";
+          const projection = await refreshProjection({
+            onWorkspaceId: (id) => {
+              projectionWorkspaceId = id;
+            },
+          });
           if (request !== generation.current) return;
           setData({ ...projection, token: session.token });
+          onProjection?.(projection, projectionWorkspaceId);
         }
         if (request !== generation.current) return;
         credentialFailures.current = 0;

@@ -338,6 +338,18 @@ impl ManagementSnapshot {
             .filter(|a| ids.contains(a.id()))
             .collect())
     }
+    /// Owner scope needed by delete to retain the same complete recursive
+    /// descendant set while avoiding unrelated lifecycle history reads.
+    pub(crate) fn delete_owner_scope(
+        &self,
+        target: &str,
+    ) -> Result<BTreeSet<String>, ManagementError> {
+        Ok(self
+            .descendants(target, true)?
+            .into_iter()
+            .map(|agent| agent.id().to_owned())
+            .collect())
+    }
     fn owned<'a>(&'a self, table: &str, field: &str, agent: &str) -> Vec<&'a Value> {
         self.rows(table)
             .iter()
@@ -1082,4 +1094,164 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     );
     decision.write("runtime_agents", record);
     Ok(decision)
+}
+
+#[cfg(test)]
+mod delete_scope_parity_tests {
+    use super::{Action, ManagementSnapshot, Records, decide_with_effects};
+    use serde_json::{Value, json};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn agent(id: &str, root: &str, parent: Option<&str>, lead: bool) -> Value {
+        let mut record = json!({
+            "id":id,
+            "rootId":root,
+            "epoch":1,
+            "status":"paused",
+            "autoWake":lead,
+            "isLead":lead,
+        });
+        if let Some(parent) = parent {
+            record["parentId"] = json!(parent);
+        }
+        record
+    }
+
+    fn scoped_delete_records(records: &Records, owners: &BTreeSet<String>) -> Records {
+        let mut tables = BTreeMap::new();
+        for (table, rows) in &records.tables {
+            if table == "runtime_agents" {
+                tables.insert(table.clone(), rows.clone());
+                continue;
+            }
+            if table.starts_with("voice_") {
+                // Delete skips voice liveness checks; saved voice rows are
+                // removed transactionally after the lifecycle decision.
+                continue;
+            }
+            let field = if table == "runtime_work" {
+                "owner"
+            } else {
+                "agent"
+            };
+            let matching = rows
+                .iter()
+                .filter(|row| {
+                    row.get(field)
+                        .and_then(Value::as_str)
+                        .is_some_and(|owner| owners.contains(owner))
+                })
+                .cloned()
+                .collect();
+            tables.insert(table.clone(), matching);
+        }
+        Records { tables }
+    }
+
+    fn effect_values(decision: &super::Decision) -> Vec<Value> {
+        decision
+            .effects
+            .iter()
+            .map(|effect| {
+                json!({
+                    "kind":effect.kind(),
+                    "before":effect.before(),
+                    "stopped":effect.stopped(),
+                    "at":effect.at(),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scoped_delete_decision_matches_full_snapshot_with_unrelated_history() {
+        let full = Records {
+            tables: BTreeMap::from([
+                (
+                    "runtime_agents".to_owned(),
+                    vec![
+                        agent("lead", "lead", None, true),
+                        agent("worker", "lead", Some("lead"), false),
+                        agent("nested", "lead", Some("worker"), false),
+                        agent("other-lead", "other-lead", None, true),
+                    ],
+                ),
+                (
+                    "runtime_monitors".to_owned(),
+                    vec![
+                        json!({"id":"worker-monitor","agent":"worker","status":"running"}),
+                        json!({"id":"unrelated-monitor","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "runtime_requests".to_owned(),
+                    vec![
+                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"user/input"}),
+                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve"}),
+                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"user/input"}),
+                    ],
+                ),
+                (
+                    "runtime_tasks".to_owned(),
+                    vec![
+                        json!({"id":"worker-task","agent":"worker","status":"pending"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "runtime_tool_requests".to_owned(),
+                    vec![
+                        json!({"id":"unrelated-tool","agent":"other-lead","stage":"completed","outcome":"applied"}),
+                    ],
+                ),
+                (
+                    "runtime_work".to_owned(),
+                    vec![
+                        json!({"id":"worker-work","owner":"worker","rootId":"lead","status":"ready","version":1}),
+                        json!({"id":"unrelated-work","owner":"other-lead","rootId":"other-lead","status":"running","version":1}),
+                    ],
+                ),
+                (
+                    "runtime_events".to_owned(),
+                    vec![
+                        json!({"id":"worker-event","agent":"worker","status":"pending","epoch":1}),
+                        json!({"id":"unrelated-event","agent":"other-lead","status":"pending","epoch":1}),
+                    ],
+                ),
+                (
+                    "voice_sessions".to_owned(),
+                    vec![json!({"id":"worker-voice","agent":"worker","state":"running"})],
+                ),
+            ]),
+        };
+        let full_snapshot = ManagementSnapshot::from_records(full.clone()).expect("full snapshot");
+        let owners = full_snapshot
+            .delete_owner_scope("lead")
+            .expect("complete descendant set");
+        assert_eq!(
+            owners,
+            BTreeSet::from(["lead".to_owned(), "nested".to_owned(), "worker".to_owned()])
+        );
+
+        let scoped = scoped_delete_records(&full, &owners);
+        let scoped_snapshot = ManagementSnapshot::from_records(scoped).expect("scoped snapshot");
+        let action = Action::Delete {
+            target: "lead".to_owned(),
+        };
+        let full_decision =
+            decide_with_effects(&full_snapshot, &action, 10.0).expect("full decision");
+        let scoped_decision =
+            decide_with_effects(&scoped_snapshot, &action, 10.0).expect("scoped decision");
+
+        assert_eq!(full_decision.result, scoped_decision.result);
+        assert_eq!(
+            serde_json::to_value(&full_decision.writes).expect("full writes"),
+            serde_json::to_value(&scoped_decision.writes).expect("scoped writes")
+        );
+        assert_eq!(full_decision.cancel_pending, scoped_decision.cancel_pending);
+        assert_eq!(
+            effect_values(&full_decision),
+            effect_values(&scoped_decision)
+        );
+    }
 }

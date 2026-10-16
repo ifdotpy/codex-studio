@@ -97,7 +97,10 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                         name,
                     ),
                 ) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(name)),
-                Err(studio_runtime_services::agents_create::CreateError::InvalidCreation(_)) => {
+                Err(
+                    studio_runtime_services::agents_create::CreateError::InvalidCreation(_)
+                    | studio_runtime_services::agents_create::CreateError::ModelUnavailable,
+                ) => {
                     Ok(false)
                 }
                 Err(_) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
@@ -587,7 +590,7 @@ impl CreationCatalog for RouteCreationCatalog {
                             || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
                 })
             })
-            .ok_or(CreateError::InvalidCreation("model"))?;
+            .ok_or(CreateError::ModelUnavailable)?;
         let supported = row
             .get("supportedReasoningEfforts")
             .and_then(Value::as_array)
