@@ -327,7 +327,7 @@ for (const delay of delays) {
       await start.click();
       const local = page.frameLocator('iframe[title="Studio on Local"]');
       const notice = local.getByText(
-        "The previous chat request needs confirmation",
+        /Studio lost confirmation for this chat request/,
       );
       const created = sidebar
         .getByRole("button", { name: /local new chat/ })

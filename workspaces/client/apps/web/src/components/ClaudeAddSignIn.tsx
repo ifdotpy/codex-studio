@@ -2,6 +2,10 @@ import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, get, post, save, saved, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
+import {
+  codeVerificationPending,
+  currentClaudeLoginReadMatches,
+} from "./claudeCodeSubmission";
 import { watchResourceReads } from "./watchResourceReads";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
@@ -101,9 +105,13 @@ export default function ClaudeAddSignIn({
   const [now, setNow] = useState(() => Date.now());
   const lock = useRef(false);
   const readyRequest = useRef("");
+  const currentRequestId = useRef(requestId);
+  const statusReadGeneration = useRef(0);
+  const refreshStatus = useRef<() => void>(() => {});
   const persistFlow = (next: SavedFlow) => {
     save(attemptKey(storageKey, next.requestId), next);
     save(storageKey, next.requestId);
+    currentRequestId.current = next.requestId;
     setFlow(next);
   };
   const clearSavedFlow = (savedFlow: SavedFlow) => {
@@ -113,6 +121,7 @@ export default function ClaudeAddSignIn({
   };
   const start = async (emailHint = expectedEmail, forceNew = false) => {
     if (lock.current) return;
+    statusReadGeneration.current += 1;
     lock.current = true;
     setBusy("start");
     setError("");
@@ -153,6 +162,7 @@ export default function ClaudeAddSignIn({
   };
   const run = async (action: "code" | "cancel") => {
     if (lock.current || !requestId || !flow) return;
+    statusReadGeneration.current += 1;
     lock.current = true;
     setBusy(action);
     setError("");
@@ -178,6 +188,7 @@ export default function ClaudeAddSignIn({
     } catch (failure) {
       if (action === "cancel" && isUnknownRequest(failure)) {
         clearSavedFlow(flow);
+        currentRequestId.current = "";
         setFlow(null);
         setReceipt(null);
         setError("");
@@ -188,14 +199,27 @@ export default function ClaudeAddSignIn({
     }
   };
   useEffect(() => {
-    if (!requestId || terminal(receipt?.status) || busy === "start") return;
+    if (!requestId || terminal(receipt?.status) || busy) return;
     let live = true;
     const poll = async () => {
+      if (lock.current) return;
+      const readGeneration = statusReadGeneration.current;
       try {
         const result = await get("/api/accounts/claude/login", {
           query: { request_id: requestId },
         });
-        if (!live || result.requestId !== requestId) return;
+        if (
+          !live ||
+          lock.current ||
+          !currentClaudeLoginReadMatches(
+            currentRequestId.current,
+            requestId,
+            result.requestId,
+            statusReadGeneration.current,
+            readGeneration,
+          )
+        )
+          return;
         setReceipt(result);
         if (result.status === "ready" && readyRequest.current !== requestId) {
           readyRequest.current = requestId;
@@ -204,22 +228,28 @@ export default function ClaudeAddSignIn({
           );
         }
       } catch (failure) {
-        if (!live) return;
+        if (
+          !live ||
+          currentRequestId.current !== requestId ||
+          statusReadGeneration.current !== readGeneration
+        )
+          return;
         if (isUnknownRequest(failure) && flow && !flow.unknownSince) {
           persistFlow({ ...flow, unknownSince: Date.now() });
           setError("");
-        } else if (!isUnknownRequest(failure)) setError(errorText(failure));
+        } else if (!isUnknownRequest(failure)) throw failure;
       }
     };
     const stop = watchResourceReads({ kind: "accounts" }, poll, (failure) => {
       if (live) setError(errorText(failure));
     });
-    const timer = setInterval(() => void poll(), 1500);
-    void poll();
+    const refresh = stop.refresh;
+    refreshStatus.current = refresh;
+    refresh();
     return () => {
       live = false;
       stop();
-      clearInterval(timer);
+      if (refreshStatus.current === refresh) refreshStatus.current = () => {};
     };
   }, [busy, flow?.unknownSince, onReady, receipt?.status, requestId]);
   useEffect(() => {
@@ -307,32 +337,47 @@ export default function ClaudeAddSignIn({
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in link.</p>
             )}
+            {receipt?.status === "pending" &&
+              (codeVerificationPending(receipt) ? (
+                <p role="status">
+                  The full code was submitted. Waiting for Claude to verify it;
+                  do not submit it again.
+                </p>
+              ) : (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void run("code");
+                  }}
+                >
+                  <Stack gap="sm">
+                    <TextInput
+                      label="Paste code"
+                      description="Paste the complete code, including the #state portion shown by Claude."
+                      type="password"
+                      autoComplete="off"
+                      value={code}
+                      onChange={(event) => setCode(event.currentTarget.value)}
+                      disabled={!!busy}
+                    />
+                    <Button
+                      type="submit"
+                      disabled={!code.trim() || !!busy}
+                      loading={busy === "code"}
+                    >
+                      Finish sign-in
+                    </Button>
+                  </Stack>
+                </form>
+              ))}
             {receipt?.status === "pending" && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void run("code");
-                }}
+              <Button
+                variant="default"
+                disabled={!!busy}
+                onClick={() => refreshStatus.current()}
               >
-                <Stack gap="sm">
-                  <TextInput
-                    label="Paste code"
-                    description="Paste the full code, including #state."
-                    type="password"
-                    autoComplete="off"
-                    value={code}
-                    onChange={(event) => setCode(event.currentTarget.value)}
-                    disabled={!!busy}
-                  />
-                  <Button
-                    type="submit"
-                    disabled={!code.trim() || !!busy}
-                    loading={busy === "code"}
-                  >
-                    Finish sign-in
-                  </Button>
-                </Stack>
-              </form>
+                Check sign-in status
+              </Button>
             )}
             {!requestId || terminal(receipt?.status) ? (
               <Button

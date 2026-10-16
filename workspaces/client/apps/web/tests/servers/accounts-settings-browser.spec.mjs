@@ -365,6 +365,36 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-claude-signin-mobile.png"),
   });
   await page.setViewportSize({ width: 1280, height: 1100 });
+  let codeWasSubmitted = false;
+  let verificationReady = false;
+  const loginRequestId = addStarts[0]?.loginId;
+  await page.route("**/api/accounts/claude/login/code", async (route) => {
+    const response = await route.fetch();
+    const receipt = await response.json();
+    codeWasSubmitted = true;
+    await route.fulfill({
+      response,
+      json: { ...receipt, status: "pending", codeSubmitted: true },
+    });
+  });
+  await page.route("**/api/accounts/claude/login?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      !codeWasSubmitted ||
+      url.searchParams.get("request_id") !== loginRequestId
+    )
+      return route.continue();
+    await route.fulfill({
+      json: {
+        requestId: loginRequestId,
+        accountKey: loginRequestId,
+        status: verificationReady ? "ready" : "pending",
+        codeSubmitted: true,
+        email: "new@example.test",
+        plan: "Max",
+      },
+    });
+  });
   const submittedCode = "FAKE-CLAUDE-CODE#FAKE-STATE";
   await claudeSignIn.getByLabel("Paste code").fill(submittedCode);
   const codeResponse = waitForPost(
@@ -374,6 +404,16 @@ test("accounts settings show per-server state and provider choices", async ({
   );
   await claudeSignIn.getByRole("button", { name: "Finish sign-in" }).click();
   expect((await codeResponse).ok()).toBe(true);
+  await expect(claudeSignIn).toContainText(
+    "Waiting for Claude to verify it; do not submit it again.",
+  );
+  await expect(claudeSignIn.getByLabel("Paste code")).toBeHidden();
+  const checkStatus = claudeSignIn.getByRole("button", {
+    name: "Check sign-in status",
+  });
+  await expect(checkStatus).toBeVisible();
+  verificationReady = true;
+  await checkStatus.click();
   await expect(claudeSignIn).toContainText("Signed in as new@example.test");
   expect(remote.accountWrites).toEqual(
     expect.arrayContaining([

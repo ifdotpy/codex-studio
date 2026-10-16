@@ -62,7 +62,7 @@ import { nativeThreadError } from "./nativeErrors";
 import {
   pendingChatCreations,
   saveChatCreation,
-  confirmChatCreation,
+  confirmChatCreationResponse,
 } from "./chatCreation";
 import {
   ActionIcon,
@@ -1623,11 +1623,12 @@ export default function App() {
       const a = await untilAnswered(() =>
         post("/api/leads", creationRequest, { timeoutMs: 60000 }),
       );
-      if (a.id !== creationRequest.id)
+      if (!confirmChatCreationResponse(creationKey, creationRequest.id, a.id))
         throw new Error("The server returned another chat identity.");
-      rememberCreated(a, creationScope);
-      confirmChatCreation(creationKey, creationRequest.id);
+      // The matching server response is the durable creation receipt. Clear this exact
+      // request before scope-sensitive UI work can fail or the workspace can change.
       setPendingCreations(pendingChatCreations(creationKey));
+      rememberCreated(a, creationScope);
       if (!opened && getDraft("new")) setDraft(getDraft("new"), a.id);
       setToast("");
       creation.current = null;
@@ -3014,10 +3015,11 @@ export default function App() {
             pendingCreations.filter(isLeadCreateRequest).map((request) => (
               <div className="sync-status" key={request.id}>
                 <p>
-                  The previous chat request needs confirmation:{" "}
+                  Studio lost confirmation for this chat request in{" "}
                   {request.cwd || "default project"}
                   {request.project_folder ? ` (${request.project_folder})` : ""}
-                  .
+                  . Retrying uses the saved request ID to check whether the chat
+                  was created.
                 </p>
                 <Button
                   onClick={() =>

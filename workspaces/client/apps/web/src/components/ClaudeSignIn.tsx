@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
+import { codeVerificationPending } from "./claudeCodeSubmission";
 import { watchResourceReads } from "./watchResourceReads";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
@@ -174,9 +175,11 @@ export default function ClaudeSignIn({
           <>
             {pending && (
               <p role="status">
-                {receipt?.status === "pending"
-                  ? "Complete sign-in in your browser."
-                  : "Waiting for the sign-in request."}
+                {codeVerificationPending(receipt)
+                  ? "The full code was submitted. Waiting for Claude to verify it; do not submit it again."
+                  : receipt?.status === "pending"
+                    ? "Complete sign-in in your browser."
+                    : "Waiting for the sign-in request."}
               </p>
             )}
             {url && (
@@ -210,33 +213,34 @@ export default function ClaudeSignIn({
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in URL.</p>
             )}
-            {receipt?.status === "pending" && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void run("code");
-                }}
-              >
-                <Stack gap="sm">
-                  <TextInput
-                    label="Authorization code"
-                    description="Paste the code if Claude asks you to return it here."
-                    type="password"
-                    autoComplete="off"
-                    value={code}
-                    onChange={(event) => setCode(event.currentTarget.value)}
-                    disabled={!!busy}
-                  />
-                  <Button
-                    type="submit"
-                    disabled={!code.trim() || !!busy}
-                    loading={busy === "code"}
-                  >
-                    Submit code
-                  </Button>
-                </Stack>
-              </form>
-            )}
+            {receipt?.status === "pending" &&
+              !codeVerificationPending(receipt) && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void run("code");
+                  }}
+                >
+                  <Stack gap="sm">
+                    <TextInput
+                      label="Authorization code"
+                      description="Paste the complete code, including the #state portion shown by Claude."
+                      type="password"
+                      autoComplete="off"
+                      value={code}
+                      onChange={(event) => setCode(event.currentTarget.value)}
+                      disabled={!!busy}
+                    />
+                    <Button
+                      type="submit"
+                      disabled={!code.trim() || !!busy}
+                      loading={busy === "code"}
+                    >
+                      Submit code
+                    </Button>
+                  </Stack>
+                </form>
+              )}
             {receipt?.status === "cancelled" && (
               <p role="status">Sign-in cancelled.</p>
             )}

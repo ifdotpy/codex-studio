@@ -42,3 +42,13 @@ export function confirmChatCreation(key: string, id: string): void {
   const legacy = JSON.parse(localStorage.getItem(key) || "null");
   if (legacy?.id === id) localStorage.removeItem(key);
 }
+
+export function confirmChatCreationResponse(
+  key: string,
+  requestId: string,
+  responseId: string,
+): boolean {
+  if (requestId !== responseId) return false;
+  confirmChatCreation(key, requestId);
+  return true;
+}
