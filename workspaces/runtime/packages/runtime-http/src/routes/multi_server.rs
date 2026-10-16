@@ -1063,7 +1063,7 @@ mod tests {
         .with_server_discovery(Arc::new(FakeDiscovery(Arc::clone(&calls))));
         let response = manage(
             State(state),
-            ApiJson(serde_json::json!({"action":"discover"})),
+            ApiJson(serde_json::json!({"action":"discover","requestId":"discovery-fixture"})),
         )
         .await
         .expect("fake discovery succeeds");
