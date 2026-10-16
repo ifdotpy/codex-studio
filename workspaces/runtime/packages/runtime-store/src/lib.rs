@@ -46,7 +46,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -147,29 +147,110 @@ pub const READ_CONNECTION_POOL_CAPACITY: usize =
 pub enum ObservedTable {
     AccessClients,
     UsageResumes,
+    Agents,
+    Events,
+    EventMeta,
+    Rooms,
+    OperationReceipts,
+    Work,
+    Monitors,
+    Rules,
+    ServerOutbox,
+    ServerLinks,
+    FederationSettings,
+    FederationIdentity,
+    FederationPeers,
+    FederationInvites,
+    FederationRooms,
+    FederationOutbox,
+    NativeActionReceipts,
+    AccessReceipts,
 }
 
 type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
 type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<ChangeObserver>>>;
 
 impl ObservedTable {
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
             Self::AccessClients => "runtime_access_clients",
             Self::UsageResumes => "runtime_usage_resumes",
+            Self::Agents => "runtime_agents",
+            Self::Events => "runtime_events",
+            Self::EventMeta => "runtime_event_meta",
+            Self::Rooms => "runtime_rooms",
+            Self::OperationReceipts => "runtime_operation_receipts",
+            Self::Work => "runtime_work",
+            Self::Monitors => "runtime_monitors",
+            Self::Rules => "runtime_rules",
+            Self::ServerOutbox => "runtime_server_outbox",
+            Self::ServerLinks => "runtime_server_links",
+            Self::FederationSettings => "runtime_federation_settings",
+            Self::FederationIdentity => "runtime_federation_identity",
+            Self::FederationPeers => "runtime_federation_peers",
+            Self::FederationInvites => "runtime_federation_invites",
+            Self::FederationRooms => "runtime_federation_rooms",
+            Self::FederationOutbox => "runtime_federation_outbox",
+            Self::NativeActionReceipts => "runtime_native_action_receipts",
+            Self::AccessReceipts => "runtime_access_receipts",
         }
     }
 
-    fn change_bit(self) -> u8 {
+    const fn change_bit(self) -> u32 {
         match self {
             Self::AccessClients => 1 << 0,
             Self::UsageResumes => 1 << 1,
+            Self::Agents => 1 << 2,
+            Self::Events => 1 << 3,
+            Self::EventMeta => 1 << 19,
+            Self::Rooms => 1 << 4,
+            Self::OperationReceipts => 1 << 5,
+            Self::Work => 1 << 6,
+            Self::Monitors => 1 << 7,
+            Self::Rules => 1 << 8,
+            Self::ServerOutbox => 1 << 9,
+            Self::ServerLinks => 1 << 10,
+            Self::FederationSettings => 1 << 11,
+            Self::FederationIdentity => 1 << 12,
+            Self::FederationPeers => 1 << 13,
+            Self::FederationInvites => 1 << 14,
+            Self::FederationRooms => 1 << 15,
+            Self::FederationOutbox => 1 << 16,
+            Self::NativeActionReceipts => 1 << 17,
+            Self::AccessReceipts => 1 << 18,
         }
+    }
+
+    const fn suppressible_resource_receipt(self) -> bool {
+        matches!(
+            self,
+            Self::OperationReceipts | Self::NativeActionReceipts | Self::AccessReceipts
+        )
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 2] =
-    [ObservedTable::AccessClients, ObservedTable::UsageResumes];
+const OBSERVED_TABLES: [ObservedTable; 20] = [
+    ObservedTable::AccessClients,
+    ObservedTable::UsageResumes,
+    ObservedTable::Agents,
+    ObservedTable::Events,
+    ObservedTable::EventMeta,
+    ObservedTable::Rooms,
+    ObservedTable::OperationReceipts,
+    ObservedTable::Work,
+    ObservedTable::Monitors,
+    ObservedTable::Rules,
+    ObservedTable::ServerOutbox,
+    ObservedTable::ServerLinks,
+    ObservedTable::FederationSettings,
+    ObservedTable::FederationIdentity,
+    ObservedTable::FederationPeers,
+    ObservedTable::FederationInvites,
+    ObservedTable::FederationRooms,
+    ObservedTable::FederationOutbox,
+    ObservedTable::NativeActionReceipts,
+    ObservedTable::AccessReceipts,
+];
 
 /// Value-free observations emitted by the optional diagnostics callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,7 +342,7 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     }
 }
 
-fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_tables: u8) {
+fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_tables: u32) {
     for table in OBSERVED_TABLES {
         if changed_tables & table.change_bit() == 0 {
             continue;
@@ -282,9 +363,36 @@ fn fire_table_change_observers(observers: &TableChangeObserverRegistry, changed_
     }
 }
 
+fn fire_resource_change_observers(observers: &Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>) {
+    let callbacks = observers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for callback in callbacks {
+        if let Err(_panic_payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+        {
+            // Resource observers are hints and cannot report panics to their caller.
+        }
+    }
+}
+
+fn transaction_has_resource_change(total_changes: Option<i64>, receipt_updates: u64) -> bool {
+    let Some(total_changes) = total_changes else {
+        return true;
+    };
+    if total_changes == 0 && receipt_updates == 0 {
+        return false;
+    }
+    let receipt_only =
+        total_changes > 0 && u64::try_from(total_changes).ok() == Some(receipt_updates);
+    !receipt_only
+}
+
 fn install_table_change_hooks(
     connection: &Connection,
-    table_change_flags: Arc<AtomicU8>,
+    table_change_flags: Arc<AtomicU32>,
+    resource_receipt_update_count: Arc<AtomicU64>,
 ) -> rusqlite::Result<()> {
     connection.update_hook(Some(
         move |_action: rusqlite::hooks::Action,
@@ -294,14 +402,16 @@ fn install_table_change_hooks(
             if database_name != "main" {
                 return;
             }
-            let Some(bit) = OBSERVED_TABLES
+            let Some(observed) = OBSERVED_TABLES
                 .iter()
                 .find(|observed| observed.name() == table_name)
-                .map(|observed| observed.change_bit())
             else {
                 return;
             };
-            table_change_flags.fetch_or(bit, Ordering::Relaxed);
+            table_change_flags.fetch_or(observed.change_bit(), Ordering::Relaxed);
+            if observed.suppressible_resource_receipt() {
+                resource_receipt_update_count.fetch_add(1, Ordering::Relaxed);
+            }
         },
     ))?;
     connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
@@ -509,7 +619,9 @@ pub struct RuntimeStore {
     identity_registry_lease: Arc<IdentityRegistryLease>,
     commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     table_commit_observers: Arc<TableChangeObserverRegistry>,
-    table_change_flags: Arc<AtomicU8>,
+    resource_change_observers: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    table_change_flags: Arc<AtomicU32>,
+    resource_receipt_update_count: Arc<AtomicU64>,
     #[cfg(test)]
     simulate_unknown_commit_after_success: Arc<AtomicBool>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
@@ -753,11 +865,13 @@ enum WriterTransactionOutcome<T, E> {
         result: Result<T, E>,
         generation: u64,
         changed: bool,
-        changed_tables: u8,
+        changed_tables: u32,
+        resource_change: bool,
     },
     CommitOutcomeUnknown {
         error: StoreError,
-        possible_table_changes: u8,
+        possible_table_changes: u32,
+        possible_resource_change: bool,
     },
 }
 
@@ -831,9 +945,11 @@ impl RuntimeStore {
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
 
-        let table_change_flags = Arc::new(AtomicU8::new(0));
+        let table_change_flags = Arc::new(AtomicU32::new(0));
+        let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
         let writer = SqliteActor::open(&canvas_path, Arc::clone(&runtime_lock)).await?;
         let hook_table_change_flags = Arc::clone(&table_change_flags);
+        let hook_resource_receipt_update_count = Arc::clone(&resource_receipt_update_count);
         writer
             .call(move |connection| {
                 connection
@@ -844,8 +960,12 @@ impl RuntimeStore {
                     .pragma_update(None, "synchronous", "FULL")
                     .map_err(StoreError::from)?;
                 schema::register_python_trigger_functions(connection)?;
-                install_table_change_hooks(connection, hook_table_change_flags)
-                    .map_err(StoreError::from)?;
+                install_table_change_hooks(
+                    connection,
+                    hook_table_change_flags,
+                    hook_resource_receipt_update_count,
+                )
+                .map_err(StoreError::from)?;
                 Ok::<(), StoreError>(())
             })
             .await
@@ -889,7 +1009,9 @@ impl RuntimeStore {
             }),
             commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
             table_commit_observers: Arc::new(Mutex::new(HashMap::new())),
+            resource_change_observers: Arc::new(Mutex::new(Vec::new())),
             table_change_flags,
+            resource_receipt_update_count,
             #[cfg(test)]
             simulate_unknown_commit_after_success: Arc::new(AtomicBool::new(false)),
             committed_change_generation: Arc::new(AtomicU64::new(0)),
@@ -986,14 +1108,29 @@ impl RuntimeStore {
         &self,
         table: ObservedTable,
         observer: impl Fn() + Send + Sync + 'static,
-    ) -> StoreResult<()> {
+    ) {
         self.table_commit_observers
             .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(table)
             .or_default()
             .push(Arc::new(observer));
-        Ok(())
+    }
+
+    /// Register a notification for durable changes visible to HTTP resource
+    /// subscribers. Writes exclusively to the three named idempotency receipt
+    /// tables are suppressed only when their update-hook count exactly matches
+    /// SQLite's transaction change count; all uncertain or mixed writes wake.
+    /// A known commit and an ambiguous commit that may have landed both notify,
+    /// so consumers must reread authoritative state. Register before taking the
+    /// subscriber's initial snapshot. Callbacks run outside the transaction
+    /// and registry lock. After caller cancellation they may run on the actor
+    /// thread, so keep them short and free of database or provider I/O.
+    pub fn add_resource_change_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
+        self.resource_change_observers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::new(observer));
     }
 
     /// Install the process-local notification fired after each successful write commit.
@@ -1274,6 +1411,7 @@ impl RuntimeStore {
         let generation = Arc::clone(&self.committed_change_generation);
         let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
         let table_change_flags = Arc::clone(&self.table_change_flags);
+        let resource_receipt_update_count = Arc::clone(&self.resource_receipt_update_count);
         #[cfg(test)]
         let simulate_unknown_commit_after_success =
             Arc::clone(&self.simulate_unknown_commit_after_success);
@@ -1282,19 +1420,26 @@ impl RuntimeStore {
                 let _account_worker_operation_lease = account_worker_operation_lease;
                 let _identity_registry_lease = identity_registry_lease;
                 table_change_flags.store(0, Ordering::Release);
+                resource_receipt_update_count.store(0, Ordering::Release);
                 let transaction = writer
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
                 let initial_changes = transaction.total_changes();
                 match operation(&transaction) {
                     Ok(value) => {
-                        let changed = transaction.total_changes() != initial_changes;
+                        let final_changes = transaction.total_changes();
+                        let changed = final_changes != initial_changes;
+                        let total_changes = final_changes.checked_sub(initial_changes);
+                        let receipt_updates = resource_receipt_update_count.load(Ordering::Acquire);
+                        let resource_change =
+                            transaction_has_resource_change(total_changes, receipt_updates);
                         let commit_started = diagnostics_enabled.then(Instant::now);
                         if let Err(error) = transaction.commit() {
                             return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
                                 error: StoreError::CommitOutcomeUnknown(error),
                                 possible_table_changes: table_change_flags
                                     .swap(0, Ordering::AcqRel),
+                                possible_resource_change: true,
                             });
                         }
                         #[cfg(test)]
@@ -1305,6 +1450,7 @@ impl RuntimeStore {
                                 ),
                                 possible_table_changes: table_change_flags
                                     .swap(0, Ordering::AcqRel),
+                                possible_resource_change: true,
                             });
                         }
                         if let Some(started) = commit_started {
@@ -1324,17 +1470,20 @@ impl RuntimeStore {
                             generation: commit_generation,
                             changed,
                             changed_tables,
+                            resource_change,
                         })
                     }
                     Err(error) => {
                         // Dropping rolls back best-effort; preserve the operation error.
                         drop(transaction);
                         table_change_flags.store(0, Ordering::Release);
+                        resource_receipt_update_count.store(0, Ordering::Release);
                         Ok(WriterTransactionOutcome::Known {
                             result: Err(error),
                             generation: generation.load(Ordering::Acquire),
                             changed: false,
                             changed_tables: 0,
+                            resource_change: false,
                         })
                     }
                 }
@@ -1342,15 +1491,17 @@ impl RuntimeStore {
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_checkpoint_requested);
         let table_commit_observers = Arc::clone(&self.table_commit_observers);
+        let resource_change_observers = Arc::clone(&self.resource_change_observers);
         let actor_outcome = self
             .writer
             .call_admitted_with_completion(permit, operation, move |result, disposition| {
                 if let Ok(outcome) = result {
-                    let (changed_tables, value) = match outcome {
+                    let (changed_tables, resource_change, value) = match outcome {
                         WriterTransactionOutcome::Known {
                             result: Ok(value),
                             changed,
                             changed_tables,
+                            resource_change,
                             ..
                         } => {
                             if *changed && disposition == ActorResponseDisposition::Abandoned {
@@ -1365,24 +1516,33 @@ impl RuntimeStore {
                                     // A dropped response cannot report observer panics.
                                 }
                             }
-                            (*changed_tables, Some(value))
+                            (*changed_tables, *resource_change, Some(value))
                         }
                         WriterTransactionOutcome::CommitOutcomeUnknown {
                             possible_table_changes,
+                            possible_resource_change,
                             ..
-                        } => (*possible_table_changes, None),
-                        WriterTransactionOutcome::Known { result: Err(_), .. } => (0, None),
+                        } => (*possible_table_changes, *possible_resource_change, None),
+                        WriterTransactionOutcome::Known { result: Err(_), .. } => (0, false, None),
                     };
                     let table_observer_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             fire_table_change_observers(&table_commit_observers, changed_tables);
                         }));
+                    let resource_observer_result = resource_change.then(|| {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fire_resource_change_observers(&resource_change_observers);
+                        }))
+                    });
                     let post_commit_result = value.map(|value| {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             post_commit(value)
                         }))
                     });
                     if let Err(panic) = table_observer_result {
+                        std::panic::resume_unwind(panic);
+                    }
+                    if let Some(Err(panic)) = resource_observer_result {
                         std::panic::resume_unwind(panic);
                     }
                     if let Some(Err(panic)) = post_commit_result {
@@ -2106,24 +2266,89 @@ mod commit_notification_tests {
     #[test]
     fn tracked_observer_tables_must_keep_rowid_storage() {
         let database = Connection::open_in_memory().expect("in-memory database");
-        database
-            .execute_batch(
-                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY) WITHOUT ROWID;
-                 CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY);",
-            )
-            .expect("create test tables");
-        assert!(matches!(
-            verify_observed_tables_are_rowid(&database),
-            Err(StoreError::SchemaMismatch(_))
-        ));
+        for table in OBSERVED_TABLES {
+            database
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id TEXT PRIMARY KEY);",
+                    table.name()
+                ))
+                .expect("create test table");
+        }
+        verify_observed_tables_are_rowid(&database).expect("all observed tables use rowid storage");
 
-        database
-            .execute_batch("DROP TABLE runtime_access_clients;")
-            .expect("drop without-rowid table");
-        database
-            .execute_batch("CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY);")
-            .expect("create rowid table");
-        verify_observed_tables_are_rowid(&database).expect("both tables use rowid storage");
+        for table in [
+            ObservedTable::AccessClients,
+            ObservedTable::EventMeta,
+            ObservedTable::OperationReceipts,
+            ObservedTable::NativeActionReceipts,
+            ObservedTable::AccessReceipts,
+        ] {
+            database
+                .execute_batch(&format!("DROP TABLE {};", table.name()))
+                .expect("drop rowid test table");
+            database
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id TEXT PRIMARY KEY) WITHOUT ROWID;",
+                    table.name()
+                ))
+                .expect("create without-rowid test table");
+            assert!(matches!(
+                verify_observed_tables_are_rowid(&database),
+                Err(StoreError::SchemaMismatch(_))
+            ));
+
+            database
+                .execute_batch(&format!("DROP TABLE {};", table.name()))
+                .expect("drop without-rowid table");
+            database
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id TEXT PRIMARY KEY);",
+                    table.name()
+                ))
+                .expect("restore rowid test table");
+        }
+        verify_observed_tables_are_rowid(&database).expect("all observed tables use rowid storage");
+    }
+
+    #[test]
+    fn table_change_mask_covers_each_named_observer_table() {
+        let database = Connection::open_in_memory().expect("in-memory database");
+        for table in OBSERVED_TABLES {
+            database
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id INTEGER PRIMARY KEY);",
+                    table.name()
+                ))
+                .expect("create observer table");
+        }
+        let table_change_flags = Arc::new(AtomicU32::new(0));
+        let receipt_update_count = Arc::new(AtomicU64::new(0));
+        install_table_change_hooks(
+            &database,
+            Arc::clone(&table_change_flags),
+            Arc::clone(&receipt_update_count),
+        )
+        .expect("install update and delete hooks");
+
+        for (index, table) in OBSERVED_TABLES.into_iter().enumerate() {
+            let insert = format!("INSERT INTO {}(id) VALUES (?1)", table.name());
+            database
+                .execute(&insert, [index as i64])
+                .expect("insert observed row");
+            assert_eq!(
+                table_change_flags.swap(0, Ordering::AcqRel),
+                table.change_bit()
+            );
+            assert_eq!(
+                receipt_update_count.swap(0, Ordering::AcqRel),
+                if table.suppressible_resource_receipt() {
+                    1
+                } else {
+                    0
+                },
+                "only named internal receipts count toward the resource filter"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2134,18 +2359,14 @@ mod commit_notification_tests {
             .expect("open runtime store");
         let access_notifications = Arc::new(AtomicUsize::new(0));
         let access_observed = Arc::clone(&access_notifications);
-        store
-            .add_table_change_observer(ObservedTable::AccessClients, move || {
-                access_observed.fetch_add(1, Ordering::AcqRel);
-            })
-            .expect("register access-client observer");
+        store.add_table_change_observer(ObservedTable::AccessClients, move || {
+            access_observed.fetch_add(1, Ordering::AcqRel);
+        });
         let usage_notifications = Arc::new(AtomicUsize::new(0));
         let usage_observed = Arc::clone(&usage_notifications);
-        store
-            .add_table_change_observer(ObservedTable::UsageResumes, move || {
-                usage_observed.fetch_add(1, Ordering::AcqRel);
-            })
-            .expect("register usage-resume observer");
+        store.add_table_change_observer(ObservedTable::UsageResumes, move || {
+            usage_observed.fetch_add(1, Ordering::AcqRel);
+        });
 
         store
             .transaction(|transaction| {
@@ -2217,6 +2438,193 @@ mod commit_notification_tests {
     }
 
     #[tokio::test]
+    async fn resource_observer_suppresses_only_proven_receipt_only_writes() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&notifications);
+        store.add_resource_change_observer(move || {
+            observed.fetch_add(1, Ordering::AcqRel);
+        });
+
+        let unpolled = store.transaction(|transaction| {
+            transaction.execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unpolled','agent','message','text','queued',1.0,1)",
+                [],
+            )?;
+            Ok(())
+        });
+        drop(unpolled);
+        assert_eq!(notifications.load(Ordering::Acquire), 0);
+
+        let receipt_inserts = [
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-only','sig','{}')",
+            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-only','sig','{}','{}')",
+            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-only','request-only','hash','session','pending','{}')",
+        ];
+        for sql in receipt_inserts {
+            store
+                .transaction(move |transaction| {
+                    transaction.execute_batch(sql)?;
+                    Ok(())
+                })
+                .await
+                .expect("receipt-only write commits");
+        }
+        assert_eq!(notifications.load(Ordering::Acquire), 0);
+
+        let mixed_receipt_inserts = [
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-mixed','sig','{}')",
+            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-mixed','sig','{}','{}')",
+            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-mixed','request-mixed','hash','session','pending','{}')",
+        ];
+        for (index, sql) in mixed_receipt_inserts.into_iter().enumerate() {
+            store
+                .transaction(move |transaction| {
+                    transaction.execute_batch(sql)?;
+                    transaction.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,'agent','message','text','queued',1.0,1)",
+                        [format!("resource-event-{index}")],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("mixed receipt and resource write commits");
+            assert_eq!(
+                notifications.load(Ordering::Acquire),
+                index + 1,
+                "each internal receipt mixed with a resource row must wake"
+            );
+        }
+
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch(
+                    "CREATE TABLE resource_receipt_trigger_side_effect(value INTEGER);
+                     CREATE TRIGGER resource_receipt_trigger AFTER INSERT ON runtime_access_receipts
+                     BEGIN INSERT INTO resource_receipt_trigger_side_effect VALUES (1); END;",
+                )?;
+                transaction.execute_batch(
+                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record)
+                     VALUES ('trigger-client','trigger-request','hash','session','pending','{}')",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("receipt trigger side-effect commits");
+        assert_eq!(notifications.load(Ordering::Acquire), 4);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute("SELECT 1", [])?;
+                Ok(())
+            })
+            .await
+            .expect("no-op transaction succeeds");
+        let rolled_back = store
+            .transaction_with(|transaction| {
+                transaction.execute_batch(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result)
+                     VALUES ('op-rollback','sig','{}')",
+                )?;
+                Err::<(), StoreError>(StoreError::RecordContract("test rollback"))
+            })
+            .await;
+        assert!(rolled_back.is_err());
+        assert_eq!(notifications.load(Ordering::Acquire), 4);
+
+        store
+            .simulate_unknown_commit_after_success
+            .store(true, Ordering::Release);
+        let receipt_unknown = store
+            .transaction(|transaction| {
+                transaction.execute_batch(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result)
+                     VALUES ('op-unknown-receipt','sig','{}')",
+                )?;
+                Ok(())
+            })
+            .await;
+        assert!(matches!(
+            receipt_unknown,
+            Err(StoreError::CommitOutcomeUnknown(_))
+        ));
+        assert_eq!(notifications.load(Ordering::Acquire), 5);
+
+        store
+            .simulate_unknown_commit_after_success
+            .store(true, Ordering::Release);
+        let resource_unknown = store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unknown-resource','agent','message','text','queued',1.0,1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await;
+        assert!(matches!(
+            resource_unknown,
+            Err(StoreError::CommitOutcomeUnknown(_))
+        ));
+        assert_eq!(notifications.load(Ordering::Acquire), 6);
+
+        store
+            .writer
+            .call(|connection| {
+                connection.update_hook(
+                    None::<
+                        for<'database, 'table> fn(
+                            rusqlite::hooks::Action,
+                            &'database str,
+                            &'table str,
+                            i64,
+                        ),
+                    >,
+                )?;
+                Ok::<(), StoreError>(())
+            })
+            .await
+            .expect("temporarily remove update hook");
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result)
+                     VALUES ('op-missing-hook','sig','{}')",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("receipt write without update hook commits");
+        assert_eq!(notifications.load(Ordering::Acquire), 7);
+
+        let table_change_flags = Arc::clone(&store.table_change_flags);
+        let receipt_update_count = Arc::clone(&store.resource_receipt_update_count);
+        store
+            .writer
+            .call(move |connection| {
+                install_table_change_hooks(connection, table_change_flags, receipt_update_count)
+                    .map_err(StoreError::from)?;
+                connection
+                    .authorizer(None::<for<'context> fn(AuthContext<'context>) -> Authorization>)
+                    .map_err(StoreError::from)?;
+                Ok::<(), StoreError>(())
+            })
+            .await
+            .expect("restore update hook and remove delete authorizer");
+        store
+            .transaction(|transaction| {
+                transaction.execute("DELETE FROM runtime_operation_receipts", [])?;
+                Ok(())
+            })
+            .await
+            .expect("receipt bulk delete commits");
+        assert_eq!(notifications.load(Ordering::Acquire), 8);
+    }
+
+    #[tokio::test]
     async fn table_observer_callbacks_run_without_holding_registration_lock() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -2231,21 +2639,18 @@ mod commit_notification_tests {
         let registered_second_callback = Arc::clone(&registered_second);
         let first_count = Arc::clone(&first_calls);
         let second_count = Arc::clone(&second_calls);
-        store
-            .add_table_change_observer(ObservedTable::UsageResumes, move || {
-                first_count.fetch_add(1, Ordering::AcqRel);
-                if !registered_second_callback.swap(true, Ordering::AcqRel) {
-                    let second_count = Arc::clone(&second_count);
-                    weak_store
-                        .upgrade()
-                        .expect("store remains alive")
-                        .add_table_change_observer(ObservedTable::UsageResumes, move || {
-                            second_count.fetch_add(1, Ordering::AcqRel);
-                        })
-                        .expect("register callback from observer");
-                }
-            })
-            .expect("register initial usage observer");
+        store.add_table_change_observer(ObservedTable::UsageResumes, move || {
+            first_count.fetch_add(1, Ordering::AcqRel);
+            if !registered_second_callback.swap(true, Ordering::AcqRel) {
+                let second_count = Arc::clone(&second_count);
+                weak_store
+                    .upgrade()
+                    .expect("store remains alive")
+                    .add_table_change_observer(ObservedTable::UsageResumes, move || {
+                        second_count.fetch_add(1, Ordering::AcqRel);
+                    });
+            }
+        });
 
         store
             .transaction(|transaction| {
@@ -2282,11 +2687,14 @@ mod commit_notification_tests {
             .expect("open runtime store");
         let notifications = Arc::new(AtomicUsize::new(0));
         let notified = Arc::clone(&notifications);
-        store
-            .add_table_change_observer(ObservedTable::AccessClients, move || {
-                notified.fetch_add(1, Ordering::AcqRel);
-            })
-            .expect("register access-client observer");
+        store.add_table_change_observer(ObservedTable::AccessClients, move || {
+            notified.fetch_add(1, Ordering::AcqRel);
+        });
+        let resource_notifications = Arc::new(AtomicUsize::new(0));
+        let resource_notified = Arc::clone(&resource_notifications);
+        store.add_resource_change_observer(move || {
+            resource_notified.fetch_add(1, Ordering::AcqRel);
+        });
         store
             .simulate_unknown_commit_after_success
             .store(true, Ordering::Release);
@@ -2310,6 +2718,7 @@ mod commit_notification_tests {
 
         assert!(matches!(result, Err(StoreError::CommitOutcomeUnknown(_))));
         assert_eq!(notifications.load(Ordering::Acquire), 1);
+        assert_eq!(resource_notifications.load(Ordering::Acquire), 1);
         assert_eq!(post_commit_calls.load(Ordering::Acquire), 0);
         let reader = store.read().expect("read committed access client");
         let count = reader
@@ -2551,11 +2960,14 @@ mod commit_notification_tests {
         });
         let table_notifications = Arc::new(AtomicUsize::new(0));
         let table_observed = Arc::clone(&table_notifications);
-        store
-            .add_table_change_observer(ObservedTable::AccessClients, move || {
-                table_observed.fetch_add(1, Ordering::Release);
-            })
-            .expect("register table observer");
+        store.add_table_change_observer(ObservedTable::AccessClients, move || {
+            table_observed.fetch_add(1, Ordering::Release);
+        });
+        let resource_notifications = Arc::new(AtomicUsize::new(0));
+        let resource_observed = Arc::clone(&resource_notifications);
+        store.add_resource_change_observer(move || {
+            resource_observed.fetch_add(1, Ordering::Release);
+        });
         let post_commit_callbacks = Arc::new(AtomicUsize::new(0));
 
         let entered = Arc::new(std::sync::Barrier::new(2));
@@ -2613,6 +3025,7 @@ mod commit_notification_tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             while notifications.load(Ordering::Acquire) != 1
                 || table_notifications.load(Ordering::Acquire) != 1
+                || resource_notifications.load(Ordering::Acquire) != 1
             {
                 tokio::task::yield_now().await;
             }
@@ -2621,6 +3034,7 @@ mod commit_notification_tests {
         .expect("abandoned committed write still notifies observers");
         assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 1);
         assert_eq!(table_notifications.load(Ordering::Acquire), 1);
+        assert_eq!(resource_notifications.load(Ordering::Acquire), 1);
 
         let reader = store.read().expect("read committed row");
         let count = reader

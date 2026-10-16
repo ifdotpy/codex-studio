@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::Value;
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{ObservedTable, RuntimeStore};
 use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
 use tokio::task::JoinHandle;
 
@@ -35,6 +35,12 @@ use crate::{event_write, monitor_runtime, rules_tick};
 const BATCH: usize = 64;
 const ERROR_RETRY_MIN: Duration = Duration::from_millis(250);
 const ERROR_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Durable inputs consulted by monitor dispatch, rule scheduling, and stall checks.
+const MONITOR_WAKE_TABLES: [ObservedTable; 3] = [
+    ObservedTable::Monitors,
+    ObservedTable::Rules,
+    ObservedTable::Agents,
+];
 
 /// The retained session must replay the same delivery until acknowledge succeeds.
 /// Its cursor belongs to that session, not to a second supervisor journal reader.
@@ -161,10 +167,10 @@ impl MonitorRuntime {
         _event_wake: Arc<Notify>,
     ) -> Self {
         let dispatch_wake = Arc::new(Notify::new());
-        let commit_wake = Arc::clone(&dispatch_wake);
-        // A Notify is a single-consumer signal. The account registry also listens
-        // to event_wake, so monitor correctness needs its own post-commit observer.
-        store.add_commit_observer(move || commit_wake.notify_one());
+        for table in MONITOR_WAKE_TABLES {
+            let table_wake = Arc::clone(&dispatch_wake);
+            store.add_table_change_observer(table, move || table_wake.notify_one());
+        }
         Self {
             store,
             port,
@@ -1513,7 +1519,7 @@ mod tests {
         std::fs::create_dir_all(store.root().join("monitor-results"))
             .expect("prepare receipt watch directory before monitor startup");
         let runtime = Arc::new(MonitorRuntime::new(
-            store,
+            store.clone(),
             port.clone(),
             Arc::new(Notify::new()),
         ));
@@ -1525,6 +1531,25 @@ mod tests {
         wait_for_cycles(&runtime, 2).await;
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         let reads = runtime.loop_activity.deadline_reads.load(Ordering::SeqCst);
+        let next_calls = port.next_calls.load(Ordering::SeqCst);
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES('unrelated-monitor-event','agent','user','input','pending',1,0,NULL,NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit unrelated event input");
+        tokio::task::yield_now().await;
+        assert_eq!(runtime.loop_activity.ticks.load(Ordering::SeqCst), ticks);
+        assert_eq!(
+            runtime.loop_activity.deadline_reads.load(Ordering::SeqCst),
+            reads
+        );
+        assert_eq!(port.next_calls.load(Ordering::SeqCst), next_calls);
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(3600)).await;
         tokio::task::yield_now().await;
@@ -2080,7 +2105,9 @@ mod tests {
             .expect("persist low-worker owner and rule");
         let registry_wake = Arc::new(Notify::new());
         let registry_commit_wake = Arc::clone(&registry_wake);
-        store.add_commit_observer(move || registry_commit_wake.notify_one());
+        store.add_table_change_observer(ObservedTable::Agents, move || {
+            registry_commit_wake.notify_one()
+        });
         let runtime = Arc::new(MonitorRuntime::new(
             store.clone(),
             port.clone(),

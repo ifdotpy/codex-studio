@@ -12,7 +12,7 @@ use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::analytics_history::{
     HistoryClock, HistoryCollector, HistoryError, StoreHistoryBudgetSink,
 };
-use studio_runtime_store::{AgentRecord, RuntimeStore, Table};
+use studio_runtime_store::{AgentRecord, ObservedTable, RuntimeStore, Table};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -460,7 +460,7 @@ async fn run_event_driven_with_wake(
     let observer_wake = Arc::clone(&wake);
     runtime
         .store
-        .add_commit_observer(move || observer_wake.commit());
+        .add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
 
     // Install the registry watch before reading either external accounts or the
     // durable roster. Notifications arriving during these snapshots stay queued.
@@ -793,6 +793,49 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn only_agent_commits_dirty_the_history_roster() {
+        let root = tempdir().expect("temporary store");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let wake = Arc::new(HistoryWake::default());
+        let observer_wake = Arc::clone(&wake);
+        store.add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES('unrelated-history-event','history-agent','user','input','pending',1,0,NULL,NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("commit unrelated event input");
+        assert!(
+            !wake.take().roster_dirty,
+            "event journal changes must not scan the history agent roster"
+        );
+
+        let actor = AgentRecord::from_value(json!({
+            "id":"history-agent", "rootId":"history-agent", "parentId":null,
+            "name":"History fixture", "epoch":0, "status":"running",
+            "accountHistory":[], "provider":"codex", "threadId":"history-thread",
+            "turnId":"history-turn", "effort":"high", "fastMode":false,
+            "daybreakEnabled":false, "cyberAccessProgram":false,
+            "cwd":"/fixture", "deletedAt":null
+        }))
+        .expect("typed history actor");
+        store
+            .transaction(move |tx| Table::<AgentRecord>::new(tx).put(&actor))
+            .await
+            .expect("commit agent roster input");
+        assert!(
+            wake.take().roster_dirty,
+            "agent changes must refresh the history roster"
+        );
+    }
 
     #[test]
     fn watcher_events_coalesce_by_path_and_overflow_requests_rescan() {

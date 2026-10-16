@@ -179,7 +179,7 @@ impl StoreBridge {
             if let Some(generation) = observed_generation.upgrade() {
                 generation.send_modify(|value| *value = value.wrapping_add(1));
             }
-        })?;
+        });
         let bridge = Self {
             store,
             operation_slot: Arc::new(Semaphore::new(1)),

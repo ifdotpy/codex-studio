@@ -187,7 +187,7 @@ impl PeerLinkRuntime {
                 Ok(()) | Err(mpsc::error::TrySendError::Full(())) => {}
                 Err(mpsc::error::TrySendError::Closed(())) => {}
             }
-        })?;
+        });
         let stop = CancellationToken::new();
         let task_stop = stop.clone();
         let task_advert = Arc::clone(&advert);

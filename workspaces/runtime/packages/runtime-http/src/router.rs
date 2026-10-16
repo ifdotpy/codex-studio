@@ -223,7 +223,7 @@ impl HttpState {
             );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
-            store.set_commit_notifier(move || changes.notify_one());
+            store.add_resource_change_observer(move || changes.notify_one());
         }
         Self {
             message_admission: None,
@@ -919,6 +919,123 @@ mod tests {
             ),
             directory,
         )
+    }
+
+    async fn state_with_store() -> (HttpState, Arc<RuntimeStore>, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
+        let state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(Arc::clone(&store)),
+            None,
+        );
+        (state, store, directory)
+    }
+
+    #[tokio::test]
+    async fn internal_receipt_journal_commits_do_not_invalidate_browser_resources() {
+        let (state, store, _directory) = state_with_store().await;
+
+        store
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    ("operation", "signature", "{}"),
+                )?;
+                transaction.execute(
+                    "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES(?1,?2,?3,?4)",
+                    ("native", "signature", "{}", "accepted"),
+                )?;
+                transaction.execute(
+                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES(?1,?2,?3,?4,?5,?6)",
+                    ("client", "request", "hash", "session", "complete", "{}"),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("internal receipt journals commit");
+
+        assert_eq!(state.sync_changes.snapshot().resource_revision, 0);
+        assert_eq!(state.sync_changes.snapshot().revision, 0);
+    }
+
+    #[tokio::test]
+    async fn message_receipt_table_commits_still_invalidate_browser_resources() {
+        let (state, store, _directory) = state_with_store().await;
+
+        for (table, statement) in [
+            (
+                "runtime_events",
+                "INSERT INTO runtime_events(id,agent,kind,status,created,error) VALUES('event','agent','message','done',1,NULL)",
+            ),
+            (
+                "runtime_event_meta",
+                "INSERT INTO runtime_event_meta(id,record) VALUES('event','{}')",
+            ),
+            (
+                "runtime_items",
+                "INSERT INTO runtime_items(id,agent,created,record) VALUES('item','agent',1,'{}')",
+            ),
+        ] {
+            let statement = statement.to_owned();
+            store
+                .transaction(move |transaction| {
+                    transaction.execute(&statement, [])?;
+                    Ok(())
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{table} UI write commits: {error}"));
+        }
+
+        assert_eq!(state.sync_changes.snapshot().resource_revision, 3);
+        assert_eq!(state.sync_changes.snapshot().revision, 3);
+    }
+
+    #[tokio::test]
+    async fn mixed_writes_and_named_resource_publications_keep_their_invalidation_paths() {
+        let (state, store, _directory) = state_with_store().await;
+
+        store
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    ("operation", "signature", "{}"),
+                )?;
+                transaction.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,status,created,error) VALUES(?1,?2,?3,?4,?5,NULL)",
+                    ("event", "agent", "message", "done", 1),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("mixed internal and UI writes commit");
+        assert_eq!(state.sync_changes.snapshot().resource_revision, 1);
+
+        let notifications = state.resource_notifications_handle();
+        notifications
+            .publish_once(&serde_json::json!({
+                "requestId": "named-resource",
+                "resources": [{"kind": "multi-server"}],
+            }))
+            .expect("named resource publication succeeds");
+        let view = notifications
+            .changes_since(&[serde_json::json!({"kind": "multi-server"})], Some(0))
+            .expect("named resource cursor reads");
+        assert_eq!(
+            view.resources,
+            vec![serde_json::json!({"kind": "multi-server"})]
+        );
+        assert_eq!(view.cursor.resource_revision, 1);
+        assert_eq!(view.cursor.revision, 2);
     }
 
     #[tokio::test]
