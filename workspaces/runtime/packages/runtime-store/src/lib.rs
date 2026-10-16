@@ -1642,6 +1642,14 @@ mod diagnostics_hook_tests {
     fn requested_checkpoint_exposes_its_remaining_cadence_without_polling() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        // Opening the migrated store commits schema setup. Establish a completed
+        // checkpoint baseline so this test measures the fixture commit below.
+        store
+            .checkpoint_wal_passive()
+            .expect("baseline checkpoint after schema setup");
+        store
+            .wal_checkpoint_requested
+            .store(false, Ordering::Release);
         assert_eq!(
             store.wal_checkpoint_retry_after().expect("initial retry"),
             None

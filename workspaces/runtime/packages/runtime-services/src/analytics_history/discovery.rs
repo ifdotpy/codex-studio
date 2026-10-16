@@ -122,6 +122,19 @@ impl DiscoveryRound {
     }
 }
 
+fn canonical_or_absolute(path: &Path) -> PathBuf {
+    if let Ok(path) = fs::canonicalize(path) {
+        return path;
+    }
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,18 +163,5 @@ mod tests {
             discovery.resolve(root.path(), "second-thread", &cancel),
             Ok(RolloutPath::Found(path)) if path == appended
         ));
-    }
-}
-
-fn canonical_or_absolute(path: &Path) -> PathBuf {
-    if let Ok(path) = fs::canonicalize(path) {
-        return path;
-    }
-    if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_owned())
     }
 }

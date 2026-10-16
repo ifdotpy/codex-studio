@@ -1636,13 +1636,13 @@ mod exit_logging_tests {
         assert!(!waiter.is_finished());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(waiter.await.expect("failure retry deadline"));
-        let (_, mut shutdown_rx) = watch::channel(false);
+        let (shutdown_tx2, mut shutdown_rx) = watch::channel(false);
         assert_eq!(
             wait_for_continuation(None, &wake, &mut shutdown_rx).await,
             ContinuationWait::Wake,
             "failure cooldown leaves the queued work notification for the regular wait"
         );
-        drop(shutdown_tx);
+        drop((shutdown_tx, shutdown_tx2));
     }
 
     #[test]

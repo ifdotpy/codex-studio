@@ -211,16 +211,18 @@ mod tests {
         let actor = agent("paused");
         let mut schedule = HistorySchedule::default();
         assert_eq!(
-            schedule.next(std::slice::from_ref(&actor), 0.0).unwrap(),
+            schedule
+                .next(std::slice::from_ref(&actor), 0.0)
+                .expect("initial schedule selection"),
             Some(&actor)
         );
         schedule
             .completed(&actor, &current_checkpoint("current"), 0.0)
-            .unwrap();
+            .expect("complete initial history import");
         assert_eq!(
             schedule
                 .next(std::slice::from_ref(&actor), 10_000.0)
-                .unwrap(),
+                .expect("current actor should wait for notification"),
             None
         );
         assert!(!schedule.has_pending());
@@ -230,7 +232,7 @@ mod tests {
         assert_eq!(
             schedule
                 .next(std::slice::from_ref(&actor), 10_000.0)
-                .unwrap(),
+                .expect("notification should schedule actor"),
             Some(&actor)
         );
     }
@@ -241,16 +243,20 @@ mod tests {
         let mut schedule = HistorySchedule::default();
         schedule
             .completed(&actor, &current_checkpoint("catchingUp"), 0.0)
-            .unwrap();
+            .expect("record partial history import");
         assert_eq!(
-            schedule.next(std::slice::from_ref(&actor), 0.0).unwrap(),
+            schedule
+                .next(std::slice::from_ref(&actor), 0.0)
+                .expect("partial actor remains scheduled"),
             Some(&actor)
         );
         schedule
             .completed(&actor, &current_checkpoint("current"), 1.0)
-            .unwrap();
+            .expect("complete caught-up history import");
         assert_eq!(
-            schedule.next(std::slice::from_ref(&actor), 1.0).unwrap(),
+            schedule
+                .next(std::slice::from_ref(&actor), 1.0)
+                .expect("caught-up actor should leave the schedule"),
             None
         );
         assert!(!schedule.has_pending());

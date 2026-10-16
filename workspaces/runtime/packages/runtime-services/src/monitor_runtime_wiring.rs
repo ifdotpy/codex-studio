@@ -272,12 +272,10 @@ impl MonitorRuntime {
                 && rule["status"] == "active"
                 && let Some(path) = rule["path"].as_str()
                 && let Some(parent) = Path::new(path).parent()
+                && let Some(directory) = nearest_existing_directory(parent)?
+                && directory != receipt_directory
             {
-                if let Some(directory) = nearest_existing_directory(parent)? {
-                    if directory != receipt_directory {
-                        directories.insert(directory);
-                    }
-                }
+                directories.insert(directory);
             }
         }
         Ok(directories)
@@ -327,19 +325,19 @@ impl MonitorRuntime {
             .query_row(
                 "SELECT MIN(deadline) FROM (
                     SELECT CASE
-                        WHEN json_extract(record,'$.kind')='file'
-                             AND COALESCE(json_extract(record,'$.stallTimeoutSeconds'),?1)>0
-                             AND COALESCE(json_extract(record,'$.fileGeneration'),0)>COALESCE(json_extract(record,'$.stallWakeGeneration'),-1)
-                        THEN MIN(json_extract(record,'$.nextAt'),COALESCE(json_extract(record,'$.fileActivityAt'),json_extract(record,'$.created'))+COALESCE(json_extract(record,'$.stallTimeoutSeconds'),?1))
-                        WHEN json_extract(record,'$.kind')='file'
-                        THEN json_extract(record,'$.nextAt')
-                        WHEN json_extract(record,'$.kind')='low_workers'
-                             AND COALESCE(json_extract(record,'$.alerted'),0)=0
-                             AND json_type(record,'$.lowSince') IN ('integer','real')
-                        THEN json_extract(record,'$.lowSince')
-                             + json_extract(record,'$.durationMinutes')*60.0 + ?2
-                        WHEN json_extract(record,'$.kind') IN ('interval','once')
-                        THEN json_extract(record,'$.nextAt')
+                        WHEN json_extract(r.record,'$.kind')='file'
+                             AND COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1)>0
+                             AND COALESCE(json_extract(r.record,'$.fileGeneration'),0)>COALESCE(json_extract(r.record,'$.stallWakeGeneration'),-1)
+                        THEN MIN(json_extract(r.record,'$.nextAt'),COALESCE(json_extract(r.record,'$.fileActivityAt'),json_extract(r.record,'$.created'))+COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),?1))
+                        WHEN json_extract(r.record,'$.kind')='file'
+                        THEN json_extract(r.record,'$.nextAt')
+                        WHEN json_extract(r.record,'$.kind')='low_workers'
+                             AND COALESCE(json_extract(r.record,'$.alerted'),0)=0
+                             AND json_type(r.record,'$.lowSince') IN ('integer','real')
+                        THEN json_extract(r.record,'$.lowSince')
+                             + json_extract(r.record,'$.durationMinutes')*60.0 + ?2
+                        WHEN json_extract(r.record,'$.kind') IN ('interval','once')
+                        THEN json_extract(r.record,'$.nextAt')
                     END AS deadline
                     FROM runtime_rules r JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
                     WHERE json_extract(r.record,'$.status')='active'
@@ -347,7 +345,7 @@ impl MonitorRuntime {
                       AND json_extract(a.record,'$.autoWake')=1
                       AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
                       AND json_extract(a.record,'$.epoch')=json_extract(r.record,'$.epoch')
-                      AND NOT (
+                      AND COALESCE((
                         (json_extract(a.record,'$.restartRecovery.stage')='pending'
                          AND json_extract(a.record,'$.restartRecovery.autoWake')=1
                          AND json_extract(a.record,'$.restartRecovery.epoch')=json_extract(a.record,'$.epoch')
@@ -360,13 +358,13 @@ impl MonitorRuntime {
                             WHEN 'real' THEN json_extract(a.record,'$.nativeFailureHold')!=0
                             WHEN 'text' THEN length(json_extract(a.record,'$.nativeFailureHold'))>0
                             WHEN 'array' THEN json_array_length(a.record,'$.nativeFailureHold')>0
-                            WHEN 'object' THEN json(a.record,'$.nativeFailureHold')<>'{}'
+                            WHEN 'object' THEN json_extract(a.record,'$.nativeFailureHold')<>'{}'
                             ELSE 0 END)=1
                          AND json_extract(a.record,'$.disconnectRecovery.autoWake')=1
                          AND json_extract(a.record,'$.disconnectRecovery.epoch')=json_extract(a.record,'$.epoch')
                          AND json_extract(a.record,'$.disconnectRecovery.accountKey') IS json_extract(a.record,'$.accountKey')
                          AND json_extract(a.record,'$.disconnectRecovery.threadId') IS json_extract(a.record,'$.threadId'))
-                      )
+                      ),0)=0
                 )",
                 rusqlite::params![
                     crate::rules_engine::DEFAULT_RULE_STALL_SECONDS as i64,
@@ -1171,7 +1169,7 @@ fn register_rule_directories(
     for directory in stale {
         // The path may already have disappeared; dropping it from our set is
         // still required so a recreated directory is watched on the next scan.
-        let _ = watcher.unwatch(&directory);
+        let _unwatch_result = watcher.unwatch(&directory);
         watched.remove(&directory);
     }
     let new_directories = directories.difference(watched).cloned().collect::<Vec<_>>();
@@ -1632,6 +1630,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 1).await;
+        wait_for_cycles(&runtime, 1).await;
         assert_eq!(runtime.last_tick_error().as_deref(), Some("test transient"));
         tokio::time::advance(ERROR_RETRY_MIN).await;
         wait_for_calls(&port, 2).await;

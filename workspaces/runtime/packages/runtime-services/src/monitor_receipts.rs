@@ -182,14 +182,14 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
         Ok(_) => {}
     }
     let mut recovered = 0;
-    let mut entries = match fs::read_dir(&directory) {
+    let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) => {
             report_recovery_warning(&directory, error);
             return Ok(0);
         }
     };
-    while let Some(entry) = entries.next() {
+    for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
