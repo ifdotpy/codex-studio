@@ -35,6 +35,14 @@ owns the total of four Canvas readers, including the version-reader
 reservation; the ordinary pool derives its capacity from that owner. The later
 raw-read migration remains separate.
 
+Each public transaction entrypoint boxes its owned SQL callback once, before
+returning a small future that borrows the store. The private
+`transaction_with_post_commit_boxed` owner retains admission, commit, post-commit,
+and unknown-outcome handling. Dropping an unpolled future does not invoke the
+callback, and future size does not grow with callback capture size; the
+[`transaction_entry_futures_do_not_store_operation_capture` test](../../workspaces/runtime/packages/runtime-store/src/lib.rs)
+covers all five entrypoints.
+
 The runtime server opens one `Arc<RuntimeStore>` in
 [`runtime-server/src/main.rs`](../../workspaces/runtime/apps/runtime-server/src/main.rs)
 and passes it to runtime services and HTTP routes. The writer API is async;

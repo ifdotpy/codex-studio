@@ -40,6 +40,7 @@ pub use repositories::system_reads;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::BufReader;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -54,6 +55,9 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
+
+type BoxedTransactionOperation<T, E> =
+    Box<dyn for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E> + Send + 'static>;
 
 use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
@@ -1136,48 +1140,52 @@ impl RuntimeStore {
     /// Admission waits cancellably when the named actor capacity is exhausted. A
     /// canceled wait submits no SQL; cancellation after submission cannot retract
     /// the job, so callers must resolve a lost response through their receipt path.
-    pub async fn transaction<T>(
+    pub fn transaction<T>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> StoreResult<T>
         + Send
         + 'static,
-    ) -> StoreResult<T>
+    ) -> impl Future<Output = StoreResult<T>> + Send + '_
     where
         T: Send + 'static,
     {
-        self.transaction_with(operation).await
+        self.transaction_with(operation)
     }
 
     /// Run one durable transaction with a domain error type that preserves
     /// operation refusals while still reporting store and commit failures.
-    pub async fn transaction_with<T, E>(
+    pub fn transaction_with<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
         + Send
         + 'static,
-    ) -> Result<T, E>
+    ) -> impl Future<Output = Result<T, E>> + Send + '_
     where
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        self.transaction_with_commit_generation(operation)
-            .await
-            .map(|(value, _)| value)
+        let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
+        async move {
+            self.transaction_with_post_commit_boxed(operation, |_| {})
+                .await
+                .map(|(value, _)| value)
+        }
     }
 
     /// Run a write transaction and return its committed change generation.
     /// The generation unit is one committed transaction with row changes.
-    pub async fn transaction_with_commit_generation<T, E>(
+    pub fn transaction_with_commit_generation<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
         + Send
         + 'static,
-    ) -> Result<(T, u64), E>
+    ) -> impl Future<Output = Result<(T, u64), E>> + Send + '_
     where
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        self.transaction_with_post_commit(operation, |_| {}).await
+        let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
+        self.transaction_with_post_commit_boxed(operation, |_| {})
     }
 
     /// Run a write transaction and invoke `post_commit` exactly once after a
@@ -1186,11 +1194,24 @@ impl RuntimeStore {
     /// transaction and admission permit; keep it bounded and free of database
     /// or provider I/O. Errors, rollback, and cancellation before submission
     /// do not invoke it.
-    pub async fn transaction_with_post_commit<T, E>(
+    pub fn transaction_with_post_commit<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
         + Send
         + 'static,
+        post_commit: impl FnOnce(&T) + Send + 'static,
+    ) -> impl Future<Output = Result<(T, u64), E>> + Send + '_
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
+        self.transaction_with_post_commit_boxed(operation, post_commit)
+    }
+
+    async fn transaction_with_post_commit_boxed<T, E>(
+        &self,
+        operation: BoxedTransactionOperation<T, E>,
         post_commit: impl FnOnce(&T) + Send + 'static,
     ) -> Result<(T, u64), E>
     where
@@ -1362,17 +1383,17 @@ impl RuntimeStore {
         }
     }
 
-    pub async fn transaction_with_error<T, E>(
+    pub fn transaction_with_error<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
         + Send
         + 'static,
-    ) -> Result<T, E>
+    ) -> impl Future<Output = Result<T, E>> + Send + '_
     where
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
-        self.transaction_with(operation).await
+        self.transaction_with(operation)
     }
 
     /// Open an independent read-only, query-only connection to the main DB.
@@ -1984,6 +2005,70 @@ mod commit_notification_tests {
     use super::*;
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn transaction_entry_futures_do_not_store_operation_capture() {
+        const SMALL_CAPTURE_BYTES: usize = 8;
+        const LARGE_CAPTURE_BYTES: usize = 65_536;
+
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+
+        macro_rules! capture_operation {
+            ($payload:ident) => {{
+                let callback_calls = Arc::clone(&callback_calls);
+                move |_| {
+                    std::hint::black_box($payload);
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok::<(), StoreError>(())
+                }
+            }};
+        }
+
+        macro_rules! make_future {
+            (transaction, $operation:expr) => {
+                store.transaction($operation)
+            };
+            (transaction_with, $operation:expr) => {
+                store.transaction_with($operation)
+            };
+            (commit_generation, $operation:expr) => {
+                store.transaction_with_commit_generation($operation)
+            };
+            (post_commit, $operation:expr) => {
+                store.transaction_with_post_commit($operation, |_| {})
+            };
+            (transaction_with_error, $operation:expr) => {
+                store.transaction_with_error($operation)
+            };
+        }
+
+        macro_rules! assert_capture_independent_future_size {
+            ($entry:ident) => {{
+                let small_payload = [0_u8; SMALL_CAPTURE_BYTES];
+                let large_payload = [0_u8; LARGE_CAPTURE_BYTES];
+                let small_future = make_future!($entry, capture_operation!(small_payload));
+                let large_future = make_future!($entry, capture_operation!(large_payload));
+                assert_eq!(
+                    std::mem::size_of_val(&small_future),
+                    std::mem::size_of_val(&large_future),
+                    "{} future size must not include its SQL callback payload",
+                    stringify!($entry)
+                );
+                drop((small_future, large_future));
+            }};
+        }
+
+        assert_capture_independent_future_size!(transaction);
+        assert_capture_independent_future_size!(transaction_with);
+        assert_capture_independent_future_size!(commit_generation);
+        assert_capture_independent_future_size!(post_commit);
+        assert_capture_independent_future_size!(transaction_with_error);
+        assert_eq!(callback_calls.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn tracked_observer_tables_must_keep_rowid_storage() {

@@ -2121,13 +2121,14 @@ mod tests {
             .expect("task-window eligibility transition remains canonical");
     }
 
-    #[test]
-    fn task_window_fast_path_preserves_full_rebuild_results_for_stable_running_updates() {
+    #[tokio::test]
+    async fn task_window_fast_path_preserves_full_rebuild_results_for_stable_running_updates() {
         let root = tempfile::tempdir().expect("isolated state directory");
         let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
             .expect("open isolated runtime store");
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 for id in ["live", "deleting"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(json!({
                         "id": id,
@@ -2171,6 +2172,7 @@ mod tests {
                 }
                 maintain_task_window(transaction, &|_, _, _, _| true)
             })
+            .await
             .expect("seed complete task-window projection");
 
         let task_projection = |connection: &Connection| {
@@ -2197,9 +2199,9 @@ mod tests {
             })
         };
 
-        TRACED_SQL.with_borrow_mut(Vec::clear);
         let direct_running_projection = store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
+                TRACED_SQL.with_borrow_mut(Vec::clear);
                 transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                 let previous_raw: String = transaction.query_row(
                     "SELECT record FROM runtime_tasks WHERE id='running-stable'",
@@ -2226,14 +2228,16 @@ mod tests {
                 let direct = task_projection(transaction);
                 maintain_task_window(transaction, &|_, _, _, _| true)?;
                 assert_eq!(task_projection(transaction), direct);
+                transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
                 Ok(direct)
             })
+            .await
             .expect("stable running update stays equivalent to a full rebuild");
         assert_eq!(direct_running_projection.len(), 102);
 
-        TRACED_SQL.with_borrow_mut(Vec::clear);
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
+                TRACED_SQL.with_borrow_mut(Vec::clear);
                 transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                 let raw: String = transaction.query_row(
                     "SELECT record FROM runtime_tasks WHERE id='running-stable'",
@@ -2267,60 +2271,94 @@ mod tests {
                         .get("running-stable")
                         .is_some_and(|(_, deleted)| !deleted)
                 );
+                transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
                 Ok(())
             })
+            .await
             .expect("missing stable-running projection is repaired by full rebuild");
 
         let compare_after_full_write = |id: &str, status: &str, created: i64| {
-            TRACED_SQL.with_borrow_mut(Vec::clear);
-            store
-                .transaction(|transaction| {
-                    transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
-                    let previous_raw: Option<String> = transaction
-                        .query_row(
-                            "SELECT record FROM runtime_tasks WHERE id=?1",
-                            [id],
-                            |row| row.get(0),
+            let store = &store;
+            let id = id.to_owned();
+            let status = status.to_owned();
+            async move {
+                let task_projection = |connection: &Connection| {
+                    connection
+                        .prepare(
+                            "SELECT id,payload,deleted FROM sync_entities WHERE collection='task' ORDER BY id",
                         )
-                        .optional()?;
-                    let previous = previous_raw
-                        .as_deref()
-                        .map(serde_json::from_str::<Value>)
-                        .transpose()?;
-                    let mut task = previous
-                        .clone()
-                        .unwrap_or_else(|| json!({"id":id,"agent":"live"}));
-                    task["status"] = json!(status);
-                    task["created"] = json!(created);
-                    transaction.execute(
-                        "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2) \
+                        .expect("task projection rows")
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                (row.get::<_, Option<String>>(1)?, row.get::<_, bool>(2)?),
+                            ))
+                        })
+                        .expect("task projection query")
+                        .collect::<Result<BTreeMap<_, _>, _>>()
+                        .expect("task projection snapshot")
+                };
+                let full_window_was_traced = || {
+                    TRACED_SQL.with_borrow(|statements| {
+                        statements.iter().any(|sql| {
+                            sql.starts_with(
+                                "SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents",
+                            )
+                        })
+                    })
+                };
+                store
+                    .transaction(move |transaction| {
+                        TRACED_SQL.with_borrow_mut(Vec::clear);
+                        transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
+                        let previous_raw: Option<String> = transaction
+                            .query_row(
+                                "SELECT record FROM runtime_tasks WHERE id=?1",
+                                [&id],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        let previous = previous_raw
+                            .as_deref()
+                            .map(serde_json::from_str::<Value>)
+                            .transpose()?;
+                        let mut task = previous
+                            .clone()
+                            .unwrap_or_else(|| json!({"id":id,"agent":"live"}));
+                        task["status"] = json!(status);
+                        task["created"] = json!(created);
+                        transaction.execute(
+                            "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2) \
                          ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-                        rusqlite::params![id, task.to_string()],
-                    )?;
-                    maintain_task_window_after_write(
-                        transaction,
-                        previous.as_ref(),
-                        &task,
-                        &|_, _, _, _| true,
-                    )?;
-                    assert!(
-                        full_window_was_traced(),
-                        "eligibility/rank change must rebuild"
-                    );
-                    let updated = task_projection(transaction);
-                    maintain_task_window(transaction, &|_, _, _, _| true)?;
-                    assert_eq!(task_projection(transaction), updated);
-                    Ok(())
-                })
-                .expect("changed task must match a full window rebuild");
+                            rusqlite::params![id, task.to_string()],
+                        )?;
+                        maintain_task_window_after_write(
+                            transaction,
+                            previous.as_ref(),
+                            &task,
+                            &|_, _, _, _| true,
+                        )?;
+                        assert!(
+                            full_window_was_traced(),
+                            "eligibility/rank change must rebuild"
+                        );
+                        let updated = task_projection(transaction);
+                        maintain_task_window(transaction, &|_, _, _, _| true)?;
+                        assert_eq!(task_projection(transaction), updated);
+                        transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+                        Ok(())
+                    })
+                    .await
+                    .expect("changed task must match a full window rebuild");
+            }
         };
 
-        compare_after_full_write("running-stable", "completed", 300);
-        compare_after_full_write("new-latest", "completed", 301);
+        compare_after_full_write("running-stable", "completed", 300).await;
+        compare_after_full_write("new-latest", "completed", 301).await;
 
-        TRACED_SQL.with_borrow_mut(Vec::clear);
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
+                TRACED_SQL.with_borrow_mut(Vec::clear);
                 transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                 let previous_raw: String = transaction.query_row(
                     "SELECT record FROM runtime_tasks WHERE id='running-deleting'",
@@ -2355,8 +2393,10 @@ mod tests {
                 );
                 maintain_task_window(transaction, &|_, _, _, _| true)?;
                 assert_eq!(task_projection(transaction), projection);
+                transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
                 Ok(())
             })
+            .await
             .expect("deleted-agent eligibility change must match a full rebuild");
     }
 

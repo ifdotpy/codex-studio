@@ -1779,7 +1779,7 @@ async fn managed_callback_same_account_provider_request_is_written_without_block
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn shutdown_drains_completed_managed_callback_and_writes_response() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -4750,19 +4750,21 @@ async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
     let agent_id = state.agent.clone();
     state
         .bridge
-        .run(move |store| {
-            store.transaction(|tx| {
-                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                    .expect("fixture agent");
-                record.extra.insert("executionMode".into(), json!("vm"));
-                record.extra.insert("layrReady".into(), json!(true));
-                record
-                    .extra
-                    .insert("cwd".into(), json!("/home/studio/project"));
-                record.extra.insert("workspaceMode".into(), json!("layr"));
-                record.extra.insert("threadId".into(), Value::Null);
-                AgentRepository::put(tx, &record)
-            })?;
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                        .expect("fixture agent");
+                    record.extra.insert("executionMode".into(), json!("vm"));
+                    record.extra.insert("layrReady".into(), json!(true));
+                    record
+                        .extra
+                        .insert("cwd".into(), json!("/home/studio/project"));
+                    record.extra.insert("workspaceMode".into(), json!("layr"));
+                    record.extra.insert("threadId".into(), Value::Null);
+                    AgentRepository::put(tx, &record)
+                })
+                .await?;
             Ok(())
         })
         .await

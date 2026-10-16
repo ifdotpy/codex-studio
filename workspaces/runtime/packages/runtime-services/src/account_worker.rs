@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
+    pin::Pin,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -1166,94 +1167,9 @@ impl Worker {
                 changed.map_err(|_| WorkerError::TaskFailed)?;
                 self.probe_auth_waits().await?;
             }
-            ServeSignal::Command(Some(command)) => match command {
-                #[cfg(test)]
-                AccountCommand::Barrier(reply) => {
-                    let _ignored = reply.send(
-                        self.bridge
-                            .faults
-                            .journal_count
-                            .load(std::sync::atomic::Ordering::SeqCst),
-                    );
-                }
-                AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
-                AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
-                AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
-                AccountCommand::JournalBarrier(command) => self.retained_barrier(command).await?,
-                AccountCommand::ConnectionRecovery { agent_id, reply } => {
-                    if self.connection_recovery_active {
-                        let _sent = reply.send(Err(retained::PortError::Capacity));
-                    } else {
-                        self.connection_recovery_active = true;
-                        let request = connection_recovery::Command {
-                            bridge: self.bridge.clone(),
-                            account: self.account.clone(),
-                            scope: self.retained_session.scope().clone(),
-                            session: self.retained_session.clone(),
-                            agent_id,
-                        };
-                        let commands = self.commands.clone();
-                        self.connection_recovery.spawn(async move {
-                            let (response, streams) = match connection_recovery::run(request).await
-                            {
-                                Ok(completed) => (Ok(completed.receipt), completed.streams),
-                                Err(_) => (Err(retained::PortError::Unknown), None),
-                            };
-                            let (done, acknowledged) = tokio::sync::oneshot::channel();
-                            if commands
-                                .send(AccountCommand::ConnectionRecoveryComplete {
-                                    result: response,
-                                    streams,
-                                    reply: done,
-                                })
-                                .await
-                                .is_ok()
-                            {
-                                let final_result = acknowledged
-                                    .await
-                                    .unwrap_or(Err(retained::PortError::Unknown));
-                                let _sent = reply.send(final_result);
-                            } else {
-                                let _sent = reply.send(Err(retained::PortError::Unknown));
-                            }
-                        });
-                    }
-                }
-                AccountCommand::ConnectionRecoveryComplete {
-                    result,
-                    streams,
-                    reply,
-                } => {
-                    if let Some(streams) = streams {
-                        self.streams = streams;
-                        self.schedule_publication_drain();
-                    }
-                    let _sent = reply.send(result);
-                }
-                AccountCommand::Wake { agent_id, epoch } => self.wake(agent_id, epoch).await?,
-                AccountCommand::Stop { agent_id } => self.stop_agent(agent_id).await?,
-                AccountCommand::RadioInterrupt {
-                    agent_id,
-                    thread_id,
-                    turn_id,
-                } => self.interrupt(agent_id, thread_id, turn_id).await?,
-                AccountCommand::RestartRecoveryDone => {
-                    self.restart_recovery.take();
-                    self.schedule_publication_drain();
-                    #[cfg(test)]
-                    {
-                        self.bridge
-                            .faults
-                            .startup_recovery_done
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                        self.bridge.faults.startup_recovery.notify_one();
-                    }
-                }
-                AccountCommand::RestartStreams(streams) => {
-                    self.streams = *streams;
-                    self.schedule_publication_drain();
-                }
-            },
+            ServeSignal::Command(Some(command)) => {
+                self.dispatch_command(command).await?;
+            }
             ServeSignal::Command(None) | ServeSignal::Event(None) => return Ok(false),
             ServeSignal::Event(Some(event)) => self.event(event).await?,
             ServeSignal::VmEvent(Some(event)) => self.handle_vm_message(event).await?,
@@ -1271,6 +1187,96 @@ impl Worker {
             ServeSignal::SessionStatusChanged(true) => {}
         }
         Ok(true)
+    }
+    async fn dispatch_command(&mut self, command: AccountCommand) -> Result<(), WorkerError> {
+        match command {
+            #[cfg(test)]
+            AccountCommand::Barrier(reply) => {
+                let _ignored = reply.send(
+                    self.bridge
+                        .faults
+                        .journal_count
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                );
+            }
+            AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
+            AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
+            AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
+            AccountCommand::JournalBarrier(command) => self.retained_barrier(command).await?,
+            AccountCommand::ConnectionRecovery { agent_id, reply } => {
+                if self.connection_recovery_active {
+                    let _sent = reply.send(Err(retained::PortError::Capacity));
+                } else {
+                    self.connection_recovery_active = true;
+                    let request = connection_recovery::Command {
+                        bridge: self.bridge.clone(),
+                        account: self.account.clone(),
+                        scope: self.retained_session.scope().clone(),
+                        session: self.retained_session.clone(),
+                        agent_id,
+                    };
+                    let commands = self.commands.clone();
+                    self.connection_recovery.spawn(async move {
+                        let (response, streams) = match connection_recovery::run(request).await {
+                            Ok(completed) => (Ok(completed.receipt), completed.streams),
+                            Err(_) => (Err(retained::PortError::Unknown), None),
+                        };
+                        let (done, acknowledged) = tokio::sync::oneshot::channel();
+                        if commands
+                            .send(AccountCommand::ConnectionRecoveryComplete {
+                                result: response,
+                                streams,
+                                reply: done,
+                            })
+                            .await
+                            .is_ok()
+                        {
+                            let final_result = acknowledged
+                                .await
+                                .unwrap_or(Err(retained::PortError::Unknown));
+                            let _sent = reply.send(final_result);
+                        } else {
+                            let _sent = reply.send(Err(retained::PortError::Unknown));
+                        }
+                    });
+                }
+            }
+            AccountCommand::ConnectionRecoveryComplete {
+                result,
+                streams,
+                reply,
+            } => {
+                if let Some(streams) = streams {
+                    self.streams = streams;
+                    self.schedule_publication_drain();
+                }
+                let _sent = reply.send(result);
+            }
+            AccountCommand::Wake { agent_id, epoch } => self.wake(agent_id, epoch).await?,
+            AccountCommand::Stop { agent_id } => self.stop_agent(agent_id).await?,
+            AccountCommand::RadioInterrupt {
+                agent_id,
+                thread_id,
+                turn_id,
+            } => self.interrupt(agent_id, thread_id, turn_id).await?,
+            AccountCommand::RestartRecoveryDone => {
+                self.restart_recovery.take();
+                self.schedule_publication_drain();
+                #[cfg(test)]
+                {
+                    self.bridge
+                        .faults
+                        .startup_recovery_done
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.bridge.faults.startup_recovery.notify_one();
+                }
+            }
+            AccountCommand::RestartStreams(streams) => {
+                self.streams = *streams;
+                self.schedule_publication_drain();
+            }
+        }
+        Ok(())
     }
     async fn db<T, F, Fut>(&mut self, name: &'static str, operation: F) -> Result<T, WorkerError>
     where
@@ -1629,7 +1635,15 @@ impl Worker {
         .await
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
     }
-    async fn submit(
+    fn submit<'a>(
+        &'a mut self,
+        intent: TurnIntent,
+        method: Method,
+        interrupt_turn: Option<(String, i64)>,
+    ) -> Pin<Box<impl Future<Output = Result<(), WorkerError>> + Send + 'a>> {
+        Box::pin(self.submit_inner(intent, method, interrupt_turn))
+    }
+    async fn submit_inner(
         &mut self,
         intent: TurnIntent,
         method: Method,
