@@ -44,8 +44,16 @@ impl ReadyNotificationGate {
     }
     fn release(&self) {
         let (released, changed) = &self.release;
-        *released.lock().expect("valid fixture") = true;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
         changed.notify_one();
+    }
+}
+struct ReleaseReadyGateOnDrop(Arc<ReadyNotificationGate>);
+impl Drop for ReleaseReadyGateOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
     }
 }
 
@@ -145,6 +153,7 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
         .send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#.to_vec()))
         .await
         .expect("valid fixture");
+    let release_gate_guard = ReleaseReadyGateOnDrop(Arc::clone(&ready_gate));
     ready_gate.hold_next();
     probe
         .output
@@ -157,24 +166,30 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
     )
     .await
     .expect("ready publication reached its notification");
-    let (ready_status, ready) = call(
-        &app,
-        "GET",
-        &format!("/api/accounts/claude/login?request_id={ID}"),
-        None,
-    )
+    let second = "a4166868-592a-4dca-8994-04d34a730af5";
+    let responses = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let ready = call(
+            &app,
+            "GET",
+            &format!("/api/accounts/claude/login?request_id={ID}"),
+            None,
+        )
+        .await;
+        let reauth = call(
+            &app,
+            "POST",
+            "/api/accounts/claude/login",
+            Some(json!({"login_id":second,"account_key":ready.1["accountKey"]})),
+        )
+        .await;
+        (ready, reauth)
+    })
     .await;
+    drop(release_gate_guard);
+    let ((ready_status, ready), (reauth_status, receipt)) =
+        responses.expect("ready observation and immediate reauthentication complete");
     assert_eq!(ready_status, 200, "{ready}");
     assert_eq!(ready["status"], "ready");
-    let second = "a4166868-592a-4dca-8994-04d34a730af5";
-    let (reauth_status, receipt) = call(
-        &app,
-        "POST",
-        "/api/accounts/claude/login",
-        Some(json!({"login_id":second,"account_key":ready["accountKey"]})),
-    )
-    .await;
-    ready_gate.release();
     assert_eq!(reauth_status, 200, "{receipt}");
     let reauth = f.launcher.next().await;
     let (status, receipt) = call(
