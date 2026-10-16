@@ -1191,7 +1191,6 @@ impl AccountRegistry {
         let mut retry_at = Some(tokio::time::Instant::now());
         let mut archive_deadline_retry_at = None;
         let mut last_reconcile_error: Option<String> = None;
-        let mut checkpoint_retry_at = None;
         loop {
             if *stop.borrow() {
                 break;
@@ -1217,7 +1216,7 @@ impl AccountRegistry {
                     } => Some(RegistryTrigger::Retry),
                 }
             };
-            match trigger {
+            let checkpoint_retry_at = match trigger {
                 Some(RegistryTrigger::WorkerExited(account, id))
                     if self.worker_completion_ids.get(&account) == Some(&id) =>
                 {
@@ -1303,22 +1302,22 @@ impl AccountRegistry {
                     let store = self.store.clone();
                     let (checkpoint_succeeded, next_checkpoint) =
                         checkpoint_maintenance(store).await;
-                    checkpoint_retry_at = next_checkpoint;
                     if !checkpoint_succeeded {
                         eprintln!("account registry WAL checkpoint deferred after failure");
                     }
+                    next_checkpoint
                 }
                 Some(RegistryTrigger::Wake) => {
                     let store = self.store.clone();
                     let (checkpoint_succeeded, next_checkpoint) =
                         checkpoint_maintenance(store).await;
-                    checkpoint_retry_at = next_checkpoint;
                     if !checkpoint_succeeded {
                         eprintln!("account registry WAL checkpoint deferred after commit wake");
                     }
+                    next_checkpoint
                 }
                 None => continue,
-            }
+            };
             match self.reconcile(Some(&shutdown)).await {
                 Err(error) => {
                     let message = error.to_string();
