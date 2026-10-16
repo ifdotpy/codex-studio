@@ -22,6 +22,7 @@ const RECEIPT_TIMEOUT_MS = 10_000;
 const TERMINAL_STATE_TIMEOUT_MS = 120_000;
 const REVALIDATION_SETTLE_MS = 3_000;
 const IDLE_OBSERVATION_MS = 15_000;
+const NAVIGATION_ABORT_GRACE_MS = 2_000;
 const POLL_INTERVAL_MS = 1_000;
 const MAX_STEADY_REQUESTS_PER_ENDPOINT = 3;
 const MAX_RECORDED_RESOURCES = 200;
@@ -163,15 +164,24 @@ function failureCountsByStage(failures) {
 }
 
 function assertTrafficHealthy(traffic, journal) {
-  const nonResetHttpErrors = traffic.failures.filter(
+  const expectedNavigationAborts = traffic.failures.filter((failure) =>
+    isExpectedCreateNavigationAbort(failure, journal),
+  );
+  const expectedFailures = new Set(expectedNavigationAborts);
+  traffic.expectedNavigationAborts = expectedNavigationAborts;
+  journal.expectedNavigationAborts = traffic.expectedNavigationAborts;
+  const unexpectedFailures = traffic.failures.filter(
+    (failure) => !expectedFailures.has(failure),
+  );
+  const nonResetHttpErrors = unexpectedFailures.filter(
     (item) => item.status !== 409,
   );
   if (
     nonResetHttpErrors.length ||
-    traffic.failures.some((item) => !item.status)
+    unexpectedFailures.some((item) => !item.status)
   )
     throw new Error("An HTTP response error or request failure occurred.");
-  const reset409s = traffic.failures.filter((item) => item.status === 409);
+  const reset409s = unexpectedFailures.filter((item) => item.status === 409);
   const unrecovered409s = reset409s.filter((error) => {
     if (new URL(error.url).pathname !== "/api/sync/pull") return true;
     return !traffic.requests.some(
@@ -197,6 +207,84 @@ function assertTrafficHealthy(traffic, journal) {
   if (traffic.pageErrors.length)
     throw new Error("The browser reported an uncaught page error.");
   return reset409s;
+}
+
+export function isExpectedCreateNavigationAbort(failure, journal) {
+  const create = journal?.stages?.create;
+  const chatId = journal?.chatId;
+  const previousId = create?.request?.previous;
+  if (
+    failure?.error !== "net::ERR_ABORTED" ||
+    failure.status !== undefined ||
+    failure.method !== "GET" ||
+    failure.stage !== "create" ||
+    !chatId ||
+    !previousId ||
+    previousId === chatId ||
+    create?.state !== "confirmed" ||
+    create.request?.id !== chatId ||
+    create.response?.id !== chatId
+  )
+    return false;
+
+  let requestUrl;
+  let origin;
+  try {
+    requestUrl = new URL(failure.url);
+    origin = new URL(journal.origin).origin;
+  } catch {
+    return false;
+  }
+  if (
+    requestUrl.origin !== origin ||
+    requestUrl.username ||
+    requestUrl.password ||
+    requestUrl.pathname !== "/api/panel" ||
+    requestUrl.hash ||
+    requestUrl.searchParams.size !== 1 ||
+    requestUrl.searchParams.getAll("agent").length !== 1 ||
+    requestUrl.searchParams.get("agent") !== previousId
+  )
+    return false;
+
+  const failureAt = Date.parse(failure.at);
+  const confirmedAt = Date.parse(create.confirmedAt);
+  const createdAt = Date.parse(create.sentAt);
+  if (
+    !Number.isFinite(failureAt) ||
+    !Number.isFinite(confirmedAt) ||
+    !Number.isFinite(createdAt) ||
+    failureAt < createdAt ||
+    failureAt < confirmedAt
+  )
+    return false;
+
+  const navigationEvidence = [];
+  const observedNavigation = create.navigation;
+  if (
+    observedNavigation?.chatId === chatId &&
+    observedNavigation?.previousAgentId === previousId &&
+    observedNavigation?.signal === "selected-chat-row"
+  )
+    navigationEvidence.push(observedNavigation.observedAt);
+  const prompt = journal.stages?.prompt;
+  if (
+    prompt?.state === "accepted" &&
+    prompt.request?.room === chatId &&
+    prompt.request?.text ===
+      `Reply with exactly ${EXPECTED_REPLY}. Do not use tools or edit files.` &&
+    prompt.receipt?.id === journal.messageId
+  )
+    navigationEvidence.push(prompt.sentAt);
+
+  return navigationEvidence.some((value) => {
+    const observedAt = Date.parse(value);
+    return (
+      Number.isFinite(observedAt) &&
+      observedAt >= failureAt &&
+      observedAt - failureAt <= NAVIGATION_ABORT_GRACE_MS
+    );
+  });
 }
 
 async function jsonResponse(response) {
@@ -279,6 +367,20 @@ async function promptAlreadyVisible(page) {
     if (text.includes(`Reply with exactly ${EXPECTED_REPLY}`)) return true;
   }
   return false;
+}
+
+async function recordCreateNavigation(page, journal, journalPath) {
+  const selectedRow = page.locator(
+    `${chatSelector(journal.chatId)}[aria-current="page"]`,
+  );
+  await selectedRow.waitFor({ timeout: CHAT_ROW_TIMEOUT_MS });
+  journal.stages.create.navigation ||= {
+    signal: "selected-chat-row",
+    previousAgentId: journal.stages.create.request?.previous || null,
+    chatId: journal.chatId,
+    observedAt: new Date().toISOString(),
+  };
+  saveJournal(journalPath, journal);
 }
 
 async function pageMetrics(page) {
@@ -401,6 +503,7 @@ async function main() {
     allRequests: [],
     failures: [...journal.http, ...journal.failures],
     expectedStreamAborts: journal.expectedStreamAborts || [],
+    expectedNavigationAborts: journal.expectedNavigationAborts || [],
     pageErrors: journal.failure?.pageErrors || [],
     agentStates: [],
     stage: "startup",
@@ -608,6 +711,7 @@ async function main() {
         await page
           .getByRole("combobox", { name: "Message", exact: true })
           .waitFor();
+        await recordCreateNavigation(page, journal, journalPath);
       }
       if (journal.stages.create?.state === "sent") {
         journal.stages.create.state = "confirmed";
@@ -817,6 +921,7 @@ async function main() {
       await page
         .getByRole("combobox", { name: "Message", exact: true })
         .waitFor();
+      await recordCreateNavigation(page, journal, journalPath);
     }
 
     if ((!options.resume || !journal.messageId) && !journal.stages.prompt) {
@@ -1066,6 +1171,7 @@ async function main() {
       httpFailures: traffic.failures,
       pageErrors: traffic.pageErrors,
       expectedStreamAborts: traffic.expectedStreamAborts,
+      expectedNavigationAborts: traffic.expectedNavigationAborts,
     };
     journal.expectedStreamAborts = traffic.expectedStreamAborts;
     saveJournal(journalPath, journal);
@@ -1080,6 +1186,7 @@ async function main() {
       failures: traffic.failures,
       pageErrors: traffic.pageErrors,
       expectedStreamAborts: traffic.expectedStreamAborts,
+      expectedNavigationAborts: traffic.expectedNavigationAborts,
       screenshot: join(evidenceDir, "rust-chat-lifecycle-failure.png"),
     };
     try {
