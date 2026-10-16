@@ -1246,7 +1246,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use studio_runtime_store::{ObservedTable, RuntimeStore};
-    use tokio::sync::{Notify, watch};
+    use tokio::sync::{Notify, mpsc, watch};
 
     #[derive(Default)]
     struct EventPort {
@@ -2074,7 +2074,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn low_worker_commit_wakes_monitor_without_stealing_registry_wake() {
+    async fn low_worker_rule_commit_does_not_wake_registry_but_agent_commit_does() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store
@@ -2104,9 +2104,9 @@ mod tests {
             .await
             .expect("persist low-worker owner and rule");
         let registry_wake = Arc::new(Notify::new());
-        let registry_commit_wake = Arc::clone(&registry_wake);
+        let (registry_tx, mut registry_rx) = mpsc::channel(1);
         store.add_table_change_observer(ObservedTable::Agents, move || {
-            registry_commit_wake.notify_one()
+            registry_tx.try_send(()).expect("registry event queues");
         });
         let runtime = Arc::new(MonitorRuntime::new(
             store.clone(),
@@ -2117,28 +2117,23 @@ mod tests {
             let mut scan = runtime.scan.lock().await;
             scan.recovering_rules = false;
         }
-        let registry_initial_waiter = tokio::spawn({
-            let registry_wake = Arc::clone(&registry_wake);
-            async move { registry_wake.notified().await }
-        });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 2).await;
         wait_for_completed_ticks(&runtime, 2).await;
         wait_for_cycles(&runtime, 1).await;
-        tokio::time::timeout(Duration::from_secs(10), registry_initial_waiter)
-            .await
-            .expect("registry receives monitor-owned commit wake")
-            .expect("initial registry wake task completes");
+        assert!(
+            matches!(
+                registry_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ),
+            "monitor rule commits must not wake the account registry"
+        );
         assert_eq!(
             runtime.next_deadline().expect("no low-worker deadline"),
             None
         );
 
-        let registry_waiter = tokio::spawn({
-            let registry_wake = Arc::clone(&registry_wake);
-            async move { registry_wake.notified().await }
-        });
         let calls = port.next_calls.load(Ordering::SeqCst);
         let completed_ticks = runtime.loop_activity.completed_ticks.load(Ordering::SeqCst);
         store
@@ -2157,10 +2152,12 @@ mod tests {
             .expect("commit worker completion");
         wait_for_calls(&port, calls + 1).await;
         wait_for_completed_ticks(&runtime, completed_ticks + 1).await;
-        tokio::time::timeout(Duration::from_secs(10), registry_waiter)
-            .await
-            .expect("registry receives its own commit wake")
-            .expect("registry wake task completes");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), registry_rx.recv())
+                .await
+                .expect("registry receives its agent commit wake"),
+            Some(())
+        );
         let low_since: f64 = store
             .read()
             .expect("read worker rule")

@@ -2544,7 +2544,9 @@ mod commit_notification_tests {
 
         store
             .transaction(|transaction| {
-                transaction.execute("SELECT 1", [])?;
+                let selected_value =
+                    transaction.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+                assert_eq!(selected_value, 1);
                 Ok(())
             })
             .await

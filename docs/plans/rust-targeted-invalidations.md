@@ -128,7 +128,7 @@ idle-browser validation also remains pending:
   [`tracked_observer_tables_must_keep_rowid_storage`](../../workspaces/runtime/packages/runtime-store/src/lib.rs);
   consumer examples are
   [`unrelated_event_commit_does_not_wake_orchestration_but_outbox_commit_does`](../../workspaces/runtime/apps/runtime-server/src/main.rs),
-  [`low_worker_commit_wakes_monitor_without_stealing_registry_wake`](../../workspaces/runtime/packages/runtime-services/src/monitor_runtime_wiring.rs),
+  [`low_worker_rule_commit_does_not_wake_registry_but_agent_commit_does`](../../workspaces/runtime/packages/runtime-services/src/monitor_runtime_wiring.rs),
   and
   [`native_rollout_append_wakes_idle_history_runtime`](../../workspaces/runtime/apps/runtime-server/src/history_runtime.rs).
 - Receipt-only writes suppress the resource wake; mixed receipt and event writes,
