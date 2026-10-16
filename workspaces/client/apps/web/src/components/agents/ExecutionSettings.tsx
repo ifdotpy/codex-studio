@@ -13,6 +13,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -396,6 +397,7 @@ function ScopedExecutionSettings({
         : agent.isLead
           ? "Main agent settings"
           : "Subagent settings";
+  const popoverLabelId = useId();
   const prefix = teamDefaults
     ? "Default subagent"
     : agent.isLead
@@ -1572,8 +1574,12 @@ function ScopedExecutionSettings({
         <Popover.Dropdown
           className="execution-dropdown"
           role="dialog"
+          aria-labelledby={popoverLabelId}
           aria-label={label}
         >
+          <span id={popoverLabelId} className="sr-only">
+            {label}
+          </span>
           {controls}
         </Popover.Dropdown>
       </Popover>
