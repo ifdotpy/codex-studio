@@ -15,6 +15,9 @@ from codex_claude_costs import parse_claude_usage
 from codex_pricing import price_usage
 from codex_cost_usage import UsageIndex, source_state as cost_source_state
 
+SESSION_COST_ID_PATTERN = r"[A-Za-z0-9-]{1,100}"
+MAX_SESSION_STATE_FILE_BYTES = 16 * 1024 * 1024
+
 
 def provider_for(model):
     if not isinstance(model, str):
@@ -502,36 +505,36 @@ class SessionCostReader:
         return Path(config).expanduser().resolve()
 
     def _thread_ids(self, config, account_key, thread_id):
-        if not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", thread_id):
+        if not isinstance(thread_id, str) or not re.fullmatch(SESSION_COST_ID_PATTERN, thread_id):
             return []
-        if not isinstance(account_key, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", account_key):
+        if not isinstance(account_key, str) or not re.fullmatch(SESSION_COST_ID_PATTERN, account_key):
             return []
         ids = {thread_id}
         server_root = self.state_root if account_key == "default" else self.state_root / "account-servers" / account_key
         state_file = server_root / "sessions" / (thread_id + ".json")
         try:
-            if state_file.stat().st_size <= 16 * 1024 * 1024:
+            if state_file.stat().st_size <= MAX_SESSION_STATE_FILE_BYTES:
                 data = json.loads(state_file.read_text())
                 for value in (data.get("nativeId"),):
-                    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9-]{1,100}", value):
+                    if isinstance(value, str) and re.fullmatch(SESSION_COST_ID_PATTERN, value):
                         ids.add(value)
                 for branch in data.get("historyBranches", []):
                     value = branch.get("nativeId") if isinstance(branch, dict) else None
-                    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9-]{1,100}", value):
+                    if isinstance(value, str) and re.fullmatch(SESSION_COST_ID_PATTERN, value):
                         ids.add(value)
                 for control in data.get("controlRequests", {}).values():
                     if not isinstance(control, dict):
                         continue
                     for key in ("sourceNativeId", "targetNativeId"):
                         value = control.get(key)
-                        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9-]{1,100}", value):
+                        if isinstance(value, str) and re.fullmatch(SESSION_COST_ID_PATTERN, value):
                             ids.add(value)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         files = []
         projects = config / "projects"
         for session_id in ids:
-            if not re.fullmatch(r"[A-Za-z0-9-]{1,100}", session_id):
+            if not re.fullmatch(SESSION_COST_ID_PATTERN, session_id):
                 continue
             files.extend(projects.glob("*/" + session_id + ".jsonl"))
         return files

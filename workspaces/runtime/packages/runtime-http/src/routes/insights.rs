@@ -16,10 +16,9 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const SESSION_COST_DEPENDENCIES: [Dependency; 3] = [
+const SESSION_COST_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("store-bootstrap/analytics-usage-schema"),
     Dependency::new("costs/pricing-refresh"),
-    Dependency::new("costs/claude-local-usage"),
 ];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -111,26 +110,22 @@ async fn session_cost(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let account_providers = state
+    let accounts = state
         .account_policy
         .as_ref()
         .map(|policy| {
-            policy
-                .accounts()
+            let snapshot = policy.accounts();
+            snapshot
                 .accounts
                 .into_iter()
-                .filter_map(|account| {
-                    Some((
-                        account.get("id")?.as_str()?.to_owned(),
-                        account.get("provider")?.as_str()?.to_owned(),
-                    ))
-                })
+                .chain(snapshot.archived_accounts)
+                .filter_map(|account| Some((account.get("id")?.as_str()?.to_owned(), account)))
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/insights",
-        move || costs::session_cost_with_accounts(&store, &agent, &account_providers),
+        move || costs::session_cost_with_account_profiles(&store, &agent, &accounts),
     )
     .await
     .map_err(|_| ApiError::internal())?
@@ -169,7 +164,8 @@ fn map_costs_error(error: CostsError) -> ApiError {
         | CostsError::Grouping(_)
         | CostsError::Repository(_)
         | CostsError::Sqlite(_)
-        | CostsError::Computation => ApiError::internal(),
+        | CostsError::Computation
+        | CostsError::AccountProfilesRequired => ApiError::internal(),
         CostsError::InvalidPricing => cost_dependency("costs/pricing-refresh"),
     }
 }
@@ -211,7 +207,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
         "store-bootstrap/analytics-usage-schema",
-        "costs/claude-local-usage",
         "costs/pricing-refresh",
         ],
     }
