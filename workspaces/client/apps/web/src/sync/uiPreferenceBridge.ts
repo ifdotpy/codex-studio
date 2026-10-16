@@ -33,7 +33,7 @@ export function createUiPreferenceBridge(storage: Storage) {
         sendAgain = false;
         for (const scope of ["user", "server"] as const) {
           const fields = readPreferenceFields(scope, storage);
-          const serialized = JSON.stringify(fields);
+          const serialized = canonicalPreferenceJson(fields);
           if (!Object.keys(fields).length || confirmed[scope] === serialized)
             continue;
           const body = { scope, fields };
@@ -51,7 +51,7 @@ export function createUiPreferenceBridge(storage: Storage) {
             requestId,
           });
           if (!active) return;
-          confirmed[scope] = JSON.stringify(result.fields);
+          confirmed[scope] = canonicalPreferenceJson(result.fields);
           acknowledgePreferenceFields(
             scope,
             fields,
@@ -74,7 +74,7 @@ export function createUiPreferenceBridge(storage: Storage) {
     for (const scope of ["user", "server"] as const) {
       const fields = preferences[scope]?.fields as PreferenceFields | undefined;
       if (!fields) continue;
-      const serialized = JSON.stringify(fields);
+      const serialized = canonicalPreferenceJson(fields);
       if (confirmed[scope] === serialized) continue;
       confirmed[scope] = serialized;
       receivePreferenceFields(scope, fields, storage);

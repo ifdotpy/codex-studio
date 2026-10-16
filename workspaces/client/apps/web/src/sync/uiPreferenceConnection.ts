@@ -164,7 +164,7 @@ export function connectUiPreferences(
           return {
             scope,
             fields,
-            serialized: JSON.stringify(fields),
+            serialized: canonicalPreferenceJson(fields),
           };
         })
         .filter(
@@ -177,18 +177,20 @@ export function connectUiPreferences(
       token = (await request("/api/session")).token;
       do {
         sendAgain = false;
-        for (const { scope, fields, serialized } of pendingFields()) {
+        for (const { scope, fields } of pendingFields()) {
           const result = await request("/api/sync/preferences", {
             scope,
             fields,
           });
           if (stopped) return;
-          confirmed[scope] = serialized;
           acknowledgePreferenceFields(
             scope,
             fields,
             result.fields as PreferenceFields,
             storage,
+          );
+          confirmed[scope] = canonicalPreferenceJson(
+            result.fields as PreferenceFields,
           );
         }
       } while (sendAgain && !stopped);
@@ -220,7 +222,7 @@ export function connectUiPreferences(
           entity.collection === "uiPreferences" &&
           ["user", "server"].includes(entity.id)
         ) {
-          confirmed[entity.id as PreferenceScope] = JSON.stringify(
+          confirmed[entity.id as PreferenceScope] = canonicalPreferenceJson(
             entity.value.fields,
           );
           receivePreferenceFields(entity.id, entity.value.fields, storage);
@@ -435,7 +437,7 @@ export function connectUiPreferences(
         nextCursor = batch.through;
       }
       for (const { scope, fields } of preferenceRows) {
-        confirmed[scope] = JSON.stringify(fields);
+        confirmed[scope] = canonicalPreferenceJson(fields);
         receivePreferenceFields(scope, fields, storage);
       }
       cursor.assign(nextCursor);
