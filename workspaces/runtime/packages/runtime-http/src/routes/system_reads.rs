@@ -17,6 +17,26 @@ const DIAGNOSTICS_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("runtime-process/process-tree"),
 ];
 
+const DIAGNOSTICS_RESPONSE_FIELDS: &[&str] = &[
+    "at",
+    "processTree",
+    "hostResources",
+    "resourceAttribution",
+    "nativeAccounts",
+    "studioLoadedThreads",
+    "queues",
+    "runtimeLockSamples",
+    "executions",
+    "sqliteContention",
+    "httpRequestMetrics",
+    "analyticsCapture",
+    "migrations",
+    "searchMigrationError",
+    "runtimeLockOperations",
+    "supervisor",
+    "blockingPoolMetrics",
+];
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -220,11 +240,17 @@ async fn diagnostics(
             studio_runtime_services::diagnostics::log_on_demand_memory_snapshot();
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::DurableInputPending)
+                })?;
             let ledger = studio_runtime_services::diagnostics::execution_ledger(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::ExecutionLedger)
+                })?;
             let migrations = studio_runtime_services::diagnostics::migration_status(&connection)
-                .map_err(|_| ApiError::internal())?;
+                .map_err(|_| {
+                    diagnostics_collection_error(DiagnosticsCollectionFailure::MigrationStatus)
+                })?;
             Ok::<_, ApiError>((
                 provider,
                 supervisor,
@@ -311,9 +337,72 @@ async fn diagnostics(
         .validators
         .validate_stored("DiagnosticsResponse", &value)
     {
+        let (field, keyword) = diagnostics_schema_rejection(&value);
+        eprintln!(
+            "diagnostics response schema rejection: schema=DiagnosticsResponse field={field} keyword={keyword}"
+        );
         return Err(ApiError::internal());
     }
     super::generated_json::<crate::generated::DiagnosticsResponse>(value).map(Json)
+}
+
+fn diagnostics_schema_rejection(value: &Value) -> (&'static str, &'static str) {
+    let rejection = studio_runtime_schema::first_error("DiagnosticsResponse", value)
+        .ok()
+        .flatten();
+    let Some((pointer, keyword)) = rejection else {
+        return ("unlocated", "unavailable");
+    };
+    let field = pointer
+        .strip_prefix('/')
+        .and_then(|path| path.split('/').next())
+        .and_then(|field| {
+            DIAGNOSTICS_RESPONSE_FIELDS
+                .iter()
+                .copied()
+                .find(|known| *known == field)
+        })
+        .unwrap_or("unlocated");
+    let keyword = match keyword.as_str() {
+        "additionalProperties" => "additionalProperties",
+        "anyOf" => "anyOf",
+        "const" => "const",
+        "enum" => "enum",
+        "format" => "format",
+        "maximum" => "maximum",
+        "minimum" => "minimum",
+        "required" => "required",
+        "type" => "type",
+        "unevaluatedProperties" => "unevaluatedProperties",
+        "uniqueItems" => "uniqueItems",
+        _ => "other",
+    };
+    (field, keyword)
+}
+
+#[derive(Clone, Copy)]
+enum DiagnosticsCollectionFailure {
+    DurableInputPending,
+    ExecutionLedger,
+    MigrationStatus,
+}
+
+impl DiagnosticsCollectionFailure {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DurableInputPending => "durable_input_pending",
+            Self::ExecutionLedger => "execution_ledger",
+            Self::MigrationStatus => "migration_status",
+        }
+    }
+}
+
+fn diagnostics_collection_error(failure: DiagnosticsCollectionFailure) -> ApiError {
+    eprintln!(
+        "diagnostics collection failed: operation={}",
+        failure.label()
+    );
+    ApiError::internal()
 }
 
 async fn ui_summary(
@@ -427,7 +516,7 @@ fn redact_untrusted_diagnostic_text(value: &mut Value) {
 
 #[cfg(test)]
 mod diagnostics_http_tests {
-    use super::redact_untrusted_diagnostic_text;
+    use super::{DIAGNOSTICS_RESPONSE_FIELDS, redact_untrusted_diagnostic_text};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -448,6 +537,39 @@ mod diagnostics_http_tests {
 
     use crate::router::{HttpState, router};
     use crate::validation::Registry;
+
+    #[test]
+    fn diagnostics_schema_rejection_logs_only_known_fields_and_keywords() {
+        for value in [
+            json!({
+                "executions": {"runs": [{"unexpected-private-name": "secret-value"}]}
+            }),
+            json!({"private-root-name": "secret-value"}),
+        ] {
+            let (field, keyword) = super::diagnostics_schema_rejection(&value);
+            assert!(
+                field == "unlocated" || DIAGNOSTICS_RESPONSE_FIELDS.contains(&field),
+                "the log field must come from the known response DTO"
+            );
+            assert!(matches!(
+                keyword,
+                "additionalProperties"
+                    | "anyOf"
+                    | "const"
+                    | "enum"
+                    | "format"
+                    | "maximum"
+                    | "minimum"
+                    | "required"
+                    | "type"
+                    | "unevaluatedProperties"
+                    | "uniqueItems"
+                    | "other"
+                    | "unavailable"
+            ));
+            assert!(!format!("{field}{keyword}").contains("secret"));
+        }
+    }
 
     #[test]
     fn diagnostics_redacts_free_form_errors_and_results_without_dropping_ids() {
@@ -573,32 +695,13 @@ mod diagnostics_http_tests {
             .expect("bounded diagnostics response");
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let value: Value = serde_json::from_slice(&body).expect("JSON diagnostics response");
-        let expected_fields = [
-            "at",
-            "processTree",
-            "hostResources",
-            "resourceAttribution",
-            "nativeAccounts",
-            "studioLoadedThreads",
-            "queues",
-            "runtimeLockSamples",
-            "executions",
-            "sqliteContention",
-            "httpRequestMetrics",
-            "analyticsCapture",
-            "migrations",
-            "searchMigrationError",
-            "runtimeLockOperations",
-            "supervisor",
-            "blockingPoolMetrics",
-        ];
         assert_eq!(
             value.as_object().map(|fields| fields.len()),
-            Some(expected_fields.len())
+            Some(DIAGNOSTICS_RESPONSE_FIELDS.len())
         );
-        for field in expected_fields {
+        for field in DIAGNOSTICS_RESPONSE_FIELDS {
             assert!(
-                value.get(field).is_some(),
+                value.get(*field).is_some(),
                 "missing Python response field {field}"
             );
         }

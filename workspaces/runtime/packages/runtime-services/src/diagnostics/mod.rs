@@ -6,8 +6,8 @@
 //! durations, never SQL text or bound values. Slow transaction history comes
 //! from the actual serialized store boundary; SQLite statement profiles are
 //! never labeled as transactions. Startup marks contain stage names and byte
-//! counts; explicit diagnostics requests can include bounded GNU allocator
-//! aggregate XML, never allocation traces.
+//! counts; explicit diagnostics requests can include bounded numeric GNU
+//! allocator aggregate counters, never raw XML or allocation traces.
 //!
 //! Python source parity: `codex_diagnostics.py:130-209,255` (migration and
 //! snapshot fields), `codex_execution.py:388-400` (execution chain),

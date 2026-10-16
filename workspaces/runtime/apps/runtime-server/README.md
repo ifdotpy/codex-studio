@@ -49,8 +49,9 @@ with zero rows.
 For an on-demand allocator snapshot, set `CODEX_CANVAS_STARTUP_MEMORY=1` before
 starting the server, then request `GET /api/diagnostics`. The request writes one
 `RUST_ALLOCATOR_MEMORY` event to stderr with current RSS, the recorded startup
-memory marks, and a bounded GNU libc allocator snapshot on Linux with glibc.
-Other targets report the allocator data as unavailable. The HTTP response and
-runtime state are unchanged, and no periodic memory sampling is started. The
-allocator snapshot is aggregate accounting, not an allocation trace; process
-RSS also includes memory outside GNU libc's allocator.
+memory marks, and compact GNU libc aggregate counters on Linux with glibc.
+Other targets report the allocator data as unavailable. Raw allocator XML is
+parsed in memory and is never logged. The HTTP response and runtime state are
+unchanged, and no periodic memory sampling is started. The reported
+allocator-used estimate is not an exact count of live allocations; process RSS
+also includes memory outside GNU libc's allocator.
