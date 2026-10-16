@@ -97,7 +97,7 @@ pub trait ManagedCreationEnvironment: Send + Sync {
             ))
         }
     }
-    /// Wait for the actor account's model catalog at the callback's async
+    /// Wait for the actor and worker-candidate model catalogs at the callback's async
     /// boundary. Implementations keep this bounded and never run it at worker
     /// startup or inside the synchronous store callback.
     fn wait_for_catalog<'a>(
