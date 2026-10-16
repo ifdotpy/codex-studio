@@ -7,6 +7,7 @@ isolate_supervisor_environment()
 
 import asyncio
 import base64
+import errno
 import hashlib
 import importlib.util
 import json
@@ -401,6 +402,70 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(slot_b.exists())
         with self.assertRaises(HostExecError):
             self.host.evict(slot_b.parent, budget, reserve=budget + 1)
+
+    async def test_partial_slot_eviction_preserves_retirement_and_blocks_reuse(self):
+        await self.acquire("retire-old")
+        slot = self.host.slot(self.host.load("retire-old"))
+        metadata = json.loads((slot / "slot.json").read_text())
+        await self.guest.call("release", {"operationId": "retire-old", "agentId": "agent"}, "release")
+        evidence = slot / "DerivedData" / "evidence.json"
+        evidence.write_bytes(b"x" * 65536)
+        self.host.budget = 8192
+
+        def interrupted(victim):
+            self.assertEqual(victim, slot)
+            (victim / "slot.json").unlink()
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(victim))
+
+        with patch.object(codex_host_exec_server.shutil, "rmtree", side_effect=interrupted):
+            with self.assertRaises(HostExecError) as caught:
+                await self.acquire("retire-failed")
+        self.assertEqual(caught.exception.code, "slot_cleanup_failed")
+        marker = slot.parent / (".retiring-" + slot.name + ".json")
+        self.assertEqual(json.loads(marker.read_text())["metadata"]["generation"], metadata["generation"])
+        self.assertTrue(evidence.exists())
+        self.assertFalse(self.host.opdir("retire-failed").exists())
+        # Even with spare capacity, preserve the failed retirement until explicit recovery.
+        self.host.budget = 1024 * 1024
+        for operation in ("retire-failed", "retire-followup"):
+            with self.assertRaises(HostExecError) as retry:
+                await self.acquire(operation)
+            self.assertEqual(retry.exception.code, "slot_cleanup_failed")
+        self.assertFalse(self.host.opdir("retire-followup").exists())
+        self.assertTrue(evidence.exists())
+
+    async def test_slot_count_shrink_records_retirement_before_deletion(self):
+        for operation in ("shrink-a", "shrink-b"):
+            await self.acquire(operation)
+        slot = self.host.slot(self.host.load("shrink-a"))
+        for operation in ("shrink-a", "shrink-b"):
+            await self.guest.call("release", {"operationId": operation, "agentId": "agent"}, "release")
+        self.project_settings({"slots": 1})
+
+        def interrupted(victim):
+            self.assertEqual(victim, slot)
+            self.assertTrue((slot.parent / (".retiring-" + slot.name + ".json")).is_file())
+            (slot / "slot.json").unlink()
+            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+
+        with patch.object(codex_host_exec_server.shutil, "rmtree", side_effect=interrupted):
+            with self.assertRaises(HostExecError) as caught:
+                await self.acquire("shrink-c")
+        self.assertEqual(caught.exception.code, "slot_cleanup_failed")
+        self.assertFalse(self.host.opdir("shrink-c").exists())
+
+    async def test_missing_legacy_slot_metadata_refuses_before_new_operation(self):
+        await self.acquire("legacy-old")
+        slot = self.host.slot(self.host.load("legacy-old"))
+        await self.guest.call("release", {"operationId": "legacy-old", "agentId": "agent"}, "release")
+        (slot / "slot.json").unlink()
+        evidence = slot / "DerivedData" / "evidence.json"
+        evidence.write_text("preserve")
+        with self.assertRaises(HostExecError) as caught:
+            await self.acquire("legacy-next")
+        self.assertEqual(caught.exception.code, "slot_invalid")
+        self.assertEqual(evidence.read_text(), "preserve")
+        self.assertFalse(self.host.opdir("legacy-next").exists())
 
     async def test_output_alias_split_and_large_manifest(self):
         for index in range(270):
