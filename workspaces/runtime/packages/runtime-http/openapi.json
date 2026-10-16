@@ -23606,6 +23606,17 @@
               }
             ]
           },
+          "diskSpace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiskSpaceStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "linuxVm": {
             "anyOf": [
               {
@@ -24540,6 +24551,58 @@
           "autoPair"
         ],
         "title": "DiscoveryIdentity",
+        "type": "object"
+      },
+      "DiskSpaceStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "freeBytes": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freebytes"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "enum": [
+                  "warning",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the free space of the state volume is below the warning or the critical threshold.",
+            "title": "Level"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "required": [
+          "level",
+          "freeBytes",
+          "message"
+        ],
+        "title": "DiskSpaceStatus",
         "type": "object"
       },
       "DraftDocumentInput": {

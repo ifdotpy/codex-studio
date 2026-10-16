@@ -59,6 +59,24 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/DesktopResponse/properties/diskSpace",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DesktopResponse/properties/diskSpace",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DesktopResponse/properties/diskSpace",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"$ref\":\"#/components/schemas/DiskSpaceStatus\"}']"
+    },
+    {
       "pointer": "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
       "constraint": "@anyOf",
       "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
@@ -255,6 +273,42 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/freeBytes",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/freeBytes",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/level",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/level",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/message",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiskSpaceStatus/properties/message",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/ExecutionEffect/properties/status",

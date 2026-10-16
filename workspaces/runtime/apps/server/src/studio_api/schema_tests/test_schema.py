@@ -593,7 +593,7 @@ class SchemaContractTests(unittest.TestCase):
             {(item["pointer"], item["constraint"]) for item in loosenings},
             self._reviewed_schema_additions(),
             "only reviewed diagnostics, execution-effect statuses, and the "
-            "MultiServerResource addition may loosen the schema",
+            "MultiServerResource and disk space additions may loosen the schema",
         )
 
 
@@ -689,6 +689,13 @@ class SchemaContractTests(unittest.TestCase):
             "/paths/~1api~1sync~1notify/post/requestBody/content/application~1json/schema/properties/resources/items",
         ):
             add(pointer, "@oneOf")
+
+        # /api/desktop reports free disk space; each field is null when the
+        # volume cannot be read or the space is above the warning threshold.
+        add("/components/schemas/DesktopResponse/properties/diskSpace",
+            "property", "@nullable", "@nullableBranch")
+        for field in ("freeBytes", "level", "message"):
+            add(f"/components/schemas/DiskSpaceStatus/properties/{field}", "@nullable", "@nullableBranch")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

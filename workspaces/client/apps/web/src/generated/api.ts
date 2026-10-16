@@ -11472,6 +11472,8 @@ export interface components {
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
+      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
+      /** @default null */
       linuxVm?: components["schemas"]["LinuxVMStatus"] | null;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
@@ -11800,6 +11802,18 @@ export interface components {
       serverId: string;
       /** Tailscaleuser */
       tailscaleUser: null | string;
+    };
+    /** DiskSpaceStatus */
+    DiskSpaceStatus: {
+      /** Freebytes */
+      freeBytes: number | null;
+      /**
+       * Level
+       * @description Set when the free space of the state volume is below the warning or the critical threshold.
+       */
+      level: ("warning" | "critical") | null;
+      /** Message */
+      message: null | string;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {

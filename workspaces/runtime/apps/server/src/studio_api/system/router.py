@@ -167,6 +167,7 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def desktop(request: Request, query: DesktopQuery = Depends()) -> Response:
         from codex_backend_identity import BACKEND_BUILD
+        from codex_disk_space import status as disk_space_status
         from codex_peer_updates import status as peer_update_status
         from codex_browser import diagnostics as untyped_browser_diagnostics
         from codex_native_runtime import status as untyped_native_runtime_status
@@ -240,6 +241,7 @@ def create_router(context: ApiContext) -> APIRouter:
             ),
             "stateDir": str(Path(canvas.root).resolve()),
             "peerUpdate": peer_update_status(Path(canvas.root)),
+            "diskSpace": disk_space_status(Path(canvas.root)),
         }
         return context.send(request, result)
 
