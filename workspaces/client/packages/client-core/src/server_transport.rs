@@ -5,13 +5,36 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 // Maximum concurrent signed requests and response bodies per native client.
 const MAX_OPEN_SERVER_RESPONSES: usize = 32;
+
+// Maximum metadata-only transport diagnostic lines per process when opted in.
+const MAX_TRANSPORT_DIAGNOSTIC_LINES: usize = 200;
+static TRANSPORT_DIAGNOSTIC_LINES: AtomicUsize = AtomicUsize::new(0);
+
+fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &str) {
+    if std::env::var("STUDIO_NATIVE_TRANSPORT_DIAGNOSTICS").as_deref() != Ok("1") {
+        return;
+    }
+    if TRANSPORT_DIAGNOSTIC_LINES.fetch_add(1, Ordering::Relaxed) >= MAX_TRANSPORT_DIAGNOSTIC_LINES
+    {
+        return;
+    }
+    // Never log query values, credentials, request IDs, headers or payloads.
+    eprintln!(
+        "Server transport: method={method} host={} path={} status={status} kind={kind}",
+        url.host_str().unwrap_or("unknown"),
+        url.path()
+    );
+}
 
 struct Body {
     _permit: OwnedSemaphorePermit,
@@ -195,8 +218,22 @@ impl RemoteClient {
                         body,
                         &id,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        transport_diagnostic(method, &target, 0, "send-error");
+                        error
+                    })?;
                 let status = response.status().as_u16();
+                let kind = match response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    Some(v) if v.starts_with("text/event-stream") => "event-stream",
+                    Some(v) if v.starts_with("application/json") => "json",
+                    _ => "other",
+                };
+                transport_diagnostic(method, response.url(), status, kind);
                 let headers = response
                     .headers()
                     .iter()
@@ -241,12 +278,56 @@ impl RemoteClient {
                 let result =
                     tokio::time::timeout(Duration::from_secs(25), body.response.chunk()).await;
                 match result {
-                    Ok(Ok(Some(bytes))) => Ok(json!({"base64":STANDARD.encode(bytes)})),
+                    Ok(Ok(Some(bytes))) => {
+                        if body.response.status().is_client_error() && bytes.len() < 4096 {
+                            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                                let code = match value["code"].as_str() {
+                                    Some(
+                                        code @ ("invalid_credentials"
+                                        | "invalid_id"
+                                        | "server_mismatch"
+                                        | "clock_difference"
+                                        | "invalid_nonce"
+                                        | "invalid_signature"
+                                        | "client_revoked"
+                                        | "owner_mismatch"
+                                        | "request_conflict"
+                                        | "replayed_nonce"),
+                                    ) => code,
+                                    _ if value["error"] == "Invalid request" => "invalid-request",
+                                    _ => "other-rejection",
+                                };
+                                transport_diagnostic(
+                                    "READ",
+                                    body.response.url(),
+                                    body.response.status().as_u16(),
+                                    code,
+                                );
+                            }
+                        }
+                        Ok(json!({"base64":STANDARD.encode(bytes)}))
+                    }
                     Ok(Ok(None)) => {
+                        transport_diagnostic(
+                            "READ",
+                            body.response.url(),
+                            body.response.status().as_u16(),
+                            "eof",
+                        );
                         self.bodies.lock().await.remove(stream);
                         Ok(json!({"done":true}))
                     }
                     _ => {
+                        transport_diagnostic(
+                            "READ",
+                            body.response.url(),
+                            body.response.status().as_u16(),
+                            if result.is_err() {
+                                "timeout"
+                            } else {
+                                "read-error"
+                            },
+                        );
                         self.bodies.lock().await.remove(stream);
                         Err("The server response was interrupted.".into())
                     }
