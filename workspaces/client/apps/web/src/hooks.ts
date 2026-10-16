@@ -15,7 +15,6 @@ import {
 } from "react";
 import {
   syncGet,
-  ApiError,
   errorText,
   refreshSession,
   saved,
@@ -36,6 +35,7 @@ import {
 } from "./sync/entityCacheStorage";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
+import { retryableReadError } from "./sync/readRetry";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
 import {
@@ -224,11 +224,7 @@ export function useSnapshot(
         });
         // Retry this read without waiting for the healthy 30-second poll. Writes
         // retain their own receipt rules and never use this retry.
-        const transient =
-          e instanceof TypeError ||
-          (e instanceof ApiError &&
-            ((e.status >= 500 && e.status < 600) ||
-              [408, 429].includes(e.status)));
+        const transient = retryableReadError(e);
         if (transient && !document.hidden && navigator.onLine !== false) {
           const delay = Math.min(
             500 * 2 ** Math.min(credentialFailures.current++, 4),

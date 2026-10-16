@@ -140,11 +140,7 @@ async function open() {
         ])
       : initialIdentity);
   } catch (error) {
-    const unavailable =
-      isApiSchemaMismatch() ||
-      error instanceof TypeError ||
-      (error instanceof ApiError &&
-        (error.status >= 500 || [408, 429].includes(error.status)));
+    const unavailable = isApiSchemaMismatch() || retryableReadError(error);
     if (!hasCache || !unavailable) throw error;
   } finally {
     clearTimeout(grace);
@@ -878,11 +874,7 @@ type ProjectionState = {
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
 const ENTITY_BATCH_SIZE = 500;
-const isTransientSyncReadFailure = (error: unknown) =>
-  error instanceof TypeError ||
-  (error instanceof ApiError &&
-    ((error.status >= 500 && error.status < 600) ||
-      [408, 429].includes(error.status)));
+const isTransientSyncReadFailure = retryableReadError;
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,

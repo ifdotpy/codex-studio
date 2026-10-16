@@ -12,7 +12,11 @@ describe("failed resource reads", () => {
     new NetworkTimeoutError(),
     new ApiError("Timeout", 408),
     new ApiError("Busy", 429),
+    new ApiError("Internal", 500),
+    new ApiError("Bad gateway", 502),
     new ApiError("Unavailable", 503),
+    new ApiError("Gateway timeout", 504),
+    new ApiError("HTTP version not supported", 505),
   ])("retries a transient read error: %s", (error) => {
     expect(retryableReadError(error)).toBe(true);
   });
@@ -22,6 +26,7 @@ describe("failed resource reads", () => {
     new ApiError("Permission", 403),
     new ApiError("Missing", 404),
     new ApiError("Conflict", 409),
+    new ApiError("Not implemented", 501),
     new ApiError("Pending", 400),
     new Error("Workspace changed"),
     new DOMException("Aborted", "AbortError"),

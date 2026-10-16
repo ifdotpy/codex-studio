@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api";
 import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
 const {
@@ -225,6 +226,31 @@ describe("watchResourceReads", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(read).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("does not back off and retry an unsupported read, but accepts a later event", async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new ApiError("Not implemented", 501))
+      .mockResolvedValue(undefined);
+    const failed = vi.fn();
+    const stop = watchResourceReads(limits, read, failed);
+    notify(limits);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    notify(limits);
+    await vi.advanceTimersByTimeAsync(0);
     expect(read).toHaveBeenCalledTimes(2);
     stop();
   });

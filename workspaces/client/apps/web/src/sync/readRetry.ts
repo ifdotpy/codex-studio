@@ -4,7 +4,9 @@ export function retryableReadError(error: unknown): boolean {
   return (
     error instanceof TypeError ||
     (error instanceof ApiError &&
-      (error.status >= 500 || error.status === 408 || error.status === 429))
+      ((error.status >= 500 && error.status < 600 && error.status !== 501) ||
+        error.status === 408 ||
+        error.status === 429))
   );
 }
 
