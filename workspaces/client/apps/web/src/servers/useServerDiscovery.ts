@@ -27,7 +27,7 @@ import {
 } from "./registry";
 import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
-import { refreshServerName } from "./serverNames";
+import { refreshServerName, watchRegisteredServerNames } from "./serverNames";
 import { watchResourceReads } from "../components/watchResourceReads";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
@@ -339,24 +339,7 @@ export function useServerDiscovery(
   }, [enabled]);
   useEffect(() => {
     if (enabled) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      for (const server of readServers()) {
-        if (stopped) return;
-        try {
-          await refreshServerName(server);
-        } catch {
-          /* The connection status owns errors for offline servers. */
-        }
-      }
-      if (!stopped) timer = setTimeout(refresh, 30000);
-    };
-    void refresh();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
+    return watchRegisteredServerNames();
   }, [enabled, localAvailable]);
   return {
     snapshot: effectiveSnapshot,
