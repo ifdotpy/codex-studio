@@ -1,5 +1,8 @@
 //! Desktop pairing keys stay in the OS vault and never enter renderer messages.
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use ring::{
     rand::{SecureRandom, SystemRandom},
     signature::{Ed25519KeyPair, KeyPair},
@@ -84,6 +87,15 @@ fn pem(label: &str, bytes: &[u8]) -> String {
         .join("\n");
     format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")
 }
+/// Multi-server request nonces encode 24 random bytes as 32 URL-safe characters.
+pub fn request_nonce() -> Result<String, String> {
+    let mut bytes = [0u8; 24];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| "Secure randomness is unavailable.")?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 pub fn random_id() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     SystemRandom::new()

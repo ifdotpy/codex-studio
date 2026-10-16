@@ -65,7 +65,7 @@ impl RemoteClient {
             .map_err(|e| e.to_string())?
             .as_secs()
             .to_string();
-        let nonce = server_keys::random_id()?;
+        let nonce = server_keys::request_nonce()?;
         let target = format!(
             "{}{}",
             url.path(),
@@ -430,6 +430,14 @@ mod tests {
             assert!(!headers.contains_key("authorization"));
             assert!(!headers.contains_key("cookie"));
             assert_eq!(headers["x-studio-request-id"], "original");
+            let nonce = &headers["x-studio-nonce"];
+            assert_eq!(nonce.len(), 32);
+            assert!(
+                nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            );
+
             assert_eq!(
                 headers["x-studio-signature"],
                 server_keys::signature(
