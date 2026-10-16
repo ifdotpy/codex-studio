@@ -65,6 +65,8 @@ class ResourceContractTests(unittest.TestCase):
         self.assertEqual(parsed.model_dump(), {"kind": "panel", "agentId": "agent-a"})
         transcript = ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
         self.assertEqual(transcript.model_dump(), {"kind": "transcript", "agentId": "agent-a"})
+        multi_server = ResourceRef.model_validate({"kind": "multi-server"})
+        self.assertEqual(multi_server.model_dump(), {"kind": "multi-server"})
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "unknown"})
         with self.assertRaises(ValidationError):

@@ -23,6 +23,7 @@ from studio_api.sync.resources.models import (
     AccountsResource,
     CostsResource,
     LimitsResource,
+    MultiServerResource,
     PanelResource,
     QueueResource,
     ResourceRef,
@@ -87,6 +88,26 @@ class CrossThreadWatchdog:
 
 
 class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
+    async def test_multi_server_resource_baseline_and_publication_are_typed(self) -> None:
+        loop = asyncio.get_running_loop()
+        resource = ResourceRef(MultiServerResource(kind="multi-server"))
+        hub = ResourceHub("workspace-multi-server")
+        subscription = hub.subscribe([resource], loop=loop)
+
+        baseline = subscription.initial.model_dump(mode="json", by_alias=True)
+        self.assertEqual(baseline["resources"], [{"kind": "multi-server"}])
+        self.assertEqual(baseline["resourceVersions"][0]["revision"], 0)
+
+        self.assertEqual(hub.publish(resource), 1)
+        event = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.resources, [resource])
+        published = event.model_dump(mode="json", by_alias=True)
+        self.assertEqual(published["resources"], [{"kind": "multi-server"}])
+        self.assertEqual(published["resourceVersions"][0]["revision"], 1)
+        subscription.close()
+
     async def test_resource_revision_survives_subscription_gap_and_is_bounded(self) -> None:
         loop = asyncio.get_running_loop()
         costs = ResourceRef(CostsResource(kind="costs"))
