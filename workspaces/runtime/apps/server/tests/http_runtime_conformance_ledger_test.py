@@ -189,20 +189,18 @@ finally:
         finally:
             backend.close()
 
-        # Keep this regression focused on durable rows rather than old FTS
-        # virtual tables, which SqliteSnapshot intentionally cannot compare.
-        # Rust startup rebuilds these derived indexes from runtime_search_rows.
+        # Keep this regression focused on durable rows rather than the obsolete
+        # legacy FTS table, which SqliteSnapshot intentionally cannot compare.
+        # Rust startup rebuilds it from runtime_search_rows. Preserve the known
+        # contentless runtime_search_next index present in copied-state fixtures.
         with closing(sqlite3.connect(template / "canvas.sqlite3")) as connection:
-            for name in ("runtime_search", "runtime_search_next"):
-                row = connection.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                    (name,),
-                ).fetchone()
-                if row is None:
-                    continue
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runtime_search'"
+            ).fetchone()
+            if row is not None:
                 definition = row[0] or ""
                 self.assertRegex(definition, r"(?is)^CREATE VIRTUAL TABLE.*USING\s+fts5\s*\(")
-                connection.execute(f'DROP TABLE "{name}"')
+                connection.execute('DROP TABLE "runtime_search"')
             connection.commit()
 
         copy = root / "copy"
