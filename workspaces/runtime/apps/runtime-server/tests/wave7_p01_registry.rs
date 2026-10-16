@@ -109,9 +109,14 @@ async fn dispatch_template() -> &'static FixtureTemplate {
             let agents = serde_json::from_slice(&result.stdout).unwrap();
             // Run migrations once before snapshotting so each test only copies a
             // ready-to-open SQLite image instead of starting Python and migrating.
-            drop(RuntimeStore::open(Some(root.path())).await.unwrap());
+            let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+            store
+                .checkpoint_wal_passive()
+                .await
+                .expect("checkpoint fixture databases before snapshot");
             let mut entries = Vec::new();
             snapshot_fixture(root.path(), root.path(), &mut entries);
+            drop(store);
             FixtureTemplate {
                 _root: root,
                 entries,
