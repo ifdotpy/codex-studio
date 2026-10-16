@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path
 import shutil
 import sqlite3
@@ -118,6 +118,108 @@ class LedgerTraceContract(unittest.TestCase):
             connection.commit()
         return root
 
+    def create_runtime_backed_marked_copy(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        template = root / "template-state"
+        template.mkdir()
+        harness_root = root / "fixture-harness"
+        harness_root.mkdir()
+        sys.path.insert(0, str(ledger.TESTS))
+        from http_backend_harness import BackendProcess
+
+        backend = BackendProcess(
+            harness_root,
+            claude_bin=None,
+            initialize_workspace=False,
+            state_root=template,
+        )
+        try:
+            backend.create_codex_replay("copy-read-only-replay.json")
+            backend.codex_home.joinpath("auth.json").write_text("{}", encoding="utf-8")
+            environment = backend._environment()
+            source = ROOT / "workspaces/runtime/apps/server/src"
+            tests = ledger.TESTS
+            environment["PYTHONPATH"] = os.pathsep.join(
+                filter(None, (str(source), str(tests), environment.get("PYTHONPATH", "")))
+            )
+            python = environment.get("CODEX_AGENTS_PYTHON") or sys.executable
+            fixture_script = r"""
+import importlib.util, json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+spec = importlib.util.spec_from_file_location("copy_runtime_fixture", Path(sys.argv[2]) / "runtime-contract.py")
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+sys.path.insert(0, sys.argv[3])
+from runtime_test_environment import make_runtime
+class QuietRuntime(fixture.Runtime):
+    def schedule(self):
+        pass
+state = Path(sys.argv[1])
+runtime = make_runtime(QuietRuntime, state, fixture.FakeServer)
+try:
+    agent = runtime.create({
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "Copied native agent witness",
+        "cwd": sys.argv[4],
+        "prompt": "Fixture record for a read-only copied-state HTTP check.",
+        "autoWake": False,
+    }, defer=True)
+    agent.update({
+        "cwd": sys.argv[4],
+        "executionMode": "host",
+        "status": "completed",
+        "autoWake": False,
+        "inFlight": False,
+    })
+    with runtime.db() as database:
+        runtime.put(database, "agents", agent)
+finally:
+    runtime.close()
+"""
+            subprocess.run(
+                [python, "-B", "-c", fixture_script, str(template), str(tests), str(source), str(backend.cwd)],
+                cwd=backend.cwd,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        finally:
+            backend.close()
+
+        # Keep this regression focused on durable rows rather than old FTS
+        # virtual tables, which SqliteSnapshot intentionally cannot compare.
+        # Rust startup rebuilds these derived indexes from runtime_search_rows.
+        with closing(sqlite3.connect(template / "canvas.sqlite3")) as connection:
+            for name in ("runtime_search", "runtime_search_next"):
+                row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                ).fetchone()
+                if row is None:
+                    continue
+                definition = row[0] or ""
+                self.assertRegex(definition, r"(?is)^CREATE VIRTUAL TABLE.*USING\s+fts5\s*\(")
+                connection.execute(f'DROP TABLE "{name}"')
+            connection.commit()
+
+        copy = root / "copy"
+        copy.mkdir()
+        for name in ("canvas.sqlite3", "analytics.sqlite3"):
+            source = template / name
+            target = copy / name
+            with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as reader:
+                with closing(sqlite3.connect(target)) as writer:
+                    reader.backup(writer, pages=-1)
+        (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+        self.assertEqual(
+            {path.name for path in copy.iterdir()},
+            {ledger.COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"},
+        )
+        return copy
+
     def test_native_p04_http_suite_is_registered_as_python_baseline_only(self) -> None:
         relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
         selected = {str(path.relative_to(ROOT)) for path in ledger.consumer_suites()}
@@ -186,6 +288,52 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
 
             unexpected = copy / "accounts"
             unexpected.mkdir()
+            with self.assertRaisesRegex(ValueError, "unexpected entries"):
+                ledger.validate_copy_state_root(copy)
+
+    @unittest.skipUnless(
+        os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),
+        "copied-state HTTP regression requires the Rust backend command",
+    )
+    def test_copied_existing_agent_http_read_seeds_signed_out_registry(self) -> None:
+        command = os.environ["STUDIO_HTTP_BACKEND_COMMAND"]
+        ledger.validate_ephemeral_backend_command(command)
+        scratch_root = os.environ.get("TMPDIR")
+        self.assertTrue(scratch_root, "server runner must provide private scratch TMPDIR")
+        with tempfile.TemporaryDirectory(prefix="copy-existing-agent-", dir=scratch_root) as scratch_name:
+            copy = self.create_runtime_backed_marked_copy(Path(scratch_name))
+            # Validation must accept the untouched copy before the registry
+            # fixture is added; it must still reject that copy after seeding.
+            ledger.validate_copy_state_root(copy)
+            witness = ledger.copied_agent_witness(copy)
+            with ExitStack() as stack:
+                snapshots = {
+                    name: stack.enter_context(ledger.sqlite_snapshot(copy / name))
+                    for name in ("canvas.sqlite3", "analytics.sqlite3")
+                }
+                result = ledger.probe_copied_data(copy, witness)
+                shutdown_preservation = {
+                    name: snapshot.preserved_existing_rows()
+                    for name, snapshot in snapshots.items()
+                }
+            self.assertEqual(
+                result["accountRegistrySeed"],
+                {
+                    "defaultAccountKey": "default",
+                    "status": "signedOut",
+                    "accountId": None,
+                    "credentialIdentityPresent": False,
+                    "homeUnderScratch": True,
+                },
+            )
+            self.assertEqual(result["existingRowReads"][0]["observedStatus"], 200)
+            self.assertTrue(result["existingRowReads"][0]["matched"])
+            self.assertTrue(result["preexistingRowsPreservedFromBeforeStartup"])
+            self.assertTrue(result["unchangedDuringFinderRead"])
+            self.assertTrue(
+                all(report["preserved"] is True for report in shutdown_preservation.values()),
+                shutdown_preservation,
+            )
             with self.assertRaisesRegex(ValueError, "unexpected entries"):
                 ledger.validate_copy_state_root(copy)
 

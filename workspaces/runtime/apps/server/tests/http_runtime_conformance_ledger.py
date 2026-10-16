@@ -2378,10 +2378,12 @@ def probe_copied_data(
     state_root: Path,
     witness: dict[str, str],
 ) -> dict[str, Any]:
-    """Read a pre-existing agent from the marked copy without fixture seeding."""
+    """Read a pre-existing agent from a caller-validated copy with a signed-out fixture."""
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess
 
+    # Both callers validate the exact marker-plus-two-database boundary before
+    # reaching this helper; do not repeat quick_check over a large copied DB.
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix="rust-http-copy-read-", dir=DEFAULT_CACHE,
@@ -2397,6 +2399,12 @@ def probe_copied_data(
         finder_snapshot: SqliteSnapshot | None = None
         try:
             backend.create_codex_replay("copy-read-only-replay.json")
+            # create_codex_replay writes only to its private scratch CODEX_HOME.
+            # Clear that fake API-key fixture before AccountStore creates the
+            # canonical signed-out registry for the Rust AccountDriver.
+            private_auth = backend.codex_home / "auth.json"
+            private_auth.write_text("{}", encoding="utf-8")
+            registry_evidence = seed_copied_data_registry(backend)
             # Pin the pre-start database so startup changes can be checked
             # against its old tables and rows after the finder read.
             preservation_snapshot = sqlite_snapshot(state_root / "canvas.sqlite3")
@@ -2426,6 +2434,7 @@ def probe_copied_data(
             }
             return {
                 "source": "marked-copy-existing-data",
+                "accountRegistrySeed": registry_evidence,
                 "status": copied_data_evidence_status({
                     "stateCheckBefore": None,
                     "existingRowRead": read_matches,
@@ -2469,6 +2478,75 @@ def probe_copied_data(
             if preservation_snapshot is not None:
                 preservation_snapshot.close()
             backend.close()
+
+
+def seed_copied_data_registry(backend: Any) -> dict[str, Any]:
+    """Create and verify the canonical signed-out registry in a validated copy."""
+    state_root = Path(backend.state).resolve(strict=True)
+    accounts = state_root / "accounts"
+    if accounts.exists() or accounts.is_symlink():
+        raise RuntimeError("copied-data fixture refuses to overwrite account state")
+
+    environment = backend._environment()
+    python = environment.get("CODEX_AGENTS_PYTHON") or sys.executable
+    source = ROOT / "workspaces/runtime/apps/server/src"
+    existing_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(source), existing_pythonpath,
+    )))
+    # The initializer reads auth metadata. Both homes must be the harness's
+    # private scratch homes, and the scratch auth file must be empty.
+    script = r"""
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from codex_accounts import AccountStore
+state = Path(sys.argv[1]).resolve(strict=True)
+scratch = Path(sys.argv[3]).resolve(strict=True)
+home = Path(os.environ["HOME"]).resolve(strict=True)
+codex_home = Path(os.environ["CODEX_HOME"]).resolve(strict=True)
+if not home.is_relative_to(scratch) or not codex_home.is_relative_to(scratch):
+    raise RuntimeError("copied-data account fixture requires private scratch homes")
+auth = codex_home / "auth.json"
+if not auth.is_file() or json.loads(auth.read_text(encoding="utf-8")) != {}:
+    raise RuntimeError("copied-data account fixture requires empty private auth metadata")
+store = AccountStore(state)
+row = store.data["accounts"]["default"]
+row_home = Path(row["home"]).resolve(strict=True)
+if (store.default() != "default" or row.get("status") != "signedOut"
+        or row.get("accountId") is not None
+        or row.get("_credentialIdentity") is not None
+        or not row_home.is_relative_to(scratch)):
+    raise RuntimeError("canonical account fixture is not signed out under scratch")
+print(json.dumps({"defaultAccountKey": "default", "status": "signedOut",
+                  "accountId": None, "credentialIdentityPresent": False,
+                  "homeUnderScratch": True}))
+"""
+    result = subprocess.run(
+        [python, "-B", "-c", script, str(state_root), str(source), str(backend.root)],
+        cwd=backend.cwd,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    evidence = json.loads(result.stdout)
+    expected = {
+        "defaultAccountKey": "default",
+        "status": "signedOut",
+        "accountId": None,
+        "credentialIdentityPresent": False,
+        "homeUnderScratch": True,
+    }
+    if evidence != expected:
+        raise RuntimeError("canonical signed-out registry verification failed")
+    registry = accounts / "registry.json"
+    if accounts.is_symlink() or registry.is_symlink() or not registry.is_file():
+        raise RuntimeError("canonical signed-out registry was not created as a regular file")
+    if {path.name for path in accounts.iterdir()} != {"registry.json"}:
+        raise RuntimeError("canonical signed-out registry contains unexpected files")
+    return evidence
 
 
 def probe_status_matches(
