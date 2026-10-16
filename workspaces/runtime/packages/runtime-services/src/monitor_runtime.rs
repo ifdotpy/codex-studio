@@ -278,16 +278,13 @@ fn active_monitor_ids(tx: &Transaction<'_>) -> Result<Vec<String>, MonitorError>
         let (id, raw) = row.map_err(studio_runtime_store::StoreError::from)?;
         match serde_json::from_str::<RecoverySelection>(&raw) {
             Ok(RecoverySelection {
-                status: Some(status),
-            }) if matches!(
-                status,
-                policy::MonitorStatus::Running
-                    | policy::MonitorStatus::Starting
-                    | policy::MonitorStatus::Approval
-            ) =>
-            {
-                ids.push(id)
-            }
+                status:
+                    Some(
+                        policy::MonitorStatus::Running
+                        | policy::MonitorStatus::Starting
+                        | policy::MonitorStatus::Approval,
+                    ),
+            }) => ids.push(id),
             Ok(_) => {}
             Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
         }
