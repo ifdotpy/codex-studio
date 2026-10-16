@@ -2021,17 +2021,8 @@ export default function App({ active = true }: { active?: boolean }) {
         ),
       });
   };
-  const schemaMismatchDialog = (
-    <Modal
-      opened={schemaMismatch}
-      onClose={() => {}}
-      title="Studio update required"
-      closeOnEscape={false}
-      closeOnClickOutside={false}
-      withCloseButton={false}
-      role="alertdialog"
-      aria-label="Studio update required"
-    >
+  const schemaMismatchContent = (
+    <>
       <p>
         {schemaMismatchNeedsRebuild
           ? "The installed renderer build does not match the server. Rebuild Studio before continuing."
@@ -2056,6 +2047,20 @@ export default function App({ active = true }: { active?: boolean }) {
           {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
         </>
       )}
+    </>
+  );
+  const schemaMismatchDialog = (
+    <Modal
+      opened={schemaMismatch}
+      onClose={() => {}}
+      title="Studio update required"
+      closeOnEscape={false}
+      closeOnClickOutside={false}
+      withCloseButton={false}
+      role="alertdialog"
+      aria-label="Studio update required"
+    >
+      {schemaMismatchContent}
     </Modal>
   );
   const openSidebarProjectAccount = (path: string) => {
@@ -2167,6 +2172,14 @@ export default function App({ active = true }: { active?: boolean }) {
     creating,
   );
   if (!active) return null;
+  // A server contract gate must not cover navigation to other server owners.
+  if (screen && schemaMismatch)
+    return (
+      <main className="startup" aria-label="Server update required">
+        <h2>{serverSettings?.server?.alias || "Server"}: update required</h2>
+        {schemaMismatchContent}
+      </main>
+    );
   if (!data)
     return schemaMismatch ? (
       schemaMismatchDialog

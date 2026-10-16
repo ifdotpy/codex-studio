@@ -617,6 +617,14 @@ export async function fixture(
       });
       notify.forEach((send) => send([{ kind: "state" }]));
     },
+    mismatchSchema() {
+      for (const stream of streams)
+        stream.write(
+          'event: api-schema\ndata: {"hash":"' +
+            "f".repeat(64) +
+            '","mismatch":true}\n\n',
+        );
+    },
     offline(value) {
       offline = value;
       if (value) for (const stream of streams) stream.destroy();

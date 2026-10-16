@@ -107,6 +107,15 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
     await page.screenshot({
       path: testInfo.outputPath("direct-server-screens.png"),
     });
+    remote.mismatchSchema();
+    await expect(
+      page.getByRole("main", { name: "Server update required" }),
+    ).toBeVisible();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await expect(page.locator("#message")).toHaveCount(0);
+    await chat("LOC").click();
+    await expect(page.locator("#message")).toHaveValue("local draft");
+    expect(remote.writes).toHaveLength(1);
     expect(errors).toEqual([]);
   } finally {
     await Promise.all([local.close(), remote.close()]);
