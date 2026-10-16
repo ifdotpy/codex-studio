@@ -1148,8 +1148,9 @@ impl RuntimeStore {
     /// tables are suppressed only when their update-hook count exactly matches
     /// SQLite's transaction change count; all uncertain or mixed writes wake.
     /// A known commit and an ambiguous commit that may have landed both notify,
-    /// so consumers must reread authoritative state. Register before taking the
-    /// subscriber's initial snapshot. Callbacks run outside the transaction
+    /// so consumers must reread authoritative state. On known commits, callbacks
+    /// run after the transaction's post-commit callback. Register before taking
+    /// the subscriber's initial snapshot. Callbacks run outside the transaction
     /// and registry lock. After caller cancellation they may run on the actor
     /// thread, so keep them short and free of database or provider I/O.
     pub fn add_resource_change_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
@@ -1555,23 +1556,23 @@ impl RuntimeStore {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             fire_table_change_observers(&table_commit_observers, changed_tables);
                         }));
-                    let resource_observer_result = resource_change.then(|| {
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            fire_resource_change_observers(&resource_change_observers);
-                        }))
-                    });
                     let post_commit_result = value.map(|value| {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             post_commit(value)
                         }))
                     });
+                    let resource_observer_result = resource_change.then(|| {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fire_resource_change_observers(&resource_change_observers);
+                        }))
+                    });
                     if let Err(panic) = table_observer_result {
                         std::panic::resume_unwind(panic);
                     }
-                    if let Some(Err(panic)) = resource_observer_result {
+                    if let Some(Err(panic)) = post_commit_result {
                         std::panic::resume_unwind(panic);
                     }
-                    if let Some(Err(panic)) = post_commit_result {
+                    if let Some(Err(panic)) = resource_observer_result {
                         std::panic::resume_unwind(panic);
                     }
                 }
@@ -2993,10 +2994,42 @@ mod commit_notification_tests {
         });
         let resource_notifications = Arc::new(AtomicUsize::new(0));
         let resource_observed = Arc::clone(&resource_notifications);
+        let published_cache_marker = Arc::new(AtomicUsize::new(0));
+        let observer_seen_cache_marker = Arc::new(AtomicUsize::new(0));
+        let published_marker_for_observer = Arc::clone(&published_cache_marker);
+        let seen_marker = Arc::clone(&observer_seen_cache_marker);
         store.add_resource_change_observer(move || {
+            seen_marker.store(
+                published_marker_for_observer.load(Ordering::Acquire),
+                Ordering::Release,
+            );
             resource_observed.fetch_add(1, Ordering::Release);
         });
         let post_commit_callbacks = Arc::new(AtomicUsize::new(0));
+
+        let normal_callback_count = Arc::clone(&post_commit_callbacks);
+        let normal_published_marker = Arc::clone(&published_cache_marker);
+        store
+            .transaction_with_post_commit(
+                |transaction| {
+                    transaction.execute(
+                        "INSERT INTO runtime_access_clients(id, record) VALUES ('normal-client', '{}')",
+                        [],
+                    )?;
+                    Ok::<(), StoreError>(())
+                },
+                move |_| {
+                    normal_callback_count.fetch_add(1, Ordering::Release);
+                    normal_published_marker.store(1, Ordering::Release);
+                },
+            )
+            .await
+            .expect("normal committed write publishes before resource invalidation");
+        assert_eq!(observer_seen_cache_marker.load(Ordering::Acquire), 1);
+        assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 1);
+        assert_eq!(table_notifications.load(Ordering::Acquire), 1);
+        assert_eq!(resource_notifications.load(Ordering::Acquire), 1);
+        assert_eq!(notifications.load(Ordering::Acquire), 1);
 
         let entered = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -3017,6 +3050,7 @@ mod commit_notification_tests {
         entered.wait();
 
         let callback_count = Arc::clone(&post_commit_callbacks);
+        let canceled_published_marker = Arc::clone(&published_cache_marker);
         let mut canceled = Box::pin(store.transaction_with_post_commit(
             |transaction| {
                 transaction.execute("INSERT INTO canceled_write VALUES (1)", [])?;
@@ -3028,6 +3062,7 @@ mod commit_notification_tests {
             },
             move |_| {
                 callback_count.fetch_add(1, Ordering::Release);
+                canceled_published_marker.store(2, Ordering::Release);
             },
         ));
         let first_poll =
@@ -3051,18 +3086,19 @@ mod commit_notification_tests {
             .expect("first writer task")
             .expect("first transaction");
         tokio::time::timeout(Duration::from_secs(2), async {
-            while notifications.load(Ordering::Acquire) != 1
-                || table_notifications.load(Ordering::Acquire) != 1
-                || resource_notifications.load(Ordering::Acquire) != 1
+            while notifications.load(Ordering::Acquire) != 2
+                || table_notifications.load(Ordering::Acquire) != 2
+                || resource_notifications.load(Ordering::Acquire) != 2
             {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("abandoned committed write still notifies observers");
-        assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 1);
-        assert_eq!(table_notifications.load(Ordering::Acquire), 1);
-        assert_eq!(resource_notifications.load(Ordering::Acquire), 1);
+        assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 2);
+        assert_eq!(table_notifications.load(Ordering::Acquire), 2);
+        assert_eq!(resource_notifications.load(Ordering::Acquire), 2);
+        assert_eq!(observer_seen_cache_marker.load(Ordering::Acquire), 2);
 
         let reader = store.read().expect("read committed row");
         let count = reader
