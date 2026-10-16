@@ -41,6 +41,7 @@ enum CallSiteGroup {
     RuntimeServerMain,
     RuntimeServicesBrowser,
     RuntimeServicesMonitorRuntimeWiring,
+    RuntimeServicesTerminalDriver,
     RuntimeServicesVoiceProvider,
     FixtureHeld,
     FixtureQueued,
@@ -48,7 +49,7 @@ enum CallSiteGroup {
     Other,
 }
 
-const CALL_SITE_GROUPS: [CallSiteGroup; 15] = [
+const CALL_SITE_GROUPS: [CallSiteGroup; 16] = [
     CallSiteGroup::RuntimeHttpBranches,
     CallSiteGroup::RuntimeHttpHostSecrets,
     CallSiteGroup::RuntimeHttpImports,
@@ -59,6 +60,7 @@ const CALL_SITE_GROUPS: [CallSiteGroup; 15] = [
     CallSiteGroup::RuntimeServerMain,
     CallSiteGroup::RuntimeServicesBrowser,
     CallSiteGroup::RuntimeServicesMonitorRuntimeWiring,
+    CallSiteGroup::RuntimeServicesTerminalDriver,
     CallSiteGroup::RuntimeServicesVoiceProvider,
     CallSiteGroup::FixtureHeld,
     CallSiteGroup::FixtureQueued,
@@ -79,6 +81,7 @@ impl CallSiteGroup {
             "runtime-server/main" => Self::RuntimeServerMain,
             "runtime-services/browser" => Self::RuntimeServicesBrowser,
             "runtime-services/monitor_runtime_wiring" => Self::RuntimeServicesMonitorRuntimeWiring,
+            "runtime-services/terminal_driver" => Self::RuntimeServicesTerminalDriver,
             "runtime-services/voice/provider" => Self::RuntimeServicesVoiceProvider,
             "fixture/held" => Self::FixtureHeld,
             "fixture/queued" => Self::FixtureQueued,
@@ -99,6 +102,7 @@ impl CallSiteGroup {
             Self::RuntimeServerMain => "runtime-server/main",
             Self::RuntimeServicesBrowser => "runtime-services/browser",
             Self::RuntimeServicesMonitorRuntimeWiring => "runtime-services/monitor_runtime_wiring",
+            Self::RuntimeServicesTerminalDriver => "runtime-services/terminal_driver",
             Self::RuntimeServicesVoiceProvider => "runtime-services/voice/provider",
             Self::FixtureHeld => "fixture/held",
             Self::FixtureQueued => "fixture/queued",

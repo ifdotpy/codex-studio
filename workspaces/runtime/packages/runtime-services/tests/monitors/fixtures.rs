@@ -67,19 +67,22 @@ fn rebase_fixture_paths(value: &mut Value, from: &Path, to: &Path) {
     }
 }
 
-pub fn store(root: &Path, name: &str) -> RuntimeStore {
+pub async fn store(root: &Path, name: &str) -> RuntimeStore {
     let target = root.join(name);
     std::fs::create_dir(&target).expect("monitor fixture");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(root.join("template").join(database), target.join(database))
             .expect("monitor fixture");
     }
-    RuntimeStore::open(Some(&target)).expect("monitor fixture")
+    RuntimeStore::open(Some(&target))
+        .await
+        .expect("monitor fixture")
 }
 
-pub fn seed(store: &RuntimeStore, case: &Value) {
+pub async fn seed(store: &RuntimeStore, case: &Value) {
+    let case = case.clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_events", [])?;
             tx.execute("DELETE FROM runtime_monitors", [])?;
             if let Some(events) = case["priorEvents"].as_array() {
@@ -90,6 +93,7 @@ pub fn seed(store: &RuntimeStore, case: &Value) {
             AgentRepository::put(tx, &AgentRecord::from_value(case["actor"].clone())?)?;
             Table::new(tx).put(&MonitorRecord::from_value(case["before"].clone())?)
         })
+        .await
         .expect("monitor fixture");
 }
 

@@ -45,35 +45,55 @@ async fn run(
     let payload_root = state_root.clone();
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/tool_requests",
-        move || {
-            let operation = |tx: &studio_runtime_store::Transaction<'_>| {
+    let value = if cancel {
+        store
+            .transaction_with_error(move |tx| {
                 let action = match (id.as_deref(), cancel) {
                     (Some(id), true) => Action::Cancel(id),
                     (Some(id), false) => Action::Get(id),
                     _ => Action::List,
                 };
-                let value = tool_requests::execute_http(tx, &actor, action, now, &payload_root)?;
-                Ok(value)
-            };
-            if cancel {
-                store.transaction_with_error(operation)
-            } else {
-                match store.read_transaction_with_error(|tx| operation(tx)) {
-                    Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
-                        studio_runtime_store::SqliteError::SqliteFailure(error, _),
-                    ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
-                        store.transaction_with_error(|tx| operation(tx))
-                    }
-                    result => result,
-                }
-            }
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(error)?;
+                tool_requests::execute_http(tx, &actor, action, now, &payload_root)
+            })
+            .await
+            .map_err(error)?
+    } else {
+        let read_store = store.clone();
+        let read_actor = actor.clone();
+        let read_id = id.clone();
+        let read_root = payload_root.clone();
+        let read_result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/tool_requests",
+            move || {
+                read_store.read_transaction_with_error(|tx| {
+                    let action = match (read_id.as_deref(), cancel) {
+                        (Some(id), true) => Action::Cancel(id),
+                        (Some(id), false) => Action::Get(id),
+                        _ => Action::List,
+                    };
+                    tool_requests::execute_http(tx, &read_actor, action, now, &read_root)
+                })
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?;
+        match read_result {
+            Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
+                studio_runtime_store::SqliteError::SqliteFailure(sqlite_error, _),
+            ))) if sqlite_error.code == studio_runtime_store::ErrorCode::ReadOnly => store
+                .transaction_with_error(move |tx| {
+                    let action = match (id.as_deref(), cancel) {
+                        (Some(id), true) => Action::Cancel(id),
+                        (Some(id), false) => Action::Get(id),
+                        _ => Action::List,
+                    };
+                    tool_requests::execute_http(tx, &actor, action, now, &payload_root)
+                })
+                .await
+                .map_err(error)?,
+            result => result.map_err(error)?,
+        }
+    };
     let mut value = resolve_payload_response(&state_root, value)?;
     if let Some(result) = value.get_mut("result") {
         tool_requests::expire(result, now);

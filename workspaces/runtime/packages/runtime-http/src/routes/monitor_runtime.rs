@@ -29,9 +29,11 @@ async fn cancel(
 ) -> Result<Json<Value>, ApiError> {
     if let Some(Extension(runtime)) = runtime {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let result = super::sync_delta::write_external(
+        let id = body.id;
+        let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
+        let result = super::sync_delta::write_external_async(
             store,
-            move || runtime.cancel(&body.id, None, event_write::unix_time()?),
+            move || async move { runtime.cancel(&id, None, now).await },
             error,
         )
         .await?;
@@ -85,26 +87,19 @@ async fn input(
     let input: Input = serde_json::from_value(body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
     if let Some(Extension(runtime)) = runtime {
-        return studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/monitor_runtime",
-            move || runtime.input_http(&id, &input, event_write::unix_time()?),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map(Json)
-        .map_err(error);
+        let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
+        return runtime
+            .input_http(&id, &input, now)
+            .await
+            .map(Json)
+            .map_err(error);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/monitor_runtime",
-        move || {
-            monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map(Json)
-    .map_err(error)
+    let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
+    monitor_runtime::input_without_session(&store, &id, &input, now)
+        .await
+        .map(Json)
+        .map_err(error)
 }
 
 fn error(error: MonitorError) -> ApiError {

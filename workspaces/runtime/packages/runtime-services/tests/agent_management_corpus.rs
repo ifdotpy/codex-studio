@@ -101,7 +101,7 @@ fn template(root: &Path) {
     }
 }
 
-fn seed_store(store: &RuntimeStore, records: &Records) {
+async fn seed_store(store: &RuntimeStore, records: &Records) {
     store
         .transaction(|tx| {
             for (table, rows) in &records.tables {
@@ -143,6 +143,7 @@ fn seed_store(store: &RuntimeStore, records: &Records) {
             }
             Ok(())
         })
+        .await
         .expect("Python records seed into store");
 }
 
@@ -158,70 +159,81 @@ impl CleanupPorts for FakeCleanup {
     }
 }
 
-struct PostCommitCleanup<'a> {
-    store: &'a RuntimeStore,
+struct PostCommitCleanup {
+    store: std::sync::Arc<RuntimeStore>,
 }
-impl LifecyclePorts for PostCommitCleanup<'_> {
+impl LifecyclePorts for PostCommitCleanup {
     fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        let queued = {
-            let reader = self.store.read()?;
-            repository::read(&reader)?
-                .get("runtime_agents")
-                .into_iter()
-                .flatten()
-                .filter(|agent| {
-                    agent
-                        .pointer("/workspaceCleanupIntent/phase")
-                        .and_then(Value::as_str)
-                        == Some("queued")
-                })
-                .map(|agent| {
-                    let action = serde_json::from_value(
+    fn committed(&self) -> agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        let store = std::sync::Arc::clone(&self.store);
+        Box::pin(async move {
+            let queued = {
+                let reader = store.read()?;
+                repository::read(&reader)?
+                    .get("runtime_agents")
+                    .into_iter()
+                    .flatten()
+                    .filter(|agent| {
                         agent
-                            .pointer("/workspaceCleanupIntent/action")
-                            .cloned()
-                            .ok_or(ManagementError::Invalid("Missing cleanup action"))?,
-                    )
-                    .map_err(|_| ManagementError::Invalid("Invalid cleanup action"))?;
-                    let id = agent["id"]
-                        .as_str()
-                        .ok_or(ManagementError::Invalid("Invalid cleanup agent"))?
-                        .to_owned();
-                    Ok::<_, ManagementError>((id, action))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for (id, action) in queued {
-            workspace_cleanup_runtime::cleanup_agent_workspace_with_ports(
-                self.store,
-                &id,
-                action,
-                &FakeCleanup,
-            )
-            .map_err(|_| ManagementError::Unavailable("workspace-cleanup/agent-management"))?;
-        }
-        Ok(())
+                            .pointer("/workspaceCleanupIntent/phase")
+                            .and_then(Value::as_str)
+                            == Some("queued")
+                    })
+                    .map(|agent| {
+                        let action = serde_json::from_value(
+                            agent
+                                .pointer("/workspaceCleanupIntent/action")
+                                .cloned()
+                                .ok_or(ManagementError::Invalid("Missing cleanup action"))?,
+                        )
+                        .map_err(|_| ManagementError::Invalid("Invalid cleanup action"))?;
+                        let id = agent["id"]
+                            .as_str()
+                            .ok_or(ManagementError::Invalid("Invalid cleanup agent"))?
+                            .to_owned();
+                        Ok::<_, ManagementError>((id, action))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for (id, action) in queued {
+                workspace_cleanup_runtime::cleanup_agent_workspace_with_ports(
+                    std::sync::Arc::clone(&store),
+                    id,
+                    action,
+                    std::sync::Arc::new(FakeCleanup),
+                )
+                .await
+                .map_err(|_| ManagementError::Unavailable("workspace-cleanup/agent-management"))?;
+            }
+            Ok(())
+        })
     }
 }
 
-fn run_lifecycle_end_state(case: &Value) -> (Value, Value) {
+async fn run_lifecycle_end_state(case: &Value) -> (Value, Value) {
     let root = tempfile::tempdir().expect("tmpfs test root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("fixture store opens");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("fixture store opens"),
+    );
     let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
-    seed_store(&store, &records);
+    seed_store(&store, &records).await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("lifecycle action");
-    let ports = PostCommitCleanup { store: &store };
+    let ports = std::sync::Arc::new(PostCommitCleanup {
+        store: std::sync::Arc::clone(&store),
+    });
     let result = agent_lifecycle_runtime::execute(
-        &store,
+        std::sync::Arc::clone(&store),
         &action,
         case["now"].as_f64().expect("time"),
-        &ports,
-    );
+        ports,
+    )
+    .await;
     let saved = store.read().expect("read final store");
     let rows = repository::read(&saved).expect("complete final rows");
     let final_state = serde_json::to_value(Records { tables: rows }).expect("serialize final rows");
@@ -238,30 +250,35 @@ impl LifecyclePorts for CrashBeforeCleanup {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        Err(ManagementError::Invalid("simulated cleanup wake loss"))
+    fn committed(&self) -> agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async { Err(ManagementError::Invalid("simulated cleanup wake loss")) })
     }
 }
 
-#[test]
-fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
+#[tokio::test]
+async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
     let case = corpus()
         .into_iter()
         .find(|case| case["name"] == "archive-completed")
         .expect("archive witness");
     let root = tempfile::tempdir().expect("tmpfs test root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("fixture store opens");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("fixture store opens"),
+    );
     let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
-    seed_store(&store, &records);
+    seed_store(&store, &records).await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("archive action");
     assert!(
         agent_lifecycle_runtime::execute(
-            &store,
+            std::sync::Arc::clone(&store),
             &action,
             case["now"].as_f64().expect("time"),
-            &CrashBeforeCleanup,
+            std::sync::Arc::new(CrashBeforeCleanup),
         )
+        .await
         .is_err()
     );
     let saved = store.read().expect("read committed intent");
@@ -281,7 +298,9 @@ fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
     drop(saved);
     drop(store);
 
-    let store = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart store");
     let saved = store.read().expect("read after restart");
     let rows = repository::read(&saved).expect("read restarted rows");
     let worker = rows["runtime_agents"]
@@ -298,8 +317,8 @@ fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
     );
 }
 
-#[test]
-fn python_lifecycle_decisions_and_complete_stored_rows_match() {
+#[tokio::test]
+async fn python_lifecycle_decisions_and_complete_stored_rows_match() {
     let cases = corpus();
     assert!(cases.len() >= 35);
     for case in cases {
@@ -307,7 +326,7 @@ fn python_lifecycle_decisions_and_complete_stored_rows_match() {
             case["action"]["action"].as_str(),
             Some("archive" | "stop" | "delete")
         ) {
-            let (actual_result, actual_records) = run_lifecycle_end_state(&case);
+            let (actual_result, actual_records) = run_lifecycle_end_state(&case).await;
             let mut expected_tables = case["expected"]["records"]["tables"].clone();
             let actual_tables = actual_records["tables"]
                 .as_object()

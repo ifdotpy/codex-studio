@@ -2,7 +2,7 @@
 name = "studio-runtime-store"
 version.workspace = true
 edition.workspace = true
-description = "Synchronous SQLite state store for the Codex Studio runtime"
+description = "Async SQLite state store for the Codex Studio runtime"
 license.workspace = true
 publish.workspace = true
 
@@ -17,6 +17,8 @@ sha2 = { workspace = true }
 studio-runtime-schema = { path = "../runtime-schema" }
 studio-runtime-providers = { path = "../runtime-providers" }
 thiserror = { workspace = true }
+tokio-rusqlite = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

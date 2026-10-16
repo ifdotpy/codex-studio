@@ -54,6 +54,21 @@ pub enum RecoveryOutcome {
     Unconfirmed,
     Applied(Value),
 }
+/// Recovery result metadata produced inside the actor transaction and returned
+/// only after commit. Callers publish stream updates after observing this value.
+#[derive(Clone, Debug)]
+pub struct RecoveryEffectResult {
+    pub outcome: RecoveryOutcome,
+    pub stream_update: Option<crate::notification_dispatch::NotificationStreamBuffer>,
+}
+impl RecoveryEffectResult {
+    pub fn plain(outcome: RecoveryOutcome) -> Self {
+        Self {
+            outcome,
+            stream_update: None,
+        }
+    }
+}
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
     #[error(transparent)]
@@ -74,30 +89,30 @@ pub enum RecoveryError {
 /// receipts in the same transaction as its writes. It must reject stale
 /// connections and preserve unknown operations; it must never send native input.
 /// Terminal effects and their durable replay receipt commit together before ACK.
-pub trait RecoveryEffects {
-    fn apply(
-        &mut self,
-        expected: &RecoverySnapshot,
-        scope: &ConnectionScope,
+pub trait RecoveryEffects: Send {
+    fn apply<'a>(
+        &'a mut self,
+        expected: &'a RecoverySnapshot,
+        scope: &'a ConnectionScope,
         action: RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError>;
+    ) -> futures_util::future::BoxFuture<'a, Result<RecoveryEffectResult, RecoveryError>>;
 }
 
 /// Reconcile a currently observed exact turn or orphan busy flag. Unknown start
 /// operations remain with the account worker's durable receipt recovery.
-pub fn recover_turn(
+pub async fn recover_turn(
     snapshot: &RecoverySnapshot,
     scope: ConnectionScope,
     reader: &mut dyn RecoveryReader,
     effects: &mut dyn RecoveryEffects,
-) -> Result<RecoveryOutcome, RecoveryError> {
+) -> Result<RecoveryEffectResult, RecoveryError> {
     let a = snapshot.record();
     if a.get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default")
         != scope.account
     {
-        return Ok(RecoveryOutcome::Superseded);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
     }
     let eligible = snapshot.eligibility();
     if eligible.unconfirmed_start {
@@ -111,16 +126,18 @@ pub fn recover_turn(
             && !observation.replaced_child(snapshot)
             && !restart_input_wait
         {
-            return effects.apply(
-                snapshot,
-                &scope,
-                RecoveryAction::StartAbsent {
-                    observation,
-                    complete_history: false,
-                    idle_twice: false,
-                    confirmed_not_applied: false,
-                },
-            );
+            return effects
+                .apply(
+                    snapshot,
+                    &scope,
+                    RecoveryAction::StartAbsent {
+                        observation,
+                        complete_history: false,
+                        idle_twice: false,
+                        confirmed_not_applied: false,
+                    },
+                )
+                .await;
         }
         let thread = a["threadId"]
             .as_str()
@@ -130,28 +147,32 @@ pub fn recover_turn(
             .and_then(|items| items.first())
             .and_then(Value::as_str)
             .ok_or(HistoryError::Invalid("events"))?;
-        match read.exact_start_outcome(thread, message) {
+        match read.exact_start_outcome(thread, message).await {
             Ok(crate::recovery_history::ExactStart::Delivered(turn)) => {
-                read.barrier()?;
-                return effects.apply(snapshot, &scope, RecoveryAction::AcceptStart { turn });
+                read.barrier().await?;
+                return effects
+                    .apply(snapshot, &scope, RecoveryAction::AcceptStart { turn })
+                    .await;
             }
             Ok(crate::recovery_history::ExactStart::NotApplied) => {
-                let state = read.thread_document(thread)?;
+                let state = read.thread_document(thread).await?;
                 if !idle(&state["status"]) || crate::event_write::truthy(state.get("activeFlags")) {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
-                read.barrier()?;
+                read.barrier().await?;
                 let observation = read.observation()?;
-                return effects.apply(
-                    snapshot,
-                    &scope,
-                    RecoveryAction::StartAbsent {
-                        observation,
-                        complete_history: true,
-                        idle_twice: true,
-                        confirmed_not_applied: true,
-                    },
-                );
+                return effects
+                    .apply(
+                        snapshot,
+                        &scope,
+                        RecoveryAction::StartAbsent {
+                            observation,
+                            complete_history: true,
+                            idle_twice: true,
+                            confirmed_not_applied: true,
+                        },
+                    )
+                    .await;
             }
             history => {
                 let complete_history =
@@ -159,7 +180,7 @@ pub fn recover_turn(
                 let mut idle_twice = complete_history;
                 if complete_history {
                     for _ in 0..2 {
-                        match read.thread_state(thread) {
+                        match read.thread_state(thread).await {
                             Ok(state)
                                 if idle(&state)
                                     && !crate::event_write::truthy(state.get("activeFlags")) => {}
@@ -170,40 +191,44 @@ pub fn recover_turn(
                         }
                     }
                 }
-                if read.barrier().is_err() {
+                if read.barrier().await.is_err() {
                     idle_twice = false;
                 }
                 let observation = read.observation()?;
-                return effects.apply(
-                    snapshot,
-                    &scope,
-                    RecoveryAction::StartAbsent {
-                        observation,
-                        complete_history,
-                        idle_twice,
-                        confirmed_not_applied: false,
-                    },
-                );
+                return effects
+                    .apply(
+                        snapshot,
+                        &scope,
+                        RecoveryAction::StartAbsent {
+                            observation,
+                            complete_history,
+                            idle_twice,
+                            confirmed_not_applied: false,
+                        },
+                    )
+                    .await;
             }
         }
     }
 
     if !a["inFlight"].as_bool().unwrap_or(false) || crate::event_write::truthy(a.get("deletedAt")) {
-        return Ok(RecoveryOutcome::Skipped);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Skipped));
     }
     let Some(thread) = a["threadId"].as_str().filter(|s| !s.is_empty()) else {
-        return Ok(RecoveryOutcome::Skipped);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Skipped));
     };
     let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
-    let state = read.thread_state(thread)?;
+    let state = read.thread_state(thread).await?;
     if !idle(&state) {
-        return Ok(RecoveryOutcome::Unconfirmed);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
     }
     let action = if eligible.orphan_busy {
-        let page = read.call(
-            HistoryMethod::Turns,
-            json!({"threadId":thread,"limit":1,"sortDirection":"desc"}),
-        )?;
+        let page = read
+            .call(
+                HistoryMethod::Turns,
+                json!({"threadId":thread,"limit":1,"sortDirection":"desc"}),
+            )
+            .await?;
         let rows = page["data"]
             .as_array()
             .ok_or(HistoryError::Invalid("data"))?;
@@ -216,22 +241,22 @@ pub fn recover_turn(
                 || !t["id"].as_str().is_some_and(|s| !s.is_empty())
                 || t.get("threadId").is_some_and(|id| id != thread)
         }) {
-            return Ok(RecoveryOutcome::Unconfirmed);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         }
-        if !idle(&read.thread_state(thread)?) {
-            return Ok(RecoveryOutcome::Unconfirmed);
+        if !idle(&read.thread_state(thread).await?) {
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         }
         RecoveryAction::OrphanIdle { latest }
     } else {
         let Some(turn_id) = a["turnId"].as_str().filter(|s| !s.is_empty()) else {
-            return Ok(RecoveryOutcome::Skipped);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Skipped));
         };
-        let Some(turn) = read.exact_turn(thread, turn_id)? else {
-            return Ok(RecoveryOutcome::Unconfirmed);
+        let Some(turn) = read.exact_turn(thread, turn_id).await? else {
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         };
-        let after = read.thread_state(thread)?;
+        let after = read.thread_state(thread).await?;
         if !idle(&after) || !terminal(&turn) {
-            return Ok(RecoveryOutcome::Unconfirmed);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         }
         RecoveryAction::Terminal {
             turn,
@@ -239,20 +264,20 @@ pub fn recover_turn(
             mode: CompletionMode::ObservedTurn,
         }
     };
-    read.barrier()?;
-    effects.apply(snapshot, &scope, action)
+    read.barrier().await?;
+    effects.apply(snapshot, &scope, action).await
 }
 
 /// Manual connection recovery never restores automatic delivery permission.
 /// Active transport adoption is deliberately left to the worker that owns the
 /// supervisor identity. An active read alone is not a receipt for that child.
-pub fn recover_connection(
+pub async fn recover_connection(
     snapshot: &RecoverySnapshot,
     scope: ConnectionScope,
     reader: &mut dyn RecoveryReader,
     effects: &mut dyn RecoveryEffects,
     automatic: bool,
-) -> Result<RecoveryOutcome, RecoveryError> {
+) -> Result<RecoveryEffectResult, RecoveryError> {
     let e = snapshot.eligibility();
     let a = snapshot.record();
     if a.get("accountKey")
@@ -260,10 +285,10 @@ pub fn recover_connection(
         .unwrap_or("default")
         != scope.account
     {
-        return Ok(RecoveryOutcome::Superseded);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
     }
     if !e.connection {
-        return Ok(RecoveryOutcome::Superseded);
+        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
     }
     let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
     if e.queued_active_wait {
@@ -275,15 +300,15 @@ pub fn recover_connection(
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or(HistoryError::Invalid("turnId"))?;
-        let first_state = read.thread_document(thread)?;
-        let first_turn = latest_turn(&mut read, thread)?;
-        let second_state = read.thread_document(thread)?;
-        let second_turn = latest_turn(&mut read, thread)?;
+        let first_state = read.thread_document(thread).await?;
+        let first_turn = latest_turn(&mut read, thread).await?;
+        let second_state = read.thread_document(thread).await?;
+        let second_turn = latest_turn(&mut read, thread).await?;
         let Some(turn) = second_turn else {
-            return Ok(RecoveryOutcome::Unconfirmed);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         };
         let Some(first_turn) = first_turn else {
-            return Ok(RecoveryOutcome::Unconfirmed);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         };
         let first_native = first_state["status"]["type"].as_str();
         let second_native = second_state["status"]["type"].as_str();
@@ -295,7 +320,7 @@ pub fn recover_connection(
             || crate::event_write::truthy(first_state["status"].get("activeFlags"))
             || crate::event_write::truthy(second_state["status"].get("activeFlags"))
         {
-            return Ok(RecoveryOutcome::Unconfirmed);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
         }
         let action = match (second_native, turn["status"].as_str()) {
             (Some("active"), Some("inProgress" | "running")) => {
@@ -305,21 +330,21 @@ pub fn recover_connection(
                 Some(native_state @ ("idle" | "notLoaded")),
                 Some("completed" | "failed" | "interrupted"),
             ) => {
-                let Some(full_turn) = read.exact_turn(thread, turn_id)? else {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                let Some(full_turn) = read.exact_turn(thread, turn_id).await? else {
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 };
                 if full_turn["status"] != turn["status"] {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
-                let final_state = read.thread_document(thread)?;
-                let final_turn = latest_turn(&mut read, thread)?;
+                let final_state = read.thread_document(thread).await?;
+                let final_turn = latest_turn(&mut read, thread).await?;
                 if final_state["status"]["type"] != json!(second_native)
                     || crate::event_write::truthy(final_state["status"].get("activeFlags"))
                     || final_turn.as_ref().is_none_or(|latest| {
                         latest["id"] != turn_id || latest["status"] != turn["status"]
                     })
                 {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 RecoveryAction::Terminal {
                     turn: full_turn,
@@ -327,10 +352,10 @@ pub fn recover_connection(
                     mode: CompletionMode::QueuedActiveWait,
                 }
             }
-            _ => return Ok(RecoveryOutcome::Unconfirmed),
+            _ => return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed)),
         };
-        read.barrier()?;
-        return effects.apply(snapshot, &scope, action);
+        read.barrier().await?;
+        return effects.apply(snapshot, &scope, action).await;
     }
     let action = if e.preparation || e.disconnected_preparation {
         RecoveryAction::RestorePreparation {
@@ -341,7 +366,7 @@ pub fn recover_connection(
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or(HistoryError::Invalid("threadId"))?;
-        let before = read.thread_state(thread)?;
+        let before = read.thread_state(thread).await?;
         if !e.restart_turn && !idle(&before) {
             RecoveryAction::RecordCheck {
                 native_state: before["type"].clone(),
@@ -357,8 +382,8 @@ pub fn recover_connection(
                 .as_str()
                 .filter(|s| !s.is_empty())
                 .ok_or(HistoryError::Invalid("turnId"))?;
-            let turn = read.exact_turn(thread, target)?;
-            let after = read.thread_state(thread)?;
+            let turn = read.exact_turn(thread, target).await?;
+            let after = read.thread_state(thread).await?;
             let turn_status = turn
                 .as_ref()
                 .map(|t| t["status"].clone())
@@ -390,14 +415,19 @@ pub fn recover_connection(
             }
         }
     };
-    read.barrier()?;
-    effects.apply(snapshot, &scope, action)
+    read.barrier().await?;
+    effects.apply(snapshot, &scope, action).await
 }
-fn latest_turn(read: &mut HistoryRead<'_>, thread: &str) -> Result<Option<Value>, HistoryError> {
-    let page = read.call(
-        HistoryMethod::Turns,
-        json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
-    )?;
+async fn latest_turn(
+    read: &mut HistoryRead<'_>,
+    thread: &str,
+) -> Result<Option<Value>, HistoryError> {
+    let page = read
+        .call(
+            HistoryMethod::Turns,
+            json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
+        )
+        .await?;
     let rows = page["data"]
         .as_array()
         .ok_or(HistoryError::Invalid("data"))?;

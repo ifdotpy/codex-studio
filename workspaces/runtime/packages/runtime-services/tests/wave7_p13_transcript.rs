@@ -2,15 +2,15 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, sync::Arc};
 use studio_runtime_services::{
     transcript,
     transcript_runtime::{self, PageRequest},
 };
 use studio_runtime_store::RuntimeStore;
 
-#[test]
-fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
+#[tokio::test]
+async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
     let root = tempfile::tempdir().expect("isolated state");
     let environment = prepared_python::IsolatedTestEnvironment::new();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -44,8 +44,11 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
     );
     let mut fault_count = 0;
     for case in cases {
-        let mut store = RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-            .expect("Python store");
+        let mut store = Arc::new(
+            RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                .await
+                .expect("Python store"),
+        );
         if let Some(expected) = case["pageError"].as_str() {
             let before = sync_snapshot(&store);
             let error =
@@ -89,7 +92,7 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
             }
         }
         if let Some(append) = case.get("append") {
-            let barrier = std::sync::Barrier::new(2);
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
             let request = PageRequest {
                 after: append["request"]["after"].as_str().map(str::to_owned),
                 limit: Some(1),
@@ -99,28 +102,35 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
                 transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
                     .expect("page and revision before append");
             assert_eq!(before_snapshot.0, append["before"]);
-            std::thread::scope(|scope| {
-                let writer = scope.spawn(|| {
-                    barrier.wait();
-                    store.transaction(|tx| {
-                        tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES (?1,'agent',?2,?3)", rusqlite::params![append["record"]["id"].as_str(), append["created"].as_f64(), append["record"].to_string()])?;
+            let writer_store = Arc::clone(&store);
+            let writer_barrier = Arc::clone(&barrier);
+            let record = append["record"].clone();
+            let created = append["created"].as_f64().expect("created");
+            let writer = tokio::spawn(async move {
+                writer_barrier.wait().await;
+                writer_store
+                    .transaction(move |tx| {
+                        tx.execute(
+                            "INSERT INTO runtime_items(id,agent,created,record) VALUES (?1,'agent',?2,?3)",
+                            rusqlite::params![record["id"].as_str(), created, record.to_string()],
+                        )?;
                         Ok(())
-                    }).expect("concurrent append");
-                });
-                barrier.wait();
-                let snapshot =
-                    transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
-                        .expect("snapshot page and revision");
-                writer.join().expect("writer joined");
-                let after_snapshot =
-                    transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
-                        .expect("page and revision after append");
-                assert_eq!(after_snapshot.0, append["after"]);
-                assert!(
-                    snapshot == before_snapshot || snapshot == after_snapshot,
-                    "page and transcript revision came from different committed snapshots"
-                );
+                    })
+                    .await
+                    .expect("concurrent append");
             });
+            barrier.wait().await;
+            let snapshot = transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
+                .expect("snapshot page and revision");
+            writer.await.expect("writer joined");
+            let after_snapshot =
+                transcript_runtime::page_at_snapshot(&store, "agent", &request, 1000.0)
+                    .expect("page and revision after append");
+            assert_eq!(after_snapshot.0, append["after"]);
+            assert!(
+                snapshot == before_snapshot || snapshot == after_snapshot,
+                "page and transcript revision came from different committed snapshots"
+            );
         }
         for page in case["pages"].as_array().expect("pages") {
             let req = &page["request"];
@@ -165,13 +175,18 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
             );
         }
         if case["phase"] == "reasoning" {
-            let first = transcript::pull_scope(&store, "transcript:agent", "agent", 0)
+            let first = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+                .await
                 .expect("first reasoning pull");
             let committed = sync_snapshot(&store);
             drop(store);
-            store = RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-                .expect("reasoning restart");
-            let replay = transcript::pull_scope(&store, "transcript:agent", "agent", 0)
+            store = Arc::new(
+                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                    .await
+                    .expect("reasoning restart"),
+            );
+            let replay = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+                .await
                 .expect("lost response retry");
             assert_eq!(
                 replay, first,
@@ -222,15 +237,24 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
                         let condition = if operation == "CACHE" { " AND NEW.payload IS NOT NULL" } else { "" };
                         tx.execute_batch(&format!("CREATE TEMP TRIGGER p13_fail {timing} {sql_operation} ON sync_entities WHEN {row}.collection='transcript:agent' AND {row}.id='{literal}'{condition} BEGIN SELECT RAISE(ABORT,'p13 failpoint'); END;"))?;
                         Ok(())
-                    }).expect("install failpoint");
+                    }).await.expect("install failpoint");
                     assert!(
-                        transcript::pull_scope(&store, "transcript:agent", "agent", after).is_err(),
+                        transcript::pull_scope(
+                            Arc::clone(&store),
+                            "transcript:agent",
+                            "agent",
+                            after
+                        )
+                        .await
+                        .is_err(),
                         "{timing} {operation} {identity}"
                     );
                     drop(store);
-                    store =
+                    store = Arc::new(
                         RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-                            .expect("restart after failed sync write");
+                            .await
+                            .expect("restart after failed sync write"),
+                    );
                     assert_eq!(
                         sync_snapshot(&store),
                         before,
@@ -243,18 +267,29 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
             store.transaction(|tx| {
                 tx.execute_batch("CREATE TEMP TABLE p13_parent(id INTEGER PRIMARY KEY); CREATE TEMP TABLE p13_commit(id INTEGER REFERENCES p13_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TEMP TRIGGER p13_commit_fail AFTER UPDATE ON sync_entities WHEN NEW.collection='transcript:agent' AND NEW.id='@revision' BEGIN INSERT INTO p13_commit VALUES(1); END;")?;
                 Ok(())
-            }).expect("commit fault");
-            assert!(transcript::pull_scope(&store, "transcript:agent", "agent", after).is_err());
+            }).await.expect("commit fault");
+            assert!(
+                transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
+                    .await
+                    .is_err()
+            );
             drop(store);
-            store = RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-                .expect("restart after commit failure");
+            store = Arc::new(
+                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                    .await
+                    .expect("restart after commit failure"),
+            );
             assert_eq!(sync_snapshot(&store), before, "commit failure leaked rows");
             let got =
-                transcript::pull_scope(&store, "transcript:agent", "agent", after).expect("pull");
+                transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
+                    .await
+                    .expect("pull");
             assert_pull(&got, expected);
             let committed = sync_snapshot(&store);
-            let replay = transcript::pull_scope(&store, "transcript:agent", "agent", after)
-                .expect("original cursor retry");
+            let replay =
+                transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
+                    .await
+                    .expect("original cursor retry");
             assert_eq!(replay, got, "original cursor response changed");
             assert_eq!(
                 sync_snapshot(&store),
@@ -263,10 +298,14 @@ fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
             );
             let seq = got["checkpoint"]["seq"].as_i64().expect("cursor");
             drop(store);
-            let store = RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-                .expect("restart");
-            let next =
-                transcript::pull_scope(&store, "transcript:agent", "agent", seq).expect("replay");
+            let store = Arc::new(
+                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                    .await
+                    .expect("restart"),
+            );
+            let next = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", seq)
+                .await
+                .expect("replay");
             assert_eq!(next["documents"], json!([]));
             assert_eq!(next["checkpoint"], got["checkpoint"]);
         }

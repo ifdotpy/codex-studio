@@ -51,11 +51,20 @@ pub enum CheckSubmission {
 /// Reconciliation includes native ticket receipts, not only monitor-row existence.
 pub trait RuleMonitor {
     fn available(&self) -> bool;
-    fn launch(&self, check: &RuleCheck) -> CheckSubmission;
-    fn reconcile(&self, _check: &RuleCheck) -> CheckReconciliation {
-        CheckReconciliation::Unknown
+    fn launch<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission>;
+    fn reconcile<'a>(
+        &'a self,
+        _check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckReconciliation> {
+        Box::pin(async { CheckReconciliation::Unknown })
     }
-    fn cancel(&self, monitor_id: &str) -> Result<(), RulesTickError>;
+    fn cancel<'a>(
+        &'a self,
+        monitor_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>>;
 }
 
 pub struct UnavailableMonitor;
@@ -63,37 +72,61 @@ impl RuleMonitor for UnavailableMonitor {
     fn available(&self) -> bool {
         false
     }
-    fn launch(&self, _check: &RuleCheck) -> CheckSubmission {
-        CheckSubmission::Unknown
+    fn launch<'a>(
+        &'a self,
+        _check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+        Box::pin(async { CheckSubmission::Unknown })
     }
-    fn cancel(&self, _monitor_id: &str) -> Result<(), RulesTickError> {
-        Err(RulesTickError::MonitorUnavailable)
+    fn cancel<'a>(
+        &'a self,
+        _monitor_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+        Box::pin(async { Err(RulesTickError::MonitorUnavailable) })
     }
 }
 
 pub trait RuleFiles {
-    fn fingerprint(&self, path: &str) -> Result<Option<(i64, u64, u64)>, RulesTickError>;
+    fn fingerprint<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>>;
 }
 
 pub struct LocalRuleFiles;
 impl RuleFiles for LocalRuleFiles {
-    fn fingerprint(&self, path: &str) -> Result<Option<(i64, u64, u64)>, RulesTickError> {
-        match std::fs::metadata(Path::new(path)) {
-            #[cfg(unix)]
-            Ok(metadata) => {
-                use std::os::unix::fs::MetadataExt;
-                let nanos = metadata
-                    .mtime()
-                    .checked_mul(1_000_000_000)
-                    .and_then(|seconds| seconds.checked_add(metadata.mtime_nsec()))
-                    .ok_or(RulesTickError::File)?;
-                Ok(Some((nanos, metadata.len(), metadata.ino())))
-            }
-            #[cfg(not(unix))]
-            Ok(_) => Err(RulesTickError::File),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(RulesTickError::File),
+    fn fingerprint<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>> {
+        Box::pin(async move {
+            let path = path.to_owned();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/rules_tick",
+                move || fingerprint_path(&path),
+            )
+            .await
+            .map_err(|_| RulesTickError::File)?
+        })
+    }
+}
+
+fn fingerprint_path(path: &str) -> Result<Option<(i64, u64, u64)>, RulesTickError> {
+    match std::fs::metadata(Path::new(path)) {
+        #[cfg(unix)]
+        Ok(metadata) => {
+            use std::os::unix::fs::MetadataExt;
+            let nanos = metadata
+                .mtime()
+                .checked_mul(1_000_000_000)
+                .and_then(|seconds| seconds.checked_add(metadata.mtime_nsec()))
+                .ok_or(RulesTickError::File)?;
+            Ok(Some((nanos, metadata.len(), metadata.ino())))
         }
+        #[cfg(not(unix))]
+        Ok(_) => Err(RulesTickError::File),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(RulesTickError::File),
     }
 }
 
@@ -107,7 +140,7 @@ pub struct TickReport {
 
 /// A timer invokes batches until next_rowid is None, then starts its next scan at 0.
 /// Sampling is optimistic: an edit or owner-permission change discards its old sample.
-pub fn tick_batch(
+pub async fn tick_batch(
     store: &RuntimeStore,
     after_rowid: i64,
     now: f64,
@@ -123,41 +156,47 @@ pub fn tick_batch(
     };
     for row in rows {
         let sampled = load_snapshot(&*store.read()?, row.rule)?;
-        let fingerprint = sampled
-            .fingerprint_path(now)
-            .map(|path| files.fingerprint(path))
-            .transpose()?;
-        let check = store.transaction_with::<_, RulesTickError>(|transaction| {
-            let Some(rule) = RulesRepository::get(transaction, sampled.id())? else {
-                return Ok(None);
-            };
-            let owner = owner(transaction, sampled.owner_id())?;
-            if !sampled.current(rule.value(), &owner.value()) {
-                return Ok(None);
-            }
-            let activity = if sampled.is_low_workers() {
-                let raw = RulesTickRepository::activity(transaction, sampled.owner_id())?;
-                Some(active_workers(&raw.agents, &raw.monitors)?)
-            } else {
-                None
-            };
-            let decision = sampled.tick(
-                now,
-                TickObservation {
-                    fingerprint,
-                    active_workers: activity,
-                },
-            )?;
-            if decision.check.is_some() && !monitor.available() {
-                return Err(RulesTickError::MonitorUnavailable);
-            }
-            if apply(transaction, &owner, &decision, now)? {
-                report.changed += 1;
-            }
-            Ok(decision.check)
-        })?;
+        let fingerprint = if let Some(path) = sampled.fingerprint_path(now) {
+            files.fingerprint(path).await?
+        } else {
+            None
+        };
+        let available = monitor.available();
+        let Some((changed, check)) = store
+            .transaction_with::<_, RulesTickError>(move |transaction| {
+                let Some(rule) = RulesRepository::get(transaction, sampled.id())? else {
+                    return Ok(None);
+                };
+                let owner = owner(transaction, sampled.owner_id())?;
+                if !sampled.current(rule.value(), &owner.value()) {
+                    return Ok(None);
+                }
+                let activity = if sampled.is_low_workers() {
+                    let raw = RulesTickRepository::activity(transaction, sampled.owner_id())?;
+                    Some(active_workers(&raw.agents, &raw.monitors)?)
+                } else {
+                    None
+                };
+                let decision = sampled.tick(
+                    now,
+                    TickObservation {
+                        fingerprint: Some(fingerprint),
+                        active_workers: activity,
+                    },
+                )?;
+                if decision.check.is_some() && !available {
+                    return Err(RulesTickError::MonitorUnavailable);
+                }
+                let changed = apply(transaction, &owner, &decision, now)?;
+                Ok(Some((changed, decision.check)))
+            })
+            .await?
+        else {
+            continue;
+        };
+        report.changed += usize::from(changed);
         if let Some(check) = check
-            && submit_check(store, &check, now, monitor)?
+            && submit_check(store, &check, now, monitor).await?
         {
             report.launched += 1;
         }
@@ -167,7 +206,7 @@ pub fn tick_batch(
 
 /// Run before enabling ticks. Reconcile durable intents outside the writer, then
 /// revalidate their exact reservation inside it. Legacy checks remain unknown.
-pub fn recover_batch(
+pub async fn recover_batch(
     store: &RuntimeStore,
     after_rowid: i64,
     now: f64,
@@ -185,32 +224,41 @@ pub fn recover_batch(
         let intent = launch_intent(&sampled)?;
         let state = match &intent {
             Some(check) if sampled.launch_allowed(check) && monitor.available() => {
-                monitor.reconcile(check)
+                monitor.reconcile(check).await
             }
             _ => CheckReconciliation::Unknown,
         };
-        let check = store.transaction_with::<_, RulesTickError>(|tx| {
-            let Some(rule) = RulesRepository::get(tx, sampled.id())? else {
-                return Ok(None);
-            };
-            let owner = owner(tx, sampled.owner_id())?;
-            if !sampled.current(rule.value(), &owner.value()) {
-                return Ok(None);
-            }
-            if let Some(check) = &intent
-                && sampled.launch_allowed(check)
-            {
-                match state {
-                    CheckReconciliation::NotSubmitted => return Ok(Some(check.clone())),
-                    CheckReconciliation::Submitted => return Ok(None),
-                    CheckReconciliation::Unknown => {}
+        let intent_for_tx = intent.clone();
+        let Some((changed, check)) = store
+            .transaction_with::<_, RulesTickError>(move |tx| {
+                let Some(rule) = RulesRepository::get(tx, sampled.id())? else {
+                    return Ok(None);
+                };
+                let owner = owner(tx, sampled.owner_id())?;
+                if !sampled.current(rule.value(), &owner.value()) {
+                    return Ok(None);
                 }
-            }
-            report.changed += usize::from(apply(tx, &owner, &sampled.recover(now)?, now)?);
-            Ok(None)
-        })?;
+                if let Some(check) = &intent_for_tx
+                    && sampled.launch_allowed(check)
+                {
+                    match state {
+                        CheckReconciliation::NotSubmitted => {
+                            return Ok(Some((false, Some(check.clone()))));
+                        }
+                        CheckReconciliation::Submitted => return Ok(None),
+                        CheckReconciliation::Unknown => {}
+                    }
+                }
+                let changed = apply(tx, &owner, &sampled.recover(now)?, now)?;
+                Ok(Some((changed, None)))
+            })
+            .await?
+        else {
+            continue;
+        };
+        report.changed += usize::from(changed);
         if let Some(check) = check
-            && submit_check(store, &check, now, monitor)?
+            && submit_check(store, &check, now, monitor).await?
         {
             report.launched += 1;
         }
@@ -220,7 +268,7 @@ pub fn recover_batch(
 
 /// Timer, recovery and event callers use this only AFTER their reservation commits.
 /// The monitor port closes the final ownership race and deduplicates by monitor ID.
-pub fn submit_check(
+pub async fn submit_check(
     store: &RuntimeStore,
     check: &RuleCheck,
     now: f64,
@@ -229,17 +277,21 @@ pub fn submit_check(
     if !monitor.available() {
         return Err(RulesTickError::MonitorUnavailable);
     }
-    let current = store.transaction_with::<_, RulesTickError>(|tx| {
-        let Some(rule) = RulesRepository::get(tx, &check.rule_id)? else {
-            return Ok(false);
-        };
-        let snapshot = load_snapshot(tx, rule)?;
-        Ok(snapshot.launch_allowed(check) && launch_intent(&snapshot)?.as_ref() == Some(check))
-    })?;
+    let check_for_tx = check.clone();
+    let current = store
+        .transaction_with::<_, RulesTickError>(move |tx| {
+            let Some(rule) = RulesRepository::get(tx, &check_for_tx.rule_id)? else {
+                return Ok(false);
+            };
+            let snapshot = load_snapshot(tx, rule)?;
+            Ok(snapshot.launch_allowed(&check_for_tx)
+                && launch_intent(&snapshot)?.as_ref() == Some(&check_for_tx))
+        })
+        .await?;
     if !current {
         return Ok(false);
     }
-    match monitor.launch(check) {
+    match monitor.launch(check).await {
         CheckSubmission::Accepted => {}
         CheckSubmission::NotSubmitted { error } => {
             finish(
@@ -252,25 +304,29 @@ pub fn submit_check(
                     output: "",
                 },
                 now,
-            )?;
+            )
+            .await?;
         }
         CheckSubmission::Unknown => {
-            store.transaction_with::<_, RulesTickError>(|tx| {
-                let Some(rule) = RulesRepository::get(tx, &check.rule_id)? else {
-                    return Ok(());
-                };
-                let snapshot = load_snapshot(tx, rule)?;
-                if snapshot.launch_allowed(check) {
-                    let mut decision = snapshot.recover(now)?;
-                    if let Some(record) = &mut decision.record {
-                        record["error"] = serde_json::json!(
-                            "Monitor submission outcome unknown; check was not repeated."
-                        );
+            let check_for_tx = check.clone();
+            store
+                .transaction_with::<_, RulesTickError>(move |tx| {
+                    let Some(rule) = RulesRepository::get(tx, &check_for_tx.rule_id)? else {
+                        return Ok(());
+                    };
+                    let snapshot = load_snapshot(tx, rule)?;
+                    if snapshot.launch_allowed(&check_for_tx) {
+                        let mut decision = snapshot.recover(now)?;
+                        if let Some(record) = &mut decision.record {
+                            record["error"] = serde_json::json!(
+                                "Monitor submission outcome unknown; check was not repeated."
+                            );
+                        }
+                        apply(tx, &owner(tx, snapshot.owner_id())?, &decision, now)?;
                     }
-                    apply(tx, &owner(tx, snapshot.owner_id())?, &decision, now)?;
-                }
-                Ok(())
-            })?;
+                    Ok(())
+                })
+                .await?;
         }
     }
     Ok(true)
@@ -295,13 +351,32 @@ fn launch_intent(snapshot: &RuleSnapshot) -> Result<Option<RuleCheck>, RulesTick
         })
 }
 
-pub fn finish(
+pub async fn finish(
     store: &RuntimeStore,
     check: &RuleCheck,
     result: CheckResult<'_>,
     now: f64,
 ) -> Result<bool, RulesTickError> {
-    store.transaction_with(|transaction| finish_in_transaction(transaction, check, result, now))
+    let error = result.error.map(str::to_owned);
+    let output = result.output.to_owned();
+    let code = result.code;
+    let cancelled = result.cancelled;
+    let check = check.clone();
+    store
+        .transaction_with(move |transaction| {
+            finish_in_transaction(
+                transaction,
+                &check,
+                CheckResult {
+                    code,
+                    error: error.as_deref(),
+                    cancelled,
+                    output: &output,
+                },
+                now,
+            )
+        })
+        .await
 }
 
 /// Monitor completion calls this inside its own transaction before acknowledging a receipt.

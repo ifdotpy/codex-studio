@@ -87,12 +87,14 @@ fn due_rule_case() -> Value {
     rule_case("interval-boundary--1")
 }
 
-#[test]
-fn runtime_ticks_match_complete_python_rows_and_events() {
+#[tokio::test]
+async fn runtime_ticks_match_complete_python_rows_and_events() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "ticks"));
-    monitor_runtime::recover_on_startup(&store, 2000.0).expect("server startup recovery");
+    let store = Arc::new(fixtures::store(root.path(), "ticks").await);
+    monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("server startup recovery");
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
     let mut count = 0;
@@ -111,8 +113,8 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
         {
             continue;
         }
-        fixtures::seed(&store, case);
-        runtime.tick(2000.0).expect("tick");
+        fixtures::seed(&store, case).await;
+        runtime.tick(2000.0).await.expect("tick");
         assert_eq!(
             record(&store, case["before"]["id"].as_str().expect("id")),
             case["after"],
@@ -139,17 +141,19 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
     assert!(count >= 4);
 }
 
-#[test]
-fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
+#[tokio::test]
+async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "monitor-output-queue");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "monitor-output-queue").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
         .expect("account");
+    let id_for_enqueue = id.to_owned();
+    let account_for_enqueue = account.to_owned();
     let first = json!({
         "processId": id,
         "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"one")
@@ -159,11 +163,26 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
         "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"two")
     });
     store
-        .transaction_with(|tx| {
-            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 11, &first)?;
-            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 12, &second)?;
+        .transaction_with(move |tx| {
+            monitor_event_queue::enqueue_output_in_transaction(
+                tx,
+                &id_for_enqueue,
+                &account_for_enqueue,
+                7,
+                11,
+                &first,
+            )?;
+            monitor_event_queue::enqueue_output_in_transaction(
+                tx,
+                &id_for_enqueue,
+                &account_for_enqueue,
+                7,
+                12,
+                &second,
+            )?;
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
+        .await
         .expect("enqueue output in provider receipt transaction");
 
     let first_delivery = monitor_event_queue::next(&store)
@@ -178,7 +197,9 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
         .expect("replay output queue")
         .expect("same first output");
     assert_eq!(replay.cursor, first_delivery.cursor);
-    monitor_event_queue::acknowledge(&store, &first_delivery).expect("ack first output");
+    monitor_event_queue::acknowledge(&store, &first_delivery)
+        .await
+        .expect("ack first output");
 
     let second_delivery = monitor_event_queue::next(&store)
         .expect("read second output")
@@ -188,11 +209,16 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
         &second_delivery.event,
         MonitorEvent::Output { offset: 3, bytes } if bytes == b"two"
     ));
-    monitor_event_queue::acknowledge(&store, &second_delivery).expect("ack second output");
-    monitor_event_queue::acknowledge(&store, &second_delivery).expect("idempotent exact ACK");
+    monitor_event_queue::acknowledge(&store, &second_delivery)
+        .await
+        .expect("ack second output");
+    monitor_event_queue::acknowledge(&store, &second_delivery)
+        .await
+        .expect("idempotent exact ACK");
     let operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
+        .await
         .expect("enqueue definitive result behind output");
     let exit = monitor_event_queue::next(&store)
         .expect("read result queue")
@@ -202,11 +228,15 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
         exit.event,
         MonitorEvent::Exit { code: Some(0), .. }
     ));
-    monitor_event_queue::acknowledge(&store, &exit).expect("ack exit");
+    monitor_event_queue::acknowledge(&store, &exit)
+        .await
+        .expect("ack exit");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
+        .await
         .expect("replay acknowledged result without duplicating it");
     let probe_result = json!({"exitCode":1,"output":"still responsive"});
     monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
+        .await
         .expect("enqueue completed liveness probe");
     let probe = monitor_event_queue::next(&store)
         .expect("read probe queue")
@@ -216,8 +246,11 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
         &probe.event,
         MonitorEvent::Probe { generation: 8, result } if result == &probe_result
     ));
-    monitor_event_queue::acknowledge(&store, &probe).expect("ack probe");
+    monitor_event_queue::acknowledge(&store, &probe)
+        .await
+        .expect("ack probe");
     monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
+        .await
         .expect("replay acknowledged probe without duplicating it");
     assert!(
         monitor_event_queue::next(&store)
@@ -226,33 +259,38 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     );
 }
 
-#[test]
-fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
+#[tokio::test]
+async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     let root = fixtures::tempdir();
     let monitor_cases = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "rule-retry"));
-    fixtures::seed(&store, &running(&monitor_cases));
+    let store = Arc::new(fixtures::store(root.path(), "rule-retry").await);
+    fixtures::seed(&store, &running(&monitor_cases)).await;
     let rule_case = due_rule_case();
     let rule = rule_case["rule"].clone();
     let rule_id = rule["id"].as_str().expect("rule id").to_owned();
     let now = rule_case["now"].as_f64().expect("rule time");
+    let owner = AgentRecord::from_value(rule_case["owner"].clone()).expect("rule owner");
     store
-        .transaction(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(rule_case["owner"].clone())?)?;
+        .transaction(move |tx| {
+            AgentRepository::put(tx, &owner)?;
             RulesRepository::put(tx, &RuleRecord::from_value(rule)?)
         })
+        .await
         .expect("seed due rule and owner");
 
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
-    runtime.tick(now).expect("startup rule reconciliation");
+    runtime
+        .tick(now)
+        .await
+        .expect("startup rule reconciliation");
     *port.rule_available.lock().expect("rule availability") = true;
     port.availability_overrides
         .lock()
         .expect("rule availability")
         .extend([true, false]);
 
-    assert!(runtime.tick(now + 1.0).is_err());
+    assert!(runtime.tick(now + 1.0).await.is_err());
     assert_eq!(rule_record(&store, &rule_id)["inFlight"], true);
     let reserved = rule_record(&store, &rule_id)["launchIntent"].clone();
     assert!(runtime.last_tick_error().is_some());
@@ -263,6 +301,7 @@ fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
         .expect("reconcile proof") = true;
     runtime
         .tick(now + 2.0)
+        .await
         .expect("retry reconciles saved launch intent");
     assert!(runtime.last_tick_error().is_none());
     let launches = port.rule_checks.lock().expect("rule checks");
@@ -273,39 +312,44 @@ fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     );
 }
 
-#[test]
-fn event_submission_failure_recovers_the_committed_launch_intent() {
+#[tokio::test]
+async fn event_submission_failure_recovers_the_committed_launch_intent() {
     use studio_runtime_services::rules_tick::{self, RuleEvent};
 
     let root = fixtures::tempdir();
     let monitor_cases = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "event-rule-retry"));
-    fixtures::seed(&store, &running(&monitor_cases));
+    let store = Arc::new(fixtures::store(root.path(), "event-rule-retry").await);
+    fixtures::seed(&store, &running(&monitor_cases)).await;
     let event_case = rule_case("event-work_review");
     let event = event_case["event"].clone();
+    let event_kind = event["kind"].as_str().expect("event kind").to_owned();
+    let event_text = event["text"].as_str().expect("event text").to_owned();
+    let event_key = event["key"].as_str().expect("event key").to_owned();
+    let event_now = event_case["now"].as_f64().expect("event time");
     let owner = AgentRecord::from_value(event_case["owner"].clone()).expect("event owner");
     let mut event_rule = event_case["rule"].clone();
     event_rule["event"] = event["kind"].clone();
     event_rule["command"] = json!("printf marker");
     let rule = RuleRecord::from_value(event_rule).expect("event rule");
     let check = store
-        .transaction_with::<_, rules_tick::RulesTickError>(|tx| {
+        .transaction_with::<_, rules_tick::RulesTickError>(move |tx| {
             AgentRepository::put(tx, &owner)?;
             RulesRepository::put(tx, &rule)?;
             let (_, checks) = rules_tick::event_in_transaction(
                 tx,
                 RuleEvent {
                     agent_id: "owner",
-                    kind: event["kind"].as_str().expect("event kind"),
-                    text: event["text"].as_str().expect("event text"),
-                    key: event["key"].as_str().expect("event key"),
-                    now: event_case["now"].as_f64().expect("event time"),
+                    kind: &event_kind,
+                    text: &event_text,
+                    key: &event_key,
+                    now: event_now,
                 },
                 0,
                 true,
             )?;
             Ok(checks.into_iter().next().expect("event launch check"))
         })
+        .await
         .expect("event transaction commits its launch intent");
     let reserved = rule_record(&store, &check.rule_id)["launchIntent"].clone();
 
@@ -317,6 +361,7 @@ fn event_submission_failure_recovers_the_committed_launch_intent() {
                 std::slice::from_ref(&check),
                 event_case["now"].as_f64().expect("event time")
             )
+            .await
             .is_err()
     );
     assert_eq!(rule_record(&store, &check.rule_id)["inFlight"], true);
@@ -329,6 +374,7 @@ fn event_submission_failure_recovers_the_committed_launch_intent() {
         .expect("rule reconciliation") = true;
     runtime
         .tick(event_case["now"].as_f64().expect("event time") + 1.0)
+        .await
         .expect("tick recovers committed event launch");
     assert_eq!(
         rule_record(&store, &check.rule_id)["launchIntent"],
@@ -341,8 +387,8 @@ fn event_submission_failure_recovers_the_committed_launch_intent() {
     );
 }
 
-#[test]
-fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
+#[tokio::test]
+async fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
@@ -361,8 +407,9 @@ fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
     };
     for table in tables {
         for boundary in ["BEFORE", "AFTER"] {
-            let store = Arc::new(fixtures::store(root.path(), &format!("{table}-{boundary}")));
-            fixtures::seed(&store, &case);
+            let store =
+                Arc::new(fixtures::store(root.path(), &format!("{table}-{boundary}")).await);
+            fixtures::seed(&store, &case).await;
             let id = case["before"]["id"].as_str().expect("id");
             let receipt = ResultReceipt {
                 version: 1,
@@ -375,26 +422,27 @@ fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
                 finished: 2000.0,
             };
             monitor_receipts::persist(store.root(), &receipt).expect("native receipt before DB");
-            store.transaction(|tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).expect("failure");
+            store.transaction(move |tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).await.expect("failure");
             let port = Arc::new(Port::default());
             assert!(
-                runtime(&store, &port).tick(2000.0).is_err(),
+                runtime(&store, &port).tick(2000.0).await.is_err(),
                 "{table}/{boundary}"
             );
             assert_eq!(record(&store, id), case["before"]);
             assert_eq!(fixtures::events(&store), json!([]));
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                     Ok(())
                 })
+                .await
                 .expect("release");
             let path = store.root().to_path_buf();
             drop(store);
-            let store = Arc::new(RuntimeStore::open(Some(&path)).expect("restart"));
+            let store = Arc::new(RuntimeStore::open(Some(&path)).await.expect("restart"));
             let runtime = runtime(&store, &port);
-            runtime.tick(2000.0).expect("recover before stall");
-            runtime.tick(2000.0).expect("repeat");
+            runtime.tick(2000.0).await.expect("recover before stall");
+            runtime.tick(2000.0).await.expect("repeat");
             assert_eq!(record(&store, id)["status"], "completed");
             assert_eq!(fixtures::events(&store), case["events"]);
             assert!(port.submitted.lock().expect("submissions").is_empty());
@@ -402,8 +450,8 @@ fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
     }
 }
 
-#[test]
-fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_restart() {
+#[tokio::test]
+async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_restart() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -411,8 +459,8 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
         .as_str()
         .expect("monitor id")
         .to_owned();
-    let store = fixtures::store(root.path(), "lifecycle-cancel");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "lifecycle-cancel").await;
+    fixtures::seed(&store, &case).await;
     let reader = store.read().expect("prepare lifecycle room snapshot");
     let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
         .expect("prepare room directory before transaction");
@@ -441,13 +489,18 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
 
     let path = store.root().to_owned();
     drop(store);
-    let store = Arc::new(RuntimeStore::open(Some(&path)).expect("restart store"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(&path))
+            .await
+            .expect("restart store"),
+    );
     let pending = monitor_driver::pending_cancel_ids(&store, 2000.0).expect("pending IDs");
     assert_eq!(pending.as_slice(), std::slice::from_ref(&id));
 
     let port = Arc::new(Port::default());
     runtime(&store, &port)
         .tick(2000.0)
+        .await
         .expect("restart tick dispatches committed cancellation");
     assert_eq!(
         *port.submitted.lock().expect("submissions"),
@@ -459,15 +512,15 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
     );
 }
 
-#[test]
-fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
+#[tokio::test]
+async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    let store = Arc::new(fixtures::store(root.path(), "output"));
+    let store = Arc::new(fixtures::store(root.path(), "output").await);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
     let port = Arc::new(Port::default());
     let output = delivery(
         &case,
@@ -483,7 +536,7 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
         .push_back(output.clone());
     *port.fail_ack.lock().expect("ack") = true;
     let runtime = runtime(&store, &port);
-    assert!(runtime.tick(1999.0).is_err());
+    assert!(runtime.tick(1999.0).await.is_err());
     assert_eq!(record(&store, &id)["bytes"], 6);
     let mut changed = output;
     changed.event = MonitorEvent::Output {
@@ -492,13 +545,14 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     };
     let error = runtime
         .deliver(&changed, 1999.0)
+        .await
         .expect_err("changed bytes at a committed output offset");
     assert!(matches!(
         error,
         studio_runtime_services::monitor_policy::MonitorError::InvalidOutputReceipt(_)
     ));
     assert!(error.fatal_for_tick());
-    runtime.tick(1999.0).expect("output replay");
+    runtime.tick(1999.0).await.expect("output replay");
     port.deliveries.lock().expect("queue").push_back(delivery(
         &case,
         "exit",
@@ -509,9 +563,9 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
         },
     ));
     *port.fail_ack.lock().expect("ack") = true;
-    assert!(runtime.tick(2000.0).is_err());
+    assert!(runtime.tick(2000.0).await.is_err());
     assert_eq!(record(&store, &id)["status"], "completed");
-    runtime.tick(2000.0).expect("exit replay");
+    runtime.tick(2000.0).await.expect("exit replay");
     assert_eq!(record(&store, &id)["bytes"], 6);
     assert_eq!(record(&store, &id)["tail"], "marker");
     assert_eq!(record(&store, &id)["status"], "completed");
@@ -525,19 +579,19 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     );
 }
 
-#[test]
-fn reattach_cancel_and_unknown_input_never_resend_a_command() {
+#[tokio::test]
+async fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
     case["before"]["status"] = json!("lost");
     case["before"]["interactive"] = json!(true);
     case["before"]["reattachRecovery"] = json!({"status":"running","epoch":2});
-    let store = Arc::new(fixtures::store(root.path(), "attach"));
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "attach").await);
+    fixtures::seed(&store, &case).await;
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
-    runtime.tick(2000.0).expect("attach");
+    runtime.tick(2000.0).await.expect("attach");
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     assert_eq!(record(&store, &id)["reattachedConnectionId"], "restarted");
     assert!(port.submitted.lock().expect("submitted").is_empty());
@@ -549,13 +603,22 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     };
     runtime
         .input(&id, "acknowledged", &input, 2001.0)
+        .await
         .expect("input reply");
-    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_err());
+    assert!(
+        runtime
+            .input(&id, "acknowledged", &input, 2001.0)
+            .await
+            .is_err()
+    );
     *port.unknown.lock().expect("unknown") = true;
-    assert!(runtime.input(&id, "unknown", &input, 2002.0).is_err());
-    assert!(runtime.input(&id, "retry", &input, 2003.0).is_err());
-    runtime.cancel(&id, None, 2004.0).expect("cancel");
-    runtime.cancel(&id, None, 2005.0).expect("duplicate cancel");
+    assert!(runtime.input(&id, "unknown", &input, 2002.0).await.is_err());
+    assert!(runtime.input(&id, "retry", &input, 2003.0).await.is_err());
+    runtime.cancel(&id, None, 2004.0).await.expect("cancel");
+    runtime
+        .cancel(&id, None, 2005.0)
+        .await
+        .expect("duplicate cancel");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
     assert_eq!(record(&store, &id)["inputAttempt"]["status"], "uncertain");
 }
@@ -564,7 +627,7 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
 async fn stopped_runtime_exits_without_ticking_or_submitting() {
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "shutdown"));
+    let store = Arc::new(fixtures::store(root.path(), "shutdown").await);
     let port = Arc::new(Port::default());
     let (_send, receive) = tokio::sync::watch::channel(true);
     studio_runtime_services::monitor_runtime_wiring::start(
@@ -577,8 +640,8 @@ async fn stopped_runtime_exits_without_ticking_or_submitting() {
     assert!(port.submitted.lock().expect("submitted").is_empty());
 }
 
-#[test]
-fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
+#[tokio::test]
+async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
     use studio_runtime_store::{RuleRecord, RulesRepository};
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
@@ -598,13 +661,13 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("rule corpus");
     assert_eq!(cases.len(), 9);
     for (number, case) in cases.iter().enumerate() {
-        let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")));
-        fixtures::seed(&store, case);
+        let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")).await);
+        fixtures::seed(&store, case).await;
         if !case["rule"].is_null() {
+            let rule = case["rule"].clone();
             store
-                .transaction(|tx| {
-                    RulesRepository::put(tx, &RuleRecord::from_value(case["rule"].clone())?)
-                })
+                .transaction(move |tx| RulesRepository::put(tx, &RuleRecord::from_value(rule)?))
+                .await
                 .expect("rule");
         }
         let runtime = runtime(&store, &Arc::new(Port::default()));
@@ -617,10 +680,11 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
                 finished: case["now"].as_f64().expect("now"),
             },
         );
-        store.transaction(|tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} AFTER {operation} ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).expect("failure");
+        store.transaction(move |tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} AFTER {operation} ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).await.expect("failure");
         assert!(
             runtime
                 .deliver(&result, case["now"].as_f64().expect("now"))
+                .await
                 .is_err()
         );
         let original_rule = RulesRepository::get(&store.read().expect("read"), "rule")
@@ -630,14 +694,16 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
         assert_eq!(original_rule, case["rule"]);
         assert_eq!(fixtures::events(&store), json!([]));
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                 Ok(())
             })
+            .await
             .expect("release");
         for _ in 0..2 {
             runtime
                 .deliver(&result, case["now"].as_f64().expect("now"))
+                .await
                 .expect("completion replay");
         }
         assert_eq!(
@@ -667,13 +733,13 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
     }
 }
 
-#[test]
-fn foreign_exit_cannot_poison_the_first_result_journal() {
+#[tokio::test]
+async fn foreign_exit_cannot_poison_the_first_result_journal() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = Arc::new(fixtures::store(root.path(), "foreign"));
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "foreign").await);
+    fixtures::seed(&store, &case).await;
     let runtime = runtime(&store, &Arc::new(Port::default()));
     let exit = delivery(
         &case,
@@ -687,7 +753,7 @@ fn foreign_exit_cannot_poison_the_first_result_journal() {
     let mut foreign = exit.clone();
     foreign.operation.connection_id = "foreign".into();
     assert!(matches!(
-        runtime.deliver(&foreign, 2000.0),
+        runtime.deliver(&foreign, 2000.0).await,
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
     ));
     let mut foreign_input = delivery(
@@ -700,84 +766,94 @@ fn foreign_exit_cannot_poison_the_first_result_journal() {
     );
     foreign_input.operation.connection_id = "foreign".into();
     assert!(matches!(
-        runtime.deliver(&foreign_input, 2000.0),
+        runtime.deliver(&foreign_input, 2000.0).await,
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
     ));
     assert!(!store.root().join("monitor-results").exists());
-    runtime.deliver(&exit, 2000.0).expect("exact result");
+    runtime.deliver(&exit, 2000.0).await.expect("exact result");
     assert_eq!(fixtures::events(&store), case["events"]);
 }
 
-#[test]
-fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_write_failure() {
+#[tokio::test]
+async fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_write_failure() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     for table in ["runtime_monitors", "sync_entities"] {
         for timing in ["BEFORE", "AFTER"] {
-            let store = Arc::new(fixtures::store(
-                root.path(),
-                &format!("cancel-{table}-{timing}"),
-            ));
-            fixtures::seed(&store, &case);
+            let store =
+                Arc::new(fixtures::store(root.path(), &format!("cancel-{table}-{timing}")).await);
+            fixtures::seed(&store, &case).await;
             let port = Arc::new(Port::default());
             let runtime = runtime(&store, &port);
             let id = case["before"]["id"].as_str().expect("id");
-            store.transaction(|tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).expect("inject");
-            assert!(runtime.cancel(id, None, 2000.0).is_err());
+            store.transaction(move |tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).await.expect("inject");
+            assert!(runtime.cancel(id, None, 2000.0).await.is_err());
             assert!(port.submitted.lock().expect("submitted").is_empty());
             assert_eq!(record(&store, id), case["before"]);
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                     Ok(())
                 })
+                .await
                 .expect("release");
-            runtime.cancel(id, None, 2000.0).expect("cancel");
-            runtime.cancel(id, None, 2000.0).expect("replay");
+            runtime.cancel(id, None, 2000.0).await.expect("cancel");
+            runtime.cancel(id, None, 2000.0).await.expect("replay");
             assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
             assert_eq!(record(&store, id)["cancelRequested"], true);
         }
     }
 }
 
-#[test]
-fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
+#[tokio::test]
+async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     use studio_runtime_services::monitor_driver;
 
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
-    let store = fixtures::store(root.path(), "cancel-restart");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "cancel-restart").await;
+    fixtures::seed(&store, &case).await;
 
     // Crash witness: the reservation commits, then the process stops before the
     // native port is called. The next runtime must recover this exact intent.
+    let id_for_reservation = id.clone();
     let (_, operation) = store
-        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, &id, None, 2000.0))
+        .transaction_with(move |tx| {
+            monitor_driver::reserve_cancel(tx, &id_for_reservation, None, 2000.0)
+        })
+        .await
         .expect("cancel reservation");
     assert!(operation.is_some());
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
     let state = store.root().to_owned();
     drop(store);
 
-    let store = Arc::new(RuntimeStore::open(Some(&state)).expect("restart"));
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("restart"));
     let port = Arc::new(Port::default());
     *port.not_sent.lock().expect("not sent") = true;
     let restarted_runtime = runtime(&store, &port);
-    restarted_runtime.tick(2001.0).expect("proven not sent");
+    restarted_runtime
+        .tick(2001.0)
+        .await
+        .expect("proven not sent");
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
     assert_eq!(
         record(&store, &id)["cancelDispatch"]["nextAttemptAt"],
         2002.0
     );
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
-    restarted_runtime.tick(2001.5).expect("backoff is active");
+    restarted_runtime
+        .tick(2001.5)
+        .await
+        .expect("backoff is active");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
 
     restarted_runtime
         .tick(2002.0)
+        .await
         .expect("second not-sent receipt");
     assert_eq!(record(&store, &id)["cancelDispatch"]["attempts"], 2);
     assert_eq!(
@@ -786,11 +862,15 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     );
     restarted_runtime
         .tick(2003.5)
+        .await
         .expect("second backoff is active");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
 
     *port.not_sent.lock().expect("not sent") = false;
-    restarted_runtime.tick(2004.0).expect("written receipt");
+    restarted_runtime
+        .tick(2004.0)
+        .await
+        .expect("written receipt");
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
     let submitted = port.submitted.lock().expect("submitted");
     assert_eq!(submitted.len(), 3);
@@ -799,30 +879,32 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     drop(submitted);
     restarted_runtime
         .cancel(&id, None, 2005.0)
+        .await
         .expect("cancel replay");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
 
     let unknown_case = running(&cases);
-    let unknown_store = Arc::new(fixtures::store(root.path(), "cancel-unknown"));
-    fixtures::seed(&unknown_store, &unknown_case);
+    let unknown_store = Arc::new(fixtures::store(root.path(), "cancel-unknown").await);
+    fixtures::seed(&unknown_store, &unknown_case).await;
     let unknown_id = unknown_case["before"]["id"].as_str().expect("id");
     let unknown_port = Arc::new(Port::default());
     *unknown_port.unknown.lock().expect("unknown") = true;
     let unknown_runtime = runtime(&unknown_store, &unknown_port);
     unknown_runtime
         .cancel(unknown_id, None, 2010.0)
+        .await
         .expect("unknown cancel receipt");
     assert_eq!(
         record(&unknown_store, unknown_id)["cancelDispatch"]["status"],
         "unknown"
     );
     *unknown_port.unknown.lock().expect("unknown") = false;
-    unknown_runtime.tick(2011.0).expect("hold unknown");
+    unknown_runtime.tick(2011.0).await.expect("hold unknown");
     assert_eq!(unknown_port.submitted.lock().expect("submitted").len(), 1);
 }
 
-#[test]
-fn permanent_cancel_refusal_settles_and_is_not_retried() {
+#[tokio::test]
+async fn permanent_cancel_refusal_settles_and_is_not_retried() {
     use studio_runtime_services::monitor_driver::NotSentReason;
 
     let root = fixtures::tempdir();
@@ -842,8 +924,8 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
             "unknown",
         ),
     ] {
-        let store = Arc::new(fixtures::store(root.path(), name));
-        fixtures::seed(&store, &case);
+        let store = Arc::new(fixtures::store(root.path(), name).await);
+        fixtures::seed(&store, &case).await;
         let port = Arc::new(Port::default());
         *port.not_sent.lock().expect("not sent") = true;
         *port.not_sent_reason.lock().expect("not sent reason") = reason;
@@ -852,6 +934,7 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
 
         runtime
             .cancel(id, None, 2000.0)
+            .await
             .expect("permanent refusal recorded");
 
         assert_eq!(record(&store, id)["status"], expected_status);
@@ -874,23 +957,28 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
         }
         runtime
             .tick(2100.0)
+            .await
             .expect("permanent refusal remains settled");
         assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
     }
 }
 
-#[test]
-fn cancellation_racing_exit_settles_without_native_terminate() {
+#[tokio::test]
+async fn cancellation_racing_exit_settles_without_native_terminate() {
     use studio_runtime_services::monitor_driver;
 
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let id = case["before"]["id"].as_str().expect("id");
-    let store = Arc::new(fixtures::store(root.path(), "cancel-exit-race"));
-    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
+    let store = Arc::new(fixtures::store(root.path(), "cancel-exit-race").await);
+    fixtures::seed(&store, &case).await;
+    let id_for_reservation = id.clone();
     let (_, operation) = store
-        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, id, None, 2000.0))
+        .transaction_with(move |tx| {
+            monitor_driver::reserve_cancel(tx, &id_for_reservation, None, 2000.0)
+        })
+        .await
         .expect("durable cancel intent");
     assert!(operation.is_some());
 
@@ -909,6 +997,7 @@ fn cancellation_racing_exit_settles_without_native_terminate() {
         ));
     runtime(&store, &port)
         .tick(2001.0)
+        .await
         .expect("exit wins the race");
 
     assert_eq!(record(&store, id)["status"], "cancelled");
@@ -925,12 +1014,16 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     let mut healthy_case = bad_case.clone();
     healthy_case["before"]["id"] = json!("healthy-monitor");
     healthy_case["before"]["log"] = json!("unused-until-output");
-    let store = Arc::new(fixtures::store(root.path(), "bad-delivery"));
-    fixtures::seed(&store, &bad_case);
+    let store = Arc::new(fixtures::store(root.path(), "bad-delivery").await);
+    fixtures::seed(&store, &bad_case).await;
+    let healthy_case_for_seed = healthy_case.clone();
     store
-        .transaction(|tx| {
-            Table::new(tx).put(&MonitorRecord::from_value(healthy_case["before"].clone())?)
+        .transaction(move |tx| {
+            Table::new(tx).put(&MonitorRecord::from_value(
+                healthy_case_for_seed["before"].clone(),
+            )?)
         })
+        .await
         .expect("seed second monitor");
 
     let port = Arc::new(Port::default());
@@ -966,10 +1059,14 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
             .join("monitor-logs")
             .join("healthy-monitor.log")
     );
+    let healthy_case_for_log = healthy_case.clone();
     store
-        .transaction(|tx| {
-            Table::new(tx).put(&MonitorRecord::from_value(healthy_case["before"].clone())?)
+        .transaction(move |tx| {
+            Table::new(tx).put(&MonitorRecord::from_value(
+                healthy_case_for_log["before"].clone(),
+            )?)
         })
+        .await
         .expect("set healthy log path");
     port.deliveries
         .lock()
@@ -1013,18 +1110,19 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
         .expect("store remains healthy");
 }
 
-#[test]
-fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
+#[tokio::test]
+async fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = Arc::new(fixtures::store(root.path(), "http-input-identity-gap"));
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "http-input-identity-gap").await);
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
     monitor["interactive"] = json!(true);
     store
-        .transaction(|tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .await
         .expect("mark seeded watch interactive");
 
     let port = Arc::new(Port::default());
@@ -1039,6 +1137,7 @@ fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
     // ticket and behaves as a new input, exactly like Python's settled state.
     runtime
         .input_http(id, &input, 2000.0)
+        .await
         .expect("first input acknowledged");
     let first = record(&store, id)["lastInputAttempt"]["id"]
         .as_str()
@@ -1046,6 +1145,7 @@ fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
         .to_owned();
     runtime
         .input_http(id, &input, 2001.0)
+        .await
         .expect("same body has no HTTP identity to replay");
     let second = record(&store, id)["lastInputAttempt"]["id"]
         .as_str()
@@ -1063,24 +1163,28 @@ fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
     )));
 }
 
-#[test]
-fn committed_managed_start_is_dispatched_after_admission() {
+#[tokio::test]
+async fn committed_managed_start_is_dispatched_after_admission() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
-    let store = Arc::new(fixtures::store(root.path(), "managed-monitor-start"));
-    monitor_runtime::recover_on_startup(&store, 1999.0).expect("server startup recovery");
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "managed-monitor-start").await);
+    monitor_runtime::recover_on_startup(&store, 1999.0)
+        .await
+        .expect("server startup recovery");
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
     monitor["status"] = json!("starting");
     monitor["operation"] = Value::Null;
     store
-        .transaction(|tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .await
         .expect("persist admitted monitor start");
 
     let port = Arc::new(Port::default());
     runtime(&store, &port)
         .tick(2000.0)
+        .await
         .expect("dispatch managed start");
     assert_eq!(
         port.starts.lock().expect("monitor start calls").as_slice(),
@@ -1088,12 +1192,12 @@ fn committed_managed_start_is_dispatched_after_admission() {
     );
 }
 
-#[test]
-fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
+#[tokio::test]
+async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
-    let store = fixtures::store(root.path(), "output-count-boundary");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "output-count-boundary").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
@@ -1103,39 +1207,54 @@ fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
         "deltaBase64":base64::engine::general_purpose::STANDARD.encode(b"x")
     });
     for cursor in 0..126 {
+        let enqueue_id = id.to_owned();
+        let enqueue_account = account.to_owned();
+        let enqueue_chunk = chunk.clone();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 monitor_event_queue::enqueue_output_in_transaction(
-                    tx, id, account, 7, cursor, &chunk,
+                    tx,
+                    &enqueue_id,
+                    &enqueue_account,
+                    7,
+                    cursor,
+                    &enqueue_chunk,
                 )
             })
+            .await
             .expect("fill output admission slots");
     }
     let before = record(&store, id);
-    let rejected = store.transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(|tx| {
-        NotificationDispatchRepository::put_notification_receipt(
-            tx,
-            "provider-notification-capacity",
-            "same-notification",
-            "settled",
-        )?;
-        monitor_event_queue::enqueue_output_in_transaction(
-            tx, id, account, 7, 126, &chunk,
-        )?;
-        Ok(())
-    });
+    let rejected_id = id.to_owned();
+    let rejected_account = account.to_owned();
+    let rejected_chunk = chunk.clone();
+    let rejected = store
+        .transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(move |tx| {
+            NotificationDispatchRepository::put_notification_receipt(
+                tx,
+                "provider-notification-capacity",
+                "same-notification",
+                "settled",
+            )?;
+            monitor_event_queue::enqueue_output_in_transaction(
+                tx, &rejected_id, &rejected_account, 7, 126, &rejected_chunk,
+            )?;
+            Ok(())
+        })
+        .await;
     assert!(matches!(
         rejected,
         Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::StreamCapacity)
     ));
     assert_eq!(record(&store, id), before);
     let receipt = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             NotificationDispatchRepository::notification_receipt(
                 tx,
                 "provider-notification-capacity",
             )
         })
+        .await
         .expect("read notification receipt");
     assert!(
         receipt.is_none(),
@@ -1144,8 +1263,10 @@ fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
 
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+        .await
         .expect("probe fits reserved event slot");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:count", Some(0), None, 9.0)
+        .await
         .expect("exit fits reserved event slot");
     assert_eq!(
         record(&store, id)["streamQueue"]
@@ -1156,12 +1277,12 @@ fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
     );
 }
 
-#[test]
-fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts() {
+#[tokio::test]
+async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
-    let store = fixtures::store(root.path(), "output-byte-boundary");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "output-byte-boundary").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
@@ -1173,22 +1294,42 @@ fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts() {
         "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)
     });
     for cursor in 0..30 {
+        let enqueue_id = id.to_owned();
+        let enqueue_account = account.to_owned();
+        let enqueue_chunk = chunk.clone();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 monitor_event_queue::enqueue_output_in_transaction(
-                    tx, id, account, 7, cursor, &chunk,
+                    tx,
+                    &enqueue_id,
+                    &enqueue_account,
+                    7,
+                    cursor,
+                    &enqueue_chunk,
                 )
             })
+            .await
             .expect("fill output byte admission limit");
     }
     assert_eq!(
         record(&store, id)["streamQueue"][29]["byteLength"],
         32 * 1024
     );
+    let rejected_id = id.to_owned();
+    let rejected_account = account.to_owned();
+    let rejected_chunk = chunk.clone();
     let error = store
-        .transaction_with(|tx| {
-            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 30, &chunk)
+        .transaction_with(move |tx| {
+            monitor_event_queue::enqueue_output_in_transaction(
+                tx,
+                &rejected_id,
+                &rejected_account,
+                7,
+                30,
+                &rejected_chunk,
+            )
         })
+        .await
         .expect_err("output beyond 960 KiB is refused");
     assert!(matches!(
         error,
@@ -1197,27 +1338,30 @@ fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts() {
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     assert!(
         monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+            .await
             .expect_err("probe cannot consume terminal reserve")
             .to_string()
             .contains("queue is full")
     );
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:bytes", Some(0), None, 9.0)
+        .await
         .expect("exit fits reserved byte capacity");
 }
 
-#[test]
-fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
+#[tokio::test]
+async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "probe-terminal-reserve");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "probe-terminal-reserve").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
+    let id_for_queue_reset = id.to_owned();
     store
-        .transaction_with(|tx| {
-            let mut value = MonitorsRepository::get(tx, id)?
+        .transaction_with(move |tx| {
+            let mut value = MonitorsRepository::get(tx, &id_for_queue_reset)?
                 .expect("monitor")
                 .value()
                 .clone();
@@ -1227,6 +1371,7 @@ fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
                     .map_err(studio_runtime_store::StoreError::from)?,
             )
         })
+        .await
         .expect("initialize bounded stream queue");
     let probe_limit = monitor_event_queue::STREAM_QUEUE_MAX_BYTES
         - monitor_event_queue::TERMINAL_RECEIPT_RESERVE_BYTES;
@@ -1241,6 +1386,7 @@ fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         };
         let result = Value::String("x".repeat(result_bytes - 2));
         monitor_event_queue::enqueue_probe(&store, id, &operation, generation as i64, &result)
+            .await
             .expect("probe fills bounded admission budget");
     }
     let probe_queue = record(&store, id);
@@ -1256,6 +1402,7 @@ fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     );
     assert!(
         monitor_event_queue::enqueue_probe(&store, id, &operation, probe_count as i64, &json!("x"))
+            .await
             .expect_err("additional probe exceeds its budget")
             .to_string()
             .contains("queue is full")
@@ -1270,6 +1417,7 @@ fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         Some(&largest_error),
         99.0,
     )
+    .await
     .expect("the maximum exit receipt still fits after probes");
     let saved = record(&store, id);
     let queued = saved["streamQueue"].as_array().expect("queued stream");
@@ -1281,19 +1429,23 @@ fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     );
 }
 
-#[test]
-fn cancellation_recovery_runs_after_a_full_delivery_batch() {
+#[tokio::test]
+async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     use studio_runtime_services::monitor_driver;
 
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
-    let store = Arc::new(fixtures::store(root.path(), "cancel-full-batch"));
+    let store = Arc::new(fixtures::store(root.path(), "cancel-full-batch").await);
     case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
+    let id_for_reservation = id.clone();
     let (_, operation) = store
-        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, &id, None, 2000.0))
+        .transaction_with(move |tx| {
+            monitor_driver::reserve_cancel(tx, &id_for_reservation, None, 2000.0)
+        })
+        .await
         .expect("cancel reservation");
     assert!(operation.is_some());
 
@@ -1312,7 +1464,7 @@ fn cancellation_recovery_runs_after_a_full_delivery_batch() {
             ));
     }
     let runtime = runtime(&store, &port);
-    runtime.tick(2001.0).expect("full output batch");
+    runtime.tick(2001.0).await.expect("full output batch");
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
@@ -1330,10 +1482,10 @@ async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
             .as_secs_f64()
     );
     case["before"]["stallTimeoutSeconds"] = json!(86400);
-    let store = Arc::new(fixtures::store(root.path(), "timer"));
+    let store = Arc::new(fixtures::store(root.path(), "timer").await);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
     let port = Arc::new(Port::default());
     port.deliveries
         .lock()
@@ -1348,7 +1500,7 @@ async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
         ));
     *port.fail_ack.lock().expect("ack") = true;
     let first_ack_attempt = Arc::new(Notify::new());
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     *port.fail_ack_gate.lock().expect("ack gate") = Some((first_ack_attempt.clone(), release_rx));
     let acknowledged = Arc::new(tokio::sync::Semaphore::new(0));
     *port.acknowledged.lock().expect("acknowledged") = Some(acknowledged.clone());

@@ -50,22 +50,10 @@ impl PairedExchange for SignedBrowserExchange {
                 .checked_duration_since(Instant::now())
                 .filter(|v| !v.is_zero())
                 .ok_or(BrowserError::Unknown)?;
-            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/browser",
-                move || {
-                    driver.exchange_with_timeout(
-                        &server,
-                        &action,
-                        &payload,
-                        &request_id,
-                        now,
-                        timeout,
-                    )
-                },
-            )
-            .await
-            .map_err(|_| BrowserError::Exchange)?
-            .unwrap_or(DeliveryOutcome::Unknown);
+            let outcome = driver
+                .exchange_with_timeout(&server, &action, &payload, &request_id, now, timeout)
+                .await
+                .unwrap_or(DeliveryOutcome::Unknown);
             Ok(match outcome {
                 DeliveryOutcome::Applied(value) => ExchangeOutcome::Applied(value),
                 DeliveryOutcome::NotApplied(error) => ExchangeOutcome::NotApplied(error),

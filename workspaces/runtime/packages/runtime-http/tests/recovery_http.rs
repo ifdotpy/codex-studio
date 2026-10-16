@@ -14,55 +14,61 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use studio_runtime_http::{HttpState, router};
-use studio_runtime_services::account_session_runtime::{AccountSessionError, AccountSessionPort};
+use studio_runtime_services::account_session_runtime::{
+    AccountSessionError, AccountSessionFuture, AccountSessionPort,
+};
 use tower::ServiceExt;
 
 struct RecoveryPort(AtomicUsize);
 impl AccountSessionPort for RecoveryPort {
-    fn recover_connection(
-        &self,
-        account: &str,
-        agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        assert_eq!(account, "default");
-        assert!(!agent_id.is_empty());
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(json!({"status":"reconciled","turnId":"turn-0","outcome":"completed"}))
+    fn recover_connection<'a>(
+        &'a self,
+        account: &'a str,
+        agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            assert_eq!(account, "default");
+            assert!(!agent_id.is_empty());
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"status":"reconciled","turnId":"turn-0","outcome":"completed"}))
+        })
     }
 }
 
 struct MissingRecoveryPort;
 impl AccountSessionPort for MissingRecoveryPort {
-    fn recover_connection(
-        &self,
-        _account: &str,
-        _agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "account-worker/recovery-history",
-        ))
+    fn recover_connection<'a>(
+        &'a self,
+        _account: &'a str,
+        _agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/recovery-history",
+            ))
+        })
     }
 }
 
 struct UnknownRecoveryPort;
 impl AccountSessionPort for UnknownRecoveryPort {
-    fn recover_connection(
-        &self,
-        _account: &str,
-        _agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Unknown)
+    fn recover_connection<'a>(
+        &'a self,
+        _account: &'a str,
+        _agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async { Err(AccountSessionError::Unknown) })
     }
 }
 
 struct SupersededRecoveryPort;
 impl AccountSessionPort for SupersededRecoveryPort {
-    fn recover_connection(
-        &self,
-        _account: &str,
-        _agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        Ok(json!({"status":"superseded"}))
+    fn recover_connection<'a>(
+        &'a self,
+        _account: &'a str,
+        _agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async { Ok(json!({"status":"superseded"})) })
     }
 }
 

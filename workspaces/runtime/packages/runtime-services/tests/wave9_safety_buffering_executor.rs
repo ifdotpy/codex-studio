@@ -12,7 +12,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
-    thread,
     time::Duration,
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
@@ -385,15 +384,19 @@ impl AccountSessionPort for BlockingSession {
     }
 }
 
-#[test]
-fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch() {
+#[tokio::test]
+async fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch() {
     let (template, corpus) = python_corpus();
     let expected = corpus["path"]["calls"].as_array().expect("Python requests");
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = RuntimeStore::open(Some(root.path())).expect("open Python-written state");
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open Python-written state"),
+    );
     let session = Session {
         store: &store,
         scope: ConnectionScope {
@@ -410,7 +413,7 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
         reject_start: false,
     };
     let result = safety_buffering::execute_action(
-        &store,
+        Arc::clone(&store),
         &session,
         &test_resources(),
         None,
@@ -424,6 +427,7 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
             choice: "retry",
         },
     )
+    .await
     .expect("safety retry completes");
     assert_eq!(result["stage"], "running");
     assert_eq!(result["acceptedTurnId"], "new-turn");
@@ -505,14 +509,18 @@ fn without_generated_client_id(mut params: Value) -> Value {
     params
 }
 
-#[test]
-fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let scope = ConnectionScope {
         account: "acct".into(),
         connection: "connection".into(),
@@ -528,9 +536,9 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
     });
     let retry_store = Arc::clone(&store);
     let retry_session = Arc::clone(&session);
-    let worker = thread::spawn(move || {
+    let worker = tokio::spawn(async move {
         safety_buffering::execute_action(
-            &retry_store,
+            retry_store,
             retry_session.as_ref(),
             &test_resources(),
             None,
@@ -544,12 +552,13 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
                 choice: "retry",
             },
         )
+        .await
     });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("provider request reached blocked boundary");
     let cancelled = safety_buffering::execute_action(
-        &store,
+        Arc::clone(&store),
         session.as_ref(),
         &test_resources(),
         None,
@@ -563,11 +572,12 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
             choice: "cancel",
         },
     )
+    .await
     .expect("concurrent cancellation commits");
     assert_eq!(cancelled["stage"], "cancelled");
     release_tx.send(()).expect("release provider");
     let late = worker
-        .join()
+        .await
         .expect("retry worker")
         .expect("late receipt handling");
     assert_eq!(late["stage"], "cancelled");
@@ -595,14 +605,18 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
     );
 }
 
-#[test]
-fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let scope = ConnectionScope {
         account: "acct".into(),
         connection: "connection".into(),
@@ -619,9 +633,9 @@ fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
     });
     let retry_store = Arc::clone(&store);
     let retry_session = Arc::clone(&session);
-    let worker = thread::spawn(move || {
+    let worker = tokio::spawn(async move {
         safety_buffering::execute_action(
-            &retry_store,
+            retry_store,
             retry_session.as_ref(),
             &test_resources(),
             None,
@@ -635,12 +649,13 @@ fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
                 choice: "retry",
             },
         )
+        .await
     });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("pause before intent");
     let cancelled = safety_buffering::execute_action(
-        &store,
+        Arc::clone(&store),
         session.as_ref(),
         &test_resources(),
         None,
@@ -654,25 +669,30 @@ fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
             choice: "cancel",
         },
     )
+    .await
     .expect("cancel commits");
     assert_eq!(cancelled["stage"], "cancelled");
     release_tx.send(()).expect("continue retry");
     let resumed = worker
-        .join()
+        .await
         .expect("retry worker")
         .expect("cancel respected");
     assert_eq!(resumed["stage"], "cancelled");
     assert_eq!(session.requests.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let scope = ConnectionScope {
         account: "acct".into(),
         connection: "connection".into(),
@@ -692,12 +712,12 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
     let retry_store = Arc::clone(&store);
     let retry_session = Arc::clone(&session);
     let retry_lifecycle = Arc::clone(&lifecycle);
-    let worker = thread::spawn(move || {
+    let worker = tokio::spawn(async move {
         let result = safety_buffering::execute_action(
-            &retry_store,
+            retry_store,
             retry_session.as_ref(),
             &resources,
-            Some(retry_lifecycle.as_ref()),
+            Some(retry_lifecycle),
             safety_buffering::SafetyAction {
                 agent_id: "agent",
                 actor: RequestActor {
@@ -707,7 +727,8 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
                 turn_id: "turn",
                 choice: "retry",
             },
-        );
+        )
+        .await;
         let state = result
             .as_ref()
             .map_or_else(|error| error.to_string(), |_| "success".into());
@@ -741,10 +762,11 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .expect("concurrent stop commits before late start receipt");
     release_tx.send(()).expect("release start receipt");
     let receipt = worker
-        .join()
+        .await
         .expect("retry worker")
         .expect("lifecycle settlement");
     assert_eq!(receipt["stage"], "running");
@@ -756,14 +778,18 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
     assert_eq!(effects[0]["stopped"]["epoch"], 8);
 }
 
-#[test]
-fn rejected_safety_start_settles_the_empty_event_attempt() {
+#[tokio::test]
+async fn rejected_safety_start_settles_the_empty_event_attempt() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let session = Session {
         store: &store,
         scope: ConnectionScope {
@@ -781,7 +807,7 @@ fn rejected_safety_start_settles_the_empty_event_attempt() {
     };
     assert!(
         safety_buffering::execute_action(
-            &store,
+            Arc::clone(&store),
             &session,
             &test_resources(),
             None,
@@ -795,6 +821,7 @@ fn rejected_safety_start_settles_the_empty_event_attempt() {
                 choice: "retry",
             },
         )
+        .await
         .is_err()
     );
     let db = store.read().expect("state read");
@@ -821,15 +848,19 @@ fn rejected_safety_start_settles_the_empty_event_attempt() {
     assert_eq!(retry["dispatch"], "rejected");
 }
 
-#[test]
-fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_replay() {
+#[tokio::test]
+async fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_replay() {
     let (template, _) = python_corpus();
     for failed_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
         for file in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
         }
-        let store = RuntimeStore::open(Some(root.path())).expect("open state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open state"),
+        );
         let session = Session {
             store: &store,
             scope: ConnectionScope {
@@ -846,7 +877,7 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             reject_start: false,
         };
         let result = safety_buffering::execute_action(
-            &store,
+            Arc::clone(&store),
             &session,
             &test_resources(),
             None,
@@ -860,12 +891,17 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
                 choice: "retry",
             },
         )
+        .await
         .expect("unknown outcome is surfaced as receipt");
         assert_eq!(result["stage"], "unknown", "stage {failed_stage}");
         let before = session.calls.lock().expect("calls").len();
         drop(session);
         drop(store);
-        let reopened = RuntimeStore::open(Some(root.path())).expect("restart store");
+        let reopened = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart store"),
+        );
         let restarted_session = Session {
             store: &reopened,
             scope: ConnectionScope {
@@ -882,7 +918,7 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             reject_start: false,
         };
         let replay = safety_buffering::execute_action(
-            &reopened,
+            Arc::clone(&reopened),
             &restarted_session,
             &test_resources(),
             None,
@@ -896,6 +932,7 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
                 choice: "retry",
             },
         )
+        .await
         .expect("unknown receipt replays after restart");
         assert_eq!(replay["stage"], "unknown", "stage {failed_stage}");
         assert_eq!(
@@ -906,14 +943,18 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
     }
 }
 
-#[test]
-fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_restart() {
+#[tokio::test]
+async fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_restart() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let interrupted = Session {
         store: &store,
         scope: ConnectionScope {
@@ -931,7 +972,7 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
     };
     assert!(
         safety_buffering::execute_action(
-            &store,
+            Arc::clone(&store),
             &interrupted,
             &test_resources(),
             None,
@@ -945,6 +986,7 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
                 choice: "retry",
             },
         )
+        .await
         .is_err()
     );
     assert_eq!(interrupted.calls.lock().expect("calls").len(), 1);
@@ -968,11 +1010,16 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
             )?;
             Ok(())
         })
+        .await
         .expect("commit simulated crash-window receipt");
     drop(interrupted);
     drop(store);
 
-    let reopened = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let reopened = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart store"),
+    );
     let restarted = Session {
         store: &reopened,
         scope: ConnectionScope {
@@ -989,7 +1036,7 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
         reject_start: false,
     };
     let result = safety_buffering::execute_action(
-        &reopened,
+        Arc::clone(&reopened),
         &restarted,
         &test_resources(),
         None,
@@ -1003,6 +1050,7 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
             choice: "retry",
         },
     )
+    .await
     .expect("unknown recovery is held");
     assert_eq!(result["stage"], "unknown");
     assert_eq!(restarted.calls.lock().expect("calls").len(), 0);
@@ -1020,14 +1068,18 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
     assert_eq!(operation["dispatch"], "unknown");
 }
 
-#[test]
-fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
+#[tokio::test]
+async fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
     }
-    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open state"),
+    );
     let session = Session {
         store: &store,
         scope: ConnectionScope {
@@ -1044,7 +1096,7 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
         reject_start: false,
     };
     let result = safety_buffering::execute_action(
-        &store,
+        Arc::clone(&store),
         &session,
         &test_resources(),
         None,
@@ -1058,6 +1110,7 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
             choice: "retry",
         },
     )
+    .await
     .expect("Unknown provider receipt is retained");
     assert_eq!(result["stage"], "unknown");
     let raw: String = store
@@ -1076,7 +1129,11 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
     drop(session);
     drop(store);
 
-    let reopened = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let reopened = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart store"),
+    );
     let restarted = Session {
         store: &reopened,
         scope: ConnectionScope {
@@ -1093,7 +1150,7 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
         reject_start: false,
     };
     let replay = safety_buffering::execute_action(
-        &reopened,
+        Arc::clone(&reopened),
         &restarted,
         &test_resources(),
         None,
@@ -1107,20 +1164,25 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
             choice: "retry",
         },
     )
+    .await
     .expect("terminal Unknown result replays");
     assert_eq!(replay["stage"], "unknown");
     assert_eq!(restarted.calls.lock().expect("calls").len(), 0);
 }
 
-#[test]
-fn not_sent_retries_same_operation_id_and_records_each_receipt() {
+#[tokio::test]
+async fn not_sent_retries_same_operation_id_and_records_each_receipt() {
     let (template, _) = python_corpus();
     for not_sent_at in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
         for file in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
         }
-        let store = RuntimeStore::open(Some(root.path())).expect("open state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open state"),
+        );
         let session = Session {
             store: &store,
             scope: ConnectionScope {
@@ -1137,7 +1199,7 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
             reject_start: false,
         };
         let result = safety_buffering::execute_action(
-            &store,
+            Arc::clone(&store),
             &session,
             &test_resources(),
             None,
@@ -1151,6 +1213,7 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
                 choice: "retry",
             },
         )
+        .await
         .expect("NotSent retry completes");
         assert_eq!(result["stage"], "running", "failed stage {not_sent_at}");
         let calls = session.calls.lock().expect("calls");
@@ -1183,15 +1246,19 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
     }
 }
 
-#[test]
-fn restart_resumes_recorded_intent_with_the_same_operation_id() {
+#[tokio::test]
+async fn restart_resumes_recorded_intent_with_the_same_operation_id() {
     let (template, _) = python_corpus();
     for interrupted_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
         for file in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
         }
-        let store = RuntimeStore::open(Some(root.path())).expect("open state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open state"),
+        );
         let first = Session {
             store: &store,
             scope: ConnectionScope {
@@ -1209,7 +1276,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
         };
         assert!(
             safety_buffering::execute_action(
-                &store,
+                Arc::clone(&store),
                 &first,
                 &test_resources(),
                 None,
@@ -1223,6 +1290,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
                     choice: "retry",
                 },
             )
+            .await
             .is_err(),
             "interrupted stage {interrupted_stage}"
         );
@@ -1233,7 +1301,11 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
         drop(first);
         drop(store);
 
-        let restarted = RuntimeStore::open(Some(root.path())).expect("restart store");
+        let restarted = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart store"),
+        );
         let second = Session {
             store: &restarted,
             scope: ConnectionScope {
@@ -1250,7 +1322,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             reject_start: false,
         };
         let result = safety_buffering::execute_action(
-            &restarted,
+            Arc::clone(&restarted),
             &second,
             &test_resources(),
             None,
@@ -1264,6 +1336,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
                 choice: "retry",
             },
         )
+        .await
         .expect("resume from recorded intent");
         assert_eq!(result["stage"], "running", "stage {interrupted_stage}");
         assert_eq!(
@@ -1274,15 +1347,19 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
     }
 }
 
-#[test]
-fn restart_applies_persisted_written_receipt_without_redispatch() {
+#[tokio::test]
+async fn restart_applies_persisted_written_receipt_without_redispatch() {
     let (template, _) = python_corpus();
     for interrupted_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
         for file in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
         }
-        let store = RuntimeStore::open(Some(root.path())).expect("open state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open state"),
+        );
         let first = Session {
             store: &store,
             scope: ConnectionScope {
@@ -1300,7 +1377,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
         };
         assert!(
             safety_buffering::execute_action(
-                &store,
+                Arc::clone(&store),
                 &first,
                 &test_resources(),
                 None,
@@ -1314,6 +1391,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
                     choice: "retry",
                 },
             )
+            .await
             .is_err(),
             "interrupted stage {interrupted_stage}"
         );
@@ -1360,11 +1438,16 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("simulate process stop after durable receipt");
         drop(first);
         drop(store);
 
-        let restarted = RuntimeStore::open(Some(root.path())).expect("restart store");
+        let restarted = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart store"),
+        );
         let second = Session {
             store: &restarted,
             scope: ConnectionScope {
@@ -1381,7 +1464,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             reject_start: false,
         };
         let result = safety_buffering::execute_action(
-            &restarted,
+            Arc::clone(&restarted),
             &second,
             &test_resources(),
             None,
@@ -1395,6 +1478,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
                 choice: "retry",
             },
         )
+        .await
         .expect("apply the saved receipt and continue");
         assert_eq!(result["stage"], "running", "stage {interrupted_stage}");
         assert!(

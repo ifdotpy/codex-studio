@@ -1,5 +1,6 @@
 //! Thin adapters from managed-tool ports to their owning runtime services.
 
+use futures_util::future::BoxFuture;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -96,42 +97,48 @@ struct ManagedChildCreationAdapter(
 );
 
 impl ChildCreationPort for ManagedChildCreationAdapter {
-    fn spawn(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn spawn<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<OperationResult, Error> {
-        crate::managed_child_create::spawn_agents(
-            store,
-            actor,
-            args,
-            request_id,
-            now,
-            self.0.as_ref(),
-        )
-        .map_err(child_creation_error)
+    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+        Box::pin(async move {
+            crate::managed_child_create::spawn_agents(
+                store,
+                actor,
+                args,
+                request_id,
+                now,
+                self.0.as_ref(),
+            )
+            .await
+            .map_err(child_creation_error)
+        })
     }
 
-    fn review(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn review<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<OperationResult, Error> {
-        crate::managed_child_create::request_review(
-            store,
-            actor,
-            args,
-            request_id,
-            now,
-            self.0.as_ref(),
-        )
-        .map_err(child_creation_error)
+    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+        Box::pin(async move {
+            crate::managed_child_create::request_review(
+                store,
+                actor,
+                args,
+                request_id,
+                now,
+                self.0.as_ref(),
+            )
+            .await
+            .map_err(child_creation_error)
+        })
     }
 }
 
@@ -141,54 +148,74 @@ struct ManagedMonitorCreateAdapter {
 }
 
 impl MonitorCreatePort for ManagedMonitorCreateAdapter {
-    fn create(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn create<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<Value, Error> {
-        let log_root = store.root().join("monitor-logs");
-        let log_root = log_root
-            .to_str()
-            .ok_or(Error::Invalid("Monitor log directory is invalid"))?;
-        let admission = crate::monitor_runtime::MonitorAdmission {
-            actor_id: actor.record().id.0.as_str(),
-            epoch: actor.record().epoch,
-            request_id,
-            request: args,
-            log_root,
-        };
-        if let Some(value) = crate::monitor_runtime::stored_create_result(store, &admission, now)
-            .map_err(monitor_error)?
-        {
+    ) -> BoxFuture<'a, Result<Value, Error>> {
+        Box::pin(async move {
+            let log_root = store.root().join("monitor-logs");
+            let log_root = log_root
+                .to_str()
+                .ok_or(Error::Invalid("Monitor log directory is invalid"))?;
+            let actor_id = actor.record().id.0.as_str().to_owned();
+            let epoch = actor.record().epoch;
+            let request_id = request_id.to_owned();
+            let request = args.clone();
+            let admission = crate::monitor_runtime::MonitorAdmission {
+                actor_id: &actor_id,
+                epoch,
+                request_id: &request_id,
+                request: &request,
+                log_root,
+            };
+            if let Some(value) =
+                crate::monitor_runtime::stored_create_result(store, &admission, now)
+                    .await
+                    .map_err(monitor_error)?
+            {
+                self.runtime.wake_tick();
+                return Ok(value);
+            }
+            let workspace = self
+                .environment
+                .prepare_workspace(store, actor.record(), args, &request_id)
+                .map_err(|error| match error {
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                        message,
+                    ) => Error::Invalid(message),
+                    crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                        name,
+                    ) => Error::Unavailable(name),
+                })?;
+            let admission_actor = actor_id.clone();
+            let admission_request_id = request_id.clone();
+            let admission_request = request.clone();
+            let log_root = admission.log_root.to_owned();
+            let value = store
+                .transaction_with(move |tx| {
+                    let admission = crate::monitor_runtime::MonitorAdmission {
+                        actor_id: &admission_actor,
+                        epoch,
+                        request_id: &admission_request_id,
+                        request: &admission_request,
+                        log_root: &log_root,
+                    };
+                    crate::monitor_runtime::create_in_transaction(
+                        tx,
+                        &admission,
+                        workspace.as_ref(),
+                        now,
+                    )
+                })
+                .await
+                .map_err(monitor_error)?;
             self.runtime.wake_tick();
-            return Ok(value);
-        }
-        let workspace = self
-            .environment
-            .prepare_workspace(store, actor.record(), args, request_id)
-            .map_err(|error| match error {
-                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(message) => {
-                    Error::Invalid(message)
-                }
-                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(name) => {
-                    Error::Unavailable(name)
-                }
-            })?;
-        let value = store
-            .transaction_with(|tx| {
-                crate::monitor_runtime::create_in_transaction(
-                    tx,
-                    &admission,
-                    workspace.as_ref(),
-                    now,
-                )
-            })
-            .map_err(monitor_error)?;
-        self.runtime.wake_tick();
-        Ok(value)
+            Ok(value)
+        })
     }
 }
 
@@ -205,44 +232,50 @@ fn child_creation_error(error: crate::managed_child_create::Error) -> Error {
 struct ManagedStatusWatchAdapter;
 
 impl StatusWatchPort for ManagedStatusWatchAdapter {
-    fn status(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
+    fn status<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
         now: f64,
-    ) -> Result<Value, Error> {
-        crate::managed_status_watch::model_directory(
-            store,
-            actor.record().id.0.as_str(),
-            actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
-            args,
-            now,
-        )
-        .map_err(status_error)
+    ) -> BoxFuture<'a, Result<Value, Error>> {
+        Box::pin(async move {
+            crate::managed_status_watch::model_directory(
+                store,
+                actor.record().id.0.as_str(),
+                actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
+                args,
+                now,
+            )
+            .await
+            .map_err(status_error)
+        })
     }
 
-    fn rules(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn rules<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<RulesActionResult, Error> {
-        let result = crate::managed_status_watch::rules(
-            store,
-            actor.record().id.0.as_str(),
-            actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
-            Some(args),
-            request_id,
-            now,
-            &crate::managed_status_watch::LocalRuleWatchFiles,
-        )
-        .map_err(rules_error)?;
-        Ok(RulesActionResult {
-            value: result.value,
-            cancel_monitor_ids: result.cancel_monitor_ids,
+    ) -> BoxFuture<'a, Result<RulesActionResult, Error>> {
+        Box::pin(async move {
+            let result = crate::managed_status_watch::rules(
+                store,
+                actor.record().id.0.as_str(),
+                actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
+                Some(args),
+                request_id,
+                now,
+                &crate::managed_status_watch::LocalRuleWatchFiles,
+            )
+            .await
+            .map_err(rules_error)?;
+            Ok(RulesActionResult {
+                value: result.value,
+                cancel_monitor_ids: result.cancel_monitor_ids,
+            })
         })
     }
 }
@@ -252,22 +285,25 @@ struct ManagedMonitorInputAdapter {
 }
 
 impl MonitorInputPort for ManagedMonitorInputAdapter {
-    fn input(
-        &self,
-        request: super::runtime_dispatch::MonitorInputRequest<'_>,
-    ) -> Result<Value, Error> {
-        let input = serde_json::from_value(request.input.clone())
-            .map_err(|_| Error::Invalid("Invalid monitor input"))?;
-        self.runtime
-            .input_for_owner(
-                request.caller_id,
-                request.caller_epoch,
-                request.monitor_id,
-                request.ticket,
-                &input,
-                request.now,
-            )
-            .map_err(monitor_error)
+    fn input<'a>(
+        &'a self,
+        request: super::runtime_dispatch::MonitorInputRequest<'a>,
+    ) -> BoxFuture<'a, Result<Value, Error>> {
+        Box::pin(async move {
+            let input = serde_json::from_value(request.input.clone())
+                .map_err(|_| Error::Invalid("Invalid monitor input"))?;
+            self.runtime
+                .input_for_owner(
+                    request.caller_id,
+                    request.caller_epoch,
+                    request.monitor_id,
+                    request.ticket,
+                    &input,
+                    request.now,
+                )
+                .await
+                .map_err(monitor_error)
+        })
     }
 }
 
@@ -276,10 +312,18 @@ struct ManagedMonitorCancelAdapter {
 }
 
 impl MonitorCancelPort for ManagedMonitorCancelAdapter {
-    fn cancel_monitor(&self, monitor_id: &str, owner: &str, now: f64) -> Result<Value, Error> {
-        self.runtime
-            .cancel(monitor_id, Some(owner), now)
-            .map_err(monitor_error)
+    fn cancel_monitor<'a>(
+        &'a self,
+        monitor_id: &'a str,
+        owner: &'a str,
+        now: f64,
+    ) -> BoxFuture<'a, Result<Value, Error>> {
+        Box::pin(async move {
+            self.runtime
+                .cancel(monitor_id, Some(owner), now)
+                .await
+                .map_err(monitor_error)
+        })
     }
 }
 
@@ -288,45 +332,49 @@ struct ManagedInterruptAdapter {
 }
 
 impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
-    fn stop_by_agent(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        target_id: &str,
-        _request_id: &str,
+    fn stop_by_agent<'a>(
+        &'a self,
+        store: Arc<RuntimeStore>,
+        actor: &'a Actor,
+        target_id: &'a str,
+        _request_id: &'a str,
         now: f64,
-    ) -> Result<DispatchedOperation, Error> {
-        match crate::agent_lifecycle_runtime::stop_by_agent(
-            store,
-            actor.record().id.0.as_str(),
-            actor.record().epoch,
-            target_id,
-            false,
-            now,
-            self.lifecycle.as_ref(),
-        ) {
-            Ok(value) => Ok(DispatchedOperation {
-                result: OperationResult {
-                    value,
-                    signals: Vec::new(),
-                },
-                certainty: DeliveryCertainty::Written,
-                applied: Some(true),
-            }),
-            Err(crate::agent_management::ManagementError::Store(
-                studio_runtime_store::StoreError::RecordContract(
-                    "Lifecycle committed; effect delivery remains pending",
-                ),
-            )) => Ok(DispatchedOperation {
-                result: OperationResult {
-                    value: json!("Lifecycle outcome unknown; do not repeat it"),
-                    signals: Vec::new(),
-                },
-                certainty: DeliveryCertainty::Unknown,
-                applied: None,
-            }),
-            Err(error) => Err(management_error(error)),
-        }
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        Box::pin(async move {
+            match crate::agent_lifecycle_runtime::stop_by_agent(
+                store,
+                actor.record().id.0.as_str(),
+                actor.record().epoch,
+                target_id,
+                false,
+                now,
+                Arc::clone(&self.lifecycle),
+            )
+            .await
+            {
+                Ok(value) => Ok(DispatchedOperation {
+                    result: OperationResult {
+                        value,
+                        signals: Vec::new(),
+                    },
+                    certainty: DeliveryCertainty::Written,
+                    applied: Some(true),
+                }),
+                Err(crate::agent_management::ManagementError::Store(
+                    studio_runtime_store::StoreError::RecordContract(
+                        "Lifecycle committed; effect delivery remains pending",
+                    ),
+                )) => Ok(DispatchedOperation {
+                    result: OperationResult {
+                        value: json!("Lifecycle outcome unknown; do not repeat it"),
+                        signals: Vec::new(),
+                    },
+                    certainty: DeliveryCertainty::Unknown,
+                    applied: None,
+                }),
+                Err(error) => Err(management_error(error)),
+            }
+        })
     }
 }
 

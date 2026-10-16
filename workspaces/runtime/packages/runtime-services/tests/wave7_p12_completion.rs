@@ -183,25 +183,33 @@ impl WakePort for FailingFirstWake {
     }
 }
 
-#[test]
-fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
+#[tokio::test]
+async fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("Python state opens");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Python state opens");
     let observation = limits();
     let turn =
         json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}});
-    let completion = || Completion::TerminalTurn {
-        agent_id: "a",
-        turn: &turn,
-        known: true,
-        now: 1000.0,
-        limits: Some(&observation),
-        claude_auth: None,
-    };
-
+    let staged_turn = turn.clone();
+    let staged_observation = observation.clone();
     let staged = store
-        .transaction_with(|tx| continuation_runtime::stage(tx, completion()))
+        .transaction_with(move |tx| {
+            continuation_runtime::stage(
+                tx,
+                Completion::TerminalTurn {
+                    agent_id: "a",
+                    turn: &staged_turn,
+                    known: true,
+                    now: 1000.0,
+                    limits: Some(&staged_observation),
+                    claude_auth: None,
+                },
+            )
+        })
+        .await
         .expect("stage completion transaction");
     assert!(staged.changed());
     assert_eq!(usage_rows(&store), (2, Some("scheduled".into())));
@@ -212,8 +220,23 @@ fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
     assert_eq!(wake.0.load(Ordering::SeqCst), 1);
     assert_eq!(wake.1.load(Ordering::SeqCst), 0);
 
+    let replay_turn = turn.clone();
+    let replay_observation = observation.clone();
     let replay = store
-        .transaction_with(|tx| continuation_runtime::stage(tx, completion()))
+        .transaction_with(move |tx| {
+            continuation_runtime::stage(
+                tx,
+                Completion::TerminalTurn {
+                    agent_id: "a",
+                    turn: &replay_turn,
+                    known: true,
+                    now: 1000.0,
+                    limits: Some(&replay_observation),
+                    claude_auth: None,
+                },
+            )
+        })
+        .await
         .expect("replayed completion");
     assert!(!replay.changed());
     continuation_runtime::committed(&replay, &wake).expect("no duplicate wake");
@@ -227,14 +250,16 @@ fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
     );
 }
 
-#[test]
-fn missing_limits_observation_aborts_without_a_partial_write() {
+#[tokio::test]
+async fn missing_limits_observation_aborts_without_a_partial_write() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("Python state opens");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Python state opens");
     let before = usage_rows(&store);
     let error = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             continuation_runtime::stage(
                 tx,
                 Completion::TerminalTurn {
@@ -246,7 +271,7 @@ fn missing_limits_observation_aborts_without_a_partial_write() {
                     claude_auth: None,
                 },
             )
-        })
+        }).await
         .expect_err("missing observation is named");
     assert!(matches!(
         error,
@@ -255,11 +280,13 @@ fn missing_limits_observation_aborts_without_a_partial_write() {
     assert_eq!(usage_rows(&store), before);
 }
 
-#[test]
-fn unknown_or_malformed_completion_does_not_create_continuation_state() {
+#[tokio::test]
+async fn unknown_or_malformed_completion_does_not_create_continuation_state() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("Python state opens");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Python state opens");
     let before = usage_rows(&store);
     let unknown = store
         .transaction_with(|tx| {
@@ -274,24 +301,26 @@ fn unknown_or_malformed_completion_does_not_create_continuation_state() {
                     claude_auth: None,
                 },
             )
-        })
+        }).await
         .expect("unknown outcome does not continue");
     assert!(!unknown.changed());
     assert_eq!(usage_rows(&store), before);
 
-    let missing_agent = store.transaction_with(|tx| {
-        continuation_runtime::stage(
-            tx,
-            Completion::TerminalTurn {
-                agent_id: "missing",
-                turn: &Value::Null,
-                known: true,
-                now: 1000.0,
-                limits: None,
-                claude_auth: None,
-            },
-        )
-    });
+    let missing_agent = store
+        .transaction_with(|tx| {
+            continuation_runtime::stage(
+                tx,
+                Completion::TerminalTurn {
+                    agent_id: "missing",
+                    turn: &Value::Null,
+                    known: true,
+                    now: 1000.0,
+                    limits: None,
+                    claude_auth: None,
+                },
+            )
+        })
+        .await;
     assert!(matches!(
         missing_agent,
         Err(ContinuationError::Store(
@@ -300,11 +329,11 @@ fn unknown_or_malformed_completion_does_not_create_continuation_state() {
     ));
 }
 
-#[test]
-fn foreign_account_limits_refuse_before_any_completion_write() {
+#[tokio::test]
+async fn foreign_account_limits_refuse_before_any_completion_write() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let before = complete_continuation_rows(&store);
     let foreign = LimitsObservation::from_record(
         json!({
@@ -314,10 +343,10 @@ fn foreign_account_limits_refuse_before_any_completion_write() {
         Some("refresh-x".into()),
     )
     .expect("typed observation");
-    let result = store.transaction_with(|tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
+    let result = store.transaction_with(move |tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
         agent_id:"a", turn:&json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}),
         known:true, now:1000.0, limits:Some(&foreign), claude_auth:None,
-    }));
+    })).await;
     assert!(matches!(
         result,
         Err(ContinuationError::Unavailable(
@@ -327,11 +356,11 @@ fn foreign_account_limits_refuse_before_any_completion_write() {
     assert_eq!(complete_continuation_rows(&store), before);
 }
 
-#[test]
-fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
+#[tokio::test]
+async fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let before = complete_continuation_rows(&store);
     let foreign = LimitsObservation::from_record(
         json!({
@@ -341,12 +370,18 @@ fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
         Some("refresh-x".into()),
     )
     .expect("typed observation");
-    let result = store.transaction_with(|tx| {
-        let raw =
-            ContinuationRepository::snapshot(tx, "a", ContinuationTable::Usage, Some("resume"))?;
-        let snapshot = Snapshot::from_records(raw)?;
-        usage_resume::limits_changed(&snapshot, &foreign, 1000.0)
-    });
+    let result = store
+        .transaction_with(move |tx| {
+            let raw = ContinuationRepository::snapshot(
+                tx,
+                "a",
+                ContinuationTable::Usage,
+                Some("resume"),
+            )?;
+            let snapshot = Snapshot::from_records(raw)?;
+            usage_resume::limits_changed(&snapshot, &foreign, 1000.0)
+        })
+        .await;
     assert!(matches!(
         result,
         Err(ContinuationError::Unavailable(
@@ -356,11 +391,11 @@ fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
     assert_eq!(complete_continuation_rows(&store), before);
 }
 
-#[test]
-fn persisted_account_limits_retime_waits_and_report_scheduler_wake() {
+#[tokio::test]
+async fn persisted_account_limits_retime_waits_and_report_scheduler_wake() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let value = json!({
         "accountKey":"default",
         "at":1000.0,
@@ -368,9 +403,10 @@ fn persisted_account_limits_retime_waits_and_report_scheduler_wake() {
         "error":null
     });
     let changed = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             continuation_runtime::stage_limits_changed_for_account(tx, "default", &value, 1000.0)
         })
+        .await
         .expect("stage fresh limits");
     assert!(
         changed,
@@ -384,11 +420,11 @@ fn persisted_account_limits_retime_waits_and_report_scheduler_wake() {
     assert_eq!(resume["plannedAt"], 1300.0);
 }
 
-#[test]
-fn ineligible_terminal_failure_does_not_require_limits() {
+#[tokio::test]
+async fn ineligible_terminal_failure_does_not_require_limits() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store
         .transaction(|tx| {
             let mut agent: Value = serde_json::from_str(&tx.query_row(
@@ -403,21 +439,22 @@ fn ineligible_terminal_failure_does_not_require_limits() {
             )?;
             Ok(())
         })
+        .await
         .expect("disable auto wake");
     let before = complete_continuation_rows(&store);
     let staged = store.transaction_with(|tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
         agent_id:"a", turn:&json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}),
         known:true, now:1000.0, limits:None, claude_auth:None,
-    })).expect("ineligible failure returns quietly");
+    })).await.expect("ineligible failure returns quietly");
     assert!(!staged.changed());
     assert_eq!(complete_continuation_rows(&store), before);
 }
 
-#[test]
-fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
+#[tokio::test]
+async fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store
         .transaction(|tx| {
             let mut agent: Value = serde_json::from_str(&tx.query_row(
@@ -432,6 +469,7 @@ fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
             )?;
             Ok(())
         })
+        .await
         .expect("new attempt");
     let pin = ClaudeAccountPin::from_value(
         json!({"id":"default","provider":"claude","home":"/tmp","accountId":"acct"}),
@@ -445,7 +483,7 @@ fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
     };
     let before = complete_continuation_rows(&store);
     let staged = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             continuation_runtime::stage(
                 tx,
                 Completion::ClaudeAuthTimeout {
@@ -456,16 +494,17 @@ fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
                 },
             )
         })
+        .await
         .expect("stale timeout ignored");
     assert!(!staged.changed());
     assert_eq!(complete_continuation_rows(&store), before);
 }
 
-#[test]
-fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_agents() {
+#[tokio::test]
+async fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_agents() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let (first, second) = store
         .transaction_with(|tx| -> std::result::Result<_, ContinuationError> {
             let base: String = tx
@@ -556,6 +595,7 @@ fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_age
             )?;
             Ok((first, second))
         })
+        .await
         .expect("two bounded completion fanouts");
     assert!(first.changed());
     assert!(second.changed());
@@ -597,6 +637,7 @@ fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_age
     for owner in ["a", "a"] {
         let tick = store
             .transaction_with(|tx| continuation_runtime::stage_tick(tx, owner, 1002.0, None))
+            .await
             .expect("tick resumes one account cursor");
         assert!(tick.changed());
     }
@@ -623,8 +664,8 @@ fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_age
     assert_ne!(rows_after_completions, complete_continuation_rows(&store));
 }
 
-#[test]
-fn production_classifier_matches_python_word_boundaries_and_bounded_evidence() {
+#[tokio::test]
+async fn production_classifier_matches_python_word_boundaries_and_bounded_evidence() {
     use studio_runtime_services::continuation_runtime::classify_usage_failure;
     let cases = vec![
         (json!({"message":"HTTP 4010 from service"}), "codex"),

@@ -112,5 +112,5 @@ pub trait LoginReceipts: Send + Sync {
 
 /// Idempotent store repair after identity-verified reauthentication.
 pub trait LoginChats: Send + Sync {
-    fn refresh(&self, account: &str) -> Result<(), LoginError>;
+    fn refresh<'a>(&'a self, account: &'a str) -> FutureResult<'a, ()>;
 }

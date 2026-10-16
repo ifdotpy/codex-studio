@@ -2,6 +2,7 @@
 
 use std::fs::{File, FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bounded_child::{self, ChildError};
@@ -62,6 +63,8 @@ pub enum CheckpointsError {
     GitTimeout,
     #[error("The workspace cannot be accessed")]
     WorkspaceUnavailable,
+    #[error("Checkpoint worker failed")]
+    Worker,
     #[error("Invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error(transparent)]
@@ -106,87 +109,145 @@ pub fn preview_context(
     })
 }
 
-pub fn capture(
-    store: &RuntimeStore,
-    snapshot: WorkspaceSnapshot,
-    label: &str,
+pub async fn capture(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+    label: String,
 ) -> Result<Value, CheckpointsError> {
-    ensure_agent_available(&snapshot.agent)?;
-    ensure_workspace_idle(&snapshot, None)?;
+    let preflight_store = Arc::clone(&store);
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/checkpoints",
+        move || {
+            let snapshot = capture_context(&preflight_store, &agent_id)?;
+            ensure_agent_available(&snapshot.agent)?;
+            ensure_workspace_idle(&snapshot, None)?;
+            Ok::<_, CheckpointsError>(snapshot)
+        },
+    )
+    .await
+    .map_err(|_| CheckpointsError::Worker)??;
     let checkpoint_id = new_uuid()?;
     let operation_id = format!("capture:{checkpoint_id}");
     let now = now_seconds();
-    store.transaction_with(|transaction| {
-        if !CheckpointsRepository::reserve_capture(transaction, &snapshot, &operation_id, now)? {
-            return Err(CheckpointsError::ActivityChanged);
-        }
-        Ok::<_, CheckpointsError>(())
-    })?;
-
+    let transaction_operation_id = operation_id.clone();
+    let (reserved, snapshot) = store
+        .transaction_with(move |transaction| {
+            let reserved = CheckpointsRepository::reserve_capture(
+                transaction,
+                &snapshot,
+                &transaction_operation_id,
+                now,
+            )?;
+            Ok::<_, CheckpointsError>((reserved, snapshot))
+        })
+        .await?;
+    if !reserved {
+        return Err(CheckpointsError::ActivityChanged);
+    }
     finish_reserved(
         store,
-        &snapshot,
+        snapshot,
         label,
-        &checkpoint_id,
-        &operation_id,
+        checkpoint_id,
+        operation_id,
         CaptureKind::Manual,
     )
+    .await
 }
 
 /// Capture the pre-restore tree while the durable restore reservation owns the
 /// workspace. The operation records the checkpoint identity before returning,
 /// so a retry never creates a second before-restore checkpoint.
-pub fn capture_before_restore(
-    store: &RuntimeStore,
-    agent_id: &str,
-    operation_id: &str,
-    expected_tree: &str,
+pub async fn capture_before_restore(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+    operation_id: String,
+    expected_tree: String,
 ) -> Result<Value, CheckpointsError> {
-    let snapshot = capture_context(store, agent_id)?;
-    if snapshot
-        .agent
-        .record
-        .get("workspaceOperation")
-        .and_then(Value::as_str)
-        != Some("restore")
-        || snapshot
-            .agent
-            .record
-            .get("workspaceReservationId")
-            .and_then(Value::as_str)
-            != Some(operation_id)
-    {
-        return Err(CheckpointsError::ActivityChanged);
-    }
-    ensure_workspace_idle(&snapshot, Some(operation_id))?;
-    let cwd = agent_string(&snapshot, "cwd")?;
-    let tree = snapshot_tree(store, cwd)?;
-    if tree != expected_tree {
-        return Err(CheckpointsError::ActivityChanged);
-    }
-    let checkpoint_id =
-        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, operation_id.as_bytes()).to_string();
-    let existing = store.read().and_then(|db| {
-        studio_runtime_store::CheckpointsRepository::checkpoint(&db, &checkpoint_id)
-    })?;
+    capture_before_restore_inner(store, agent_id, operation_id, expected_tree).await
+}
+
+async fn capture_before_restore_inner(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+    operation_id: String,
+    expected_tree: String,
+) -> Result<Value, CheckpointsError> {
+    let read_store = Arc::clone(&store);
+    let read_agent = agent_id.clone();
+    let read_operation = operation_id.clone();
+    let read_expected_tree = expected_tree.clone();
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/checkpoints",
+        move || {
+            let snapshot = capture_context(&read_store, &read_agent)?;
+            if snapshot
+                .agent
+                .record
+                .get("workspaceOperation")
+                .and_then(Value::as_str)
+                != Some("restore")
+                || snapshot
+                    .agent
+                    .record
+                    .get("workspaceReservationId")
+                    .and_then(Value::as_str)
+                    != Some(read_operation.as_str())
+            {
+                return Err(CheckpointsError::ActivityChanged);
+            }
+            ensure_workspace_idle(&snapshot, Some(&read_operation))?;
+            let cwd = agent_string(&snapshot, "cwd")?.to_owned();
+            let tree = snapshot_tree(&read_store, &cwd)?;
+            if tree != read_expected_tree {
+                return Err(CheckpointsError::ActivityChanged);
+            }
+            let checkpoint_id =
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, read_operation.as_bytes())
+                    .to_string();
+            let existing = read_store.read().and_then(|db| {
+                studio_runtime_store::CheckpointsRepository::checkpoint(&db, &checkpoint_id)
+            })?;
+            Ok::<_, CheckpointsError>((snapshot, cwd, tree, checkpoint_id, existing))
+        },
+    )
+    .await
+    .map_err(|_| CheckpointsError::Worker)??;
+    let (snapshot, cwd, tree, checkpoint_id, existing) = snapshot;
     if let Some(existing) = existing {
         return Ok(checkpoint_summary(existing.record));
     }
-    let commit_output = git(
-        cwd,
-        &["commit-tree", tree.as_str(), "-p", "HEAD"],
-        &[
-            ("GIT_AUTHOR_NAME", "Codex Agents"),
-            ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
-            ("GIT_COMMITTER_NAME", "Codex Agents"),
-            ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
-        ],
-        Some(b"Codex Agents workspace checkpoint\n"),
-        128,
-    )?;
-    let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
-    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{checkpoint_id}");
-    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+    let agent_id = agent_id;
+    let operation_id = operation_id;
+    let git_agent_id = agent_id.clone();
+    let git_checkpoint_id = checkpoint_id.clone();
+    let git_cwd = cwd.clone();
+    let git_tree = tree.clone();
+    let commit_stage = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/checkpoints",
+        move || {
+            let commit_output = git(
+                &git_cwd,
+                &["commit-tree", git_tree.as_str(), "-p", "HEAD"],
+                &[
+                    ("GIT_AUTHOR_NAME", "Codex Agents"),
+                    ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
+                    ("GIT_COMMITTER_NAME", "Codex Agents"),
+                    ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
+                ],
+                Some(b"Codex Agents workspace checkpoint\n"),
+                128,
+            )?;
+            let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
+            let reference =
+                format!("refs/codex-agents/checkpoints/{git_agent_id}/{git_checkpoint_id}");
+            git(&git_cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+            Ok::<_, CheckpointsError>((commit, reference))
+        },
+    )
+    .await
+    .map_err(|_| CheckpointsError::Worker)??;
+    let (commit, reference) = commit_stage;
     let parent_id = snapshot
         .agent
         .record
@@ -198,8 +259,33 @@ pub fn capture_before_restore(
         .as_ref()
         .and_then(|parent| parent.record.get("historyBoundary"))
         .and_then(Value::as_i64);
-    store.transaction_with(|tx| {
-        let Some(mut operation) = studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, operation_id)? else {
+    let root_id = snapshot
+        .agent
+        .record
+        .get("rootId")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let thread_id = snapshot
+        .agent
+        .record
+        .get("threadId")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let turn_id = snapshot
+        .agent
+        .record
+        .get("lastCompletedTurn")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let transaction_operation_id = operation_id;
+    let transaction_agent_id = agent_id;
+    let transaction_checkpoint_id = checkpoint_id;
+    let transaction_cwd = cwd;
+    let transaction_tree = tree;
+    let transaction_commit = commit;
+    let transaction_reference = reference;
+    store.transaction_with(move |tx| {
+        let Some(mut operation) = studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, &transaction_operation_id)? else {
             return Err(CheckpointsError::ActivityChanged);
         };
         if operation.get("kind").and_then(Value::as_str) != Some("restore")
@@ -209,27 +295,27 @@ pub fn capture_before_restore(
         {
             return Err(CheckpointsError::ActivityChanged);
         }
-        let (history_delta, history_boundary) = studio_runtime_store::CheckpointsRepository::history_delta(tx, agent_id, parent_boundary)?;
+        let (history_delta, history_boundary) = studio_runtime_store::CheckpointsRepository::history_delta(tx, &transaction_agent_id, parent_boundary)?;
         let record = json!({
             "historyParent":parent_id,"historyDelta":history_delta,"historyBoundary":history_boundary,
-            "id":checkpoint_id,"agent":agent_id,"rootId":snapshot.agent.record.get("rootId"),
-            "label":"Before restore","tree":tree,"commit":commit,"ref":reference,
-            "threadId":snapshot.agent.record.get("threadId"),
-            "turnId":snapshot.agent.record.get("lastCompletedTurn"),"created":now_seconds(),"cwd":cwd
+            "id":&transaction_checkpoint_id,"agent":&transaction_agent_id,"rootId":root_id,
+            "label":"Before restore","tree":&transaction_tree,"commit":&transaction_commit,"ref":&transaction_reference,
+            "threadId":thread_id,
+            "turnId":turn_id,"created":now_seconds(),"cwd":transaction_cwd
         });
-        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![checkpoint_id, record.to_string()])
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![&transaction_checkpoint_id, record.to_string()])
             .map_err(StoreError::from)?;
-        let Some(mut agent) = studio_runtime_store::CheckpointsRepository::agent(tx, agent_id)? else {
+        let Some(mut agent) = studio_runtime_store::CheckpointsRepository::agent(tx, &transaction_agent_id)? else {
             return Err(CheckpointsError::UnknownAgent);
         };
-        agent.record["checkpointHistoryHead"] = json!(checkpoint_id);
+        agent.record["checkpointHistoryHead"] = json!(transaction_checkpoint_id);
         let agent = studio_runtime_store::AgentRecord::from_value(agent.record)
             .map_err(StoreError::from)?;
         studio_runtime_store::AgentRepository::put(tx, &agent)?;
-        operation["beforeCheckpoint"] = json!(checkpoint_id);
+        operation["beforeCheckpoint"] = json!(transaction_checkpoint_id);
         studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::put_operation(tx, &operation)?;
         Ok::<_, CheckpointsError>(record)
-    })
+    }).await
 }
 
 /// Restore a previously previewed tree in the caller's already-reserved,
@@ -276,28 +362,40 @@ pub fn validate_tree(cwd: &str, tree: &str) -> Result<(), CheckpointsError> {
     Ok(())
 }
 
-pub(crate) fn finish_reserved(
-    store: &RuntimeStore,
-    snapshot: &WorkspaceSnapshot,
-    label: &str,
-    checkpoint_id: &str,
-    operation_id: &str,
+pub(crate) async fn finish_reserved(
+    store: Arc<RuntimeStore>,
+    snapshot: WorkspaceSnapshot,
+    label: String,
+    checkpoint_id: String,
+    operation_id: String,
     kind: CaptureKind,
 ) -> Result<Value, CheckpointsError> {
-    let result = capture_reserved(store, snapshot, label, checkpoint_id, operation_id, kind);
+    let result = capture_reserved(
+        Arc::clone(&store),
+        snapshot,
+        label,
+        checkpoint_id,
+        operation_id.clone(),
+        kind,
+    )
+    .await;
     match result {
         Ok(checkpoint) => Ok(checkpoint_summary(checkpoint)),
         Err(error) => {
             let message = error.to_string();
-            let settlement = store.transaction_with(|transaction| {
-                CheckpointsRepository::settle_capture(
-                    transaction,
-                    operation_id,
-                    Some(&message),
-                    now_seconds(),
-                )?;
-                Ok::<_, CheckpointsError>(())
-            });
+            let settlement_operation_id = operation_id;
+            let transaction_operation_id = settlement_operation_id.clone();
+            let settlement = store
+                .transaction_with(move |transaction| {
+                    CheckpointsRepository::settle_capture(
+                        transaction,
+                        &transaction_operation_id,
+                        Some(&message),
+                        now_seconds(),
+                    )?;
+                    Ok::<_, CheckpointsError>(())
+                })
+                .await;
             match settlement {
                 Ok(()) => Err(error),
                 Err(settlement_error) => Err(CheckpointsError::SettlementFailed {
@@ -309,104 +407,167 @@ pub(crate) fn finish_reserved(
     }
 }
 
-fn capture_reserved(
-    store: &RuntimeStore,
-    snapshot: &WorkspaceSnapshot,
-    label: &str,
-    checkpoint_id: &str,
-    operation_id: &str,
+async fn capture_reserved(
+    store: Arc<RuntimeStore>,
+    snapshot: WorkspaceSnapshot,
+    label: String,
+    checkpoint_id: String,
+    operation_id: String,
     kind: CaptureKind,
 ) -> Result<Value, CheckpointsError> {
-    let snapshot = capture_context(store, &snapshot.agent.id)?;
-    if snapshot
-        .agent
-        .record
-        .get("workspaceReservationId")
-        .and_then(Value::as_str)
-        != Some(operation_id)
-        || snapshot
-            .agent
-            .record
-            .get("workspaceOperation")
-            .and_then(Value::as_str)
-            != Some(kind.as_str())
-    {
-        return Err(CheckpointsError::ActivityChanged);
-    }
-    ensure_workspace_idle(&snapshot, Some(operation_id))?;
-    let started = store.transaction_with(|transaction| {
-        CheckpointsRepository::set_capture_running(
-            transaction,
-            &snapshot,
-            operation_id,
-            now_seconds(),
-        )
-        .map_err(CheckpointsError::from)
-    })?;
+    let read_store = Arc::clone(&store);
+    let agent_id = snapshot.agent.id.clone();
+    let transaction_operation_id = operation_id.clone();
+    let preflight_operation_id = transaction_operation_id.clone();
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/checkpoints",
+        move || {
+            let snapshot = capture_context(&read_store, &agent_id)?;
+            if snapshot
+                .agent
+                .record
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                != Some(preflight_operation_id.as_str())
+                || snapshot
+                    .agent
+                    .record
+                    .get("workspaceOperation")
+                    .and_then(Value::as_str)
+                    != Some(kind.as_str())
+            {
+                return Err(CheckpointsError::ActivityChanged);
+            }
+            ensure_workspace_idle(&snapshot, Some(&preflight_operation_id))?;
+            Ok::<_, CheckpointsError>(snapshot)
+        },
+    )
+    .await
+    .map_err(|_| CheckpointsError::Worker)??;
+    let (started, snapshot) = store
+        .transaction_with(move |transaction| {
+            let started = CheckpointsRepository::set_capture_running(
+                transaction,
+                &snapshot,
+                &transaction_operation_id,
+                now_seconds(),
+            )
+            .map_err(CheckpointsError::from)?;
+            Ok::<_, CheckpointsError>((started, snapshot))
+        })
+        .await?;
     if !started {
         return Err(CheckpointsError::ActivityChanged);
     }
-    let agent_id = &snapshot.agent.id;
-    let cwd = agent_string(&snapshot, "cwd")?;
-    let tree = snapshot_tree(store, cwd)?;
-    let commit_output = git(
-        cwd,
-        &["commit-tree", tree.as_str(), "-p", "HEAD"],
-        &[
-            ("GIT_AUTHOR_NAME", "Codex Agents"),
-            ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
-            ("GIT_COMMITTER_NAME", "Codex Agents"),
-            ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
-        ],
-        Some(b"Codex Agents workspace checkpoint\n"),
-        128,
-    )?;
-    let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
-    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{checkpoint_id}");
-    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
-
-    let parent_id = snapshot
-        .agent
-        .record
-        .get("checkpointHistoryHead")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let parent_boundary = snapshot
-        .parent_checkpoint
-        .as_ref()
-        .and_then(|parent| parent.record.get("historyBoundary"))
-        .and_then(Value::as_i64);
-    store.transaction_with(|transaction| {
-        let (history_delta, history_boundary) =
-            CheckpointsRepository::history_delta(transaction, agent_id, parent_boundary)?;
-        let record = json!({
-            "historyParent": parent_id,
-            "historyDelta": history_delta,
-            "historyBoundary": history_boundary,
-            "id": checkpoint_id,
-            "agent": agent_id,
-            "rootId": snapshot.agent.record.get("rootId"),
-            "label": label,
-            "tree": tree,
-            "commit": commit,
-            "ref": reference,
-            "threadId": snapshot.agent.record.get("threadId"),
-            "turnId": snapshot.agent.record.get("lastCompletedTurn"),
-            "created": now_seconds(),
-            "cwd": cwd,
-        });
-        if !CheckpointsRepository::complete_capture(
-            transaction,
-            agent_id,
-            operation_id,
-            parent_id.as_deref(),
-            &record,
-            now_seconds(),
-        )? {
-            return Err(CheckpointsError::ActivityChanged);
-        }
-        Ok::<_, CheckpointsError>(record)
-    })
+    let git_store = Arc::clone(&store);
+    let transaction_agent_id = snapshot.agent.id.clone();
+    let transaction_operation_id = operation_id;
+    let transaction_checkpoint_id = checkpoint_id;
+    let transaction_label = label;
+    let git_agent_id = transaction_agent_id.clone();
+    let git_checkpoint_id = transaction_checkpoint_id.clone();
+    let (parent_id, parent_boundary, root_id, thread_id, turn_id, cwd, tree, commit, reference) =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/checkpoints",
+            move || {
+                let cwd = agent_string(&snapshot, "cwd")?.to_owned();
+                let tree = snapshot_tree(&git_store, &cwd)?;
+                let commit_output = git(
+                    &cwd,
+                    &["commit-tree", tree.as_str(), "-p", "HEAD"],
+                    &[
+                        ("GIT_AUTHOR_NAME", "Codex Agents"),
+                        ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
+                        ("GIT_COMMITTER_NAME", "Codex Agents"),
+                        ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
+                    ],
+                    Some(b"Codex Agents workspace checkpoint\n"),
+                    128,
+                )?;
+                let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
+                let reference =
+                    format!("refs/codex-agents/checkpoints/{git_agent_id}/{git_checkpoint_id}");
+                git(&cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+                let parent_id = snapshot
+                    .agent
+                    .record
+                    .get("checkpointHistoryHead")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let parent_boundary = snapshot
+                    .parent_checkpoint
+                    .as_ref()
+                    .and_then(|parent| parent.record.get("historyBoundary"))
+                    .and_then(Value::as_i64);
+                let root_id = snapshot
+                    .agent
+                    .record
+                    .get("rootId")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let thread_id = snapshot
+                    .agent
+                    .record
+                    .get("threadId")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let turn_id = snapshot
+                    .agent
+                    .record
+                    .get("lastCompletedTurn")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                Ok::<_, CheckpointsError>((
+                    parent_id,
+                    parent_boundary,
+                    root_id,
+                    thread_id,
+                    turn_id,
+                    cwd,
+                    tree,
+                    commit,
+                    reference,
+                ))
+            },
+        )
+        .await
+        .map_err(|_| CheckpointsError::Worker)??;
+    store
+        .transaction_with(move |transaction| {
+            let (history_delta, history_boundary) = CheckpointsRepository::history_delta(
+                transaction,
+                &transaction_agent_id,
+                parent_boundary,
+            )?;
+            let record = json!({
+                "historyParent": parent_id,
+                "historyDelta": history_delta,
+                "historyBoundary": history_boundary,
+                "id": &transaction_checkpoint_id,
+                "agent": &transaction_agent_id,
+                "rootId": root_id,
+                "label": &transaction_label,
+                "tree": &tree,
+                "commit": &commit,
+                "ref": &reference,
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "created": now_seconds(),
+                "cwd": cwd,
+            });
+            if !CheckpointsRepository::complete_capture(
+                transaction,
+                &transaction_agent_id,
+                &transaction_operation_id,
+                parent_id.as_deref(),
+                &record,
+                now_seconds(),
+            )? {
+                return Err(CheckpointsError::ActivityChanged);
+            }
+            Ok::<_, CheckpointsError>(record)
+        })
+        .await
 }
 
 pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, CheckpointsError> {

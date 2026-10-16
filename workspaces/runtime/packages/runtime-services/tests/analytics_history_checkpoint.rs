@@ -2,11 +2,11 @@
 mod prepared_python;
 use serde_json::{Value, json};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Command;
-use std::sync::mpsc;
-use std::sync::{OnceLock, atomic::AtomicBool};
-use std::thread;
+use std::sync::{Arc, OnceLock, atomic::AtomicBool};
 use studio_runtime_services::analytics_history::{
     self as history, BatchLimits, HistoryBudgetSink, HistoryError, HistorySnapshot, RolloutPath,
 };
@@ -15,8 +15,12 @@ use studio_runtime_store::{AnalyticsRepository, RuntimeStore, StoreError, Transc
 
 struct Budget;
 impl HistoryBudgetSink for Budget {
-    fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
-        Ok(())
+    fn capture_page<'a>(
+        &'a self,
+        _: Vec<(Arc<Value>, Value, f64)>,
+        _: f64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
 }
 // Allow the fixed mutation runner to keep SQLite fixtures on caller-owned tmpfs.
@@ -77,8 +81,8 @@ fn checkpoint(store: &RuntimeStore) -> Option<Value> {
         .expect("read");
     Repo::read(&db, CaptureTable::History, "a:default:thread").expect("checkpoint")
 }
-#[test]
-fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
+#[tokio::test]
+async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records(), b"");
     let cancel = AtomicBool::new(false);
@@ -103,6 +107,7 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     .expect("competing batch");
     first
         .commit(&store, &Budget, 200.)
+        .await
         .expect("commit before response lost");
     let committed = checkpoint(&store).expect("checkpoint");
     assert_eq!(
@@ -110,7 +115,7 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         fs::metadata(&path).expect("stat").len()
     );
     assert!(matches!(
-        stale.commit(&store, &Budget, 201.),
+        stale.commit(&store, &Budget, 201.).await,
         Err(HistoryError::StaleCheckpoint)
     ));
     drop(store);
@@ -125,7 +130,10 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     )
     .expect("resume");
     assert!(!batch.advanced());
-    batch.commit(&store, &Budget, 202.).expect("idle commit");
+    batch
+        .commit(&store, &Budget, 202.)
+        .await
+        .expect("idle commit");
     assert_eq!(checkpoint(&store), Some(committed));
     let db = AnalyticsRepository::new(store.root())
         .open_read_only()
@@ -137,8 +145,8 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     assert_eq!(turn["durationMs"], 1000.);
 }
 
-#[test]
-fn committed_read_snapshot_finishes_while_store_writer_is_held() {
+#[tokio::test]
+async fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     use std::sync::mpsc;
     use std::time::Duration;
     let (root, _) = fixture();
@@ -146,67 +154,90 @@ fn committed_read_snapshot_finishes_while_store_writer_is_held() {
     let (writer_started, started) = mpsc::channel();
     let (release_writer, release) = mpsc::channel();
     let (reader_done, read_done) = mpsc::channel();
-    thread::scope(|scope| {
-        let writer_store = &store;
-        let writer = scope.spawn(move || {
-            writer_store
-                .transaction(|tx| {
-                    tx.execute("UPDATE runtime_agents SET record=record WHERE id='a'", [])?;
-                    writer_started.send(()).expect("writer gate");
-                    release.recv().expect("writer release");
-                    Ok(())
-                })
-                .expect("writer commit");
-        });
-        started
-            .recv_timeout(Duration::from_secs(5))
-            .expect("writer holds transaction");
-        let reader_store = &store;
-        scope.spawn(move || {
-            reader_done
-                .send(reader_store.read_transaction(|tx| {
-                    Ok(
-                        tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
-                            r.get::<_, String>(0)
-                        })?,
-                    )
-                }))
-                .expect("reader result receiver");
-        });
-        let result = read_done.recv_timeout(Duration::from_secs(5));
-        release_writer.send(()).expect("release writer");
-        writer.join().expect("writer task");
-        assert_eq!(
-            result
-                .expect("reader completed before writer release")
-                .expect("read"),
-            "a"
-        );
+    let writer_store = store.clone();
+    let writer = tokio::spawn(async move {
+        writer_store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_agents SET record=record WHERE id='a'", [])?;
+                writer_started.send(()).expect("writer gate");
+                release.recv().expect("writer release");
+                Ok(())
+            })
+            .await
+            .expect("writer commit");
     });
+    started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("writer holds transaction");
+    let reader_store = store.clone();
+    tokio::spawn(async move {
+        reader_done
+            .send(reader_store.read_transaction(|tx| {
+                Ok(
+                    tx.query_row("SELECT id FROM runtime_agents WHERE id='a'", [], |r| {
+                        r.get::<_, String>(0)
+                    })?,
+                )
+            }))
+            .expect("reader result receiver");
+    });
+    let result = read_done.recv_timeout(Duration::from_secs(5));
+    release_writer.send(()).expect("release writer");
+    writer.await.expect("writer task");
+    assert_eq!(
+        result
+            .expect("reader completed before writer release")
+            .expect("read"),
+        "a"
+    );
 }
 
-#[test]
-fn unchanged_transcript_projection_performs_no_sql_writes() {
+#[tokio::test]
+async fn unchanged_transcript_projection_performs_no_sql_writes() {
     let (root, _) = fixture();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
     let payload = json!({
         "agent":{"id":"a"},
         "items":[{"id":"item-1","role":"assistant","text":"stable"}]
     });
-    let writes = || {
-        store.transaction(|tx| {
+    let initial_payload = payload.clone();
+    let initial = store
+        .transaction(move |tx| {
             let before = tx.total_changes();
-            TranscriptRepository::pull_payload(tx, "transcript:a", 0, &payload, false, Some(1))
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            TranscriptRepository::pull_payload(
+                tx,
+                "transcript:a",
+                0,
+                &initial_payload,
+                false,
+                Some(1),
+            )
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             Ok(tx.total_changes() - before)
         })
-    };
-    assert!(writes().expect("initial projection") > 0);
-    assert_eq!(writes().expect("same projection"), 0);
+        .await;
+    let duplicate_payload = payload;
+    let duplicate = store
+        .transaction(move |tx| {
+            let before = tx.total_changes();
+            TranscriptRepository::pull_payload(
+                tx,
+                "transcript:a",
+                0,
+                &duplicate_payload,
+                false,
+                Some(1),
+            )
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            Ok(tx.total_changes() - before)
+        })
+        .await;
+    assert!(initial.expect("initial projection") > 0);
+    assert_eq!(duplicate.expect("same projection"), 0);
 }
 
-#[test]
-fn main_store_write_runs_between_separately_scheduled_history_batches() {
+#[tokio::test]
+async fn main_store_write_runs_between_separately_scheduled_history_batches() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records(), b"");
     let cancel = AtomicBool::new(false);
@@ -221,49 +252,50 @@ fn main_store_write_runs_between_separately_scheduled_history_batches() {
     )
     .expect("first batch prepares");
 
-    let (schedule_write, write_scheduled) = mpsc::channel();
-    let (write_committed, committed) = mpsc::channel();
-    thread::scope(|scope| {
-        let agent_id = agent["id"].as_str().expect("agent id").to_owned();
-        let store_ref = &store;
-        let task = scope.spawn(move || {
-            write_scheduled.recv().expect("queued write is scheduled");
-            store_ref
-                .transaction(|tx| {
-                    tx.execute(
-                        "UPDATE runtime_agents SET record=record WHERE id=?",
-                        [&agent_id],
-                    )?;
-                    Ok(())
-                })
-                .expect("queued main-store write commits");
-            write_committed
-                .send(())
-                .expect("commit receipt is received");
-        });
-
-        first
-            .commit(&store, &Budget, 10.0)
-            .expect("first batch commits");
-        schedule_write.send(()).expect("main write is queued");
-        committed
-            .recv()
-            .expect("main write commits before next batch");
-
-        let second = history::prepare(
-            HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
-            root.path(),
-            RolloutPath::Found(path),
-            BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
-            11.0,
-            &cancel,
-        )
-        .expect("second batch prepares");
-        second
-            .commit(&store, &Budget, 11.0)
-            .expect("second batch commits");
-        task.join().expect("queued writer exits");
+    let (schedule_write, write_scheduled) = tokio::sync::oneshot::channel();
+    let (write_committed, committed) = tokio::sync::oneshot::channel();
+    let agent_id = agent["id"].as_str().expect("agent id").to_owned();
+    let writer_store = store.clone();
+    let task = tokio::spawn(async move {
+        write_scheduled.await.expect("queued write is scheduled");
+        writer_store
+            .transaction(move |tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=record WHERE id=?",
+                    [&agent_id],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("queued main-store write commits");
+        write_committed
+            .send(())
+            .expect("commit receipt is received");
     });
+
+    first
+        .commit(&store, &Budget, 10.0)
+        .await
+        .expect("first batch commits");
+    schedule_write.send(()).expect("main write is queued");
+    committed
+        .await
+        .expect("main write commits before next batch");
+
+    let second = history::prepare(
+        HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
+        root.path(),
+        RolloutPath::Found(path),
+        BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
+        11.0,
+        &cancel,
+    )
+    .expect("second batch prepares");
+    second
+        .commit(&store, &Budget, 11.0)
+        .await
+        .expect("second batch commits");
+    task.await.expect("queued writer exits");
 
     let stored = checkpoint(&store).expect("history checkpoint persists");
     assert_eq!(stored["status"], "catchingUp");
@@ -305,8 +337,8 @@ fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
     assert_eq!(refused.checkpoint()["offset"], previous["offset"]);
     assert!(!refused.advanced());
 }
-#[test]
-fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
+#[tokio::test]
+async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
     for timing in ["BEFORE", "AFTER"] {
         for table in [
             "analytics_agents",
@@ -338,7 +370,7 @@ fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             )
             .expect("batch");
             assert!(
-                batch.commit(&store, &Budget, 200.).is_err(),
+                batch.commit(&store, &Budget, 200.).await.is_err(),
                 "failpoint {timing} {table} must fire"
             );
             assert!(checkpoint(&store).is_none());
@@ -363,13 +395,16 @@ fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
                 &AtomicBool::new(false),
             )
             .expect("retry");
-            batch.commit(&store, &Budget, 201.).expect("single commit");
+            batch
+                .commit(&store, &Budget, 201.)
+                .await
+                .expect("single commit");
             assert_eq!(checkpoint(&store).expect("saved")["importedRecords"], 5);
         }
     }
 }
-#[test]
-fn stale_agent_budget_failure_and_cancellation_write_nothing() {
+#[tokio::test]
+async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     let (root, agent) = fixture();
     let mut lines = records();
     lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
@@ -385,7 +420,9 @@ fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     )
     .expect("batch");
     assert!(matches!(
-        batch.commit(&store, &history::BudgetUnavailable, 200.),
+        batch
+            .commit(&store, &history::BudgetUnavailable, 200.)
+            .await,
         Err(HistoryError::BudgetUnavailable)
     ));
     assert!(checkpoint(&store).is_none());
@@ -417,34 +454,37 @@ fn stale_agent_budget_failure_and_cancellation_write_nothing() {
             )?;
             Ok(())
         })
+        .await
         .expect("epoch advance");
-    assert!(batch.commit(&store, &Budget, 200.).is_err());
+    assert!(batch.commit(&store, &Budget, 200.).await.is_err());
     assert!(checkpoint(&store).is_none());
 }
 
-#[test]
-fn history_usage_is_admitted_once_per_bounded_page() {
+#[tokio::test]
+async fn history_usage_is_admitted_once_per_bounded_page() {
     use std::sync::Mutex;
     #[derive(Default)]
     struct Pages(Mutex<Vec<Vec<String>>>);
     impl HistoryBudgetSink for Pages {
-        fn capture_page(
-            &self,
-            captures: &[(Value, Value, f64)],
+        fn capture_page<'a>(
+            &'a self,
+            captures: Vec<(Arc<Value>, Value, f64)>,
             _: f64,
-        ) -> Result<(), HistoryError> {
-            self.0.lock().expect("page counts").push(
-                captures
-                    .iter()
-                    .map(|(_, params, _)| {
-                        params["responseId"]
-                            .as_str()
-                            .expect("captured history page includes response ID")
-                            .to_owned()
-                    })
-                    .collect(),
-            );
-            Ok(())
+        ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.0.lock().expect("page counts").push(
+                    captures
+                        .iter()
+                        .map(|(_, params, _)| {
+                            params["responseId"]
+                                .as_str()
+                                .expect("captured history page includes response ID")
+                                .to_owned()
+                        })
+                        .collect(),
+                );
+                Ok(())
+            })
         }
     }
     let (root, agent) = fixture();
@@ -467,7 +507,7 @@ fn history_usage_is_admitted_once_per_bounded_page() {
     )
     .expect("batch");
     let pages = Pages::default();
-    batch.commit(&store, &pages, 200.).expect("commit");
+    batch.commit(&store, &pages, 200.).await.expect("commit");
     assert_eq!(
         *pages.0.lock().expect("page counts"),
         vec![vec!["r1".to_owned(), "r2".to_owned()]],
@@ -475,8 +515,8 @@ fn history_usage_is_admitted_once_per_bounded_page() {
     );
 }
 
-#[test]
-fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
+#[tokio::test]
+async fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_services::analytics_history::StoreHistoryBudgetSink;
@@ -489,7 +529,7 @@ fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
     });
     let captures = ["r1", "r2"].map(|response| {
         (
-            agent.clone(),
+            Arc::new(agent.clone()),
             json!({
                 "threadId":"thread", "turnId":"turn", "responseId":response,
                 "rawTokenUsageRecord":{"response_id":response},
@@ -500,13 +540,16 @@ fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
         )
     });
     let sink = StoreHistoryBudgetSink::new(&store);
-    sink.capture_page(&captures, 200.).expect("budget page");
+    sink.capture_page(captures.to_vec(), 200.)
+        .await
+        .expect("budget page");
     assert_eq!(
         commits.load(Ordering::SeqCst),
         1,
         "one writer commit for the page"
     );
-    sink.capture_page(&captures, 200.)
+    sink.capture_page(captures.to_vec(), 200.)
+        .await
         .expect("idempotent replay");
     assert_eq!(
         commits.load(Ordering::SeqCst),
@@ -530,8 +573,8 @@ fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
     assert_eq!((rows, tokens), (2, 4));
 }
 
-#[test]
-fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
+#[tokio::test]
+async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     use studio_runtime_services::analytics_history::{
         HistoryClock, HistoryCollector, StoreHistoryBudgetSink,
     };
@@ -551,25 +594,26 @@ fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     }
     fs::write(&path, bytes).expect("fixture rollout");
     let store = RuntimeStore::open(Some(root.path())).expect("store");
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut collector = HistoryCollector::default();
     let budget = StoreHistoryBudgetSink::new(&store);
     let roster = [agent];
-    let profile = |_: &str| Ok(root.path().to_path_buf());
+    let profile_path = root.path().to_path_buf();
 
     assert!(
         collector
             .step(
                 &store,
                 &roster,
-                profile,
+                move |_| Ok(profile_path),
                 HistoryClock {
                     observed_at: 200.0,
                     monotonic: 10.0
                 },
-                &cancel,
+                Arc::clone(&cancel),
                 &budget,
             )
+            .await
             .expect("first import tick")
     );
     let read_budget = || {
@@ -610,14 +654,15 @@ fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
         .step(
             &store,
             &roster,
-            profile,
+            |_| panic!("idle poll must not rediscover files"),
             HistoryClock {
                 observed_at: 205.0,
                 monotonic: 15.0,
             },
-            &cancel,
+            Arc::clone(&cancel),
             &budget,
         )
+        .await
         .expect("replay tick");
 
     assert_eq!(read_budget(), (1, 23));
@@ -628,8 +673,8 @@ fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     );
 }
 
-#[test]
-fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity_strict() {
+#[tokio::test]
+async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity_strict() {
     use studio_runtime_services::analytics_history::{
         HistoryClock, HistoryCollector, StoreHistoryBudgetSink,
     };
@@ -639,14 +684,16 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
     let (root, mut agent) = fixture();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
     agent["turnId"] = json!("current-turn");
+    let agent_id = agent["id"].as_str().expect("agent id").to_owned();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.turnId',?1) WHERE id=?2",
-                rusqlite::params!["current-turn", agent["id"].as_str()],
+                rusqlite::params!["current-turn", agent_id],
             )?;
             Ok(())
         })
+        .await
         .expect("persist current turn");
 
     let usage = json!({
@@ -669,23 +716,24 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
     let sessions = root.path().join("sessions");
     fs::create_dir_all(&sessions).expect("fixture sessions");
     let path = file(&sessions, &lines, b"");
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let budget = StoreHistoryBudgetSink::new(&store);
     let mut collector = HistoryCollector::default();
-    let profile = |_: &str| Ok(root.path().to_path_buf());
+    let profile_path = root.path().to_path_buf();
     assert!(
         collector
             .step(
                 &store,
                 std::slice::from_ref(&agent),
-                profile,
+                move |_| Ok(profile_path),
                 HistoryClock {
                     observed_at: 200.0,
                     monotonic: 10.0,
                 },
-                &cancel,
+                Arc::clone(&cancel),
                 &budget,
             )
+            .await
             .expect("import notices and delayed prior-turn response")
     );
 
@@ -726,6 +774,7 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
     assert!(!replay.advanced());
     replay
         .commit(&store, &budget, 201.0)
+        .await
         .expect("idempotent historical replay");
     assert_eq!(checkpoint(&store), Some(stored_checkpoint));
     assert_eq!(read_budget(), (3, 34));
@@ -740,17 +789,19 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
     });
     let mut wrong_live_agent = agent.clone();
     wrong_live_agent["turnId"] = json!("earlier-turn");
-    let result = store.transaction_with::<_, BudgetError>(|tx| {
-        budget_service::capture(
-            tx,
-            &mut wrong_live_agent,
-            &params,
-            202.0,
-            CaptureSource::Live,
-            202.0,
-        )
-        .map(|_| ())
-    });
+    let result = store
+        .transaction_with::<_, BudgetError>(|tx| {
+            budget_service::capture(
+                tx,
+                &mut wrong_live_agent,
+                &params,
+                202.0,
+                CaptureSource::Live,
+                202.0,
+            )
+            .map(|_| ())
+        })
+        .await;
     assert!(matches!(
         result,
         Err(BudgetError::Invalid(location)) if location == "runtime_agents/turnId/identity"
@@ -765,17 +816,19 @@ fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_identity
         let mut wrong_history_agent = agent.clone();
         wrong_history_agent["turnId"] = json!("earlier-turn");
         wrong_history_agent[field] = value;
-        let result = store.transaction_with::<_, BudgetError>(|tx| {
-            budget_service::capture(
-                tx,
-                &mut wrong_history_agent,
-                &params,
-                203.0,
-                CaptureSource::History,
-                203.0,
-            )
-            .map(|_| ())
-        });
+        let result = store
+            .transaction_with::<_, BudgetError>(|tx| {
+                budget_service::capture(
+                    tx,
+                    &mut wrong_history_agent,
+                    &params,
+                    203.0,
+                    CaptureSource::History,
+                    203.0,
+                )
+                .map(|_| ())
+            })
+            .await;
         assert!(matches!(
             result,
             Err(BudgetError::Invalid(location)) if location == format!("runtime_agents/{field}/identity")
@@ -835,8 +888,8 @@ fn active_import_quota_notification_waits_for_event() {
     assert!(!schedule.has_pending());
 }
 
-#[test]
-fn background_consumer_imports_selected_roster_actor() {
+#[tokio::test]
+async fn background_consumer_imports_selected_roster_actor() {
     let (root, agent) = fixture();
     let session = root.path().join("sessions");
     fs::create_dir(&session).expect("sessions");
@@ -848,14 +901,18 @@ fn background_consumer_imports_selected_roster_actor() {
             .step(
                 &store,
                 std::slice::from_ref(&agent),
-                |_| Ok(root.path().to_path_buf()),
+                {
+                    let profile_path = root.path().to_path_buf();
+                    move |_| Ok(profile_path)
+                },
                 history::HistoryClock {
                     observed_at: 200.,
                     monotonic: 10.
                 },
-                &AtomicBool::new(false),
+                Arc::new(AtomicBool::new(false)),
                 &Budget
             )
+            .await
             .expect("background step")
     );
     assert_eq!(checkpoint(&store).expect("checkpoint")["status"], "current");
@@ -869,15 +926,16 @@ fn background_consumer_imports_selected_roster_actor() {
                     observed_at: 201.,
                     monotonic: 11.
                 },
-                &AtomicBool::new(false),
+                Arc::new(AtomicBool::new(false)),
                 &Budget
             )
+            .await
             .expect("idle")
     );
 }
 
-#[test]
-fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
+#[tokio::test]
+async fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
     use studio_runtime_services::analytics_capture::{CaptureSource, PreparedCapture, capture};
     use studio_runtime_services::analytics_history_repair::repair_terminal_errors;
     for thread in [Some("thread"), None, Some("foreign")] {
@@ -885,7 +943,7 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
         let store = RuntimeStore::open(Some(root.path())).expect("store");
         capture(
             &store,
-            &PreparedCapture::event(
+            PreparedCapture::event(
                 &agent,
                 "turn/started",
                 &json!({}),
@@ -895,16 +953,18 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
             )
             .expect("prepared"),
         )
+        .await
         .expect("capture");
         let notice = json!({"id":"a:native-notice:error:turn","agent":"a","turnId":"turn","threadId":thread,"nativeError":{"message":"native failure"},"at":3});
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)",
                     rusqlite::params![notice["id"].as_str(), "a", notice.to_string(), 3],
                 )?;
                 Ok(())
             })
+            .await
             .expect("saved notice");
         if thread.is_none() {
             store
@@ -915,6 +975,7 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
                     row["threadId"] = json!("other");
                     Repo::write(tx, CaptureTable::Turns, &row)
                 })
+                .await
                 .expect("ambiguous second turn");
         }
         drop(store);
@@ -939,7 +1000,7 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
         );
         let expected: Value = serde_json::from_slice(&out.stdout).expect("oracle result");
         let store = RuntimeStore::open(Some(root.path())).expect("restart");
-        repair_terminal_errors(&store).expect("Rust repair");
+        repair_terminal_errors(&store).await.expect("Rust repair");
         let db = AnalyticsRepository::new(store.root())
             .open_read_only()
             .expect("db");
@@ -964,8 +1025,8 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
     }
 }
 
-#[test]
-fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
+#[tokio::test]
+async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
     use std::sync::Mutex;
     use studio_runtime_services::analytics_capture::{CaptureSource, PreparedCapture, capture};
     use studio_runtime_services::analytics_history_repair::migrate_budget;
@@ -975,20 +1036,22 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
         page_sizes: Mutex<Vec<usize>>,
     }
     impl HistoryBudgetSink for Receipts {
-        fn capture_page(
-            &self,
-            captures: &[(Value, Value, f64)],
+        fn capture_page<'a>(
+            &'a self,
+            captures: Vec<(Arc<Value>, Value, f64)>,
             _: f64,
-        ) -> Result<(), HistoryError> {
-            self.page_sizes
-                .lock()
-                .expect("page sizes")
-                .push(captures.len());
-            let mut receipts = self.ids.lock().expect("receipts");
-            for (_, params, _) in captures {
-                receipts.insert(params["responseId"].as_str().expect("response").into());
-            }
-            Ok(())
+        ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+            Box::pin(async move {
+                self.page_sizes
+                    .lock()
+                    .expect("page sizes")
+                    .push(captures.len());
+                let mut receipts = self.ids.lock().expect("receipts");
+                for (_, params, _) in captures {
+                    receipts.insert(params["responseId"].as_str().expect("response").into());
+                }
+                Ok(())
+            })
         }
     }
     let (root, agent) = fixture();
@@ -996,7 +1059,7 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
     let params = json!({"responseId":"r0","tokenUsage":{"total":{"totalTokens":2},"last":{"totalTokens":2}},"rawTokenUsageRecord":{"response_id":"r0"}});
     capture(
         &store,
-        &PreparedCapture::event(
+        PreparedCapture::event(
             &agent,
             "thread/tokenUsage/updated",
             &params,
@@ -1006,10 +1069,15 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
         )
         .expect("input"),
     )
+    .await
     .expect("capture");
-    store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{let raw:String=tx.query_row("SELECT record FROM analytics_usage LIMIT 1",[],|r|r.get(0))?;let base:Value=serde_json::from_str(&raw)?;for index in 1..65{let mut record=base.clone();record["id"]=json!(format!("usage-{index}"));record["responseId"]=json!(format!("r{index}"));Repo::write(tx,CaptureTable::Usage,&record)?;}tx.execute_batch("CREATE TRIGGER abort_migration BEFORE INSERT ON analytics_meta WHEN NEW.key LIKE 'budgetUsageMigrationV1:%' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;Ok(())}).expect("65 saved responses and failpoint");
+    store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{let raw:String=tx.query_row("SELECT record FROM analytics_usage LIMIT 1",[],|r|r.get(0))?;let base:Value=serde_json::from_str(&raw)?;for index in 1..65{let mut record=base.clone();record["id"]=json!(format!("usage-{index}"));record["responseId"]=json!(format!("r{index}"));Repo::write(tx,CaptureTable::Usage,&record)?;}tx.execute_batch("CREATE TRIGGER abort_migration BEFORE INSERT ON analytics_meta WHEN NEW.key LIKE 'budgetUsageMigrationV1:%' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;Ok(())}).await.expect("65 saved responses and failpoint");
     let receipts = Receipts::default();
-    assert!(migrate_budget(&store, &agent, &receipts, 200.).is_err());
+    assert!(
+        migrate_budget(&store, agent.clone(), &receipts, 200.)
+            .await
+            .is_err()
+    );
     assert_eq!(receipts.ids.lock().expect("receipts").len(), 64);
     assert_eq!(*receipts.page_sizes.lock().expect("page sizes"), vec![64]);
     store
@@ -1017,29 +1085,42 @@ fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
             tx.execute_batch("DROP TRIGGER abort_migration")?;
             Ok(())
         })
+        .await
         .expect("remove failpoint");
     drop(store);
     let store = RuntimeStore::open(Some(root.path())).expect("restart");
-    assert!(migrate_budget(&store, &agent, &receipts, 200.).expect("idempotent replay"));
+    assert!(
+        migrate_budget(&store, agent.clone(), &receipts, 200.)
+            .await
+            .expect("idempotent replay")
+    );
     assert_eq!(receipts.ids.lock().expect("receipts").len(), 64);
     assert_eq!(
         *receipts.page_sizes.lock().expect("page sizes"),
         vec![64, 64]
     );
-    assert!(migrate_budget(&store, &agent, &receipts, 200.).expect("last page"));
+    assert!(
+        migrate_budget(&store, agent.clone(), &receipts, 200.)
+            .await
+            .expect("last page")
+    );
     assert_eq!(receipts.ids.lock().expect("receipts").len(), 65);
     assert_eq!(
         *receipts.page_sizes.lock().expect("page sizes"),
         vec![64, 64, 1]
     );
-    assert!(!migrate_budget(&store, &agent, &receipts, 200.).expect("complete"));
+    assert!(
+        !migrate_budget(&store, agent, &receipts, 200.)
+            .await
+            .expect("complete")
+    );
 }
 
 #[path = "analytics_capture/common.rs"]
 mod common;
 
-#[test]
-fn full_tail_import_matches_real_python_rows_and_checkpoint() {
+#[tokio::test]
+async fn full_tail_import_matches_real_python_rows_and_checkpoint() {
     for suffix in [b"".as_slice(), b"{\"partial\":", b"malformed\n"] {
         let (root, agent) = fixture();
         let oracle_root = tempfile::tempdir().expect("oracle clone");
@@ -1078,6 +1159,7 @@ fn full_tail_import_matches_real_python_rows_and_checkpoint() {
         )
         .expect("read")
         .commit(&store, &Budget, 200.)
+        .await
         .expect("commit");
         let db = AnalyticsRepository::new(root.path())
             .open_read_only()
@@ -1086,8 +1168,8 @@ fn full_tail_import_matches_real_python_rows_and_checkpoint() {
     }
 }
 
-#[test]
-fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomically() {
+#[tokio::test]
+async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomically() {
     use studio_runtime_services::analytics_capture::{
         CaptureSource, PreparedCapture, capture_batch, capture_limit,
     };
@@ -1113,7 +1195,11 @@ fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomically() 
         CaptureSource::Live,
     )
     .expect("stale");
-    assert!(capture_batch(&store, &[prepared.clone(), rejected]).is_err());
+    assert!(
+        capture_batch(&store, vec![prepared.clone(), rejected])
+            .await
+            .is_err()
+    );
     let db = AnalyticsRepository::new(root.path())
         .open_read_only()
         .expect("reader");
@@ -1129,7 +1215,7 @@ fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomically() 
             .expect("count"),
         0
     );
-    capture_batch(&store, &[prepared]).expect("commit");
+    capture_batch(&store, vec![prepared]).await.expect("commit");
     assert_eq!(
         db.query_row("SELECT SUM(count) FROM analytics_notifications", [], |r| {
             r.get::<_, i64>(0)
@@ -1138,15 +1224,23 @@ fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomically() 
         1
     );
     let limits = json!({"rateLimits":{"primary":{"usedPercent":25}},"updated":1});
-    capture_limit(&store, "default", &limits, 10.).expect("limit");
-    capture_limit(&store, "default", &limits, 11.).expect("duplicate limit");
+    capture_limit(&store, "default".into(), limits.clone(), 10.)
+        .await
+        .expect("limit");
+    capture_limit(&store, "default".into(), limits.clone(), 11.)
+        .await
+        .expect("duplicate limit");
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM analytics_limits", [], |r| r
             .get::<_, i64>(0))
             .expect("count"),
         1
     );
-    assert!(capture_limit(&store, "default", &limits, f64::NAN).is_err());
+    assert!(
+        capture_limit(&store, "default".into(), limits, f64::NAN)
+            .await
+            .is_err()
+    );
 }
 
 #[test]
@@ -1215,12 +1309,16 @@ fn conflicting_header_alias_does_not_authorize_a_foreign_file() {
     assert_eq!(batch.checkpoint()["offset"], 0);
 }
 
-#[test]
-fn changed_consumed_range_is_refused_before_any_effect() {
+#[tokio::test]
+async fn changed_consumed_range_is_refused_before_any_effect() {
     struct NoEffects;
     impl HistoryBudgetSink for NoEffects {
-        fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
-            panic!("changed file must be refused before budget capture")
+        fn capture_page<'a>(
+            &'a self,
+            _: Vec<(Arc<Value>, Value, f64)>,
+            _: f64,
+        ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+            Box::pin(async { panic!("changed file must be refused before budget capture") })
         }
     }
     for change in ["rewrite", "truncate", "replace"] {
@@ -1260,7 +1358,7 @@ fn changed_consumed_range_is_refused_before_any_effect() {
         }
         assert!(
             matches!(
-                batch.commit(&store, &NoEffects, 201.),
+                batch.commit(&store, &NoEffects, 201.).await,
                 Err(HistoryError::ChangedDuringRead)
             ),
             "{change}"
@@ -1336,8 +1434,8 @@ fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules()
     );
 }
 
-#[test]
-fn collector_updates_shared_discovery_from_file_event_across_rounds() {
+#[tokio::test]
+async fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     let (root, agent) = fixture();
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).expect("sessions");
@@ -1345,32 +1443,36 @@ fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     let mut second = agent.clone();
     second["id"] = json!("b");
     second["parentId"] = json!("a");
+    let second_record = second.to_string();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('b',?)",
-                [second.to_string()],
+                [second_record],
             )?;
             Ok(())
         })
+        .await
         .expect("second managed actor");
     let actors = [agent, second];
-    let cancel = AtomicBool::new(false);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut collector = history::HistoryCollector::default();
     for index in 0..2 {
+        let profile_path = root.path().to_path_buf();
         let advanced = collector
             .step(
                 &store,
                 &actors,
-                |_| Ok(root.path().to_path_buf()),
+                move |_| Ok(profile_path),
                 history::HistoryClock {
                     observed_at: 200.,
                     monotonic: 10. + index as f64,
                 },
-                &cancel,
+                Arc::clone(&cancel),
                 &Budget,
             )
+            .await
             .expect("actor import");
         if index == 0 {
             assert!(advanced, "the first actor imports its rollout");
@@ -1400,19 +1502,21 @@ fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     );
     drop(db);
     collector.begin_round();
+    let profile_path = root.path().to_path_buf();
     assert!(
         !collector
             .step(
                 &store,
                 &actors,
-                |_| Ok(root.path().to_path_buf()),
+                move |_| Ok(profile_path),
                 history::HistoryClock {
                     observed_at: 201.,
                     monotonic: 20.,
                 },
-                &cancel,
+                Arc::clone(&cancel),
                 &Budget,
             )
+            .await
             .expect("next round"),
         "a watcher-updated ambiguous profile is refused without import"
     );

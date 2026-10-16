@@ -6,17 +6,21 @@ use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, Table};
 
 pub struct StoredChats(pub Arc<RuntimeStore>);
 impl LoginChats for StoredChats {
-    fn refresh(&self, account: &str) -> Result<(), LoginError> {
-        self.0
-            .transaction(|tx| {
-                for record in Table::<AgentRecord>::new(tx).list()? {
-                    if let Some(next) = refreshed_agent(&record.value(), account) {
-                        AgentRepository::put(tx, &AgentRecord::from_value(next)?)?;
+    fn refresh<'a>(&'a self, account: &'a str) -> super::ports::FutureResult<'a, ()> {
+        Box::pin(async move {
+            let account = account.to_owned();
+            self.0
+                .transaction(move |tx| {
+                    for record in Table::<AgentRecord>::new(tx).list()? {
+                        if let Some(next) = refreshed_agent(&record.value(), &account) {
+                            AgentRepository::put(tx, &AgentRecord::from_value(next)?)?;
+                        }
                     }
-                }
-                Ok(())
-            })
-            .map_err(|_| LoginError::Persistence)
+                    Ok(())
+                })
+                .await
+                .map_err(|_| LoginError::Persistence)
+        })
     }
 }
 pub fn refreshed_agent(agent: &Value, account: &str) -> Option<Value> {

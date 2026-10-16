@@ -36,17 +36,6 @@ pub async fn acquire_probe_slot() -> Result<OwnedSemaphorePermit> {
         .map_err(|_| ContinuationError::Unavailable("claude-auth/probe-slots"))
 }
 
-async fn blocking_store<T: Send + 'static>(
-    operation: impl FnOnce() -> Result<T> + Send + 'static,
-) -> Result<T> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/claude_auth_runtime",
-        operation,
-    )
-    .await
-    .map_err(|_| ContinuationError::Unavailable("claude-auth/store-worker"))?
-}
-
 pub fn preparation_settings(agent: &Value) -> Value {
     let mut settings = serde_json::Map::new();
     for key in [
@@ -74,41 +63,45 @@ fn snapshot(tx: &Transaction<'_>, agent: &str, record: Option<&str>) -> Result<S
 
 /// Bounded due waits for one retained Claude account. The worker calls this on
 /// startup and on its shared 180-second auth-probe schedule.
-pub fn due_waits(
+pub async fn due_waits(
     store: &RuntimeStore,
     account: &str,
     now: f64,
 ) -> Result<Vec<(String, i64, Value)>> {
-    store.transaction_with(|tx| {
-        let mut statement = tx
-            .prepare_cached(
-                "SELECT agent FROM runtime_usage_resumes \
+    let account = account.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let mut statement = tx
+                .prepare_cached(
+                    "SELECT agent FROM runtime_usage_resumes \
              WHERE json_extract(record,'$.status')='auth_probe_wait' \
                AND json_extract(record,'$.accountKey')=?1 \
                AND CAST(json_extract(record,'$.dueAt') AS REAL)<=?2 \
              ORDER BY CAST(json_extract(record,'$.dueAt') AS REAL),rowid LIMIT 16",
-            )
-            .map_err(StoreError::from)?;
-        let agents = statement
-            .query_map(params![account, now], |row| row.get::<_, String>(0))
-            .map_err(StoreError::from)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(StoreError::from)?;
-        let mut result = Vec::with_capacity(agents.len());
-        for agent in agents {
-            let state = snapshot(tx, &agent, None)?;
-            if state.agent.get("provider") != Some(&json!("claude"))
-                || state.agent.get("accountKey").and_then(Value::as_str) != Some(account)
-            {
-                continue;
+                )
+                .map_err(StoreError::from)?;
+            let agents = statement
+                .query_map(params![account, now], |row| row.get::<_, String>(0))
+                .map_err(StoreError::from)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(StoreError::from)?;
+            let mut result = Vec::with_capacity(agents.len());
+            for agent in agents {
+                let state = snapshot(tx, &agent, None)?;
+                if state.agent.get("provider") != Some(&json!("claude"))
+                    || state.agent.get("accountKey").and_then(Value::as_str)
+                        != Some(account.as_str())
+                {
+                    continue;
+                }
+                let Some(epoch) = state.agent.get("epoch").and_then(Value::as_i64) else {
+                    continue;
+                };
+                result.push((agent, epoch, preparation_settings(&state.agent)));
             }
-            let Some(epoch) = state.agent.get("epoch").and_then(Value::as_i64) else {
-                continue;
-            };
-            result.push((agent, epoch, preparation_settings(&state.agent)));
-        }
-        Ok::<_, ContinuationError>(result)
-    })
+            Ok::<_, ContinuationError>(result)
+        })
+        .await
 }
 
 fn persist(
@@ -156,7 +149,7 @@ pub fn stage_start_timeout(
 }
 
 /// Settle a timed-out local auth probe and save its wait in the same writer transaction.
-pub fn settle_start_timeout(
+pub async fn settle_start_timeout(
     store: &RuntimeStore,
     intent: &crate::scheduler::TurnIntent,
     capture: &Capture,
@@ -164,7 +157,11 @@ pub fn settle_start_timeout(
     account_pin: &Value,
     now: f64,
 ) -> Result<bool> {
-    crate::scheduler::lifecycle_transaction_with(store, |tx| {
+    let intent = intent.clone();
+    let capture = capture.clone();
+    let settings = settings.clone();
+    let account_pin = account_pin.clone();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         SchedulerRepository::settle_start_outcome(
             tx,
             &intent.identity(),
@@ -173,22 +170,25 @@ pub fn settle_start_timeout(
         )?;
         let state = snapshot(tx, &intent.agent_id, None)?;
         let decision =
-            claude_auth_wait::record_timeout(&state, capture, settings, account_pin, now)?;
+            claude_auth_wait::record_timeout(&state, &capture, &settings, &account_pin, now)?;
         let recorded = decision.record.is_some();
         persist(tx, &intent.agent_id, &decision)?;
         Ok::<_, ContinuationError>(recorded)
     })
+    .await
 }
 
-fn settle_blocked(
+async fn settle_blocked(
     store: &RuntimeStore,
     intent: &crate::scheduler::TurnIntent,
     reason: &'static str,
 ) -> Result<()> {
-    crate::scheduler::lifecycle_transaction_with(store, |tx| {
+    let intent = intent.clone();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         SchedulerRepository::settle_start_outcome(tx, &intent.identity(), "held", Some(reason))?;
         Ok::<_, ContinuationError>(())
     })
+    .await
 }
 
 /// Probe the selected Claude profile before input preparation. Timeout waits and
@@ -202,8 +202,8 @@ pub async fn require_before_start<F, Fut>(
     read_account: F,
 ) -> Result<bool>
 where
-    F: FnOnce(crate::account_worker::retained::RequestActor, Instant) -> Fut,
-    Fut: Future<Output = Result<Value>>,
+    F: FnOnce(crate::account_worker::retained::RequestActor, Instant) -> Fut + Send,
+    Fut: Future<Output = Result<Value>> + Send,
 {
     let account_key = intent.account_key.clone();
     let driver_copy = driver.clone();
@@ -218,28 +218,25 @@ where
     if !same_selected_account(&selected_pin, &before) {
         let store = store.clone();
         let intent = intent.clone();
-        blocking_store(move || {
-            settle_blocked(
-                &store,
-                &intent,
-                "The Claude account changed during authentication",
-            )
-        })
+        settle_blocked(
+            &store,
+            &intent,
+            "The Claude account changed during authentication",
+        )
         .await?;
         return Ok(false);
     }
     let store_copy = store.clone();
     let agent = intent.agent_id.clone();
     let capture_pin = before.clone();
-    let (settings, capture) = blocking_store(move || {
-        store_copy.transaction_with(|tx| {
+    let (settings, capture) = store_copy
+        .transaction_with(move |tx| {
             let state = snapshot(tx, &agent, None)?;
             let settings = preparation_settings(&state.agent);
             let capture = claude_auth_wait::capture(&state, &settings, &capture_pin);
             Ok::<_, ContinuationError>((settings, capture))
         })
-    })
-    .await?;
+        .await?;
 
     let driver_copy = driver.clone();
     let key_copy = account_key.clone();
@@ -261,13 +258,11 @@ where
     if claude_auth_wait::account_pin(&before) != claude_auth_wait::account_pin(&after) {
         let store = store.clone();
         let intent = intent.clone();
-        blocking_store(move || {
-            settle_blocked(
-                &store,
-                &intent,
-                "The Claude account changed during authentication",
-            )
-        })
+        settle_blocked(
+            &store,
+            &intent,
+            "The Claude account changed during authentication",
+        )
         .await?;
         return Ok(false);
     }
@@ -288,17 +283,12 @@ where
             let intent = intent.clone();
             let settings = settings.clone();
             let after = after.clone();
-            let _recorded = blocking_store(move || {
-                settle_start_timeout(&store, &intent, &capture, &settings, &after, now)
-            })
-            .await?;
+            let _recorded =
+                settle_start_timeout(&store, &intent, &capture, &settings, &after, now).await?;
         } else {
             let store = store.clone();
             let intent = intent.clone();
-            blocking_store(move || {
-                settle_blocked(&store, &intent, claude_auth_wait::AUTH_TIMEOUT_ERROR)
-            })
-            .await?;
+            settle_blocked(&store, &intent, claude_auth_wait::AUTH_TIMEOUT_ERROR).await?;
         }
         return Ok(false);
     }
@@ -338,8 +328,7 @@ where
     }
     let store = store.clone();
     let intent = intent.clone();
-    blocking_store(move || settle_blocked(&store, &intent, "Sign in with claude auth login first"))
-        .await?;
+    settle_blocked(&store, &intent, "Sign in with claude auth login first").await?;
     Ok(false)
 }
 
@@ -368,16 +357,16 @@ pub async fn probe_due<F, Fut>(
     account_pin: &Value,
     now: f64,
     probe: F,
-    read_current_pin: impl FnOnce() -> Value,
+    read_current_pin: impl FnOnce() -> Value + Send,
 ) -> Result<bool>
 where
-    F: FnOnce(&Value) -> Fut,
-    Fut: Future<Output = Value>,
+    F: FnOnce(&Value) -> Fut + Send,
+    Fut: Future<Output = Value> + Send,
 {
     let store_copy = store.clone();
     let agent_id = agent.to_owned();
-    let attempt_id = blocking_store(move || {
-        store_copy.transaction_with(|tx| {
+    let attempt_id = store_copy
+        .transaction_with(move |tx| {
             let state = snapshot(tx, &agent_id, None)?;
             let attempt = state
                 .agent
@@ -387,8 +376,7 @@ where
                 .unwrap_or_default();
             Ok::<_, ContinuationError>(attempt.to_owned())
         })
-    })
-    .await?;
+        .await?;
     if attempt_id.is_empty() {
         return Ok(false);
     }
@@ -398,16 +386,15 @@ where
     let receipt = receipt_id.clone();
     let settings_copy = settings.clone();
     let pin_copy = account_pin.clone();
-    let claimed: Option<ProbeTicket> = blocking_store(move || {
-        store_copy.transaction_with(|tx| {
+    let claimed: Option<ProbeTicket> = store_copy
+        .transaction_with(move |tx| {
             let state = snapshot(tx, &agent_id, Some(&receipt))?;
             let (decision, ticket) =
                 claude_auth_wait::claim_probe(&state, &settings_copy, &pin_copy, now)?;
             persist(tx, &agent_id, &decision)?;
             Ok::<_, ContinuationError>(ticket)
         })
-    })
-    .await?;
+        .await?;
     let Some(ticket) = claimed else {
         return Ok(false);
     };
@@ -420,8 +407,8 @@ where
     let agent_id = agent.to_owned();
     let receipt = receipt_id.clone();
     let settings_copy = settings.clone();
-    let applied = blocking_store(move || {
-        store_copy.transaction_with(|tx| {
+    let applied = store_copy
+        .transaction_with(move |tx| {
             let state = snapshot(tx, &agent_id, Some(&receipt))?;
             let decision = claude_auth_wait::apply_probe(
                 &state,
@@ -438,8 +425,7 @@ where
             persist(tx, &agent_id, &decision)?;
             Ok::<_, ContinuationError>(completed)
         })
-    })
-    .await?;
+        .await?;
     Ok(applied)
 }
 

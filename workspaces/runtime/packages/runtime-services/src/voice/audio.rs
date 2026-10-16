@@ -3,6 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde_json::{Value, json};
@@ -23,91 +24,104 @@ pub enum VoiceAudioError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error("voice audio storage failed")]
     Io(#[from] std::io::Error),
+    #[error("voice audio preparation worker failed")]
+    PreparationWorker,
 }
 
 /// Persist one synthetic or captured audio chunk and its transcript event.
 /// The deterministic file name makes retries idempotent and detects identity
 /// reuse with different bytes.
-pub fn save_audio(
-    store: &RuntimeStore,
+pub async fn save_audio(
+    store: Arc<RuntimeStore>,
     agent_id: &str,
     session_id: &str,
     chunk_id: &str,
     encoded_audio: &str,
     mime: &str,
 ) -> Result<Value, VoiceAudioError> {
-    let connection = store.read()?;
-    super::checked_agent(&connection, agent_id)?;
-    let session = VoiceRepository::session_exists(&connection, agent_id, session_id)?;
-    drop(connection);
+    let store_for_preparation = Arc::clone(&store);
+    let agent_id = agent_id.to_owned();
+    let session_id = session_id.to_owned();
+    let chunk_id = chunk_id.to_owned();
+    let encoded_audio = encoded_audio.to_owned();
+    let mime = mime.to_owned();
+    let input = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/audio",
+        move || {
+            let connection = store_for_preparation.read()?;
+            super::checked_agent(&connection, &agent_id)?;
+            let session = VoiceRepository::session_exists(&connection, &agent_id, &session_id)?;
+            drop(connection);
 
-    let request = policy::AudioChunkRequest {
-        agent: studio_runtime_store::AgentId::from(agent_id),
-        session_id: policy::SessionId::parse(session_id.to_owned())?,
-        chunk_id: chunk_id.to_owned(),
-        base64: encoded_audio.to_owned(),
-        mime: mime.to_owned(),
-    };
+            let request = policy::AudioChunkRequest {
+                agent: studio_runtime_store::AgentId::from(agent_id.as_str()),
+                session_id: policy::SessionId::parse(session_id.clone())?,
+                chunk_id: chunk_id.clone(),
+                base64: encoded_audio.clone(),
+                mime: mime.clone(),
+            };
 
-    let directory = store.root().join("voice-audio");
-    ensure_audio_directory(&directory)?;
-    let session_prefix = audio_session_prefix(agent_id, session_id);
-    let validated = validate_then_prune(request.clone(), session, &directory, &session_prefix)?;
+            let directory = store_for_preparation.root().join("voice-audio");
+            ensure_audio_directory(&directory)?;
+            let session_prefix = audio_session_prefix(&agent_id, &session_id);
+            let validated =
+                validate_then_prune(request.clone(), session, &directory, &session_prefix)?;
 
-    let name = audio_name(agent_id, session_id, chunk_id);
-    let path = directory.join(&name);
-    let legacy_path = directory.join(legacy_audio_name(agent_id, session_id, chunk_id));
-    let legacy_exists = legacy_path.exists();
-    let existing = read_existing_chunk(&path)?.or(read_existing_chunk(&legacy_path)?);
-    let decision = match existing.as_deref() {
-        Some(bytes) => policy::decide_audio(request, session, Some(bytes))?,
-        None => validated,
-    };
-    let chunk = match decision {
-        policy::AudioDecision::Store(chunk) => {
-            match create_private_file(&path, chunk.bytes()) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let existing = read_existing_chunk(&path)?.ok_or(error)?;
-                    let _ = policy::decide_audio(
-                        policy::AudioChunkRequest {
-                            agent: studio_runtime_store::AgentId::from(agent_id),
-                            session_id: policy::SessionId::parse(session_id.to_owned())?,
-                            chunk_id: chunk_id.to_owned(),
-                            base64: encoded_audio.to_owned(),
-                            mime: mime.to_owned(),
-                        },
-                        true,
-                        Some(&existing),
-                    )?;
+            let name = audio_name(&agent_id, &session_id, &chunk_id);
+            let path = directory.join(&name);
+            let legacy_file_name = legacy_audio_name(&agent_id, &session_id, &chunk_id);
+            let legacy_path = directory.join(&legacy_file_name);
+            let legacy_exists = legacy_path.exists();
+            let existing = read_existing_chunk(&path)?.or(read_existing_chunk(&legacy_path)?);
+            let decision = match existing.as_deref() {
+                Some(bytes) => policy::decide_audio(request, session, Some(bytes))?,
+                None => validated,
+            };
+            let chunk = match decision {
+                policy::AudioDecision::Store(chunk) => {
+                    match create_private_file(&path, chunk.bytes()) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                            let existing = read_existing_chunk(&path)?.ok_or(error)?;
+                            let _ = policy::decide_audio(
+                                policy::AudioChunkRequest {
+                                    agent: studio_runtime_store::AgentId::from(agent_id.as_str()),
+                                    session_id: policy::SessionId::parse(session_id.clone())?,
+                                    chunk_id: chunk_id.clone(),
+                                    base64: encoded_audio.clone(),
+                                    mime: mime.clone(),
+                                },
+                                true,
+                                Some(&existing),
+                            )?;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                    chunk
                 }
-                Err(error) => return Err(error.into()),
-            }
-            chunk
-        }
-        policy::AudioDecision::Reuse(chunk) => chunk,
-    };
+                policy::AudioDecision::Reuse(chunk) => chunk,
+            };
 
-    Ok(super::record(
-        store,
-        VoiceRecordInput {
-            agent_id: agent_id.to_owned(),
-            session_id: session_id.to_owned(),
-            event_id: format!(
-                "audio:{}",
-                legacy_audio_name(agent_id, session_id, chunk_id)
-            ),
-            kind: "event".to_owned(),
-            text: "audio saved".to_owned(),
-            item_id: String::new(),
-            previous_item_id: String::new(),
-            payload: Some(json!({
-                "file": if legacy_exists { legacy_audio_name(agent_id, session_id, chunk_id) } else { name },
-                "mime": chunk.mime()
-            })),
-            internal: false,
+            Ok::<_, VoiceAudioError>(VoiceRecordInput {
+                agent_id,
+                session_id,
+                event_id: format!("audio:{legacy_file_name}"),
+                kind: "event".to_owned(),
+                text: "audio saved".to_owned(),
+                item_id: String::new(),
+                previous_item_id: String::new(),
+                payload: Some(json!({
+                    "file": if legacy_exists { legacy_file_name } else { name },
+                    "mime": chunk.mime()
+                })),
+                internal: false,
+            })
         },
-    )?)
+    )
+    .await
+    .map_err(|_| VoiceAudioError::PreparationWorker)??;
+
+    Ok(super::record(&store, input).await?)
 }
 
 fn audio_name(agent: &str, session: &str, chunk: &str) -> String {

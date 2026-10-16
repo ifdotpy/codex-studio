@@ -6,6 +6,7 @@ use crate::analytics_measurements::{item_sizes, payload_size};
 use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError, python_json_compact, sha256_hex};
@@ -46,7 +47,7 @@ pub enum CaptureError {
 }
 #[derive(Clone)]
 pub struct PreparedCapture {
-    agent: Value,
+    agent: Arc<Value>,
     method: String,
     params: Value,
     at: f64,
@@ -67,7 +68,14 @@ impl PreparedCapture {
         source: CaptureSource,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(agent)?;
-        Self::event_validated(agent, method, params, at, recorded_at, source)
+        Self::event_validated(
+            Arc::new(agent.clone()),
+            method,
+            params,
+            at,
+            recorded_at,
+            source,
+        )
     }
 
     pub(crate) fn notification_event(
@@ -77,11 +85,30 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
     ) -> Result<Self, CaptureError> {
-        Self::event_validated(agent, method, params, at, recorded_at, CaptureSource::Live)
+        Self::event_validated(
+            Arc::new(agent.clone()),
+            method,
+            params,
+            at,
+            recorded_at,
+            CaptureSource::Live,
+        )
+    }
+
+    pub(crate) fn event_shared(
+        agent: Arc<Value>,
+        method: &str,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, CaptureError> {
+        CaptureTable::Agents.validate(&agent)?;
+        Self::event_validated(agent, method, params, at, recorded_at, source)
     }
 
     fn event_validated(
-        agent: &Value,
+        agent: Arc<Value>,
         method: &str,
         params: &Value,
         at: f64,
@@ -107,7 +134,7 @@ impl PreparedCapture {
             &params["item"],
         );
         Ok(Self {
-            agent: agent.clone(),
+            agent,
             method: method.to_owned(),
             params: params.clone(),
             at,
@@ -125,7 +152,15 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
     ) -> Result<Self, CaptureError> {
-        let mut result = Self::event(
+        Self::model_payload_shared(Arc::new(agent.clone()), params, at, recorded_at)
+    }
+    pub(crate) fn model_payload_shared(
+        agent: Arc<Value>,
+        params: &Value,
+        at: f64,
+        recorded_at: f64,
+    ) -> Result<Self, CaptureError> {
+        let mut result = Self::event_shared(
             agent,
             "model/payload",
             params,
@@ -258,12 +293,15 @@ struct CaptureRows {
     pub last_limit: Option<Value>,
 }
 pub struct CaptureSnapshot {
-    prepared: PreparedCapture,
+    prepared: std::sync::Arc<PreparedCapture>,
     meta: Value,
     rows: CaptureRows,
 }
 impl CaptureSnapshot {
-    fn from_records(prepared: PreparedCapture, rows: CaptureRows) -> Result<Self, CaptureError> {
+    fn from_records(
+        prepared: std::sync::Arc<PreparedCapture>,
+        rows: CaptureRows,
+    ) -> Result<Self, CaptureError> {
         for (table, row) in [
             (CaptureTable::Turns, &rows.turn),
             (CaptureTable::Items, &rows.item),
@@ -306,7 +344,10 @@ impl CaptureSnapshot {
             rows,
         })
     }
-    pub fn load(db: &Connection, prepared: PreparedCapture) -> Result<Self, CaptureError> {
+    pub fn load(
+        db: &Connection,
+        prepared: std::sync::Arc<PreparedCapture>,
+    ) -> Result<Self, CaptureError> {
         let meta = prepared.meta();
         let turn = studio_runtime_store::truthy(Some(&meta["turnId"]))
             .then(|| Repo::read(db, CaptureTable::Turns, &key(&meta, &meta["turnId"])))
@@ -414,33 +455,35 @@ impl CaptureDecision {
         Ok(())
     }
 }
-pub fn capture(
+pub async fn capture(
     store: &RuntimeStore,
-    prepared: &PreparedCapture,
+    prepared: PreparedCapture,
 ) -> Result<CaptureDecision, CaptureError> {
-    store.analytics_transaction(|tx, canvas| {
-        check_identity(canvas, prepared.agent())?;
-        let decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
-        decision.apply(tx)?;
-        Ok(decision)
-    })
+    store
+        .analytics_transaction(move |tx, canvas| {
+            check_identity(canvas, prepared.agent())?;
+            let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+            decision.apply(tx)?;
+            Ok(decision)
+        })
+        .await
 }
 
 /// Apply an analytics publication exactly once, even if the account worker
 /// crashes after this transaction commits but before deleting its receipt.
 /// The receipt marker and all analytics rows commit together in analytics.sqlite3.
-pub fn capture_notification_effect(
+pub async fn capture_notification_effect(
     store: &RuntimeStore,
-    provider_handle: &str,
+    provider_handle: String,
     generation: u64,
     cursor: u64,
-    capture_kind: &str,
-    prepared: &PreparedCapture,
-    stream: Option<&NotificationStreamMetrics>,
+    capture_kind: String,
+    prepared: PreparedCapture,
+    stream: Option<NotificationStreamMetrics>,
 ) -> Result<bool, CaptureError> {
     if provider_handle.is_empty()
         || provider_handle.len() > 256
-        || !matches!(capture_kind, "analytics" | "analyticsStream")
+        || !matches!(capture_kind.as_str(), "analytics" | "analyticsStream")
     {
         return Err(CaptureError::Invalid("/captureIdentity"));
     }
@@ -451,7 +494,7 @@ pub fn capture_notification_effect(
     } else {
         2_i64
     };
-    store.analytics_transaction(|tx, canvas| {
+    store.analytics_transaction(move |tx, canvas| {
         tx.execute(
             "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
             [],
@@ -485,7 +528,7 @@ pub fn capture_notification_effect(
         let legacy: Option<(i64, i64, i64)> = tx
             .query_row(
                 "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
-                [provider_handle],
+                [provider_handle.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
@@ -499,31 +542,33 @@ pub fn capture_notification_effect(
         }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
-            params![provider_handle, generation, cursor, capture_kind],
+            params![provider_handle.as_str(), generation, cursor, capture_kind.as_str()],
         )?;
         if inserted == 0 {
             return Ok(false);
         }
         check_identity(canvas, prepared.agent())?;
-        let mut decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
-        if let Some(metrics) = stream {
-            apply_stream_metrics(&mut decision, prepared, metrics);
+        let prepared = std::sync::Arc::new(prepared);
+        let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
+        if let Some(metrics) = &stream {
+            apply_stream_metrics(&mut decision, &prepared, metrics);
         }
         decision.apply(tx)?;
         Ok(true)
     })
+    .await
 }
 
 /// Retain the legacy process-scoped receipt tables while volatile token-rate
 /// publication is owned by `TokenRateHub`.
-pub fn start_token_rate_process(
+pub async fn start_token_rate_process(
     store: &RuntimeStore,
-    process_id: &str,
+    process_id: String,
 ) -> Result<(), CaptureError> {
     if process_id.is_empty() || process_id.len() > 128 {
         return Err(CaptureError::Invalid("/processId"));
     }
-    store.analytics_transaction(|tx, _| {
+    store.analytics_transaction(move |tx, _| {
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS token_rate_receipt_process (id INTEGER PRIMARY KEY CHECK(id=1),process_id TEXT NOT NULL);\
              CREATE TABLE IF NOT EXISTS token_rate_publication_receipts (process_id TEXT NOT NULL,provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL,PRIMARY KEY(process_id,provider));",
@@ -535,23 +580,24 @@ pub fn start_token_rate_process(
                 |row| row.get(0),
             )
             .optional()?;
-        if current.as_deref() != Some(process_id) {
+        if current.as_deref() != Some(process_id.as_str()) {
             tx.execute("DELETE FROM token_rate_publication_receipts", [])?;
             tx.execute(
                 "INSERT INTO token_rate_receipt_process(id,process_id) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET process_id=excluded.process_id",
-                [process_id],
+                [process_id.as_str()],
             )?;
         }
         Ok(())
     })
+    .await
 }
 
 /// Preserve the lossy queue's overflow count in analytics coverage metadata.
 /// Python's Runtime.schedule_analytics_captures records queueOverflow instead
 /// of failing the already committed provider notification.
-pub fn record_publication_overflow(
+pub async fn record_publication_overflow(
     store: &RuntimeStore,
-    receipt_id: &str,
+    receipt_id: String,
     analytics_overflow: u64,
     publication_overflow: u64,
 ) -> Result<(), CaptureError> {
@@ -562,7 +608,7 @@ pub fn record_publication_overflow(
     if receipt_id.is_empty() || receipt_id.len() > 1024 {
         return Err(CaptureError::Invalid("/receiptId"));
     }
-    store.analytics_transaction(|tx, _| {
+    store.analytics_transaction(move |tx, _| {
         tx.execute(
             "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
             [],
@@ -570,7 +616,7 @@ pub fn record_publication_overflow(
         let prior: Option<(i64, i64)> = tx
             .query_row(
                 "SELECT analytics_overflow,publication_overflow FROM analytics_publication_overflow_receipts WHERE receipt_id=?1",
-                [receipt_id],
+                [receipt_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -585,7 +631,7 @@ pub fn record_publication_overflow(
         }
         tx.execute(
             "INSERT INTO analytics_publication_overflow_receipts(receipt_id,analytics_overflow,publication_overflow) VALUES (?1,?2,?3) ON CONFLICT(receipt_id) DO UPDATE SET analytics_overflow=MAX(analytics_publication_overflow_receipts.analytics_overflow,excluded.analytics_overflow),publication_overflow=MAX(analytics_publication_overflow_receipts.publication_overflow,excluded.publication_overflow)",
-            params![receipt_id, analytics_overflow, publication_overflow],
+            params![receipt_id.as_str(), analytics_overflow, publication_overflow],
         )?;
         tx.execute(
             "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
@@ -597,6 +643,7 @@ pub fn record_publication_overflow(
         )?;
         Ok(())
     })
+    .await
 }
 
 fn apply_stream_metrics(
@@ -796,10 +843,24 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
         return Ok(result);
     }
     if method == "analytics/compaction" {
-        let mut next = q.clone();
-        next.method = "item/completed".into();
-        next.params["item"] = json!({"id":first(&[&p["id"],&p["_analyticsId"],&json!(at.to_string())]),"type":"compactionSnapshot","compactionMetadata":p});
-        let recursive = decide(CaptureSnapshot::from_records(next, rows)?)?;
+        let mut params = q.params.clone();
+        params["item"] = json!({"id":first(&[&p["id"],&p["_analyticsId"],&json!(at.to_string())]),"type":"compactionSnapshot","compactionMetadata":p});
+        let next = PreparedCapture {
+            agent: std::sync::Arc::clone(&q.agent),
+            method: "item/completed".into(),
+            params,
+            at: q.at,
+            recorded_at: q.recorded_at,
+            source: q.source,
+            input: q.input.clone(),
+            output: q.output.clone(),
+            stream: q.stream.clone(),
+            model: q.model,
+        };
+        let recursive = decide(CaptureSnapshot::from_records(
+            std::sync::Arc::new(next),
+            rows,
+        )?)?;
         result.rows.extend(
             recursive
                 .rows
@@ -1374,31 +1435,33 @@ fn response_content(v: &Value) -> Value {
 
 /// The notification dispatcher can commit one bounded delta batch. Preparation
 /// remains outside the transaction; each item observes prior items in order.
-pub fn capture_batch(
+pub async fn capture_batch(
     store: &RuntimeStore,
-    prepared: &[PreparedCapture],
+    prepared: Vec<PreparedCapture>,
 ) -> Result<Vec<ResponseRateAssociation>, CaptureError> {
     if prepared.len() > 128 {
         return Err(CaptureError::Invalid("/capture/batch"));
     }
-    store.analytics_transaction(|tx, canvas| {
-        let mut effects = Vec::new();
-        for prepared in prepared {
-            check_identity(canvas, prepared.agent())?;
-            let decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
-            decision.apply(tx)?;
-            if let Some(effect) = decision.response_rate {
-                effects.push(effect)
+    store
+        .analytics_transaction(move |tx, canvas| {
+            let mut effects = Vec::new();
+            for prepared in prepared {
+                check_identity(canvas, prepared.agent())?;
+                let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+                decision.apply(tx)?;
+                if let Some(effect) = decision.response_rate {
+                    effects.push(effect)
+                }
             }
-        }
-        Ok(effects)
-    })
+            Ok(effects)
+        })
+        .await
 }
 /// Account-level rate-limit capture uses the same change-only series as events.
-pub fn capture_limit(
+pub async fn capture_limit(
     store: &RuntimeStore,
-    account: &str,
-    value: &Value,
+    account: String,
+    value: Value,
     at: f64,
 ) -> Result<(), CaptureError> {
     if !at.is_finite()
@@ -1408,16 +1471,18 @@ pub fn capture_limit(
     {
         return Err(CaptureError::Invalid("/rateLimits"));
     }
-    store.analytics_transaction(|tx, _| {
-        let previous = Repo::last_limit(tx, &json!(account))?;
-        if previous.as_ref().map(limit_content) != Some(limit_content(value)) {
-            tx.execute(
-                "INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)",
-                params![account, at, value.to_string()],
-            )?;
-        }
-        Ok(())
-    })
+    store
+        .analytics_transaction(move |tx, _| {
+            let previous = Repo::last_limit(tx, &json!(account))?;
+            if previous.as_ref().map(limit_content) != Some(limit_content(&value)) {
+                tx.execute(
+                    "INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)",
+                    params![account, at, value.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 // JSON integer/float representations compare numerically, as Python does.

@@ -37,36 +37,43 @@ pub struct StartupRecovery {
 /// Recover durable monitor results first, then expire requests and mark only
 /// monitors with no surviving process as lost. All row and projection writes
 /// share one transaction; result files are handled before that transaction.
-pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecovery, MonitorError> {
+pub async fn recover_on_startup(
+    store: &RuntimeStore,
+    now: f64,
+) -> Result<StartupRecovery, MonitorError> {
     if !now.is_finite() || now < 0.0 {
         return Err(MonitorError::Refused("Invalid startup recovery clock"));
     }
     let mut recovery = StartupRecovery::default();
     loop {
-        let count = crate::monitor_receipts::recover_pending(store, STARTUP_RECEIPT_BATCH)?;
+        let count = crate::monitor_receipts::recover_pending(store, STARTUP_RECEIPT_BATCH).await?;
         recovery.receipts += count;
         if count < STARTUP_RECEIPT_BATCH {
             break;
         }
     }
-    let (requests, events, monitors) = store.transaction_with::<_, MonitorError>(|tx| {
-        // Use the scheduler's canonical exact-batch validator. The general
-        // event pass below owns only the claims left after that operation.
-        if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
-            match error {
-                studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
-                    if scope == "runtime_agents" =>
-                {
-                    eprintln!("startup scheduler reservation skipped row id={id}: invalid batch");
+    let (requests, events, monitors) = store
+        .transaction_with::<_, MonitorError>(move |tx| {
+            // Use the scheduler's canonical exact-batch validator. The general
+            // event pass below owns only the claims left after that operation.
+            if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
+                match error {
+                    studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
+                        if scope == "runtime_agents" =>
+                    {
+                        eprintln!(
+                            "startup scheduler reservation skipped row id={id}: invalid batch"
+                        );
+                    }
+                    error => return Err(MonitorError::Store(error)),
                 }
-                error => return Err(MonitorError::Store(error)),
             }
-        }
-        let requests = recover_requests(tx)?;
-        let events = recover_uncovered_events(tx)?;
-        let monitors = recover_active_monitors(tx, now)?;
-        Ok((requests, events, monitors))
-    })?;
+            let requests = recover_requests(tx)?;
+            let events = recover_uncovered_events(tx)?;
+            let monitors = recover_active_monitors(tx, now)?;
+            Ok((requests, events, monitors))
+        })
+        .await?;
     recovery.requests = requests;
     recovery.events = events;
     recovery.monitors = monitors;
@@ -436,13 +443,17 @@ pub fn snapshot(
     Ok((snapshot, actor))
 }
 
-pub fn cancel(
+pub async fn cancel(
     store: &RuntimeStore,
     id: &str,
     owner: Option<&str>,
     now: f64,
 ) -> Result<Value, MonitorError> {
-    store.transaction_with(|tx| cancel_in_transaction(tx, id, owner, now))
+    let id = id.to_owned();
+    let owner = owner.map(str::to_owned);
+    store
+        .transaction_with(move |tx| cancel_in_transaction(tx, &id, owner.as_deref(), now))
+        .await
 }
 
 pub fn cancel_in_transaction(
@@ -464,7 +475,7 @@ pub struct MonitorApprovalAnswer {
 
 /// Commit the local monitor decision and its request receipt together. The HTTP
 /// caller wakes retained start dispatch only after this transaction succeeds.
-pub fn answer_approval(
+pub async fn answer_approval(
     store: &RuntimeStore,
     request_id: &str,
     data: &Value,
@@ -474,157 +485,166 @@ pub fn answer_approval(
     if !now.is_finite() || now < 0.0 {
         return Err(MonitorError::Refused("Invalid monitor approval clock"));
     }
-    store.transaction_with(|tx| {
-        let Some(request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())? else {
-            return Ok(None);
-        };
-        let mut request = request.value().clone();
-        if request.get("method").and_then(Value::as_str) != Some("monitor/approve") {
-            return Ok(None);
-        }
-        let decision = data
-            .get("decision")
-            .and_then(Value::as_str)
-            .filter(|decision| matches!(*decision, "accept" | "decline" | "cancel"))
-            .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
-        let accepted = decision == "accept";
-        let monitor_id = request
-            .pointer("/params/monitorId")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or(MonitorError::InvalidStored {
-                id: request_id.into(),
-                location: "params/monitorId".into(),
-            })?;
-        let (snapshot, actor) = snapshot(tx, monitor_id)?;
-        event_write::refuse_remote(&actor)?;
-        if request.get("agent").and_then(Value::as_str) != Some(snapshot.agent()) {
-            return Err(MonitorError::Refused("Monitor approval identity changed"));
-        }
-        if request["status"] == "answered" {
-            let saved = request
-                .get("answerDecision")
+    let request_id = request_id.to_owned();
+    let data = data.clone();
+    store
+        .transaction_with(move |tx| {
+            let Some(request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())? else {
+                return Ok(None);
+            };
+            let mut request = request.value().clone();
+            if request.get("method").and_then(Value::as_str) != Some("monitor/approve") {
+                return Ok(None);
+            }
+            let decision = data
+                .get("decision")
                 .and_then(Value::as_str)
-                .or_else(|| match snapshot.record()["status"].as_str() {
-                    Some("starting" | "running" | "completed" | "failed") => Some("accept"),
-                    Some("cancelled") => Some("decline"),
-                    _ => None,
-                });
-            if saved != Some(decision) {
-                return Err(MonitorError::Refused(
-                    "This monitor approval already has a different decision",
-                ));
+                .filter(|decision| matches!(*decision, "accept" | "decline" | "cancel"))
+                .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
+            let accepted = decision == "accept";
+            let monitor_id = request
+                .pointer("/params/monitorId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or(MonitorError::InvalidStored {
+                    id: request_id.clone(),
+                    location: "params/monitorId".into(),
+                })?;
+            let (snapshot, actor) = snapshot(tx, monitor_id)?;
+            event_write::refuse_remote(&actor)?;
+            if request.get("agent").and_then(Value::as_str) != Some(snapshot.agent()) {
+                return Err(MonitorError::Refused("Monitor approval identity changed"));
+            }
+            if request["status"] == "answered" {
+                let saved = request
+                    .get("answerDecision")
+                    .and_then(Value::as_str)
+                    .or_else(|| match snapshot.record()["status"].as_str() {
+                        Some("starting" | "running" | "completed" | "failed") => Some("accept"),
+                        Some("cancelled") => Some("decline"),
+                        _ => None,
+                    });
+                if saved != Some(decision) {
+                    return Err(MonitorError::Refused(
+                        "This monitor approval already has a different decision",
+                    ));
+                }
+                if accepted && !start_dispatch_available {
+                    return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
+                }
+                return Ok(Some(MonitorApprovalAnswer {
+                    response: json!({"status":"answered","replayed":true}),
+                    accepted,
+                }));
+            }
+            if request.get("status").and_then(Value::as_str) != Some("pending")
+                || snapshot.record()["status"] != "approval"
+                || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
+                || actor.extra.get("autoWake") != Some(&json!(true))
+                || event_write::truthy(actor.extra.get("deletedAt"))
+            {
+                return Err(MonitorError::Refused("Command watch was stopped"));
             }
             if accepted && !start_dispatch_available {
                 return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
             }
-            return Ok(Some(MonitorApprovalAnswer {
-                response: json!({"status":"answered","replayed":true}),
-                accepted,
-            }));
-        }
-        if request.get("status").and_then(Value::as_str) != Some("pending")
-            || snapshot.record()["status"] != "approval"
-            || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
-            || actor.extra.get("autoWake") != Some(&json!(true))
-            || event_write::truthy(actor.extra.get("deletedAt"))
-        {
-            return Err(MonitorError::Refused("Command watch was stopped"));
-        }
-        if accepted && !start_dispatch_available {
-            return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
-        }
 
-        let mut monitor = snapshot.record().clone();
-        if accepted {
-            monitor["status"] = json!("starting");
-        } else {
-            monitor["status"] = json!("cancelled");
-            monitor["finished"] = json!(now);
-            monitor["configurationPending"] = json!(false);
-            if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
-                let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
-                    .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
-                let rule_snapshot = crate::rules_engine::RuleSnapshot::from_records(
-                    rule.value().clone(),
-                    actor.value(),
-                )
-                .map_err(crate::rules_tick::RulesTickError::from)?;
-                let check = rule_snapshot.check();
-                if check.monitor_id != monitor_id {
-                    return Err(MonitorError::Refused("Monitor rule identity changed"));
-                }
-                crate::rules_tick::finish_in_transaction(
-                    tx,
-                    &check,
-                    crate::rules_engine::CheckResult {
-                        code: None,
-                        error: Some("User declined the command"),
-                        cancelled: false,
-                        output: monitor
-                            .get("tail")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
-                    },
-                    now,
-                )?;
+            let mut monitor = snapshot.record().clone();
+            if accepted {
+                monitor["status"] = json!("starting");
             } else {
-                event_write::enqueue_event(
-                    tx,
-                    &actor,
-                    format!("monitor-declined:{monitor_id}"),
-                    "monitor_cancelled",
-                    format!("User declined command {monitor_id}"),
-                    now,
-                )?;
+                monitor["status"] = json!("cancelled");
+                monitor["finished"] = json!(now);
+                monitor["configurationPending"] = json!(false);
+                if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
+                    let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
+                        .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
+                    let rule_snapshot = crate::rules_engine::RuleSnapshot::from_records(
+                        rule.value().clone(),
+                        actor.value(),
+                    )
+                    .map_err(crate::rules_tick::RulesTickError::from)?;
+                    let check = rule_snapshot.check();
+                    if check.monitor_id != monitor_id {
+                        return Err(MonitorError::Refused("Monitor rule identity changed"));
+                    }
+                    crate::rules_tick::finish_in_transaction(
+                        tx,
+                        &check,
+                        crate::rules_engine::CheckResult {
+                            code: None,
+                            error: Some("User declined the command"),
+                            cancelled: false,
+                            output: monitor
+                                .get("tail")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                        },
+                        now,
+                    )?;
+                } else {
+                    event_write::enqueue_event(
+                        tx,
+                        &actor,
+                        format!("monitor-declined:{monitor_id}"),
+                        "monitor_cancelled",
+                        format!("User declined command {monitor_id}"),
+                        now,
+                    )?;
+                }
             }
-        }
-        repository::put(tx, monitor)?;
-        crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-            deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-        })?;
-        request["status"] = json!("answered");
-        request["answerDecision"] = json!(decision);
-        request["answerSignature"] = json!(event_write::request_signature(
-            &json!({"decision":decision})
-        ));
-        request["answeredBy"] = json!("user");
-        request["answeredAt"] = json!(now);
-        request["decision"] = json!(decision);
-        let request = RequestRecord::from_value(request.clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
-        Table::<RequestRecord>::new(tx).put(&request)?;
-        let request_view = crate::sync_views::project_persisted_record("request", request.value())
-            .ok_or(MonitorError::Refused(
-                "Monitor approval projection is invalid",
-            ))?;
-        SyncDocumentsRepository::put_entity(tx, "request", request_id, request_view, false)?;
-        Ok(Some(MonitorApprovalAnswer {
-            response: json!({"status":"answered"}),
-            accepted,
-        }))
-    })
+            repository::put(tx, monitor)?;
+            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
+                deleted
+                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
+            })?;
+            request["status"] = json!("answered");
+            request["answerDecision"] = json!(decision);
+            request["answerSignature"] = json!(event_write::request_signature(
+                &json!({"decision":decision})
+            ));
+            request["answeredBy"] = json!("user");
+            request["answeredAt"] = json!(now);
+            request["decision"] = json!(decision);
+            let request = RequestRecord::from_value(request.clone())
+                .map_err(studio_runtime_store::StoreError::from)?;
+            Table::<RequestRecord>::new(tx).put(&request)?;
+            let request_view =
+                crate::sync_views::project_persisted_record("request", request.value()).ok_or(
+                    MonitorError::Refused("Monitor approval projection is invalid"),
+                )?;
+            SyncDocumentsRepository::put_entity(tx, "request", &request_id, request_view, false)?;
+            Ok(Some(MonitorApprovalAnswer {
+                response: json!({"status":"answered"}),
+                accepted,
+            }))
+        })
+        .await
 }
 
-pub fn input_without_session(
+pub async fn input_without_session(
     store: &RuntimeStore,
     id: &str,
     input: &Input,
     now: f64,
 ) -> Result<Value, MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, _) = snapshot(tx, id)?;
-        let operation = snapshot.operation().ok_or(MonitorError::Refused(
-            "This interactive monitor is not active",
-        ))?;
-        policy::begin_input(&snapshot, operation, "unavailable", input, now)?;
-        Err(MonitorError::Unavailable(SESSION_DEPENDENCY))
-    })
+    let id = id.to_owned();
+    let input = input.clone();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, _) = snapshot(tx, &id)?;
+            let operation = snapshot.operation().ok_or(MonitorError::Refused(
+                "This interactive monitor is not active",
+            ))?;
+            policy::begin_input(&snapshot, operation, "unavailable", &input, now)?;
+            Err(MonitorError::Unavailable(SESSION_DEPENDENCY))
+        })
+        .await
 }
 
 /// The provider adapter calls once, after it has obtained its exact transport ticket.
 /// A commit error is Unknown: do not send. An inputAttempt already present is never replayed.
-pub fn reserve_input(
+pub async fn reserve_input(
     store: &RuntimeStore,
     id: &str,
     operation: &Operation,
@@ -632,20 +652,26 @@ pub fn reserve_input(
     input: &Input,
     now: f64,
 ) -> Result<Effect, MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        let decision = policy::begin_input(&snapshot, operation, attempt_id, input, now)?;
-        let effect = decision
-            .effects
-            .first()
-            .cloned()
-            .ok_or(MonitorError::Refused("Missing monitor input"))?;
-        apply(tx, &snapshot, &actor, &decision, now)?;
-        Ok(effect)
-    })
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let attempt_id = attempt_id.to_owned();
+    let input = input.clone();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let decision = policy::begin_input(&snapshot, &operation, &attempt_id, &input, now)?;
+            let effect = decision
+                .effects
+                .first()
+                .cloned()
+                .ok_or(MonitorError::Refused("Missing monitor input"))?;
+            apply(tx, &snapshot, &actor, &decision, now)?;
+            Ok(effect)
+        })
+        .await
 }
 
-pub fn settle_input(
+pub async fn settle_input(
     store: &RuntimeStore,
     id: &str,
     operation: &Operation,
@@ -653,11 +679,16 @@ pub fn settle_input(
     outcome: InputOutcome,
     now: f64,
 ) -> Result<(), MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        let decision = policy::settle_input(&snapshot, operation, attempt_id, outcome, now)?;
-        apply(tx, &snapshot, &actor, &decision, now)
-    })
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let attempt_id = attempt_id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let decision = policy::settle_input(&snapshot, &operation, &attempt_id, outcome, now)?;
+            apply(tx, &snapshot, &actor, &decision, now)
+        })
+        .await
 }
 
 pub fn finish_in_transaction(
@@ -680,17 +711,18 @@ pub struct TickPage {
     pub next_after: Option<String>,
 }
 
-pub fn tick_page(
+pub async fn tick_page(
     store: &RuntimeStore,
     now: f64,
     after: Option<&str>,
 ) -> Result<TickPage, MonitorError> {
-    store.transaction_with(|tx| {
+    let after = after.map(str::to_owned);
+    store.transaction_with(move |tx| {
         let mut statement = tx.prepare_cached(
             "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND id>?1 ORDER BY id LIMIT ?2",
         ).map_err(studio_runtime_store::StoreError::from)?;
         let ids = statement
-            .query_map((after.unwrap_or(""), (MONITOR_TICK_BATCH + 1) as i64), |row| {
+            .query_map((after.as_deref().unwrap_or(""), (MONITOR_TICK_BATCH + 1) as i64), |row| {
                 row.get::<_, String>(0)
             })
             .map_err(studio_runtime_store::StoreError::from)?
@@ -714,21 +746,24 @@ pub fn tick_page(
             );
         }
         Ok(TickPage { effects, next_after })
-    })
+    }).await
 }
 
-pub fn complete_probe(
+pub async fn complete_probe(
     store: &RuntimeStore,
     id: &str,
     generation: i64,
     result: Value,
     now: f64,
 ) -> Result<(), MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        let decision = policy::probe_result(&snapshot, generation, result, now)?;
-        apply(tx, &snapshot, &actor, &decision, now)
-    })
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let decision = policy::probe_result(&snapshot, generation, result, now)?;
+            apply(tx, &snapshot, &actor, &decision, now)
+        })
+        .await
 }
 
 fn refuse_unavailable(decision: &Decision) -> Result<(), MonitorError> {
@@ -1047,6 +1082,7 @@ fn legacy_reattach_notice(
             && scoped_turn(restart, &restart["reattachedAt"]))
 }
 
+#[derive(Clone)]
 pub struct PreparedStart {
     pub monitor: Value,
     pub actor: Value,
@@ -1054,44 +1090,58 @@ pub struct PreparedStart {
     pub params: Value,
 }
 
-pub fn reserve_start(
+pub async fn reserve_start(
     store: &RuntimeStore,
     id: &str,
     prepared: &PreparedStart,
     now: f64,
 ) -> Result<Effect, MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        if snapshot.record() != &prepared.monitor
-            || serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?
-                != prepared.actor
-        {
-            return Err(MonitorError::Refused("Monitor changed during preparation"));
-        }
-        let decision = policy::start(&snapshot, &prepared.operation, prepared.params.clone(), now)?;
-        let effect = decision
-            .effects
-            .first()
-            .cloned()
-            .ok_or(MonitorError::Refused("Missing monitor command"))?;
-        apply(tx, &snapshot, &actor, &decision, now)?;
-        Ok(effect)
-    })
+    let id = id.to_owned();
+    let prepared = prepared.clone();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            if snapshot.record() != &prepared.monitor
+                || serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?
+                    != prepared.actor
+            {
+                return Err(MonitorError::Refused("Monitor changed during preparation"));
+            }
+            let decision =
+                policy::start(&snapshot, &prepared.operation, prepared.params.clone(), now)?;
+            let effect = decision
+                .effects
+                .first()
+                .cloned()
+                .ok_or(MonitorError::Refused("Missing monitor command"))?;
+            apply(tx, &snapshot, &actor, &decision, now)?;
+            Ok(effect)
+        })
+        .await
 }
 
-pub fn reattach(
+pub async fn reattach(
     store: &RuntimeStore,
     id: &str,
     proof: &policy::ReattachProof,
     now: f64,
 ) -> Result<(), MonitorError> {
-    store.transaction_with(|tx| {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        let decision = policy::reattach(&snapshot, proof)?;
-        apply(tx, &snapshot, &actor, &decision, now)?;
-        repository::cancel_lost_notice(tx, id)?;
-        Ok(())
-    })
+    let id = id.to_owned();
+    let proof = policy::ReattachProof {
+        operation: proof.operation.clone(),
+        operation_id: proof.operation_id.clone(),
+        native_id: proof.native_id,
+        current_connection: proof.current_connection.clone(),
+    };
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let decision = policy::reattach(&snapshot, &proof)?;
+            apply(tx, &snapshot, &actor, &decision, now)?;
+            repository::cancel_lost_notice(tx, &id)?;
+            Ok(())
+        })
+        .await
 }
 
 /// Admission for the dynamic monitor caller. Return the durable identity promptly;
@@ -1107,36 +1157,37 @@ pub struct MonitorAdmission<'a> {
 /// Return an exact prior create result without workspace preparation. This is
 /// a read-only fast path; `create_in_transaction` repeats the identity check
 /// under the committing transaction to close the race with a concurrent create.
-pub fn stored_create_result(
+pub async fn stored_create_result(
     store: &RuntimeStore,
     admission: &MonitorAdmission<'_>,
     now: f64,
 ) -> Result<Option<Value>, MonitorError> {
-    store.transaction_with(|tx| {
-        let actor = event_write::checked_agent(tx, admission.actor_id)?;
-        let actor_value =
-            serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
-        let record = policy::create_record(
-            &actor_value,
-            admission.request,
-            admission.request_id,
-            admission.log_root,
-            now,
-        )?;
-        let id = record
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
-        match MonitorsRepository::get(tx, id)? {
-            Some(previous) if policy::same_request(previous.value(), &record) => {
-                Ok(Some(previous.value().clone()))
+    let actor_id = admission.actor_id.to_owned();
+    let request = admission.request.clone();
+    let request_id = admission.request_id.to_owned();
+    let log_root = admission.log_root.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let actor = event_write::checked_agent(tx, &actor_id)?;
+            let actor_value =
+                serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
+            let record =
+                policy::create_record(&actor_value, &request, &request_id, &log_root, now)?;
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
+            match MonitorsRepository::get(tx, id)? {
+                Some(previous) if policy::same_request(previous.value(), &record) => {
+                    Ok(Some(previous.value().clone()))
+                }
+                Some(_) => Err(MonitorError::Refused(
+                    "This monitor request id has different content",
+                )),
+                None => Ok(None),
             }
-            Some(_) => Err(MonitorError::Refused(
-                "This monitor request id has different content",
-            )),
-            None => Ok(None),
-        }
-    })
+        })
+        .await
 }
 
 /// Implemented by workspace admission. This check performs only transactional

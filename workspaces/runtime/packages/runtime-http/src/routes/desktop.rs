@@ -260,12 +260,22 @@ mod tests {
         fn upstream_enabled(&self) -> bool {
             true
         }
-        fn persist_warnings(
-            &self,
-            _: &[String],
-            _: &[Value],
-        ) -> Result<(), studio_runtime_services::provider_versions::ProviderVersionsError> {
-            Ok(())
+        fn persist_warnings<'a>(
+            &'a self,
+            _: &'a [String],
+            _: &'a [Value],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            (),
+                            studio_runtime_services::provider_versions::ProviderVersionsError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -341,8 +351,13 @@ mod tests {
             Arc::new(Fetch),
             Arc::new(FixtureClock),
         )
+        .await
         .expect("monitor starts without real probes or network");
-        assert!(monitor.wait_until_checked(std::time::Duration::from_secs(5)));
+        assert!(
+            monitor
+                .wait_until_checked(std::time::Duration::from_secs(5))
+                .await
+        );
 
         let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = crate::router::HttpState::new(
@@ -422,6 +437,6 @@ mod tests {
             "The exact version already running in Claude sessions is unknown.",
             "the Claude projection uses the production probe's running-session note"
         );
-        monitor.shutdown();
+        monitor.shutdown().await;
     }
 }

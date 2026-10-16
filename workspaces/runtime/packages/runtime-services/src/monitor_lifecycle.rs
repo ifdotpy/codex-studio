@@ -8,7 +8,9 @@ use studio_runtime_store::Transaction;
 use tokio::sync::Notify;
 
 use crate::{
-    agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
+    agent_lifecycle_runtime::{
+        LifecycleCommitFuture, LifecycleEffect, LifecycleEffectKind, LifecyclePorts,
+    },
     agent_management::ManagementError,
     monitor_driver,
     monitor_policy::MonitorError,
@@ -58,9 +60,11 @@ impl LifecyclePorts for MonitorLifecyclePorts {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        self.wake.notify_one();
-        Ok(())
+    fn committed(&self) -> LifecycleCommitFuture<'_> {
+        Box::pin(async move {
+            self.wake.notify_one();
+            Ok(())
+        })
     }
 }
 

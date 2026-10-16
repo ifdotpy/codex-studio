@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
+use std::sync::Arc;
 use studio_runtime_services::coordination::{self, CoordinationError};
 
 use super::extractors::{ApiJson, QueryParams};
@@ -79,19 +80,13 @@ async fn create_chat(
     ApiJson(body): ApiJson<ChatCreate>,
 ) -> Result<Json<crate::generated::ChatCreated>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            let value = store
-                .transaction_with_error(|transaction| {
-                    coordination::create_chat(transaction, &body.id, &body.name, &body.members)
-                })
-                .map_err(coordination_error)?;
-            super::generated_json::<crate::generated::ChatCreated>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let value = store
+        .transaction_with_error(move |transaction| {
+            coordination::create_chat(transaction, &body.id, &body.name, &body.members)
+        })
+        .await
+        .map_err(coordination_error)?;
+    let result = super::generated_json::<crate::generated::ChatCreated>(value)?;
     Ok(Json(result))
 }
 
@@ -100,24 +95,13 @@ async fn connect_chat(
     ApiJson(body): ApiJson<Connection>,
 ) -> Result<Json<crate::generated::ChatReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            let value = store
-                .transaction_with_error(|transaction| {
-                    coordination::connect_chat(
-                        transaction,
-                        &body.source,
-                        &body.target,
-                        body.connected,
-                    )
-                })
-                .map_err(coordination_error)?;
-            super::generated_json::<crate::generated::ChatReceipt>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let value = store
+        .transaction_with_error(move |transaction| {
+            coordination::connect_chat(transaction, &body.source, &body.target, body.connected)
+        })
+        .await
+        .map_err(coordination_error)?;
+    let result = super::generated_json::<crate::generated::ChatReceipt>(value)?;
     Ok(Json(result))
 }
 
@@ -141,98 +125,114 @@ pub(super) async fn post_message(
         .map(crate::generated::ManagedMessageBodyDelivery::as_str)
         .unwrap_or("queue")
         .to_owned();
-    let result =
+    let admission_store = Arc::clone(&store);
+    let admission_room = body.room.clone();
+    let admission_override = message_admission.clone();
+    let (federated_room, remote_worker, prepared) =
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/messages",
             move || {
-                let federated_room = store
+                let federated_room = admission_store
                     .read_transaction(|connection| {
                         connection
                             .query_row(
                                 "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
-                                [&body.room],
+                                [&admission_room],
                                 |row| row.get::<_, bool>(0),
                             )
                             .map_err(studio_runtime_store::StoreError::from)
                     })
                     .map_err(|_| ApiError::internal())?;
                 if federated_room {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| ApiError::internal())?
-                        .as_secs_f64();
-                    let mut result = studio_runtime_services::federation_delivery::user_message(
-                        &store, &body.room, &body.text, &body.id, now,
-                    )
-                    .map_err(federation_error)?;
-                    result["id"] = Value::String(body.id.clone());
-                    let receipt = super::generated_json::<
-                        crate::generated::StudioApiWorkModelsMessageReceipt,
-                    >(result)?;
-                    wake.notify_one();
-                    return Ok::<_, ApiError>(receipt);
+                    return Ok::<_, ApiError>((true, false, None));
                 }
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                let remote_worker: bool = connection.query_row(
-                    "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
-                    [&body.room],
-                    |row| row.get(0),
-                ).optional().map_err(|_| ApiError::internal())?.unwrap_or(false);
-                let prepared: Box<
-                    dyn studio_runtime_services::message_admission::MessageAdmission + '_,
-                > = if message_admission.is_some() {
-                    Box::new(
-                        studio_runtime_services::message_admission::PreparedAdmission::load(
-                            &connection,
-                            &body.room,
-                        )
-                        .map_err(coordination_error)?,
+                let connection = admission_store.read().map_err(|_| ApiError::internal())?;
+                let remote_worker: bool = connection
+                    .query_row(
+                        "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
+                        [&admission_room],
+                        |row| row.get(0),
                     )
-                } else {
-                    Box::new(
-                        studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                            &store,
-                            &connection,
-                            &body.room,
+                    .optional()
+                    .map_err(|_| ApiError::internal())?
+                    .unwrap_or(false);
+                let prepared: Box<dyn studio_runtime_services::message_admission::MessageAdmission> =
+                    if admission_override.is_some() {
+                        Box::new(
+                            studio_runtime_services::message_admission::PreparedAdmission::load(
+                                &connection,
+                                &admission_room,
+                            )
+                            .map_err(coordination_error)?,
                         )
-                        .map_err(coordination_error)?,
-                    )
-                };
+                    } else {
+                        Box::new(
+                            studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                                Arc::clone(&admission_store),
+                                &connection,
+                                &admission_room,
+                            )
+                            .map_err(coordination_error)?,
+                        )
+                    };
                 drop(connection);
                 #[cfg(test)]
-                ingress_tests::support::after_preparation(&body.room);
-                let admission = message_admission
-                    .as_deref()
-                    .unwrap_or(prepared.as_ref());
-                let posted = store
-                    .transaction_with_error(|transaction| {
-                        coordination::post_message_with_admission(
-                            transaction,
-                            coordination::PostManagedMessage {
-                                room: &body.room,
-                                id: &body.id,
-                                text: &body.text,
-                                delivery: &delivery,
-                                assets: &assets,
-                            },
-                            admission,
-                        )
-                    })
-                    .map_err(coordination_error)?;
-                let value = super::generated_json::<
-                    crate::generated::StudioApiWorkModelsMessageReceipt,
-                >(posted.receipt.clone())?;
-                posted.notify_committed(|| wake.notify_one());
-                if remote_worker && let Some(driver) = &orchestration_driver {
-                    let now = studio_runtime_services::event_write::unix_time()
-                        .map_err(|_| ApiError::internal())? as i64;
-                    driver.pump_due(now).map_err(|_| ApiError::internal())?;
-                }
-                Ok::<crate::generated::StudioApiWorkModelsMessageReceipt, ApiError>(value)
+                ingress_tests::support::after_preparation(&admission_room);
+                Ok((false, remote_worker, Some(prepared)))
             },
         )
         .await
         .map_err(|_| ApiError::internal())??;
+    if federated_room {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ApiError::internal())?
+            .as_secs_f64();
+        let mut result = studio_runtime_services::federation_delivery::user_message(
+            Arc::clone(&store),
+            &body.room,
+            &body.text,
+            &body.id,
+            now,
+        )
+        .await
+        .map_err(federation_error)?;
+        result["id"] = Value::String(body.id.clone());
+        let result =
+            super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(result)?;
+        wake.notify_one();
+        return Ok(Json(result));
+    }
+    let prepared = prepared.ok_or_else(ApiError::internal)?;
+    let admission = message_admission.unwrap_or_else(|| Arc::from(prepared));
+    let posted = store
+        .transaction_with_error(move |transaction| {
+            coordination::post_message_with_admission(
+                transaction,
+                coordination::PostManagedMessage {
+                    room: &body.room,
+                    id: &body.id,
+                    text: &body.text,
+                    delivery: &delivery,
+                    assets: &assets,
+                },
+                admission.as_ref(),
+            )
+        })
+        .await
+        .map_err(coordination_error)?;
+    let result = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
+        posted.receipt.clone(),
+    )?;
+    posted.notify_committed(|| wake.notify_one());
+    if remote_worker && let Some(driver) = &orchestration_driver {
+        let now = studio_runtime_services::event_write::unix_time()
+            .map_err(|_| ApiError::internal())? as i64;
+        driver
+            .pump_due(now)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
     Ok(Json(result))
 }
 
@@ -313,26 +313,21 @@ async fn delete_room(
     ApiJson(body): ApiJson<crate::generated::RoomDeleteBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            store.transaction_with_error(|tx| {
-                let value =
-                    studio_runtime_services::coordination_reads::delete_room(tx, &body.id, |v| {
-                        super::generated_json::<crate::generated::RoomEntityDto>(v.clone()).is_ok()
-                    })?;
-                super::generated_json::<crate::generated::MutationReceipt>(value).map_err(|_| {
-                    CoordinationError::InvalidStored {
-                        object: "runtime_rooms",
-                        id: body.id.clone(),
-                    }
-                })
+    let value = store
+        .transaction_with_error(move |tx| {
+            let value =
+                studio_runtime_services::coordination_reads::delete_room(tx, &body.id, |v| {
+                    super::generated_json::<crate::generated::RoomEntityDto>(v.clone()).is_ok()
+                })?;
+            super::generated_json::<crate::generated::MutationReceipt>(value).map_err(|_| {
+                CoordinationError::InvalidStored {
+                    object: "runtime_rooms",
+                    id: body.id.clone(),
+                }
             })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(coordination_error)?;
+        })
+        .await
+        .map_err(coordination_error)?;
     Ok(Json(value))
 }
 

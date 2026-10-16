@@ -81,8 +81,8 @@ impl Fault for StopAt {
 fn observation() -> usage_resume::LimitsObservation {
     usage_resume::LimitsObservation::from_record(json!({"accountKey":"default","at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),None).expect("observation")
 }
-#[test]
-fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
+#[tokio::test]
+async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
     let template = template();
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
     for boundary in [
@@ -108,7 +108,9 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
             continue;
         }
         let root = clone_template(template.path());
-        let store = RuntimeStore::open(Some(root.path())).expect("Python state opens");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("Python state opens");
         let before = read(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -118,13 +120,16 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
             1000.0,
             |s| usage_resume::tick(s, &observation(), 1000.0),
             &mut StopAt(boundary),
-        );
+        )
+        .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
         if boundary != Boundary::AfterCommit {
             assert_eq!(read(&store), before, "rollback at {boundary:?}");
         }
         drop(store);
-        let restarted = RuntimeStore::open(Some(root.path())).expect("restart");
+        let restarted = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
         continuation_driver::drive(
             &restarted,
             "a",
@@ -133,6 +138,7 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
             1000.0,
             |s| usage_resume::tick(s, &observation(), 1000.0),
         )
+        .await
         .expect("retry safely discovers durable state");
         let after = read(&restarted);
         assert_eq!(after["eventCount"], 1);
@@ -146,15 +152,16 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
             1100.0,
             |s| usage_resume::tick(s, &observation(), 1100.0),
         )
+        .await
         .expect("second replay");
         assert_eq!(read(&restarted), after);
     }
 }
-#[test]
-fn changed_task_cancels_resume_and_notifies_parent_atomically() {
+#[tokio::test]
+async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     store.transaction(|tx|{
         let mut a:Value=serde_json::from_str(&tx.query_row("SELECT record FROM runtime_agents WHERE id='a'",[],|r|r.get::<_,String>(0))?)?;
         a["isLead"]=json!(false);a["parentId"]=json!("parent");a["rootId"]=json!("parent");
@@ -162,7 +169,7 @@ fn changed_task_cancels_resume_and_notifies_parent_atomically() {
         let parent=json!({"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
         tx.execute("INSERT INTO runtime_agents VALUES('parent',?1)",[parent.to_string()])?;
         let work=json!({"id":"new","rootId":"parent","owner":"a","status":"running"});tx.execute("INSERT INTO runtime_work VALUES('new',?1)",[work.to_string()])?;Ok(())
-    }).expect("changed ownership fixture");
+    }).await.expect("changed ownership fixture");
     let result = continuation_driver::drive(
         &store,
         "a",
@@ -170,7 +177,8 @@ fn changed_task_cancels_resume_and_notifies_parent_atomically() {
         Some("resume"),
         1000.0,
         |s| usage_resume::tick(s, &observation(), 1000.0),
-    );
+    )
+    .await;
     assert!(result.is_ok(), "{result:?}");
     let after = read(&store);
     assert_eq!(after["record"]["status"], "cancelled");
@@ -186,12 +194,12 @@ fn changed_task_cancels_resume_and_notifies_parent_atomically() {
     assert_eq!(parent_event, 1);
 }
 
-#[test]
-fn foreign_followup_identity_refuses_and_rolls_back() {
+#[tokio::test]
+async fn foreign_followup_identity_refuses_and_rolls_back() {
     let template = template();
     let root = clone_template(template.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
-    store.transaction(|tx|{tx.execute("INSERT INTO runtime_events VALUES('usage-resume:resume','foreign','followup','foreign payload','pending',1.0,2,NULL,NULL)",[])?;Ok(())}).expect("foreign event");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    store.transaction(|tx|{tx.execute("INSERT INTO runtime_events VALUES('usage-resume:resume','foreign','followup','foreign payload','pending',1.0,2,NULL,NULL)",[])?;Ok(())}).await.expect("foreign event");
     let before = read(&store);
     let result = continuation_driver::drive(
         &store,
@@ -200,7 +208,8 @@ fn foreign_followup_identity_refuses_and_rolls_back() {
         Some("resume"),
         1000.0,
         |s| usage_resume::tick(s, &observation(), 1000.0),
-    );
+    )
+    .await;
     assert!(matches!(result,Err(ContinuationError::Invalid(ref at)) if at=="/events/identity"));
     assert_eq!(read(&store), before);
 }
@@ -226,8 +235,8 @@ fn wake_state(store: &RuntimeStore) -> WakeState {
         .expect("metadata rows");
     (rows, meta)
 }
-#[test]
-fn wakeup_event_and_metadata_writes_restart_atomically() {
+#[tokio::test]
+async fn wakeup_event_and_metadata_writes_restart_atomically() {
     let template = template_kind("wake");
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
     for boundary in [
@@ -242,7 +251,7 @@ fn wakeup_event_and_metadata_writes_restart_atomically() {
             continue;
         }
         let root = clone_template(template.path());
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = wake_state(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -252,16 +261,20 @@ fn wakeup_event_and_metadata_writes_restart_atomically() {
             1000.0,
             |s| Ok(studio_runtime_services::wakeups::pending_batch(s)),
             &mut StopAt(boundary),
-        );
+        )
+        .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
         if boundary != Boundary::AfterCommit {
             assert_eq!(wake_state(&store), before);
         }
         drop(store);
-        let store = RuntimeStore::open(Some(root.path())).expect("restart");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
         continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
             Ok(studio_runtime_services::wakeups::pending_batch(s))
         })
+        .await
         .expect("replay");
         let after = wake_state(&store);
         assert_eq!(
@@ -276,15 +289,18 @@ fn wakeup_event_and_metadata_writes_restart_atomically() {
         continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
             Ok(studio_runtime_services::wakeups::pending_batch(s))
         })
+        .await
         .expect("idempotent replay");
         assert_eq!(wake_state(&store), after);
     }
 }
 
-#[test]
-fn corrupt_continuation_rows_name_the_table_and_identity() {
+#[tokio::test]
+async fn corrupt_continuation_rows_name_the_table_and_identity() {
     let template = template_kind("capacity");
-    let store = RuntimeStore::open(Some(template.path())).expect("Python template");
+    let store = RuntimeStore::open(Some(template.path()))
+        .await
+        .expect("Python template");
     let agent: String = store
         .read()
         .expect("reader")
@@ -351,8 +367,8 @@ impl continuation_driver::CapacityAdmission for FixtureAdmission {
         Ok(())
     }
 }
-#[test]
-fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends() {
+#[tokio::test]
+async fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends() {
     use studio_runtime_services::capacity_retry::{self, Action};
     let template = template_kind("capacity");
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
@@ -379,7 +395,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
             continue;
         }
         let root = clone_template(template.path());
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = capacity_state(&store);
         // The default adapter still refuses absent admission without persisting a claim.
         assert!(matches!(
@@ -397,7 +413,8 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                     },
                     1000.0
                 )
-            ),
+            )
+            .await,
             Err(ContinuationError::Unavailable(
                 "turn-driver/capacity-admission"
             ))
@@ -423,13 +440,16 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                 fault: &mut StopAt(boundary),
                 capacity_admission: &mut FixtureAdmission,
             },
-        );
+        )
+        .await;
         assert!(result.is_err(), "fault {boundary:?} reached");
         if boundary != Boundary::AfterCommit {
             assert_eq!(capacity_state(&store), before);
         }
         drop(store);
-        let store = RuntimeStore::open(Some(root.path())).expect("restart");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
         let committed = continuation_driver::drive_with_hooks(
             &store,
             "a",
@@ -451,6 +471,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                 capacity_admission: &mut FixtureAdmission,
             },
         )
+        .await
         .expect("retry discovers commit");
         assert_eq!(
             committed.effects.len(),
@@ -478,6 +499,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                 )
             },
         )
+        .await
         .expect("claim replay");
         assert!(replay.effects.is_empty());
         assert_eq!(capacity_state(&store), after);
@@ -489,6 +511,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
             1000.0,
             |s| capacity_retry::transition(s, Action::Restart, 1000.0),
         )
+        .await
         .expect("unsent recovery");
         assert!(!recovered.effects.iter().any(|e| matches!(
             e,
@@ -498,10 +521,12 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
     }
 }
 
-#[test]
-fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() {
+#[tokio::test]
+async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() {
     let template = template_kind("capacity");
-    let store = RuntimeStore::open(Some(template.path())).expect("Python state opens");
+    let store = RuntimeStore::open(Some(template.path()))
+        .await
+        .expect("Python state opens");
     store
         .transaction_with(|tx| {
             let mut agent: Value = tx
@@ -523,6 +548,7 @@ fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() 
             )));
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .expect("atomic exclusion settlement");
     let state = capacity_state(&store);
     assert_eq!(state["record"]["status"], "cancelled");

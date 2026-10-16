@@ -80,7 +80,11 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         for file in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(template.join(file), state.join(file)).expect("valid fixture");
         }
-        let store = Arc::new(RuntimeStore::open(Some(&state)).expect("valid fixture"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(&state))
+                .await
+                .expect("valid fixture"),
+        );
         let native = Arc::new(Native {
             calls: Mutex::new(vec![]),
             unknown,
@@ -275,7 +279,11 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
             for name in ["canvas.sqlite3", "analytics.sqlite3"] {
                 std::fs::copy(template.join(name), state.join(name)).expect("valid fixture");
             }
-            let store = Arc::new(RuntimeStore::open(Some(&state)).expect("valid fixture"));
+            let store = Arc::new(
+                RuntimeStore::open(Some(&state))
+                    .await
+                    .expect("valid fixture"),
+            );
             let native = Arc::new(Native {
                 calls: Mutex::new(vec![]),
                 unknown: step == "failed",
@@ -297,7 +305,11 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
             drop(cut);
             drop(adapter);
             drop(store);
-            let store = Arc::new(RuntimeStore::open(Some(&state)).expect("valid fixture"));
+            let store = Arc::new(
+                RuntimeStore::open(Some(&state))
+                    .await
+                    .expect("valid fixture"),
+            );
             let service = Controls::new(
                 Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
                 native.clone(),

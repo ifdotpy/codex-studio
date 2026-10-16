@@ -86,7 +86,9 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub(crate) server_discovery:
         Option<Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>>,
-    pub(crate) tailscale_whoami: Option<Arc<dyn Fn() -> Option<Value> + Send + Sync>>,
+    pub(crate) tailscale_whoami: Option<
+        Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Option<Value>> + Send + Sync>,
+    >,
     pub(crate) project_secrets_guest:
         Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
     pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
@@ -127,7 +129,8 @@ pub struct HttpState {
     #[cfg(unix)]
     terminal_driver: Option<Arc<TerminalDriver<PtyTerminalSession>>>,
     #[cfg(unix)]
-    terminal_write_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    terminal_write_gate:
+        Option<Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -140,6 +143,7 @@ pub struct HttpState {
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) continuation_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
+    mutation_tasks: Arc<crate::mutation_tasks::MutationTasks>,
 }
 
 impl HttpState {
@@ -281,6 +285,7 @@ impl HttpState {
             event_wake: Arc::new(Notify::new()),
             continuation_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
+            mutation_tasks: Arc::new(crate::mutation_tasks::MutationTasks::new()),
         }
     }
 
@@ -304,7 +309,9 @@ impl HttpState {
     /// Attach the host Tailscale whoami probe used when creating federation invites.
     pub fn with_tailscale_whoami(
         mut self,
-        whoami: Arc<dyn Fn() -> Option<Value> + Send + Sync>,
+        whoami: Arc<
+            dyn Fn() -> futures_util::future::BoxFuture<'static, Option<Value>> + Send + Sync,
+        >,
     ) -> Self {
         self.tailscale_whoami = Some(whoami);
         self
@@ -478,13 +485,38 @@ impl HttpState {
         });
         let model = self.model_catalog.shutdown().await;
         if let Some(monitor) = &self.provider_versions {
-            monitor.shutdown();
+            monitor.shutdown().await;
         }
         if let Some(login) = &self.claude_login {
             login.shutdown().await.map_err(std::io::Error::other)?;
         }
         cost_refresh?;
         model
+    }
+
+    /// Stop admitting API mutations after the server begins graceful shutdown.
+    pub fn close_mutation_admission(&self) {
+        self.mutation_tasks.close_admission();
+    }
+
+    /// Close admission and wait for accepted HTTP mutations before stopping their dependencies.
+    pub async fn shutdown_mutations(&self) {
+        self.mutation_tasks.shutdown().await;
+    }
+
+    /// Admit a previously validated signed mutation into the shared request-lifetime owner.
+    pub(crate) async fn run_tracked_mutation<F>(
+        &self,
+        route: String,
+        request_id: Option<String>,
+        future: F,
+    ) -> Response
+    where
+        F: std::future::Future<Output = Response> + Send + 'static,
+    {
+        self.mutation_tasks
+            .run_response(future, route, request_id)
+            .await
     }
 
     /// Cancellation shared with blocking local cost scans during shutdown.
@@ -587,7 +619,10 @@ impl HttpState {
     }
 
     #[cfg(unix)]
-    pub fn with_terminal_write_gate(mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+    pub fn with_terminal_write_gate(
+        mut self,
+        gate: Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>,
+    ) -> Self {
         self.terminal_write_gate = Some(gate);
         self
     }
@@ -603,7 +638,9 @@ impl HttpState {
     }
 
     #[cfg(unix)]
-    pub(crate) fn terminal_write_gate_handle(&self) -> Option<Arc<dyn Fn() -> bool + Send + Sync>> {
+    pub(crate) fn terminal_write_gate_handle(
+        &self,
+    ) -> Option<Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>> {
         self.terminal_write_gate.clone()
     }
 }
@@ -780,6 +817,10 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             crate::mutation_sync::envelope,
+        ))
+        .layer(axum_middleware::from_fn_with_state(
+            Arc::clone(&state.mutation_tasks),
+            crate::mutation_tasks::own_mutations,
         ))
         // Boundary schema validation runs first, so malformed object requests are not sampled.
         // Python samples before route validation, but the difference is unobservable: both
@@ -1187,6 +1228,48 @@ mod tests {
         .expect("validation envelope is JSON");
         assert_eq!(body["error"], "Invalid request");
         assert_eq!(body["location"], serde_json::json!(["body"]));
+    }
+
+    #[tokio::test]
+    async fn boundary_refusal_precedes_closed_mutation_admission_and_keeps_request_id() {
+        let (state, _directory) = state();
+        state.close_mutation_admission();
+        let app = super::validation_probe_router(state).expect("probe router starts");
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/agents")
+            .header("host", "127.0.0.1:4620")
+            .header("x-studio-request-id", "request-preserved")
+            .body(Body::empty())
+            .expect("request builds");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers()["x-studio-request-id"],
+            "request-preserved"
+        );
+
+        let (state, _directory) = state();
+        state.close_mutation_admission();
+        let app = super::validation_probe_router(state).expect("probe router starts");
+        let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
+        let accepted_request = Request::builder()
+            .method("POST")
+            .uri("/api/accounts/discover")
+            .header("host", "127.0.0.1:4620")
+            .header("x-canvas-token", "token")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .header("x-studio-request-id", "request-closed")
+            .extension(peer)
+            .body(Body::empty())
+            .expect("request builds");
+        let response = app.oneshot(accepted_request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["x-studio-request-id"], "request-closed");
     }
 
     #[tokio::test]

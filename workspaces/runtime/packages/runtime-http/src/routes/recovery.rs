@@ -48,9 +48,9 @@ async fn recover(
         .account_session
         .clone()
         .ok_or_else(|| ApiError::dependency("account-worker/recovery-history"))?;
-    let result = tokio::task::spawn_blocking(move || port.recover_connection(&account, &id))
+    let result = port
+        .recover_connection(&account, &id)
         .await
-        .map_err(|_| ApiError::internal())?
         .map_err(|error| match error {
             studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
                 name,

@@ -75,7 +75,9 @@ fn token_rate_association_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateAssociation(NotificationObservation {
         agent: Some(SharedJson::new(rate_agent())),
         method: "item/started".into(),
-        params: SharedJson::new(json!({"threadId":"thread","turnId":"turn","item":{"id":"item","type":"commandExecution"}})),
+        params: SharedJson::new(
+            json!({"threadId":"thread","turnId":"turn","item":{"id":"item","type":"commandExecution"}}),
+        ),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
             generation: 7,
@@ -101,7 +103,7 @@ fn token_rate_started_effect(cursor: u64) -> NotificationPostCommit {
     })
 }
 
-fn seed_analytics_agent(store: &RuntimeStore) {
+async fn seed_analytics_agent(store: &RuntimeStore) {
     let agent = rate_agent();
     store
         .transaction_with(|tx| {
@@ -111,6 +113,7 @@ fn seed_analytics_agent(store: &RuntimeStore) {
             )?;
             Ok::<(), WorkerError>(())
         })
+        .await
         .expect("seed analytics agent identity");
 }
 
@@ -130,12 +133,13 @@ fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     (root, Arc::new(store))
 }
 
-fn stage(store: &RuntimeStore, sequence: u64, index: usize, value: Value) {
+async fn stage(store: &RuntimeStore, sequence: u64, index: usize, value: Value) {
     store
         .transaction_with(|tx| {
             let operation = format!("notification-publication:default:{sequence}:{index}");
             store::save(tx, &operation, "pending", value)
         })
+        .await
         .expect("commit publication receipt");
 }
 
@@ -162,49 +166,60 @@ struct RecordingSink {
 }
 
 impl NotificationPostCommitSink for RecordingSink {
-    fn publish(
-        &self,
-        effect: &NotificationPostCommit,
-    ) -> Result<(), crate::notification_dispatch::NotificationDispatchError> {
-        let cursor = match effect {
-            NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation)
-            | NotificationPostCommit::TokenRateUsage(observation)
-            | NotificationPostCommit::Analytics { observation, .. }
-            | NotificationPostCommit::AnalyticsStream { observation, .. } => {
-                Some(observation.delivery.cursor)
+    fn publish<'a>(
+        &'a self,
+        effect: &'a NotificationPostCommit,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(), crate::notification_dispatch::NotificationDispatchError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let cursor = match effect {
+                NotificationPostCommit::TokenRateStream(observation)
+                | NotificationPostCommit::TokenRateAssociation(observation)
+                | NotificationPostCommit::TokenRateUsage(observation)
+                | NotificationPostCommit::Analytics { observation, .. }
+                | NotificationPostCommit::AnalyticsStream { observation, .. } => {
+                    Some(observation.delivery.cursor)
+                }
+                // Recovered effects have a stable identity but no provider cursor;
+                // the cursor failure injector does not apply to that lane.
+                NotificationPostCommit::Recovered { .. } => None,
+            };
+            if cursor.is_some_and(|cursor| {
+                *self.fail_cursor.lock().expect("failure state") == Some(cursor)
+            }) {
+                return Err(
+                    crate::notification_dispatch::NotificationDispatchError::Dependency(
+                        "test/publication-sink",
+                    ),
+                );
             }
-            // Recovered effects have a stable identity but no provider cursor;
-            // the cursor failure injector does not apply to that lane.
-            NotificationPostCommit::Recovered { .. } => None,
-        };
-        if cursor
-            .is_some_and(|cursor| *self.fail_cursor.lock().expect("failure state") == Some(cursor))
-        {
-            return Err(
-                crate::notification_dispatch::NotificationDispatchError::Dependency(
-                    "test/publication-sink",
-                ),
-            );
-        }
-        let mut seen = self.seen.lock().expect("recording state");
-        if !seen.contains(effect) {
-            seen.push(effect.clone());
-        }
-        Ok(())
+            let mut seen = self.seen.lock().expect("recording state");
+            if !seen.contains(effect) {
+                seen.push(effect.clone());
+            }
+            Ok(())
+        })
     }
 }
 
-#[test]
-fn committed_receipt_is_delivered_then_removed() {
+#[tokio::test]
+async fn committed_receipt_is_delivered_then_removed() {
     let (root, store) = test_store();
     let expected = publication_effect(1);
-    stage(&store, 1, 0, value(1, 0, expected.clone()));
+    stage(&store, 1, 0, value(1, 0, expected.clone())).await;
     assert_eq!(pending_count(&store), 1);
 
-    let sink = RecordingSink::default();
+    let sink = Arc::new(RecordingSink::default());
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("drain"),
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("drain"),
         1
     );
     assert_eq!(sink.seen.lock().expect("sink").as_slice(), &[expected]);
@@ -212,18 +227,20 @@ fn committed_receipt_is_delivered_then_removed() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn restart_delivers_a_receipt_that_was_pending() {
+#[tokio::test]
+async fn restart_delivers_a_receipt_that_was_pending() {
     let (root, store) = test_store();
     let expected = publication_effect(2);
     {
-        stage(&store, 1, 0, value(1, 0, expected.clone()));
+        stage(&store, 1, 0, value(1, 0, expected.clone())).await;
     }
     drop(store);
-    let store = RuntimeStore::open(Some(&root)).expect("reopen store");
-    let sink = RecordingSink::default();
+    let store = Arc::new(RuntimeStore::open(Some(&root)).expect("reopen store"));
+    let sink = Arc::new(RecordingSink::default());
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("drain after restart"),
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("drain after restart"),
         1
     );
     assert_eq!(sink.seen.lock().expect("sink").as_slice(), &[expected]);
@@ -231,8 +248,8 @@ fn restart_delivers_a_receipt_that_was_pending() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn sequence_and_index_order_survive_a_sink_failure() {
+#[tokio::test]
+async fn sequence_and_index_order_survive_a_sink_failure() {
     let (root, store) = test_store();
     for cursor in 1..=3 {
         stage(
@@ -240,11 +257,16 @@ fn sequence_and_index_order_survive_a_sink_failure() {
             cursor,
             0,
             value(cursor, 0, publication_effect(cursor)),
-        );
+        )
+        .await;
     }
-    let sink = RecordingSink::default();
+    let sink = Arc::new(RecordingSink::default());
     *sink.fail_cursor.lock().expect("failure state") = Some(2);
-    assert!(store::drain_publications(&store, "default", &sink).is_err());
+    assert!(
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .is_err()
+    );
     let delivered = sink.seen.lock().expect("sink");
     assert_eq!(delivered.len(), 1);
     assert!(
@@ -255,7 +277,9 @@ fn sequence_and_index_order_survive_a_sink_failure() {
 
     *sink.fail_cursor.lock().expect("failure state") = None;
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("retry"),
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("retry"),
         2
     );
     let delivered = sink.seen.lock().expect("sink");
@@ -272,25 +296,31 @@ fn sequence_and_index_order_survive_a_sink_failure() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn crash_before_delete_keeps_the_receipt_for_idempotent_replay() {
+#[tokio::test]
+async fn crash_before_delete_keeps_the_receipt_for_idempotent_replay() {
     let (root, store) = test_store();
-    let sink = RecordingSink::default();
+    let sink = Arc::new(RecordingSink::default());
     {
-        stage(&store, 1, 0, value(1, 0, publication_effect(4)));
+        stage(&store, 1, 0, value(1, 0, publication_effect(4))).await;
         assert!(
-            store::drain_publications_with_hook(&store, "default", &sink, || {
-                Err(WorkerError::TaskFailed)
-            })
+            store::drain_publications_with_hook(
+                Arc::clone(&store),
+                "default".into(),
+                sink.clone(),
+                || { Err(WorkerError::TaskFailed) }
+            )
+            .await
             .is_err()
         );
         assert_eq!(pending_count(&store), 1);
         assert_eq!(sink.seen.lock().expect("sink").len(), 1);
     }
     drop(store);
-    let store = RuntimeStore::open(Some(&root)).expect("reopen after delete failpoint");
+    let store = Arc::new(RuntimeStore::open(Some(&root)).expect("reopen after delete failpoint"));
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("restart replay"),
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("restart replay"),
         1
     );
     assert_eq!(sink.seen.lock().expect("sink").len(), 1);
@@ -298,10 +328,10 @@ fn crash_before_delete_keeps_the_receipt_for_idempotent_replay() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn long_stream_keeps_the_publication_table_bounded() {
+#[tokio::test]
+async fn long_stream_keeps_the_publication_table_bounded() {
     let (root, store) = test_store();
-    let sink = RecordingSink::default();
+    let sink = Arc::new(RecordingSink::default());
     let mut maximum = 0;
     for sequence in 1..=256 {
         stage(
@@ -309,10 +339,13 @@ fn long_stream_keeps_the_publication_table_bounded() {
             sequence,
             0,
             value(sequence, 0, publication_effect(sequence)),
-        );
+        )
+        .await;
         maximum = maximum.max(pending_count(&store));
         assert_eq!(
-            store::drain_publications(&store, "default", &sink).expect("drain stream"),
+            store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+                .await
+                .expect("drain stream"),
             1
         );
     }
@@ -321,8 +354,8 @@ fn long_stream_keeps_the_publication_table_bounded() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
+#[tokio::test]
+async fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     let (root, store) = test_store();
     let first = NotificationPublicationBatch {
         sequence: 1,
@@ -333,6 +366,7 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     };
     store
         .transaction_with(|tx| store::persist_publication_batch(tx, "default", &first))
+        .await
         .expect("fill bounded pending table");
     assert_eq!(
         pending_count(&store),
@@ -349,6 +383,7 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     };
     store
         .transaction_with(|tx| store::persist_publication_batch(tx, "default", &extra))
+        .await
         .expect("publication pressure must not fail the provider write");
     assert_eq!(
         pending_count(&store),
@@ -363,24 +398,32 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
         )
         .expect("record dropped analytics capture");
     assert_eq!(overflow, 1);
-    let sink = RecordingSink::default();
+    let sink = Arc::new(RecordingSink::default());
     let mut before_delete_calls = 0;
     for _ in 0..(store::MAX_PENDING_PUBLICATION_RECEIPTS / store::PUBLICATION_DRAIN_LIMIT) - 1 {
         assert_eq!(
-            store::drain_publications(&store, "default", &sink).expect("drain bounded batch"),
+            store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+                .await
+                .expect("drain bounded batch"),
             store::PUBLICATION_DRAIN_LIMIT
         );
         before_delete_calls += store::PUBLICATION_DRAIN_LIMIT;
     }
     assert!(
-        store::drain_publications_with_hook(&store, "default", &sink, || {
-            before_delete_calls += 1;
-            if before_delete_calls == store::MAX_PENDING_PUBLICATION_RECEIPTS {
-                Err(WorkerError::TaskFailed)
-            } else {
-                Ok(())
+        store::drain_publications_with_hook(
+            Arc::clone(&store),
+            "default".into(),
+            Arc::clone(&sink),
+            || {
+                before_delete_calls += 1;
+                if before_delete_calls == store::MAX_PENDING_PUBLICATION_RECEIPTS {
+                    Err(WorkerError::TaskFailed)
+                } else {
+                    Ok(())
+                }
             }
-        })
+        )
+        .await
         .is_err()
     );
     assert_eq!(pending_count(&store), 1);
@@ -398,7 +441,9 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
         1
     );
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("retry overflow receipt"),
+        store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+            .await
+            .expect("retry overflow receipt"),
         1
     );
     let repeated: String = analytics
@@ -416,14 +461,17 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn publication_overflow_receipt_records_only_newly_attached_counts() {
+#[tokio::test]
+async fn publication_overflow_receipt_records_only_newly_attached_counts() {
     let (root, store) = test_store();
-    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 1, 0)
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow".into(), 1, 0)
+        .await
         .expect("record initial overflow");
-    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 3, 0)
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow".into(), 3, 0)
+        .await
         .expect("record increased overflow count");
-    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 3, 0)
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow".into(), 3, 0)
+        .await
         .expect("replay overflow count");
     let analytics =
         rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
@@ -519,8 +567,8 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
     worker.shutdown().await.expect("stop worker");
 }
 
-#[test]
-fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
+#[tokio::test]
+async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     let (root, store) = test_store();
     let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
     let client = changes.subscribe();
@@ -535,7 +583,7 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         resources: Arc::clone(&resources),
         analytics_store: Arc::clone(&store),
     };
-    seed_analytics_agent(&store);
+    seed_analytics_agent(&store).await;
     let backlog = NotificationPublicationBatch {
         sequence: 1,
         effects: std::iter::once(token_rate_started_effect(1))
@@ -545,6 +593,7 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     };
     store
         .transaction_with(|tx| store::persist_publication_batch(tx, "default", &backlog))
+        .await
         .expect("fill publication receipts to the bound");
     let pressured = NotificationPublicationBatch {
         sequence: 2,
@@ -564,6 +613,7 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     };
     store
         .transaction_with(|tx| store::persist_publication_batch(tx, "default", &pressured))
+        .await
         .expect("preserve token-rate observation under analytics pressure");
     assert_eq!(
         pending_count(&store),
@@ -609,7 +659,11 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .expect("count coalesced invalidation markers");
     assert_eq!(invalidations, 1);
 
-    while store::drain_publications(&store, "default", &sink).expect("drain publications") > 0 {}
+    while store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+        .await
+        .expect("drain publications")
+        > 0
+    {}
 
     assert!(
         client
@@ -628,8 +682,8 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn saturated_publication_coalescing_has_a_hard_effect_bound() {
+#[tokio::test]
+async fn saturated_publication_coalescing_has_a_hard_effect_bound() {
     let (root, store) = test_store();
     let backlog = NotificationPublicationBatch {
         sequence: 1,
@@ -640,6 +694,7 @@ fn saturated_publication_coalescing_has_a_hard_effect_bound() {
     };
     store
         .transaction_with(|tx| store::persist_publication_batch(tx, "default", &backlog))
+        .await
         .expect("fill publication receipts to the bound");
     let bounded = NotificationPublicationBatch {
         sequence: 2,
@@ -651,6 +706,7 @@ fn saturated_publication_coalescing_has_a_hard_effect_bound() {
     assert!(
         store
             .transaction_with(|tx| store::persist_publication_batch(tx, "default", &bounded))
+            .await
             .is_err()
     );
     assert_eq!(
@@ -684,19 +740,21 @@ async fn drained_effect_reaches_token_rate_and_resource_hubs() {
     let resources = Arc::new(crate::resource_notify::ResourceNotifications::new(
         changes.clone(),
     ));
-    let sink = RuntimeNotificationPostCommitSink {
+    let sink = Arc::new(RuntimeNotificationPostCommitSink {
         token_rates,
         resources,
         analytics_store: Arc::clone(&store),
-    };
-    seed_analytics_agent(&store);
+    });
+    seed_analytics_agent(&store).await;
     let started = analytics_effect(8, "turn/started", json!({"turnId":"turn"}));
     let delta = publication_effect(9);
-    stage(&store, 1, 0, value(1, 0, started));
-    stage(&store, 1, 1, value(1, 1, delta));
+    stage(&store, 1, 0, value(1, 0, started)).await;
+    stage(&store, 1, 1, value(1, 1, delta)).await;
 
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("drain to hubs"),
+        store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+            .await
+            .expect("drain to hubs"),
         2
     );
     snapshots.changed().await.expect("token-rate snapshot");
@@ -712,10 +770,10 @@ async fn drained_effect_reaches_token_rate_and_resource_hubs() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn production_sink_replay_keeps_analytics_rows_unchanged() {
+#[tokio::test]
+async fn production_sink_replay_keeps_analytics_rows_unchanged() {
     let (root, store) = test_store();
-    seed_analytics_agent(&store);
+    seed_analytics_agent(&store).await;
     let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
     let token_rates = Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
         Arc::clone(&changes),
@@ -723,18 +781,22 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
     let resources = Arc::new(crate::resource_notify::ResourceNotifications::new(
         Arc::clone(&changes),
     ));
-    let sink = RuntimeNotificationPostCommitSink {
+    let sink = Arc::new(RuntimeNotificationPostCommitSink {
         token_rates,
         resources,
         analytics_store: Arc::clone(&store),
-    };
+    });
     let effect = analytics_effect(50, "turn/started", json!({"turnId":"turn"}));
-    stage(&store, 1, 0, value(1, 0, effect));
+    stage(&store, 1, 0, value(1, 0, effect)).await;
 
     assert!(
-        store::drain_publications_with_hook(&store, "default", &sink, || {
-            Err(WorkerError::TaskFailed)
-        })
+        store::drain_publications_with_hook(
+            Arc::clone(&store),
+            "default".into(),
+            Arc::clone(&sink),
+            || { Err(WorkerError::TaskFailed) }
+        )
+        .await
         .is_err()
     );
     let before = analytics_counts(&root);
@@ -743,7 +805,9 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
     assert_eq!(pending_count(&store), 1);
 
     assert_eq!(
-        store::drain_publications(&store, "default", &sink).expect("replay same receipt"),
+        store::drain_publications(Arc::clone(&store), "default".into(), Arc::clone(&sink))
+            .await
+            .expect("replay same receipt"),
         1
     );
     assert_eq!(analytics_counts(&root), before);
@@ -753,10 +817,10 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
+#[tokio::test]
+async fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
     let (root, store) = test_store();
-    seed_analytics_agent(&store);
+    seed_analytics_agent(&store).await;
     let agent = rate_agent();
     let prepared = crate::analytics_capture::PreparedCapture::event(
         &agent,
@@ -779,25 +843,27 @@ fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
     assert!(
         !crate::analytics_capture::capture_notification_effect(
             &store,
-            "account:default",
+            "account:default".into(),
             7,
             50,
-            "analytics",
-            &prepared,
+            "analytics".into(),
+            prepared.clone(),
             None,
         )
+        .await
         .expect("deduplicate a legacy receipt")
     );
     assert!(
         crate::analytics_capture::capture_notification_effect(
             &store,
-            "account:default",
+            "account:default".into(),
             7,
             51,
-            "analytics",
-            &prepared,
+            "analytics".into(),
+            prepared,
             None,
         )
+        .await
         .expect("capture after the legacy watermark")
     );
 
@@ -814,11 +880,11 @@ fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
-#[test]
-fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
+#[tokio::test]
+async fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
     let (root, store) = test_store();
     let agent = rate_agent();
-    seed_analytics_agent(&store);
+    seed_analytics_agent(&store).await;
     let prepared = crate::analytics_capture::PreparedCapture::event(
         &agent,
         "turn/started",
@@ -828,22 +894,29 @@ fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
         crate::analytics_capture::CaptureSource::Live,
     )
     .expect("prepare turn capture");
-    let deliver = |cursor| {
+    let deliver = |cursor, prepared: crate::analytics_capture::PreparedCapture| async move {
         crate::analytics_capture::capture_notification_effect(
             &store,
-            "account:default",
+            "account:default".into(),
             7,
             cursor,
-            "analytics",
-            &prepared,
+            "analytics".into(),
+            prepared,
             None,
         )
+        .await
         .expect("capture analytics effect")
     };
 
-    assert!(deliver(4));
-    assert!(deliver(3), "delayed first delivery remains capturable");
-    assert!(!deliver(3), "only an exact replay is deduplicated");
+    assert!(deliver(4, prepared.clone()).await);
+    assert!(
+        deliver(3, prepared.clone()).await,
+        "delayed first delivery remains capturable"
+    );
+    assert!(
+        !deliver(3, prepared).await,
+        "only an exact replay is deduplicated"
+    );
     let analytics =
         rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
     let receipts: i64 = analytics
@@ -877,8 +950,8 @@ fn analytics_counts(root: &std::path::Path) -> (i64, i64, i64) {
     (notifications, turns, captures)
 }
 
-#[test]
-fn streamed_turn_analytics_rows_match_python_capture_oracle() {
+#[tokio::test]
+async fn streamed_turn_analytics_rows_match_python_capture_oracle() {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = crate::agents_create::prepared_python(&source);
     let oracle =
@@ -895,7 +968,7 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
     let expected: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
 
     let (root, store) = test_store();
-    seed_analytics_agent(&store);
+    seed_analytics_agent(&store).await;
     let agent = rate_agent();
     for (method, params, at) in [
         ("turn/started", json!({"turnId":"turn"}), 10.0),
@@ -914,7 +987,9 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
             crate::analytics_capture::CaptureSource::Live,
         )
         .expect("prepare pre-stream capture");
-        crate::analytics_capture::capture(&store, &prepared).expect("capture pre-stream rows");
+        crate::analytics_capture::capture(&store, prepared)
+            .await
+            .expect("capture pre-stream rows");
     }
     let first_params = json!({"threadId":"thread","turnId":"turn","itemId":"item","delta":"hello"});
     let second_params =
@@ -956,7 +1031,9 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
         resources: Arc::new(crate::resource_notify::ResourceNotifications::new(changes)),
         analytics_store: Arc::clone(&store),
     };
-    sink.publish(&effect).expect("publish streamed analytics");
+    sink.publish(&effect)
+        .await
+        .expect("publish streamed analytics");
 
     let actual_db =
         rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics output");

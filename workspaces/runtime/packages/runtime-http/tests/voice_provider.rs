@@ -100,8 +100,8 @@ impl VoiceRequestPort for RecordingPort {
     }
 }
 
-fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>) {
-    let (root, store) = common::store();
+async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>) {
+    let (root, store) = common::store().await;
     let actor = json!({
         "id":"voice-http-agent", "rootId":"voice-http-agent", "epoch":7,
         "status":"idle", "isLead":true, "autoWake":true,
@@ -168,7 +168,9 @@ fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>) {
             [],
         )?;
         Ok(())
-    }).expect("seed voice HTTP rows");
+    })
+    .await
+    .expect("seed voice HTTP rows");
     (root, store, Arc::new(RecordingPort::default()))
 }
 
@@ -199,7 +201,7 @@ async fn post(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value
 
 #[tokio::test]
 async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
-    let (_root, store, port) = fixture();
+    let (_root, store, port) = fixture().await;
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -312,10 +314,11 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .as_object_mut()
         .expect("monitor record")
         .remove("operation");
-    let store = Arc::new(monitor_fixtures::store(root.path(), "voice-monitor"));
+    let store = Arc::new(monitor_fixtures::store(root.path(), "voice-monitor").await);
     studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
+        .await
         .expect("server startup recovery");
-    monitor_fixtures::seed(&store, &case);
+    monitor_fixtures::seed(&store, &case).await;
     let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
     let monitor_id = case["before"]["id"].as_str().expect("monitor id");
     let request_id = format!("monitor-approval:{monitor_id}");
@@ -355,6 +358,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed voice monitor approval");
 
     let approval_body = json!({
@@ -441,6 +445,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
             )?;
             Ok(())
         })
+        .await
         .expect("simulate crash window");
     let (status, recovered) = post(&app_without_runtime, "/api/voice/approve", approval_body).await;
     assert_eq!(status, StatusCode::OK, "{recovered}");
@@ -462,13 +467,14 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
 
     runtime
         .tick(1001.0)
+        .await
         .expect("dispatch accepted monitor start");
     assert_eq!(port.starts.lock().expect("monitor starts").len(), 1);
 }
 
 #[tokio::test]
 async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes() {
-    let (_root, store, _port) = fixture();
+    let (_root, store, _port) = fixture().await;
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),

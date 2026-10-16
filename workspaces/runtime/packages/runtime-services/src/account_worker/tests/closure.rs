@@ -39,7 +39,7 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
     }
     state
         .bridge
-        .run(|store| {
+        .run(|store| async move {
             store.transaction_with(|tx| {
                 tx.execute_batch("DROP TRIGGER no_flush")?;
                 Ok(())
@@ -382,6 +382,7 @@ async fn publication_uses_the_identity_snapshot_loaded_before_serving() {
                 entered.set(true);
                 Ok(())
             })
+            .await
             .expect("projection keeps the cached absent identity");
             assert!(entered.get(), "the cached absent identity remains usable");
             Ok(())

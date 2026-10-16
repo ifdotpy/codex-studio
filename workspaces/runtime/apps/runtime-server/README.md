@@ -32,6 +32,15 @@ runtime admissions start. The retained monitor task handles queued results,
 rule events, and durable deadlines; its first tick does not repeat startup
 recovery after new monitor work may have been admitted.
 
+On a shutdown signal, the server closes HTTP mutation admission, drains admitted
+mutations and durable account login/cancellation work while their dependencies
+remain live, then stops those dependencies. The existing 20-second
+`SERVER_SHUTDOWN_GRACE` watchdog bounds the sequence; graceful shutdown does not
+promise that every operation finishes before that deadline. If the watchdog
+forces process exit, existing durable intents, receipts, unknown outcomes, and
+recovery behavior remain authoritative. Shutdown adds no automatic request
+replay.
+
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the
 async listener and signal handling. The async executor defaults to at most four

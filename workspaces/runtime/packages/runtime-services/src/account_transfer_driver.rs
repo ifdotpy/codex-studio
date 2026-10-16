@@ -5,6 +5,8 @@ use crate::account_transfer::{
     Action, Command, Decision, EXECUTOR_REQUIRED, Snapshot, Ticket, TransferError,
 };
 use serde_json::{Value, json};
+use std::future::Future;
+use std::pin::Pin;
 use studio_runtime_store::{
     AccountTransferRepository as Repository, AgentRepository, RuntimeStore, Transaction,
 };
@@ -78,35 +80,40 @@ fn snapshot_agents(
 }
 
 /// The account worker calls this once during startup before admitting turns.
-pub fn recover(store: &RuntimeStore, now: f64) -> Result<usize, TransferError> {
-    store.transaction_with_error(|tx| {
-        if !Repository::available(tx)? {
-            return Ok(0);
-        }
-        let mut changed = 0;
-        for id in Repository::ids(tx)? {
-            let snapshot = load(tx, &id)?;
-            let decision = snapshot.decide(Command::Restart)?;
-            changed += usize::from(decision.changed);
-            persist(tx, decision, now)?;
-        }
-        Ok(changed)
-    })
+pub async fn recover(store: &RuntimeStore, now: f64) -> Result<usize, TransferError> {
+    store
+        .transaction_with_error(move |tx| {
+            if !Repository::available(tx)? {
+                return Ok(0);
+            }
+            let mut changed = 0;
+            for id in Repository::ids(tx)? {
+                let snapshot = load(tx, &id)?;
+                let decision = snapshot.decide(Command::Restart)?;
+                changed += usize::from(decision.changed);
+                persist(tx, decision, now)?;
+            }
+            Ok(changed)
+        })
+        .await
 }
-pub fn action(
+pub async fn action(
     store: &RuntimeStore,
     id: &str,
     action: Action,
     now: f64,
 ) -> Result<Value, TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, id)?;
-        persist(tx, snapshot.decide(Command::Action(action))?, now)
-    })
+    let id = id.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &id)?;
+            persist(tx, snapshot.decide(Command::Action(action))?, now)
+        })
+        .await
 }
 /// No provider submission is repeated by this method. It only replays an exact
 /// durable request; a genuinely new request needs the executor before any write.
-pub fn request(
+pub async fn request(
     store: &RuntimeStore,
     id: &str,
     lead: &str,
@@ -122,11 +129,16 @@ pub fn request(
             "Choose a valid transfer scope and destination provider",
         ));
     }
-    store.transaction_with_error(|tx| {
+    let id = id.to_owned();
+    let lead = lead.to_owned();
+    let target = target.to_owned();
+    let scope = scope.to_owned();
+    let target_provider = target_provider.to_owned();
+    store.transaction_with_error(move |tx| {
         if !Repository::available(tx)? {
             return Err(TransferError::Requires(EXECUTOR_REQUIRED));
         }
-        let actor = crate::event_write::checked_agent(tx, lead)
+        let actor = crate::event_write::checked_agent(tx, &lead)
             .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
         if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
             return Err(TransferError::Refused(
@@ -137,7 +149,7 @@ pub fn request(
             .extra
             .get("excludedAccountKeys")
             .and_then(Value::as_array)
-            .is_some_and(|keys| keys.iter().any(|key| key == target))
+            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(target.as_str())))
         {
             return Err(TransferError::Refused(
                 "This account is disabled for this chat",
@@ -145,7 +157,7 @@ pub fn request(
         }
         for key in Repository::ids(tx)? {
             let snapshot = load(tx, &key)?;
-            if snapshot.replay(id, lead, target, scope)? {
+            if snapshot.replay(&id, &lead, &target, &scope)? {
                 return snapshot.public_view();
             }
         }
@@ -170,7 +182,10 @@ pub fn request(
             if ids.len() > 4096 {
                 return Err(TransferError::Refused("Transfer member scan exceeds the supported limit"));
             }
-            let target_provider = operation["targetProvider"].as_str().unwrap_or(target_provider).to_owned();
+            let target_provider = operation["targetProvider"]
+                .as_str()
+                .unwrap_or(&target_provider)
+                .to_owned();
             for member_id in ids {
                 if operation["members"].get(&member_id).is_some()
                     || (scope == "subagents" && member_id == lead)
@@ -180,7 +195,7 @@ pub fn request(
                 let Some(raw) = Repository::agent(tx, &member_id)? else { continue };
                 let mut value: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
                 if studio_runtime_store::truthy(value.get("deletedAt"))
-                    || (member_id != lead && value["rootId"].as_str() != Some(lead))
+                    || (member_id != lead && value["rootId"].as_str() != Some(lead.as_str()))
                 {
                     continue;
                 }
@@ -252,13 +267,18 @@ pub fn request(
                 }
                 agents.insert(member_id, value);
             }
-            if agents.get(lead).is_some_and(|lead_agent| lead_agent.get("accountKey").and_then(Value::as_str) == Some(target)) {
-                let lead_agent = agents.get_mut(lead).ok_or(TransferError::Refused("Unknown transfer lead"))?;
+            if agents
+                .get(&lead)
+                .is_some_and(|lead_agent| lead_agent.get("accountKey").and_then(Value::as_str) == Some(target.as_str()))
+            {
+                let lead_agent = agents
+                    .get_mut(&lead)
+                    .ok_or(TransferError::Refused("Unknown transfer lead"))?;
                 let mut defaults = lead_agent.get("workerDefaults").and_then(Value::as_object).cloned().unwrap_or_default();
                 defaults.insert("accountKey".into(), json!(target));
                 lead_agent["workerDefaults"] = Value::Object(defaults);
             }
-            operation["requests"][id] = json!({"leadId":lead,"targetAccountKey":target,"scope":scope});
+            operation["requests"][id.as_str()] = json!({"leadId":lead,"targetAccountKey":target,"scope":scope});
             let mut decision = Snapshot::read(
                 &operation.to_string(),
                 agents.iter().map(|(id,value)|(id.clone(),value.to_string())),
@@ -285,14 +305,14 @@ pub fn request(
             let Some(raw) = Repository::agent(tx, &id)? else { continue };
             let value: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
             if studio_runtime_store::truthy(value.get("deletedAt"))
-                || (id != lead && value["rootId"].as_str() != Some(lead))
+                || (id != lead && value["rootId"].as_str() != Some(lead.as_str()))
                 || (scope == "subagents" && id == lead)
             {
                 continue;
             }
             agents.insert(id, value);
         }
-        if !agents.contains_key(lead) {
+        if !agents.contains_key(&lead) {
             return Err(TransferError::Refused("Unknown managed agent"));
         }
         if agents.values().any(|agent| {
@@ -311,7 +331,7 @@ pub fn request(
             let source_account = value.get("accountKey").and_then(Value::as_str).unwrap_or("default").to_owned();
             let provider = value.get("provider").and_then(Value::as_str).unwrap_or("codex").to_owned();
             let source_thread = value.get("threadId").cloned().filter(|thread| !thread.is_null());
-            if agent_id != lead && provider != target_provider {
+            if agent_id.as_str() != lead.as_str() && provider != target_provider {
                 operation["members"][agent_id] = json!({"phase":"left","sourceAccountKey":source_account,
                     "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
                     "reason":format!("Uses {provider}; the destination account uses {target_provider}")});
@@ -384,10 +404,10 @@ pub fn request(
         decision.agents = agents;
         decision.changed = true;
         persist(tx, decision, now)
-    })
+    }).await
 }
 
-pub fn reserve(
+pub async fn reserve(
     store: &RuntimeStore,
     ticket: &Ticket,
     method: &str,
@@ -395,26 +415,33 @@ pub fn reserve(
     scope: Value,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        check_durable_blockers(tx, &ticket.agent)?;
-        let snapshot = load(tx, &ticket.operation)?;
-        let decision =
-            snapshot.provider_intent(&ticket.agent, &ticket.request, scope, method, params)?;
-        persist(tx, decision, now)?;
-        Ok(())
-    })
+    let ticket = ticket.clone();
+    let method = method.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            check_durable_blockers(tx, &ticket.agent)?;
+            let snapshot = load(tx, &ticket.operation)?;
+            let decision =
+                snapshot.provider_intent(&ticket.agent, &ticket.request, scope, &method, params)?;
+            persist(tx, decision, now)?;
+            Ok(())
+        })
+        .await
 }
-pub fn receive(
+pub async fn receive(
     store: &RuntimeStore,
     ticket: &Ticket,
     result: Option<Value>,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, &ticket.operation)?;
-        persist(tx, snapshot.receive(ticket, result)?, now)?;
-        Ok(())
-    })
+    let ticket = ticket.clone();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &ticket.operation)?;
+            persist(tx, snapshot.receive(&ticket, result)?, now)?;
+            Ok(())
+        })
+        .await
 }
 
 fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Value, TransferError> {
@@ -516,16 +543,17 @@ fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Val
     decision.public_view()
 }
 
-/// Synchronous effect port, implemented by the account worker's bounded native
+/// Asynchronous effect port, implemented by the account worker's bounded native
 /// request adapter. A failed wait is unknown, never evidence of non-execution.
-pub trait TransferTransport {
-    fn send(
-        &self,
-        ticket: &Ticket,
-        scope: &crate::account_session_runtime::ConnectionScope,
-        method: &str,
-        params: &Value,
-    ) -> TransferDispatch;
+pub type TransferFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub trait TransferTransport: Send + Sync {
+    fn send<'a>(
+        &'a self,
+        ticket: &'a Ticket,
+        scope: &'a crate::account_session_runtime::ConnectionScope,
+        method: &'a str,
+        params: &'a Value,
+    ) -> TransferFuture<'a, TransferDispatch>;
 }
 pub struct TransferDispatch {
     pub receipt: Value,
@@ -539,7 +567,7 @@ pub enum DispatchOutcome {
 }
 /// The returned ticket reservation is committed before `send` is invoked.
 /// Callers must not retry after any error; inspect the durable operation first.
-pub fn send_once(
+pub async fn send_once(
     store: &RuntimeStore,
     transport: &dyn TransferTransport,
     ticket: &Ticket,
@@ -550,8 +578,8 @@ pub fn send_once(
 ) -> Result<DispatchOutcome, TransferError> {
     let scope_value = serde_json::to_value(&scope)
         .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
-    reserve(store, ticket, method, params.clone(), scope_value, now)?;
-    let dispatch = transport.send(ticket, &scope, method, &params);
+    reserve(store, ticket, method, params.clone(), scope_value, now).await?;
+    let dispatch = transport.send(ticket, &scope, method, &params).await;
     let known = dispatch.certainty == crate::account_session_runtime::RequestCertainty::Written
         && dispatch
             .result
@@ -570,7 +598,8 @@ pub fn send_once(
             certainty: dispatch.certainty,
         },
         now,
-    )?;
+    )
+    .await?;
     Ok(if known {
         DispatchOutcome::ReceiptSaved
     } else {
@@ -580,17 +609,21 @@ pub fn send_once(
 
 /// Called after the account worker has checked its live preparation/catalog
 /// reservations. Durable local blockers are checked again in this transaction.
-pub fn begin_read(
+pub async fn begin_read(
     store: &RuntimeStore,
     operation: &str,
     agent: &str,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        check_durable_blockers(tx, agent)?;
-        persist(tx, load(tx, operation)?.begin_read(agent)?, now)?;
-        Ok(())
-    })
+    let operation = operation.to_owned();
+    let agent = agent.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            check_durable_blockers(tx, &agent)?;
+            persist(tx, load(tx, &operation)?.begin_read(&agent)?, now)?;
+            Ok(())
+        })
+        .await
 }
 
 /// Persist a stable provider operation and its observed connection scope after
@@ -604,26 +637,32 @@ pub struct ProviderIntent<'a> {
     pub params: Value,
 }
 
-pub fn provider_intent(
+pub async fn provider_intent(
     store: &RuntimeStore,
     intent: ProviderIntent<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, intent.operation)?;
-        persist(
-            tx,
-            snapshot.provider_intent(
-                intent.agent,
-                intent.provider_operation,
-                intent.scope,
-                intent.method,
-                intent.params,
-            )?,
-            now,
-        )?;
-        Ok(())
-    })
+    let operation = intent.operation.to_owned();
+    let agent = intent.agent.to_owned();
+    let provider_operation = intent.provider_operation.to_owned();
+    let method = intent.method.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &operation)?;
+            persist(
+                tx,
+                snapshot.provider_intent(
+                    &agent,
+                    &provider_operation,
+                    intent.scope,
+                    &method,
+                    intent.params,
+                )?,
+                now,
+            )?;
+            Ok(())
+        })
+        .await
 }
 
 pub(crate) struct ProviderReadIntent<'a> {
@@ -636,30 +675,37 @@ pub(crate) struct ProviderReadIntent<'a> {
     pub params: Value,
 }
 
-pub(crate) fn provider_read_intent(
+pub(crate) async fn provider_read_intent(
     store: &RuntimeStore,
     intent: ProviderReadIntent<'_>,
     now: f64,
 ) -> Result<Option<Value>, TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, intent.transfer)?;
-        let prior = snapshot.operation()["members"][intent.agent]["providerReadReceipts"]
-            [intent.operation]
+    let transfer = intent.transfer.to_owned();
+    let agent = intent.agent.to_owned();
+    let operation = intent.operation.to_owned();
+    let account = intent.account.to_owned();
+    let method = intent.method.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &transfer)?;
+            let prior = snapshot.operation()["members"][agent.as_str()]["providerReadReceipts"]
+                [operation.as_str()]
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
             .map(Value::Object);
-        let decision = snapshot.provider_read_intent(
-            intent.agent,
-            intent.operation,
-            intent.account,
-            intent.scope,
-            intent.method,
-            intent.params,
-        )?;
-        persist(tx, decision, now)?;
-        Ok(prior)
-    })
+            let decision = snapshot.provider_read_intent(
+                &agent,
+                &operation,
+                &account,
+                intent.scope,
+                &method,
+                intent.params,
+            )?;
+            persist(tx, decision, now)?;
+            Ok(prior)
+        })
+        .await
 }
 
 pub(crate) struct ProviderReadReceipt<'a> {
@@ -671,26 +717,31 @@ pub(crate) struct ProviderReadReceipt<'a> {
     pub certainty: crate::account_session_runtime::RequestCertainty,
 }
 
-pub(crate) fn provider_read_receipt(
+pub(crate) async fn provider_read_receipt(
     store: &RuntimeStore,
     receipt: ProviderReadReceipt<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, receipt.transfer)?;
-        persist(
-            tx,
-            snapshot.provider_read_receipt(
-                receipt.agent,
-                receipt.operation,
-                receipt.receipt,
-                receipt.result,
-                receipt.certainty,
-            )?,
-            now,
-        )?;
-        Ok(())
-    })
+    let transfer = receipt.transfer.to_owned();
+    let agent = receipt.agent.to_owned();
+    let operation = receipt.operation.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &transfer)?;
+            persist(
+                tx,
+                snapshot.provider_read_receipt(
+                    &agent,
+                    &operation,
+                    receipt.receipt,
+                    receipt.result,
+                    receipt.certainty,
+                )?,
+                now,
+            )?;
+            Ok(())
+        })
+        .await
 }
 
 /// Persist the provider's exact ticket and certainty before adopting any returned
@@ -704,29 +755,34 @@ pub struct ProviderReceipt<'a> {
     pub certainty: crate::account_session_runtime::RequestCertainty,
 }
 
-pub fn provider_receipt(
+pub async fn provider_receipt(
     store: &RuntimeStore,
     receipt: ProviderReceipt<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, receipt.operation)?;
-        persist(
-            tx,
-            snapshot.provider_receipt(
-                receipt.agent,
-                receipt.provider_operation,
-                receipt.receipt,
-                receipt.result,
-                receipt.certainty,
-            )?,
-            now,
-        )?;
-        Ok(())
-    })
+    let operation = receipt.operation.to_owned();
+    let agent = receipt.agent.to_owned();
+    let provider_operation = receipt.provider_operation.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &operation)?;
+            persist(
+                tx,
+                snapshot.provider_receipt(
+                    &agent,
+                    &provider_operation,
+                    receipt.receipt,
+                    receipt.result,
+                    receipt.certainty,
+                )?,
+                now,
+            )?;
+            Ok(())
+        })
+        .await
 }
 
-pub fn prepared_member(
+pub async fn prepared_member(
     store: &RuntimeStore,
     operation: &str,
     agent: &str,
@@ -734,27 +790,35 @@ pub fn prepared_member(
     portable_history: Option<Value>,
     now: f64,
 ) -> Result<(), TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, operation)?;
-        persist(
-            tx,
-            snapshot.prepared_member(agent, target_settings, portable_history)?,
-            now,
-        )?;
-        Ok(())
-    })
+    let operation = operation.to_owned();
+    let agent = agent.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &operation)?;
+            persist(
+                tx,
+                snapshot.prepared_member(&agent, target_settings, portable_history)?,
+                now,
+            )?;
+            Ok(())
+        })
+        .await
 }
 
-pub fn adopt_receipt(
+pub async fn adopt_receipt(
     store: &RuntimeStore,
     operation: &str,
     agent: &str,
     now: f64,
 ) -> Result<Value, TransferError> {
-    store.transaction_with_error(|tx| {
-        let snapshot = load(tx, operation)?;
-        persist(tx, snapshot.adopt_receipt(agent)?, now)
-    })
+    let operation = operation.to_owned();
+    let agent = agent.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let snapshot = load(tx, &operation)?;
+            persist(tx, snapshot.adopt_receipt(&agent)?, now)
+        })
+        .await
 }
 
 fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
@@ -821,13 +885,16 @@ pub struct PreparedTransfer {
 /// it must not send a native mutation. The transport must use the supplied ticket.
 pub trait TransferExecutor: TransferTransport {
     fn available(&self) -> Result<(), TransferError>;
-    fn prepare(&self, input: &TransferPreparation) -> Result<PreparedTransfer, TransferError>;
+    fn prepare<'a>(
+        &'a self,
+        input: &'a TransferPreparation,
+    ) -> TransferFuture<'a, Result<PreparedTransfer, TransferError>>;
 }
 
 /// Execute one existing member through its durable receipt. Adoption remains a
 /// separate transaction owned by the history/settings/resume-cancellation adapter.
 /// Call `recover` once at startup, before running members or admitting turns.
-pub fn execute_member(
+pub async fn execute_member(
     store: &RuntimeStore,
     executor: &dyn TransferExecutor,
     operation: &str,
@@ -835,18 +902,23 @@ pub fn execute_member(
     now: f64,
 ) -> Result<DispatchOutcome, TransferError> {
     executor.available()?;
-    let input = store.transaction_with_error(|tx| {
-        check_durable_blockers(tx, agent)?;
-        let snapshot = load(tx, operation)?;
-        let decision = snapshot.begin_read(agent)?;
-        let input = TransferPreparation {
-            operation: decision.operation.clone(),
-            agent: snapshot.agent(agent)?.clone(),
-        };
-        persist(tx, decision, now)?;
-        Ok::<_, TransferError>(input)
-    })?;
-    let prepared = executor.prepare(&input).and_then(|prepared| {
+    let operation_id = operation.to_owned();
+    let agent_id = agent.to_owned();
+    let transaction_agent_id = agent_id.clone();
+    let input = store
+        .transaction_with_error(move |tx| {
+            check_durable_blockers(tx, &transaction_agent_id)?;
+            let snapshot = load(tx, &operation_id)?;
+            let decision = snapshot.begin_read(&transaction_agent_id)?;
+            let input = TransferPreparation {
+                operation: decision.operation.clone(),
+                agent: snapshot.agent(&transaction_agent_id)?.clone(),
+            };
+            persist(tx, decision, now)?;
+            Ok::<_, TransferError>(input)
+        })
+        .await?;
+    let prepared = executor.prepare(&input).await.and_then(|prepared| {
         if prepared.ticket.operation != operation || prepared.ticket.agent != agent {
             return Err(TransferError::Refused(
                 "The prepared transfer belongs to another member",
@@ -854,41 +926,75 @@ pub fn execute_member(
         }
         Ok(prepared)
     });
-    let result = prepared.and_then(|prepared| {
-        send_once(
-            store,
-            executor,
-            &prepared.ticket,
-            prepared.scope,
-            prepared.method.wire(),
-            prepared.params,
-            now,
-        )
-    });
-    if result.is_err() {
-        store.transaction_with_error(|tx| {
-            let snapshot = load(tx, operation)?;
-            persist(
-                tx,
-                snapshot.preparation_failed(agent, &input.operation["members"][agent]["source"])?,
+    let result = match prepared {
+        Ok(prepared) => {
+            send_once(
+                store,
+                executor,
+                &prepared.ticket,
+                prepared.scope,
+                prepared.method.wire(),
+                prepared.params,
                 now,
-            )?;
-            Ok::<_, TransferError>(())
-        })?;
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        let operation_id = operation.to_owned();
+        let failed_agent = agent_id.clone();
+        store
+            .transaction_with_error(move |tx| {
+                let snapshot = load(tx, &operation_id)?;
+                persist(
+                    tx,
+                    snapshot.preparation_failed(
+                        &failed_agent,
+                        &input.operation["members"][failed_agent.as_str()]["source"],
+                    )?,
+                    now,
+                )?;
+                Ok::<_, TransferError>(())
+            })
+            .await?;
     }
     result
 }
 
 #[cfg(test)]
 mod request_tests {
+    use super::request as request_async;
     use super::*;
     use serde_json::json;
+    use std::future::Future;
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
+
+    fn run_async<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime builds")
+            .block_on(future)
+    }
+
+    fn request(
+        store: &RuntimeStore,
+        id: &str,
+        lead: &str,
+        target: &str,
+        scope: &str,
+        provider: &str,
+        now: f64,
+    ) -> Result<Value, TransferError> {
+        run_async(request_async(store, id, lead, target, scope, provider, now))
+    }
 
     fn store_with_agents() -> (tempfile::TempDir, RuntimeStore) {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
-        let store = RuntimeStore::open(Some(root.path())).expect("test fixture operation succeeds");
-        store.transaction_with_error(|tx| {
+        let store = run_async(RuntimeStore::open(Some(root.path())))
+            .expect("test fixture operation succeeds");
+        run_async(store.transaction_with_error(|tx| {
             for value in [
                 json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work"}),
@@ -899,7 +1005,7 @@ mod request_tests {
                 AgentRepository::put(tx, &agent).expect("test fixture operation succeeds");
             }
             Ok::<_, studio_runtime_store::StoreError>(())
-        }).expect("test fixture operation succeeds");
+        })).expect("test fixture operation succeeds");
         (root, store)
     }
 
@@ -933,20 +1039,18 @@ mod request_tests {
             "threadId":"source-thread","epoch":1,"turnId":"turn","cause":"rate_limit",
             "failedAt":1.0,"dueAt":200.0,"plannedAt":null,"resetAt":null,"reason":null,
             "taskClaims":[]});
-        store
-            .transaction_with_error(|tx| {
-                let mut lead =
-                    AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead exists");
-                lead.extra.insert("usageResume".into(), resume.clone());
-                lead.extra.insert("usageResumeEnabled".into(), json!(true));
-                AgentRepository::put(tx, &lead)?;
-                tx.execute(
-                    "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
-                    ("resume", "lead", resume.to_string()),
-                )?;
-                Ok::<_, studio_runtime_store::StoreError>(())
-            })
-            .expect("fixture writes atomically");
+        run_async(store.transaction_with_error(move |tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead exists");
+            lead.extra.insert("usageResume".into(), resume.clone());
+            lead.extra.insert("usageResumeEnabled".into(), json!(true));
+            AgentRepository::put(tx, &lead)?;
+            tx.execute(
+                "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
+                ("resume", "lead", resume.to_string()),
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }))
+        .expect("fixture writes atomically");
 
         request(
             &store,
@@ -996,15 +1100,14 @@ mod request_tests {
             10.0,
         )
         .expect("test fixture operation succeeds");
-        store
-            .transaction_with_error(|tx| {
-                let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
+        run_async(store.transaction_with_error(|tx| {
+            let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
                 "status":"idle","isLead":false,"accountKey":"source","provider":"codex",
                 "model":"gpt-6-astra","cwd":"/tmp/work"}))
-                .expect("test fixture operation succeeds");
-                AgentRepository::put(tx, &late)
-            })
             .expect("test fixture operation succeeds");
+            AgentRepository::put(tx, &late)
+        }))
+        .expect("test fixture operation succeeds");
         let result = request(
             &store,
             "5a300f72-4ea6-4d30-8a0e-9b2c13c42272",
@@ -1025,11 +1128,16 @@ mod request_tests {
         .value();
         assert_eq!(late["accountKey"], "target");
         assert_eq!(late["lazyAccountTransfer"]["sourceAccountKey"], "source");
-        store.transaction_with_error(|tx| {
-            let stored = load(tx, "5a300f72-4ea6-4d30-8a0e-9b2c13c42271").expect("test fixture operation succeeds");
-            assert_eq!(stored.operation()["requests"]["5a300f72-4ea6-4d30-8a0e-9b2c13c42272"]["leadId"], "lead");
+        run_async(store.transaction_with_error(|tx| {
+            let stored = load(tx, "5a300f72-4ea6-4d30-8a0e-9b2c13c42271")
+                .expect("test fixture operation succeeds");
+            assert_eq!(
+                stored.operation()["requests"]["5a300f72-4ea6-4d30-8a0e-9b2c13c42272"]["leadId"],
+                "lead"
+            );
             Ok::<_, studio_runtime_store::StoreError>(())
-        }).expect("test fixture operation succeeds");
+        }))
+        .expect("test fixture operation succeeds");
     }
 
     #[test]
@@ -1054,16 +1162,15 @@ mod request_tests {
             )
             .is_err()
         );
-        store
-            .transaction_with_error(|tx| {
-                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?
-                    .expect("test fixture operation succeeds");
-                lead.extra
-                    .insert("excludedAccountKeys".into(), json!(["blocked"]));
-                AgentRepository::put(tx, &lead)?;
-                Ok::<_, studio_runtime_store::StoreError>(())
-            })
-            .expect("test fixture operation succeeds");
+        run_async(store.transaction_with_error(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?
+                .expect("test fixture operation succeeds");
+            lead.extra
+                .insert("excludedAccountKeys".into(), json!(["blocked"]));
+            AgentRepository::put(tx, &lead)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }))
+        .expect("test fixture operation succeeds");
         let before_blocked = AgentRepository::get(
             &store.read().expect("test fixture operation succeeds"),
             &AgentId::from("lead"),

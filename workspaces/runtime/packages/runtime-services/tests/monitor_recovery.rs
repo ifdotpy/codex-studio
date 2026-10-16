@@ -30,8 +30,8 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
         .clone()
 }
 
-#[test]
-fn local_cancel_persists_before_fake_provider_termination() {
+#[tokio::test]
+async fn local_cancel_persists_before_fake_provider_termination() {
     use std::sync::{Arc, Mutex};
     use studio_runtime_services::monitor_driver::{self, MonitorNative, Submission};
     struct Port {
@@ -40,21 +40,27 @@ fn local_cancel_persists_before_fake_provider_termination() {
         submitted: Mutex<Vec<String>>,
     }
     impl MonitorNative for Port {
-        fn submit(&self, _: &Operation, effect: &monitor_policy::Effect) -> Submission {
-            assert_eq!(
-                record(&self.store, &self.id)["cancelRequested"],
-                json!(true)
-            );
-            let monitor_policy::Effect::Native { method, params, .. } = effect else {
-                panic!("expected provider termination")
-            };
-            assert_eq!(*method, "command/exec/terminate");
-            assert_eq!(params["processId"], self.id);
-            self.submitted
-                .lock()
-                .expect("submission lock")
-                .push((*method).into());
-            Submission::Written
+        fn submit<'a>(
+            &'a self,
+            _: &'a Operation,
+            effect: &'a monitor_policy::Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async move {
+                assert_eq!(
+                    record(&self.store, &self.id)["cancelRequested"],
+                    json!(true)
+                );
+                let monitor_policy::Effect::Native { method, params, .. } = effect else {
+                    panic!("expected provider termination")
+                };
+                assert_eq!(*method, "command/exec/terminate");
+                assert_eq!(params["processId"], self.id);
+                self.submitted
+                    .lock()
+                    .expect("submission lock")
+                    .push((*method).into());
+                Submission::Written
+            })
         }
     }
     let root = fixtures::tempdir();
@@ -62,8 +68,8 @@ fn local_cancel_persists_before_fake_provider_termination() {
     let mut case = running(&cases);
     let id = "local-cancel-provider-test";
     case["before"]["id"] = json!(id);
-    let store = Arc::new(fixtures::store(root.path(), "local-cancel"));
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "local-cancel").await);
+    fixtures::seed(&store, &case).await;
     let port = Port {
         store: Arc::clone(&store),
         id: id.into(),
@@ -71,6 +77,7 @@ fn local_cancel_persists_before_fake_provider_termination() {
     };
 
     let result = monitor_driver::cancel(&store, &port, id, None, 2001.0)
+        .await
         .expect("local cancel dispatch succeeds");
     assert_eq!(result["status"], "running");
     assert_eq!(result["cancelRequested"], true);
@@ -81,14 +88,14 @@ fn local_cancel_persists_before_fake_provider_termination() {
     );
 }
 
-#[test]
-fn receipt_survives_store_failure_restart_and_replays_once() {
+#[tokio::test]
+async fn receipt_survives_store_failure_restart_and_replays_once() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let id = case["before"]["id"].as_str().expect("monitor fixture");
-    let store = fixtures::store(root.path(), "receipt");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "receipt").await;
+    fixtures::seed(&store, &case).await;
     let receipt = ResultReceipt {
         version: 1,
         key: id.into(),
@@ -97,8 +104,8 @@ fn receipt_survives_store_failure_restart_and_replays_once() {
         operation: Some(operation(&case)),
         finished: 2000.0,
     };
-    store.transaction(|tx| { tx.execute_batch("CREATE TRIGGER fail_monitor BEFORE INSERT ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END")?; Ok(()) }).expect("monitor fixture");
-    assert!(monitor_receipts::finish(&store, &receipt).is_err());
+    store.transaction(move |tx| { tx.execute_batch("CREATE TRIGGER fail_monitor BEFORE INSERT ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END")?; Ok(()) }).await.expect("monitor fixture");
+    assert!(monitor_receipts::finish(&store, &receipt).await.is_err());
     assert_eq!(record(&store, id)["status"], "running");
     assert_eq!(fixtures::events(&store), json!([]));
     assert_eq!(
@@ -108,19 +115,24 @@ fn receipt_survives_store_failure_restart_and_replays_once() {
         1
     );
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute_batch("DROP TRIGGER fail_monitor")?;
             Ok(())
         })
+        .await
         .expect("monitor fixture");
     let state = store.root().to_owned();
     drop(store);
-    let store = RuntimeStore::open(Some(&state)).expect("monitor fixture");
-    let restored = monitor_receipts::recover(&store, &[id.into()]);
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("monitor fixture");
+    let restored = monitor_receipts::recover(&store, &[id.into()]).await;
     assert!(restored[0].1.is_ok());
     assert_eq!(record(&store, id)["status"], "completed");
     assert_eq!(fixtures::events(&store), case["events"]);
-    monitor_receipts::finish(&store, &receipt).expect("monitor fixture");
+    monitor_receipts::finish(&store, &receipt)
+        .await
+        .expect("monitor fixture");
     assert_eq!(fixtures::events(&store), case["events"]);
     assert_eq!(
         std::fs::read_dir(store.root().join("monitor-results"))
@@ -130,30 +142,32 @@ fn receipt_survives_store_failure_restart_and_replays_once() {
     );
 }
 
-#[test]
-fn malformed_pending_result_receipt_is_retained_and_skipped() {
+#[tokio::test]
+async fn malformed_pending_result_receipt_is_retained_and_skipped() {
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
-    let store = fixtures::store(root.path(), "corrupt-receipt");
+    let store = fixtures::store(root.path(), "corrupt-receipt").await;
     let directory = store.root().join("monitor-results");
     std::fs::create_dir(&directory).expect("monitor fixture");
     std::fs::write(directory.join("corrupt.json"), b"{").expect("monitor fixture");
 
     assert_eq!(
-        monitor_receipts::recover_pending(&store, 64).expect("skip corrupt receipt"),
+        monitor_receipts::recover_pending(&store, 64)
+            .await
+            .expect("skip corrupt receipt"),
         0
     );
     assert!(directory.join("corrupt.json").exists());
 }
 
-#[test]
-fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
+#[tokio::test]
+async fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
     case["before"]["interactive"] = json!(true);
-    let store = fixtures::store(root.path(), "input");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "input").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let operation = operation(&case);
     let input = Input {
@@ -163,6 +177,7 @@ fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
         close_stdin: true,
     };
     monitor_runtime::reserve_input(&store, id, &operation, "ticket-1", &input, 2000.0)
+        .await
         .expect("monitor fixture");
     monitor_runtime::settle_input(
         &store,
@@ -172,11 +187,14 @@ fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
         InputOutcome::Unknown("transport disconnected".into()),
         2001.0,
     )
+    .await
     .expect("monitor fixture");
     let unknown = record(&store, id);
     assert_eq!(unknown["inputAttempt"]["status"], "uncertain");
     assert!(
-        monitor_runtime::reserve_input(&store, id, &operation, "ticket-2", &input, 2002.0).is_err()
+        monitor_runtime::reserve_input(&store, id, &operation, "ticket-2", &input, 2002.0)
+            .await
+            .is_err()
     );
     assert!(
         monitor_runtime::settle_input(
@@ -187,6 +205,7 @@ fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
             InputOutcome::Acknowledged,
             2003.0
         )
+        .await
         .is_err()
     );
     assert_eq!(record(&store, id), unknown);
@@ -198,21 +217,23 @@ fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
         InputOutcome::Acknowledged,
         2004.0,
     )
+    .await
     .expect("monitor fixture");
     assert_eq!(record(&store, id)["stdinClosed"], true);
     assert!(record(&store, id).get("inputAttempt").is_none());
 }
 
-#[test]
-fn monitor_cancel_persists_before_dispatch_and_malformed_state_is_refused() {
+#[tokio::test]
+async fn monitor_cancel_persists_before_dispatch_and_malformed_state_is_refused() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "refusal");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "refusal").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let before = record(&store, id);
     let result = monitor_runtime::cancel(&store, id, None, 2000.0)
+        .await
         .expect("cancel intent persists without a synchronous provider port");
     assert_eq!(result["cancelRequested"], true);
     assert_eq!(record(&store, id)["cancelRequested"], true);
@@ -243,7 +264,7 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    let store = fixtures::store(root.path(), "child");
+    let store = fixtures::store(root.path(), "child").await;
     let id = case["before"]["id"]
         .as_str()
         .expect("monitor fixture")
@@ -255,7 +276,7 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
         .as_object_mut()
         .expect("monitor fixture")
         .remove("operation");
-    fixtures::seed(&store, &case);
+    fixtures::seed(&store, &case).await;
     let params = json!({"processId":id,"cwd":case["before"]["cwd"],"timeoutMs":case["before"]["timeout_ms"],"sandboxPolicy":{},"command":["/bin/sh","-c","printf marker"]});
     let prepared = monitor_runtime::PreparedStart {
         monitor: case["before"].clone(),
@@ -263,7 +284,9 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
         operation: operation.clone(),
         params,
     };
-    let effect = monitor_runtime::reserve_start(&store, &id, &prepared, 2000.0).expect("start");
+    let effect = monitor_runtime::reserve_start(&store, &id, &prepared, 2000.0)
+        .await
+        .expect("start");
     assert!(matches!(
         effect,
         monitor_policy::Effect::Native {
@@ -271,7 +294,11 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
             ..
         }
     ));
-    assert!(monitor_runtime::reserve_start(&store, &id, &prepared, 2000.0).is_err());
+    assert!(
+        monitor_runtime::reserve_start(&store, &id, &prepared, 2000.0)
+            .await
+            .is_err()
+    );
     let mut child = StreamChild::spawn(ChildSpec {
         program: "/bin/sh".into(),
         args: vec!["-c".into(), "printf marker".into()],
@@ -306,6 +333,7 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
                     finished: 2002.0,
                 },
             )
+            .await
             .expect("monitor fixture"),
         }
     }
@@ -327,8 +355,8 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
     );
 }
 
-#[test]
-fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
+#[tokio::test]
+async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -347,8 +375,8 @@ fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
     };
     for table in tables {
         for boundary in ["BEFORE", "AFTER"] {
-            let store = fixtures::store(root.path(), &format!("{table}-{boundary}"));
-            fixtures::seed(&store, &case);
+            let store = fixtures::store(root.path(), &format!("{table}-{boundary}")).await;
+            fixtures::seed(&store, &case).await;
             let receipt = ResultReceipt {
                 version: 1,
                 key: id.into(),
@@ -357,70 +385,83 @@ fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
                 operation: Some(operation(&case)),
                 finished: 2000.0,
             };
-            store.transaction(|tx| {
+            store.transaction(move |tx| {
                 // An upsert fires AFTER UPDATE when its row already exists.
                 for operation in ["INSERT", "UPDATE"] {
                     tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
                 }
                 Ok(())
-            }).expect("install boundary");
+            }).await.expect("install boundary");
             assert!(
-                monitor_receipts::finish(&store, &receipt).is_err(),
+                monitor_receipts::finish(&store, &receipt).await.is_err(),
                 "{table}-{boundary}"
             );
             assert_eq!(record(&store, id), case["before"]);
             assert_eq!(fixtures::events(&store), json!([]));
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                     Ok(())
                 })
+                .await
                 .expect("release boundary");
             let state = store.root().to_owned();
             drop(store);
-            let store = RuntimeStore::open(Some(&state)).expect("restart");
-            assert!(monitor_receipts::recover(&store, &[id.into()])[0].1.is_ok());
+            let store = RuntimeStore::open(Some(&state)).await.expect("restart");
+            assert!(
+                monitor_receipts::recover(&store, &[id.into()]).await[0]
+                    .1
+                    .is_ok()
+            );
             assert_eq!(record(&store, id), case["after"]);
             assert_eq!(fixtures::events(&store), case["events"]);
         }
     }
 }
 
-#[test]
-fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
-    use std::cell::Cell;
+#[tokio::test]
+async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_services::monitor_driver::{self, InputRequest, MonitorNative, Submission};
     struct Port<'a> {
         store: &'a RuntimeStore,
         id: &'a str,
-        sends: Cell<usize>,
+        sends: AtomicUsize,
     }
     impl MonitorNative for Port<'_> {
-        fn submit(&self, _: &Operation, _: &monitor_policy::Effect) -> Submission {
-            // Taking the writer here would deadlock if submit ran inside admission.
-            self.store
-                .transaction(|tx| {
-                    let saved = MonitorsRepository::get(tx, self.id)?.expect("admitted row");
-                    assert_eq!(
-                        saved
-                            .get("inputAttempt")
-                            .and_then(|v| v.get("id"))
-                            .and_then(Value::as_str),
-                        Some("ticket-1")
-                    );
-                    Ok(())
-                })
-                .expect("outside admission transaction");
-            self.sends.set(self.sends.get() + 1);
-            Submission::Unknown
+        fn submit<'a>(
+            &'a self,
+            _: &'a Operation,
+            _: &'a monitor_policy::Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async move {
+                // Taking the writer here would deadlock if submit ran inside admission.
+                let id = self.id.to_owned();
+                self.store
+                    .transaction(move |tx| {
+                        let saved = MonitorsRepository::get(tx, &id)?.expect("admitted row");
+                        assert_eq!(
+                            saved
+                                .get("inputAttempt")
+                                .and_then(|v| v.get("id"))
+                                .and_then(Value::as_str),
+                            Some("ticket-1")
+                        );
+                        Ok(())
+                    })
+                    .await
+                    .expect("outside admission transaction");
+                self.sends.fetch_add(1, Ordering::SeqCst);
+                Submission::Unknown
+            })
         }
     }
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
     case["before"]["interactive"] = json!(true);
-    let store = fixtures::store(root.path(), "port");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "port").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation = operation(&case);
     let input = Input {
@@ -432,7 +473,7 @@ fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
     let port = Port {
         store: &store,
         id,
-        sends: Cell::new(0),
+        sends: AtomicUsize::new(0),
     };
     assert!(matches!(
         monitor_driver::input(
@@ -445,7 +486,8 @@ fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
                 input: &input
             },
             2000.0
-        ),
+        )
+        .await,
         Ok(Submission::Unknown)
     ));
     assert!(
@@ -460,31 +502,39 @@ fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
             },
             2001.0
         )
+        .await
         .is_err()
     );
-    assert_eq!(port.sends.get(), 1);
+    assert_eq!(port.sends.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn launch_admission_serializes_cancel_before_native_submission_completes() {
-    use std::sync::{Barrier, Mutex};
+#[tokio::test]
+async fn launch_admission_serializes_cancel_before_native_submission_completes() {
+    use std::sync::{Arc, Mutex};
     use studio_runtime_services::monitor_driver::{self, MonitorNative, Submission};
+    use tokio::sync::Notify;
     struct Port {
-        entered: Barrier,
-        release: Barrier,
+        entered: Notify,
+        release: Notify,
         sent: Mutex<Vec<String>>,
     }
     impl MonitorNative for Port {
-        fn submit(&self, _: &Operation, effect: &monitor_policy::Effect) -> Submission {
-            let monitor_policy::Effect::Native { method, .. } = effect else {
-                panic!("native effect")
-            };
-            if *method == "command/exec" {
-                self.entered.wait();
-                self.release.wait();
-            }
-            self.sent.lock().expect("sent").push((*method).into());
-            Submission::Written
+        fn submit<'a>(
+            &'a self,
+            _: &'a Operation,
+            effect: &'a monitor_policy::Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async move {
+                let monitor_policy::Effect::Native { method, .. } = effect else {
+                    panic!("native effect")
+                };
+                if *method == "command/exec" {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                self.sent.lock().expect("sent").push((*method).into());
+                Submission::Written
+            })
         }
     }
     let root = fixtures::tempdir();
@@ -497,8 +547,8 @@ fn launch_admission_serializes_cancel_before_native_submission_completes() {
         .as_object_mut()
         .expect("record")
         .remove("operation");
-    let store = fixtures::store(root.path(), "sequence");
-    fixtures::seed(&store, &case);
+    let store = Arc::new(fixtures::store(root.path(), "sequence").await);
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("id");
     let prepared = monitor_runtime::PreparedStart {
         monitor: case["before"].clone(),
@@ -506,30 +556,36 @@ fn launch_admission_serializes_cancel_before_native_submission_completes() {
         operation: op,
         params: json!({"processId":id,"cwd":case["before"]["cwd"],"timeoutMs":case["before"]["timeout_ms"],"sandboxPolicy":{}}),
     };
-    let port = Port {
-        entered: Barrier::new(2),
-        release: Barrier::new(2),
+    let port = Arc::new(Port {
+        entered: Notify::new(),
+        release: Notify::new(),
         sent: Mutex::new(vec![]),
-    };
-    std::thread::scope(|scope| {
-        let start = scope.spawn(|| monitor_driver::start(&store, &port, id, &prepared, 2000.0));
-        port.entered.wait(); // The running intent committed, command/exec is unresolved.
-        let refused = monitor_driver::cancel(&store, &port, id, None, 2001.0);
-        let before = record(&store, id);
-        port.release.wait();
-        start.join().expect("start thread").expect("start");
-        assert!(refused.is_err());
-        assert_ne!(before["cancelRequested"], json!(true));
     });
-    monitor_driver::cancel(&store, &port, id, None, 2002.0).expect("resolved cancel");
+    let prepared = Arc::new(prepared);
+    let start_store = Arc::clone(&store);
+    let start_port = Arc::clone(&port);
+    let start_prepared = Arc::clone(&prepared);
+    let start = tokio::spawn(async move {
+        monitor_driver::start(&start_store, &start_port, id, &start_prepared, 2000.0).await
+    });
+    port.entered.notified().await; // The running intent committed, command/exec is unresolved.
+    let refused = monitor_driver::cancel(&store, &port, id, None, 2001.0).await;
+    let before = record(&store, id);
+    port.release.notify_one();
+    start.await.expect("start task").expect("start");
+    assert!(refused.is_err());
+    assert_ne!(before["cancelRequested"], json!(true));
+    monitor_driver::cancel(&store, &port, id, None, 2002.0)
+        .await
+        .expect("resolved cancel");
     assert_eq!(
         *port.sent.lock().expect("sent"),
         vec!["command/exec", "command/exec/terminate"]
     );
 }
 
-#[test]
-fn reattach_and_receipts_require_exact_operation_and_live_owner() {
+#[tokio::test]
+async fn reattach_and_receipts_require_exact_operation_and_live_owner() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);

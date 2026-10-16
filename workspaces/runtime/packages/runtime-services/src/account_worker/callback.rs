@@ -110,8 +110,8 @@ pub(super) async fn vm_codex_refresh_response(
 /// Resolve a tool callback only when this account worker has one active turn
 /// bound to its current provider generation. Tool arguments never supply actor
 /// identity. Ambiguous account sessions fail closed.
-pub(super) fn managed_response(
-    store: &RuntimeStore,
+pub(super) async fn managed_response(
+    store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
     emitting_actor: Option<&str>,
@@ -147,36 +147,63 @@ pub(super) fn managed_response(
             "Managed tool callback has no turn identity",
         ));
     };
-    let body = match callback_context(store, account, generation, emitting_actor, thread, turn) {
-        Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
+    let store_for_context = Arc::clone(store);
+    let account_for_context = account.to_owned();
+    let actor_for_context = emitting_actor.map(str::to_owned);
+    let thread_for_context = thread.to_owned();
+    let turn_for_context = turn.to_owned();
+    let context = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_callback_context",
+        move || {
+            callback_context(
+                &store_for_context,
+                &account_for_context,
+                generation,
+                actor_for_context.as_deref(),
+                &thread_for_context,
+                &turn_for_context,
+            )
+        },
+    )
+    .await
+    .ok();
+    let body = match context {
+        Some(Ok(Some(context))) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
             store,
             &context,
             frame,
             dependencies.wake,
             dependencies.monitor_dispatch_wake,
             dependencies.managed_runtime.as_deref(),
-        )
-        .and_then(|ports| {
-            crate::provider_callbacks::dispatch_with_managed_tools(
-                store, &context, frame, now, &ports,
+        ) {
+            Ok(ports) => match crate::provider_callbacks::dispatch_with_managed_tools(
+                Arc::clone(store),
+                &context,
+                frame,
+                now,
+                Arc::new(ports),
             )
-        }) {
-            Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
-            Ok(
-                crate::provider_callbacks::CallbackDecision::Pending(_)
-                | crate::provider_callbacks::CallbackDecision::Settled(_),
-            ) => return None,
-            Ok(crate::provider_callbacks::CallbackDecision::Unsupported) => {
-                tool_call_failure_body("Provider tool is not supported by this runtime")
-            }
+            .await
+            {
+                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
+                Ok(
+                    crate::provider_callbacks::CallbackDecision::Pending(_)
+                    | crate::provider_callbacks::CallbackDecision::Settled(_),
+                ) => return None,
+                Ok(crate::provider_callbacks::CallbackDecision::Unsupported) => {
+                    tool_call_failure_body("Provider tool is not supported by this runtime")
+                }
+                Err(error) => tool_call_failure_body(&error.to_string()),
+            },
             Err(error) => tool_call_failure_body(&error.to_string()),
         },
-        Ok(None) => tool_call_failure_body(
+        Some(Ok(None)) => tool_call_failure_body(
             "Managed tool callback has no unique active turn for this account generation",
         ),
-        Err(error) => tool_call_failure_body(&format!(
+        Some(Err(error)) => tool_call_failure_body(&format!(
             "Managed tool callback context is unavailable: {error}"
         )),
+        None => tool_call_failure_body("Managed tool callback context read failed"),
     };
     Some(Frame::Response {
         id: request.id.clone(),

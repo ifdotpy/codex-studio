@@ -99,7 +99,7 @@ pub struct RulesActionResult {
 
 /// Filesystem work for rule actions. Implementations must be called only before
 /// the store's write transaction, never from its closure.
-pub trait RuleWatchFiles {
+pub trait RuleWatchFiles: Clone + Send + Sync + 'static {
     fn resolve(&self, cwd: &str, path: &str) -> Result<String, RulesServiceError>;
     fn fingerprint(&self, path: &str) -> Result<Option<Value>, RulesServiceError>;
 }
@@ -159,7 +159,7 @@ struct StatusPathSnapshot {
 
 /// Build a status snapshot and retain its revision in the same serialized
 /// transaction, matching the Python callback's state point.
-pub fn model_directory(
+pub async fn model_directory(
     store: &RuntimeStore,
     actor_id: &str,
     actor_epoch: u64,
@@ -189,9 +189,13 @@ pub fn model_directory(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let paths = StatusPathSnapshot { inputs, resolved };
-    store.transaction_with(|tx| {
-        status_in_transaction(tx, actor_id, actor_epoch, &root_id, &paths, args, now)
-    })
+    let actor_id = actor_id.to_owned();
+    let args = args.clone();
+    store
+        .transaction_with(move |tx| {
+            status_in_transaction(tx, &actor_id, actor_epoch, &root_id, &paths, &args, now)
+        })
+        .await
 }
 
 fn status_in_transaction(
@@ -832,7 +836,7 @@ fn read_rules_receipt(
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
 /// IDs are sorted and must be delivered by the callback owner after this call
 /// returns, which proves the rule transaction has committed.
-pub fn rules(
+pub async fn rules(
     store: &RuntimeStore,
     actor_id: &str,
     actor_epoch: u64,
@@ -847,7 +851,8 @@ pub fn rules(
     let action = data
         .and_then(|value| value.get("action"))
         .and_then(Value::as_str)
-        .unwrap_or(if data.is_none() { "list" } else { "save" });
+        .unwrap_or(if data.is_none() { "list" } else { "save" })
+        .to_owned();
     if data.is_some_and(|value| !value.is_object()) {
         return Err(RulesServiceError::Invalid("rule"));
     }
@@ -882,7 +887,7 @@ pub fn rules(
         });
     }
 
-    let body = data.ok_or(RulesServiceError::Invalid("rule"))?;
+    let body = data.ok_or(RulesServiceError::Invalid("rule"))?.clone();
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
     }
@@ -918,10 +923,20 @@ pub fn rules(
     let kind = body
         .get("kind")
         .and_then(Value::as_str)
-        .unwrap_or("interval");
+        .unwrap_or("interval")
+        .to_owned();
     let prepared_path = if action == "save" && kind == "file" {
         let raw = text(body.get("path"), "a path", FILE_PATH_MAX_CHARS, false)?;
-        Some(files.resolve(cwd(&prepared_actor)?, &raw)?)
+        let cwd = cwd(&prepared_actor)?.to_owned();
+        let files = (*files).clone();
+        Some(
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/managed_status_watch/rule_path",
+                move || files.resolve(&cwd, &raw),
+            )
+            .await
+            .map_err(|_| RulesServiceError::FilePath)??,
+        )
     } else if action == "resume"
         && old_before
             .as_ref()
@@ -938,130 +953,146 @@ pub fn rules(
         None
     };
     let fingerprint = match prepared_path.as_deref() {
-        Some(path) => files.fingerprint(path)?,
+        Some(path) => {
+            let path = path.to_owned();
+            let files = (*files).clone();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/managed_status_watch/rule_fingerprint",
+                move || files.fingerprint(&path),
+            )
+            .await
+            .map_err(|_| RulesServiceError::FilePath)??
+        }
         None => None,
     };
 
-    let result = store.transaction_with(|tx| {
-        let actor = checked_actor(tx, actor_id, actor_epoch).map_err(status_to_rules)?;
-        if let Some(saved_receipt) = read_rules_receipt(tx, &receipt_id, &signature)? {
-            return Ok::<_, RulesServiceError>(saved_receipt);
-        }
-        if actor.value() != prepared_actor.value() {
-            return Err(RulesServiceError::Stale);
-        }
-        let old = RulesRepository::get(tx, &key)?.map(|record| record.value().clone());
-        if old != old_before {
-            return Err(RulesServiceError::Invalid(
-                "The rule changed while it was being prepared",
-            ));
-        }
-        if let Some(old) = &old
-            && old.get("agent").and_then(Value::as_str) != Some(actor_id)
-        {
-            return Err(RulesServiceError::Invalid(
-                "This rule belongs to another agent",
-            ));
-        }
-        let mut cancel_monitor_ids = if matches!(action, "pause" | "delete") {
-            active_rule_monitors(tx, &key)?
-        } else {
-            Vec::new()
-        };
-        let value = match action {
-            "pause" | "resume" | "delete" => {
-                let mut old = old.ok_or(RulesServiceError::Invalid("Unknown rule"))?;
-                if action == "resume" && old.get("inFlight").and_then(Value::as_bool) == Some(true)
-                {
-                    return Err(RulesServiceError::Invalid(
-                        "Wait for the current rule check before resuming",
-                    ));
-                }
-                if action == "delete" {
-                    RulesRepository::delete(tx, &key)?;
-                    json!({"deleted": key})
-                } else {
-                    if action == "resume" && actor.extra.get("autoWake") != Some(&Value::Bool(true))
+    let transaction_actor_id = actor_id.to_owned();
+    let transaction_actor_epoch = actor_epoch;
+    let result = store
+        .transaction_with(move |tx| {
+            let actor = checked_actor(tx, &transaction_actor_id, transaction_actor_epoch)
+                .map_err(status_to_rules)?;
+            if let Some(saved_receipt) = read_rules_receipt(tx, &receipt_id, &signature)? {
+                return Ok::<_, RulesServiceError>(saved_receipt);
+            }
+            if actor.value() != prepared_actor.value() {
+                return Err(RulesServiceError::Stale);
+            }
+            let old = RulesRepository::get(tx, &key)?.map(|record| record.value().clone());
+            if old != old_before {
+                return Err(RulesServiceError::Invalid(
+                    "The rule changed while it was being prepared",
+                ));
+            }
+            if let Some(old) = &old
+                && old.get("agent").and_then(Value::as_str) != Some(transaction_actor_id.as_str())
+            {
+                return Err(RulesServiceError::Invalid(
+                    "This rule belongs to another agent",
+                ));
+            }
+            let mut cancel_monitor_ids = if matches!(action.as_str(), "pause" | "delete") {
+                active_rule_monitors(tx, &key)?
+            } else {
+                Vec::new()
+            };
+            let value = match action.as_str() {
+                "pause" | "resume" | "delete" => {
+                    let mut old = old.ok_or(RulesServiceError::Invalid("Unknown rule"))?;
+                    if action == "resume"
+                        && old.get("inFlight").and_then(Value::as_bool) == Some(true)
                     {
                         return Err(RulesServiceError::Invalid(
-                            "Resume the agent before its rules",
+                            "Wait for the current rule check before resuming",
                         ));
                     }
-                    if let Some(object) = old.as_object_mut() {
-                        object.remove("restartCheck");
-                    }
-                    let desired = if action == "resume" {
-                        "active"
+                    if action == "delete" {
+                        RulesRepository::delete(tx, &key)?;
+                        json!({"deleted": key})
                     } else {
-                        "paused"
-                    };
-                    let unchanged_low_workers = old.get("kind").and_then(Value::as_str)
-                        == Some("low_workers")
-                        && old.get("status").and_then(Value::as_str) == Some(desired)
-                        && old.get("epoch") == Some(&json!(actor.epoch));
-                    if !unchanged_low_workers {
-                        if old.get("kind").and_then(Value::as_str) == Some("low_workers") {
-                            old["lowSince"] = Value::Null;
-                            old["alerted"] = Value::Bool(false);
-                        }
                         if action == "resume"
-                            && old.get("kind").and_then(Value::as_str) == Some("file")
+                            && actor.extra.get("autoWake") != Some(&Value::Bool(true))
                         {
-                            let generation = old
-                                .get("fileGeneration")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0)
-                                .saturating_add(1);
-                            old["fileActivityAt"] = json!(now);
-                            old["fingerprint"] = fingerprint.clone().unwrap_or(Value::Null);
-                            old["fileGeneration"] = json!(generation);
-                            old["stallWakeGeneration"] = json!(generation as i64 - 1);
+                            return Err(RulesServiceError::Invalid(
+                                "Resume the agent before its rules",
+                            ));
                         }
-                        old["status"] = json!(desired);
-                        old["epoch"] = json!(actor.epoch);
-                        let interval = old
-                            .get("intervalSeconds")
-                            .and_then(Value::as_f64)
-                            .unwrap_or(10.0);
-                        old["nextAt"] = json!(now + interval);
-                        old["error"] = Value::Null;
-                        let stored = checked_rule(old.clone(), actor.value())?;
-                        RulesRepository::put(tx, &stored)?;
+                        if let Some(object) = old.as_object_mut() {
+                            object.remove("restartCheck");
+                        }
+                        let desired = if action == "resume" {
+                            "active"
+                        } else {
+                            "paused"
+                        };
+                        let unchanged_low_workers = old.get("kind").and_then(Value::as_str)
+                            == Some("low_workers")
+                            && old.get("status").and_then(Value::as_str) == Some(desired)
+                            && old.get("epoch") == Some(&json!(actor.epoch));
+                        if !unchanged_low_workers {
+                            if old.get("kind").and_then(Value::as_str) == Some("low_workers") {
+                                old["lowSince"] = Value::Null;
+                                old["alerted"] = Value::Bool(false);
+                            }
+                            if action == "resume"
+                                && old.get("kind").and_then(Value::as_str) == Some("file")
+                            {
+                                let generation = old
+                                    .get("fileGeneration")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0)
+                                    .saturating_add(1);
+                                old["fileActivityAt"] = json!(now);
+                                old["fingerprint"] = fingerprint.clone().unwrap_or(Value::Null);
+                                old["fileGeneration"] = json!(generation);
+                                old["stallWakeGeneration"] = json!(generation as i64 - 1);
+                            }
+                            old["status"] = json!(desired);
+                            old["epoch"] = json!(actor.epoch);
+                            let interval = old
+                                .get("intervalSeconds")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(10.0);
+                            old["nextAt"] = json!(now + interval);
+                            old["error"] = Value::Null;
+                            let stored = checked_rule(old.clone(), actor.value())?;
+                            RulesRepository::put(tx, &stored)?;
+                        }
+                        old
                     }
-                    old
                 }
-            }
-            "save" => save_rule(
-                tx,
-                &actor,
-                RuleSave {
-                    body,
-                    old: old.as_ref(),
-                    key: &key,
-                    kind,
-                    now,
-                    prepared_path: prepared_path.as_deref(),
-                    fingerprint: fingerprint.as_ref(),
-                },
-            )?,
-            _ => return Err(RulesServiceError::UnknownAction),
-        };
-        cancel_monitor_ids.sort();
-        cancel_monitor_ids.dedup();
-        let saved = RulesActionResult {
-            value,
-            cancel_monitor_ids,
-        };
-        let result = json!({
-            "value": saved.value.clone(),
-            "cancelMonitorIds": saved.cancel_monitor_ids.clone(),
-        });
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-            params![receipt_id, signature, result.to_string()],
-        )?;
-        Ok(saved)
-    })?;
+                "save" => save_rule(
+                    tx,
+                    &actor,
+                    RuleSave {
+                        body: &body,
+                        old: old.as_ref(),
+                        key: &key,
+                        kind: &kind,
+                        now,
+                        prepared_path: prepared_path.as_deref(),
+                        fingerprint: fingerprint.as_ref(),
+                    },
+                )?,
+                _ => return Err(RulesServiceError::UnknownAction),
+            };
+            cancel_monitor_ids.sort();
+            cancel_monitor_ids.dedup();
+            let saved = RulesActionResult {
+                value,
+                cancel_monitor_ids,
+            };
+            let result = json!({
+                "value": saved.value.clone(),
+                "cancelMonitorIds": saved.cancel_monitor_ids.clone(),
+            });
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                params![receipt_id, signature, result.to_string()],
+            )?;
+            Ok(saved)
+        })
+        .await?;
     Ok(result)
 }
 
@@ -1305,20 +1336,23 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    fn fixture() -> (TempDir, RuntimeStore) {
+    async fn fixture() -> (TempDir, RuntimeStore) {
         let directory = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
+        let cwd = directory.path().to_string_lossy().into_owned();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 for record in [
                     json!({
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
-                        "isLead":true,"autoWake":true,"cwd":directory.path(),
+                        "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":directory.path()}),
-                    json!({"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":directory.path()}),
+                    json!({"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1331,13 +1365,14 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed state");
         (directory, store)
     }
 
-    #[test]
-    fn status_snapshot_tracks_capacity_finished_pages_and_revision_replay() {
-        let (_directory, store) = fixture();
+    #[tokio::test]
+    async fn status_snapshot_tracks_capacity_finished_pages_and_revision_replay() {
+        let (_directory, store) = fixture().await;
         let first = model_directory(
             &store,
             "lead",
@@ -1345,6 +1380,7 @@ mod tests {
             &json!({"include_finished":true,"limit":1}),
             100.0,
         )
+        .await
         .expect("status snapshot");
         assert_eq!(first["capacity"]["teamLimit"], 2);
         assert_eq!(first["capacity"]["teamActive"], 1);
@@ -1362,6 +1398,7 @@ mod tests {
             &json!({"include_finished":true,"limit":1,"cursor":cursor}),
             100.0,
         )
+        .await
         .expect("second status page");
         assert_eq!(second["finished"]["items"][0]["id"], "m-done");
         let replay = model_directory(
@@ -1371,21 +1408,23 @@ mod tests {
             &json!({"since_revision":first["revision"]}),
             102.0,
         )
+        .await
         .expect("status revision replay");
         assert_eq!(replay["unchanged"], true);
         assert_eq!(replay["changes"], json!([]));
         assert_eq!(replay["workerDefaults"]["model"], "gpt-fixture");
     }
 
-    #[test]
-    fn status_projection_matches_python_on_team_capacity_and_finished_page_corpus() {
+    #[tokio::test]
+    async fn status_projection_matches_python_on_team_capacity_and_finished_page_corpus() {
         use std::process::Command;
         use std::time::Duration;
 
-        let (_directory, store) = fixture();
+        let (_directory, store) = fixture().await;
         let args = json!({"include_finished":true,"limit":1});
-        let actual =
-            model_directory(&store, "lead", 3, &args, 100.0).expect("Rust status projection");
+        let actual = model_directory(&store, "lead", 3, &args, 100.0)
+            .await
+            .expect("Rust status projection");
         let (agents, monitors) = {
             let connection = store.read().expect("read status corpus rows");
             (
@@ -1451,12 +1490,12 @@ mod tests {
         assert_eq!(comparable, expected, "status corpus differs from Python");
     }
 
-    #[test]
-    fn malformed_cached_status_corpus_is_rejected_with_table_and_actor() {
+    #[tokio::test]
+    async fn malformed_cached_status_corpus_is_rejected_with_table_and_actor() {
         use std::process::Command;
         use std::time::Duration;
 
-        let (_directory, store) = fixture();
+        let (_directory, store) = fixture().await;
         let (agents, monitors) = {
             let connection = store.read().expect("read corpus rows");
             (
@@ -1507,13 +1546,14 @@ mod tests {
         assert_eq!(expected["malformedPreviousRejected"], true);
 
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_model_status(agent,revision,at,record) VALUES('lead','corrupt',1,?1)",
                     [malformed.to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed malformed cached status");
         let error = model_directory(
             &store,
@@ -1522,6 +1562,7 @@ mod tests {
             &json!({"since_revision":"corrupt"}),
             100.0,
         )
+        .await
         .expect_err("reject malformed status cache");
         assert!(matches!(
             error,
@@ -1530,12 +1571,12 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn file_rule_save_pause_and_post_commit_cancellations_match_python() {
+    #[tokio::test]
+    async fn file_rule_save_pause_and_post_commit_cancellations_match_python() {
         use std::process::Command;
         use std::time::Duration;
 
-        let (directory, store) = fixture();
+        let (directory, store) = fixture().await;
         let server_source =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let script =
@@ -1575,6 +1616,7 @@ mod tests {
             100.0,
             &LocalRuleWatchFiles,
         )
+        .await
         .expect("save file rule");
         let replayed = rules(
             &store,
@@ -1585,6 +1627,7 @@ mod tests {
             101.0,
             &LocalRuleWatchFiles,
         )
+        .await
         .expect("replay exact rule request");
         assert_eq!(replayed, saved, "exact request returns saved result");
         let mismatched = json!({
@@ -1604,6 +1647,7 @@ mod tests {
                 102.0,
                 &LocalRuleWatchFiles,
             )
+            .await
             .is_err()
         );
         let persisted_after_mismatch = RulesRepository::get(
@@ -1614,7 +1658,7 @@ mod tests {
         .expect("saved rule remains");
         assert_eq!(persisted_after_mismatch.value(), &saved.value);
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_monitors(id,record) VALUES('watch-monitor',?1)",
                     [json!({
@@ -1627,6 +1671,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed cancellation monitor");
         let paused = rules(
             &store,
@@ -1637,6 +1682,7 @@ mod tests {
             100.0,
             &LocalRuleWatchFiles,
         )
+        .await
         .expect("pause file rule");
 
         assert_eq!(saved.value, expected["saved"]);
@@ -1658,12 +1704,18 @@ mod tests {
         assert_eq!(sync_payload, expected["syncEntity"]);
     }
 
-    #[test]
-    fn status_validation_and_stale_epoch_leave_revision_table_unchanged() {
-        let (_directory, store) = fixture();
-        assert!(model_directory(&store, "lead", 2, &json!({}), 100.0).is_err());
+    #[tokio::test]
+    async fn status_validation_and_stale_epoch_leave_revision_table_unchanged() {
+        let (_directory, store) = fixture().await;
         assert!(
-            model_directory(&store, "lead", 3, &json!({"include_finished":"yes"}), 100.0).is_err()
+            model_directory(&store, "lead", 2, &json!({}), 100.0)
+                .await
+                .is_err()
+        );
+        assert!(
+            model_directory(&store, "lead", 3, &json!({"include_finished":"yes"}), 100.0)
+                .await
+                .is_err()
         );
         let count: i64 = store
             .read()
@@ -1675,9 +1727,9 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn status_cache_pruning_failure_rolls_back_new_revision() {
-        let (_directory, store) = fixture();
+    #[tokio::test]
+    async fn status_cache_pruning_failure_rolls_back_new_revision() {
+        let (_directory, store) = fixture().await;
         store
             .transaction_with(|tx| {
                 for index in 0..MODEL_STATUS_HISTORY {
@@ -1692,6 +1744,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed revision history and pruning failpoint");
         let before = {
             let connection = store.read().expect("read old revisions");
@@ -1710,7 +1763,11 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .expect("collect old revisions")
         };
-        assert!(model_directory(&store, "lead", 3, &json!({}), 100.0).is_err());
+        assert!(
+            model_directory(&store, "lead", 3, &json!({}), 100.0)
+                .await
+                .is_err()
+        );
         let after = {
             let connection = store.read().expect("read revisions after rollback");
             let mut statement = connection
@@ -1742,27 +1799,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rules_save_replays_by_request_identity_and_pause_returns_committed_cancellations() {
-        let (_directory, store) = fixture();
+    #[tokio::test]
+    async fn rules_save_replays_by_request_identity_and_pause_returns_committed_cancellations() {
+        let (_directory, store) = fixture().await;
         let save = json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
-        let first =
-            rules(&store, "lead", 3, Some(&save), "request-1", 100.0, &Files).expect("save rule");
+        let first = rules(&store, "lead", 3, Some(&save), "request-1", 100.0, &Files)
+            .await
+            .expect("save rule");
         let repeated = rules(&store, "lead", 3, Some(&save), "request-1", 101.0, &Files)
+            .await
             .expect("retry same rule identity");
         assert_eq!(first.value["id"], repeated.value["id"]);
         let id = first.value["id"].as_str().expect("rule id").to_owned();
+        let monitor_rule_id = id.clone();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_monitors(id,record) VALUES('watch-monitor',?1)",
                     [
-                        json!({"id":"watch-monitor","agent":"lead","ruleId":id,"status":"running"})
+                        json!({"id":"watch-monitor","agent":"lead","ruleId":monitor_rule_id,"status":"running"})
                             .to_string(),
                     ],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed monitor");
         let pause = rules(
             &store,
@@ -1773,6 +1834,7 @@ mod tests {
             102.0,
             &Files,
         )
+        .await
         .expect("pause rule");
         assert_eq!(pause.value["status"], "paused");
         assert_eq!(pause.cancel_monitor_ids, ["watch-monitor"]);
@@ -1793,9 +1855,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rule_file_preparation_failure_and_sql_failpoint_do_not_partially_write() {
-        let (_directory, store) = fixture();
+    #[tokio::test]
+    async fn rule_file_preparation_failure_and_sql_failpoint_do_not_partially_write() {
+        let (_directory, store) = fixture().await;
         let file_rule = json!({"kind":"file","name":"watch","path":"notes.txt"});
         assert!(
             rules(
@@ -1807,6 +1869,7 @@ mod tests {
                 100.0,
                 &FailingFiles,
             )
+            .await
             .is_err()
         );
         let rule: i64 = store
@@ -1823,6 +1886,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("install failpoint");
         let interval_rule = json!({"kind":"interval","name":"rule"});
         assert!(
@@ -1835,6 +1899,7 @@ mod tests {
                 100.0,
                 &LocalRuleWatchFiles,
             )
+            .await
             .is_err()
         );
         let rule: i64 = store
@@ -1852,6 +1917,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("install post-projection failpoint");
         assert!(
             rules(
@@ -1863,6 +1929,7 @@ mod tests {
                 100.0,
                 &LocalRuleWatchFiles,
             )
+            .await
             .is_err()
         );
         let (rule_count, sync_count): (i64, i64) = {

@@ -45,7 +45,7 @@ pub(crate) struct HistoryRuntime {
     store: Arc<RuntimeStore>,
     accounts: Arc<AccountDriver>,
     collector: HistoryCollector,
-    cancelled: AtomicBool,
+    cancelled: Arc<AtomicBool>,
     started: std::time::Instant,
 }
 
@@ -290,13 +290,13 @@ impl HistoryRuntime {
             store,
             accounts,
             collector: HistoryCollector::default(),
-            cancelled: AtomicBool::new(false),
+            cancelled: Arc::new(AtomicBool::new(false)),
             started: std::time::Instant::now(),
         }
     }
 
-    fn read_roster(&self) -> Result<Vec<Value>, HistoryError> {
-        let db = self.store.read().map_err(HistoryError::Store)?;
+    fn read_roster(store: &RuntimeStore) -> Result<Vec<Value>, HistoryError> {
+        let db = store.read().map_err(HistoryError::Store)?;
         let actors = Table::<AgentRecord>::new(&db)
             .list()
             .map_err(HistoryError::Store)?
@@ -307,7 +307,7 @@ impl HistoryRuntime {
         Ok(actors)
     }
 
-    fn step(&mut self, actors: &[Value], clock: HistoryClock) -> Result<bool, HistoryError> {
+    async fn step(&mut self, actors: &[Value], clock: HistoryClock) -> Result<bool, HistoryError> {
         let accounts = Arc::clone(&self.accounts);
         let profile = move |account_key: &str| {
             let snapshot = accounts.snapshot().map_err(|_| HistoryError::Read)?;
@@ -321,27 +321,42 @@ impl HistoryRuntime {
                 .ok_or(HistoryError::Read)
         };
         let budget = StoreHistoryBudgetSink::new(&self.store);
-        self.collector.step(
-            &self.store,
-            actors,
-            profile,
-            clock,
-            &self.cancelled,
-            &budget,
-        )
+        self.collector
+            .step(
+                &self.store,
+                actors,
+                profile,
+                clock,
+                Arc::clone(&self.cancelled),
+                &budget,
+            )
+            .await
     }
 
-    fn refresh_accounts(&self, watcher: &mut HistoryWatcher) -> Result<Vec<PathBuf>, HistoryError> {
-        let snapshot = self.accounts.snapshot()?;
-        let homes = snapshot
-            .accounts
-            .iter()
-            .filter_map(|account| {
-                let id = account.get("id")?.as_str()?;
-                let home = account.get("home")?.as_str()?;
-                (!home.is_empty()).then(|| (id.to_owned(), PathBuf::from(home)))
-            })
-            .collect::<BTreeMap<_, _>>();
+    async fn refresh_accounts(
+        &self,
+        watcher: &mut HistoryWatcher,
+    ) -> Result<Vec<PathBuf>, HistoryError> {
+        let accounts = Arc::clone(&self.accounts);
+        let homes = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/history-account-profiles",
+            move || {
+                let snapshot = accounts.snapshot()?;
+                Ok::<_, HistoryError>(
+                    snapshot
+                        .accounts
+                        .iter()
+                        .filter_map(|account| {
+                            let id = account.get("id")?.as_str()?;
+                            let home = account.get("home")?.as_str()?;
+                            (!home.is_empty()).then(|| (id.to_owned(), PathBuf::from(home)))
+                        })
+                        .collect::<BTreeMap<_, _>>(),
+                )
+            },
+        )
+        .await
+        .map_err(|_| HistoryError::Read)??;
         watcher.watch_profiles(homes)
     }
 
@@ -398,18 +413,17 @@ impl HistoryRuntime {
                     .as_ref()
                     .map_or_else(|| history_clock(&runtime), |tick| tick.clock);
                 let completion = manual_tick.map(|tick| tick.completed);
-                let (next, result) = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/history_runtime",
-                    move || {
-                        let result = runtime
-                            .read_roster()
-                            .and_then(|actors| runtime.step(&actors, clock));
-                        (runtime, result)
-                    },
+                let store = Arc::clone(&runtime.store);
+                let actors = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/history_roster",
+                    move || HistoryRuntime::read_roster(&store),
                 )
                 .await
                 .map_err(|_| HistoryError::Read)?;
-                runtime = next;
+                let result = match actors {
+                    Ok(actors) => runtime.step(&actors, clock).await,
+                    Err(error) => Err(error),
+                };
                 if let Some(completed) = completion {
                     let response = result.as_ref().copied().map_err(ToString::to_string);
                     if completed.send(response).is_err() {
@@ -451,7 +465,7 @@ async fn run_event_driven_with_wake(
     // Install the registry watch before reading either external accounts or the
     // durable roster. Notifications arriving during these snapshots stay queued.
     let mut watcher = HistoryWatcher::new(runtime.store.root(), Arc::clone(&wake))?;
-    let initial_profiles = runtime.refresh_accounts(&mut watcher)?;
+    let initial_profiles = runtime.refresh_accounts(&mut watcher).await?;
     for profile in initial_profiles {
         runtime.collector.profile_changed(&profile);
     }
@@ -502,7 +516,7 @@ async fn run_event_driven_with_wake(
         let mut reconfigure_watches = pending.overflow;
 
         if pending.accounts_dirty {
-            let changed_profiles = match runtime.refresh_accounts(&mut watcher) {
+            let changed_profiles = match runtime.refresh_accounts(&mut watcher).await {
                 Ok(changed) => changed,
                 Err(error) => {
                     eprintln!("provider history account-watch update failed: {error}");
@@ -617,16 +631,7 @@ async fn run_event_driven_with_wake(
         if runtime.collector.schedule.has_pending() {
             let clock = history_clock(&runtime);
             let actors = Arc::clone(&roster);
-            let (next_runtime, result) = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/history_runtime",
-                move || {
-                    let result = runtime.step(&actors, clock);
-                    (runtime, result)
-                },
-            )
-            .await
-            .map_err(|_| HistoryError::Read)?;
-            runtime = next_runtime;
+            let result = runtime.step(&actors, clock).await;
             match result {
                 Ok(_) => {
                     failures = 0;
@@ -666,7 +671,7 @@ async fn restore_history_watcher(
         }
         let attempt = (|| {
             let mut watcher = HistoryWatcher::new(runtime.store.root(), Arc::clone(wake))?;
-            runtime.refresh_accounts(&mut watcher)?;
+            runtime.refresh_accounts(&mut watcher).await?;
             for home in watcher.accounts.values() {
                 runtime.collector.profile_changed(home);
             }
@@ -920,7 +925,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_stops_the_history_task() {
         let root = tempdir().expect("temporary store");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("store"));
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let account_path = root.path().join("accounts.json");
         std::fs::write(
             &account_path,
@@ -974,7 +979,7 @@ mod tests {
         )
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
-        let store = Arc::new(RuntimeStore::open(Some(&state)).expect("store"));
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
         let agent = json!({
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
@@ -986,6 +991,7 @@ mod tests {
         let stored_agent = AgentRecord::from_value(agent.clone()).expect("typed fixture agent");
         store
             .transaction(|tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
+            .await
             .expect("persist fixture agent");
 
         let rollout = sessions.join("rollout-20261016-history-thread.jsonl");
@@ -1029,6 +1035,7 @@ mod tests {
         let second_agent_id = second_agent.id().as_ref().to_owned();
         store
             .transaction(|tx| Table::<AgentRecord>::new(tx).put(&second_agent))
+            .await
             .expect("persist recovery fixture agent");
         let second_thread = "history-thread-after-recovery";
         let second_rollout = sessions.join("rollout-20261016-history-thread-after-recovery.jsonl");
@@ -1129,7 +1136,7 @@ mod tests {
         )
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
-        let store = Arc::new(RuntimeStore::open(Some(&state)).expect("store"));
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
         let agent = json!({
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
@@ -1141,6 +1148,7 @@ mod tests {
         let stored_agent = AgentRecord::from_value(agent.clone()).expect("typed fixture agent");
         store
             .transaction(|tx| Table::<AgentRecord>::new(tx).put(&stored_agent))
+            .await
             .expect("persist fixture agent");
 
         let rollout = sessions.join("rollout-fixture-history-thread.jsonl");

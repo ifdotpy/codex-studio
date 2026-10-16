@@ -251,54 +251,62 @@ pub fn start(_tx: &Transaction<'_>, _actor: &str, _args: &Value) -> Result<Value
     Err(MoveError::Requires(NATIVE_MOVE_DEPENDENCY))
 }
 
-pub fn expire(store: &RuntimeStore, key: &str, now: f64) -> Result<bool, MoveError> {
-    store.transaction_with(|tx| {
-        let Some(row) = Repository::get(tx, key)? else {
-            return Ok(false);
-        };
-        let snapshot = MoveSnapshot::from_record(&row)?;
-        let agent =
-            AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?.map(|a| a.value());
-        apply(tx, snapshot.expire(agent.as_ref(), now)?)
-    })
+pub async fn expire(store: &RuntimeStore, key: &str, now: f64) -> Result<bool, MoveError> {
+    let key = key.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let Some(row) = Repository::get(tx, &key)? else {
+                return Ok(false);
+            };
+            let snapshot = MoveSnapshot::from_record(&row)?;
+            let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?
+                .map(|a| a.value());
+            apply(tx, snapshot.expire(agent.as_ref(), now)?)
+        })
+        .await
 }
 
 /// Reconcile a saved paired status ticket. A response alone is insufficient authority.
-pub fn release_untransferred(
+pub async fn release_untransferred(
     store: &RuntimeStore,
     key: &str,
     status_ticket: &str,
     now: f64,
 ) -> Result<bool, MoveError> {
-    store.transaction_with(|tx| {
-        let Some(row) = Repository::get(tx, key)? else {
-            return Ok(false);
-        };
-        let snapshot = MoveSnapshot::from_record(&row)?;
-        let receipt = studio_runtime_store::ProjectLocationsRepository::outbox(tx, status_ticket)?
-            .ok_or(MoveError::Refused("Unknown move status ticket"))?;
-        if receipt["server"] != row["server"]
-            || receipt.pointer("/body/payload/reconciliationGeneration")
-                != Some(&json!(snapshot.reconciliation_generation()))
-            || receipt["state"] != "complete"
-            || receipt.pointer("/body/requestId") != Some(&json!(status_ticket))
-            || receipt.pointer("/body/action") != Some(&json!("move_status"))
-            || receipt.pointer("/body/payload/move") != Some(&json!(key))
-            || receipt.pointer("/result/requestId") != Some(&json!(status_ticket))
-            || receipt.pointer("/result/outcome") != Some(&json!("applied"))
-        {
-            return Err(MoveError::Refused(
-                "The move status ticket does not prove this move",
-            ));
-        }
-        let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?
-            .ok_or(MoveError::Refused("Unknown move agent"))?;
-        let pending = Repository::pending_events(tx, &snapshot.agent)?;
-        apply(
-            tx,
-            snapshot.release(&agent.value(), &receipt["result"]["value"], pending, now)?,
-        )
-    })
+    let key = key.to_owned();
+    let status_ticket = status_ticket.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let Some(row) = Repository::get(tx, &key)? else {
+                return Ok(false);
+            };
+            let snapshot = MoveSnapshot::from_record(&row)?;
+            let receipt =
+                studio_runtime_store::ProjectLocationsRepository::outbox(tx, &status_ticket)?
+                    .ok_or(MoveError::Refused("Unknown move status ticket"))?;
+            if receipt["server"] != row["server"]
+                || receipt.pointer("/body/payload/reconciliationGeneration")
+                    != Some(&json!(snapshot.reconciliation_generation()))
+                || receipt["state"] != "complete"
+                || receipt.pointer("/body/requestId") != Some(&json!(status_ticket))
+                || receipt.pointer("/body/action") != Some(&json!("move_status"))
+                || receipt.pointer("/body/payload/move") != Some(&json!(key))
+                || receipt.pointer("/result/requestId") != Some(&json!(status_ticket))
+                || receipt.pointer("/result/outcome") != Some(&json!("applied"))
+            {
+                return Err(MoveError::Refused(
+                    "The move status ticket does not prove this move",
+                ));
+            }
+            let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?
+                .ok_or(MoveError::Refused("Unknown move agent"))?;
+            let pending = Repository::pending_events(tx, &snapshot.agent)?;
+            apply(
+                tx,
+                snapshot.release(&agent.value(), &receipt["result"]["value"], pending, now)?,
+            )
+        })
+        .await
 }
 fn apply(tx: &Transaction<'_>, decision: Option<MoveDecision>) -> Result<bool, MoveError> {
     let Some(decision) = decision else {

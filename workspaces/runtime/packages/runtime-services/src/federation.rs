@@ -4,6 +4,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_store::{FederationRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -23,32 +24,33 @@ pub fn snapshot(store: &RuntimeStore) -> Result<Value, FederationError> {
     Ok(store.read_transaction(|transaction| FederationRepository::snapshot(transaction))?)
 }
 
-pub fn manage(store: &RuntimeStore, body: &Value) -> Result<Value, FederationError> {
-    manage_with_origin(store, body, None)
+pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, FederationError> {
+    manage_with_origin(store, body, None).await
 }
 
-pub fn manage_with_origin(
-    store: &RuntimeStore,
+pub async fn manage_with_origin(
+    store: Arc<RuntimeStore>,
     body: &Value,
     public_origin: Option<&str>,
 ) -> Result<Value, FederationError> {
-    manage_with_origin_and_whoami(store, body, public_origin, None)
+    manage_with_origin_and_whoami(store, body, public_origin, None).await
 }
 
-pub fn manage_with_origin_and_whoami(
-    store: &RuntimeStore,
+pub async fn manage_with_origin_and_whoami(
+    store: Arc<RuntimeStore>,
     body: &Value,
     public_origin: Option<&str>,
     whoami: Option<&Value>,
 ) -> Result<Value, FederationError> {
     if body.get("action").and_then(Value::as_str) == Some("create_invite") {
-        return create_invitation(store, body, public_origin, whoami);
+        return create_invitation(store, body, public_origin, whoami).await;
     }
     if body.get("action").and_then(Value::as_str) == Some("accept_peer") {
-        return accept_peer(store, body, public_origin);
+        return accept_peer(store, body, public_origin).await;
     }
+    let body = body.clone();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let action = body
                 .get("action")
                 .and_then(Value::as_str)
@@ -72,8 +74,8 @@ pub fn manage_with_origin_and_whoami(
                     body["room_id"].as_str().unwrap_or_default(),
                     &body["disclosure"],
                 )?,
-                "create_room" => FederationRepository::room_action(tx, body, false)?,
-                "approve_room" => FederationRepository::room_action(tx, body, true)?,
+                "create_room" => FederationRepository::room_action(tx, &body, false)?,
+                "approve_room" => FederationRepository::room_action(tx, &body, true)?,
                 _ => {
                     return Err(FederationError::Refused(format!(
                         "unsupported local federation action: {action}"
@@ -82,6 +84,7 @@ pub fn manage_with_origin_and_whoami(
             }
             FederationRepository::snapshot(tx).map_err(FederationError::from)
         })
+        .await
         .map_err(|error| match error {
             FederationError::Store(StoreError::SchemaMismatch(message))
                 if message.starts_with("missing local federation identity") =>
@@ -97,8 +100,8 @@ pub fn manage_with_origin_and_whoami(
         })
 }
 
-fn create_invitation(
-    store: &RuntimeStore,
+async fn create_invitation(
+    store: Arc<RuntimeStore>,
     body: &Value,
     public_origin: Option<&str>,
     whoami: Option<&Value>,
@@ -110,10 +113,15 @@ fn create_invitation(
                 "Configure Tailscale Serve before creating a pairing invitation".to_owned(),
             )
         })?;
-    let enabled = store.read_transaction(|tx| {
-        let snapshot = FederationRepository::snapshot(tx)?;
-        Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
-    })?;
+    let store_for_read = Arc::clone(&store);
+    let enabled = tokio::task::spawn_blocking(move || {
+        store_for_read.read_transaction(|tx| {
+            let snapshot = FederationRepository::snapshot(tx)?;
+            Ok::<_, StoreError>(snapshot["enabled"].as_bool() == Some(true))
+        })
+    })
+    .await
+    .map_err(|_| FederationError::Refused("federation settings lookup failed".to_owned()))??;
     if !enabled {
         return Err(FederationError::Refused(
             "Enable federation before creating an invitation".to_owned(),
@@ -141,22 +149,31 @@ fn create_invitation(
         ));
     }
     let now = unix_time()?;
-    let lead_name = store.read_transaction(|connection| {
-        connection
-            .query_row(
-                "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
-                [],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map(|value| value.flatten())
-            .map_err(StoreError::from)
-    })?
+    let store_for_read = Arc::clone(&store);
+    let lead_name = tokio::task::spawn_blocking(move || {
+        store_for_read.read_transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(|value| value.flatten())
+                .map_err(StoreError::from)
+        })
+    })
+    .await
+    .map_err(|_| FederationError::Refused("federation identity lookup failed".to_owned()))??
     .filter(|name| !name.is_empty())
     .unwrap_or_else(|| "Lead".to_owned());
     let identity = crate::federation_credentials::Credentials::ensure_federation_identity(
-        store, label, &lead_name, now,
-    )?;
+        Arc::clone(&store),
+        label,
+        &lead_name,
+        now,
+    )
+    .await?;
     let mut token_bytes = [0_u8; 32];
     SystemRandom::new()
         .fill(&mut token_bytes)
@@ -190,17 +207,23 @@ fn create_invitation(
         "status": "open",
         "expectedUser": expected_user,
     });
-    store.transaction_with(|tx| {
+    let invite_id_for_write = invite_id.clone();
+    let record_for_write = record.clone();
+    let label_for_write = label.to_owned();
+    let lead_name_for_write = lead_name.clone();
+    let tailscale_user_for_write = tailscale_user.map(str::to_owned);
+    let tailscale_status_for_write = tailscale_status.to_owned();
+    store.transaction_with(move |tx| {
         tx.execute(
             "UPDATE runtime_federation_identity SET record=json_set(record,'$.label',?1,'$.leadName',?2,'$.tailscaleUser',?3,'$.tailscaleStatus',?4) WHERE id='local'",
-            rusqlite::params![label, lead_name, tailscale_user, tailscale_status],
+            rusqlite::params![label_for_write, lead_name_for_write, tailscale_user_for_write, tailscale_status_for_write],
         )?;
         tx.execute(
             "INSERT INTO runtime_federation_invites(id,record) VALUES(?1,?2)",
-            rusqlite::params![invite_id, record.to_string()],
+            rusqlite::params![invite_id_for_write, record_for_write.to_string()],
         )?;
         Ok::<_, StoreError>(())
-    })?;
+    }).await?;
     let invitation = json!({
         "protocol": 1,
         "inviteId": invite_id,
@@ -221,8 +244,8 @@ fn create_invitation(
     }))
 }
 
-fn accept_peer(
-    store: &RuntimeStore,
+async fn accept_peer(
+    store: Arc<RuntimeStore>,
     body: &Value,
     public_origin: Option<&str>,
 ) -> Result<Value, FederationError> {
@@ -261,26 +284,32 @@ fn accept_peer(
     }
     uuid::Uuid::parse_str(state_id)
         .map_err(|_| FederationError::Refused("Peer state identity is invalid".to_owned()))?;
-    let enabled = store.read_transaction(|tx| {
-        tx.query_row(
-            "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(StoreError::from)
-    })?;
+    let store_for_read = Arc::clone(&store);
+    let enabled = tokio::task::spawn_blocking(move || {
+        store_for_read.read_transaction(|tx| {
+            tx.query_row(
+                "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(StoreError::from)
+        })
+    })
+    .await
+    .map_err(|_| FederationError::Refused("federation settings lookup failed".to_owned()))??;
     if !enabled {
         return Err(FederationError::Refused(
             "Enable federation before pairing".to_owned(),
         ));
     }
-    let lead_name = local_lead_name(store)?;
+    let lead_name = local_lead_name(Arc::clone(&store)).await?;
     let local = crate::federation_credentials::Credentials::ensure_federation_identity(
-        store,
+        Arc::clone(&store),
         "Studio server",
         &lead_name,
         now,
-    )?;
+    )
+    .await?;
     if local.id() == state_id {
         return Err(FederationError::Refused(
             "Cannot pair a server with itself".to_owned(),
@@ -307,66 +336,87 @@ fn accept_peer(
         "updated": now,
         "protocol": crate::federation_limits::PROTOCOL_VERSION,
     });
-    store.transaction_with(|tx| {
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                [state_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(StoreError::from)?;
-        if let Some(existing) = existing {
-            let existing: Value = serde_json::from_str(&existing)
-                .map_err(|_| StoreError::SchemaMismatch("invalid federation peer".to_owned()))?;
-            if existing["inviteId"] != invite_id
-                || existing["inviteToken"] != token
-                || existing["publicKey"] != public_key
-                || existing["origin"] != origin
-            {
-                return Err(FederationError::Refused(
-                    "A different pairing invitation already exists for this server".to_owned(),
-                ));
+    let state_id_for_write = state_id.to_owned();
+    let invite_id_for_write = invite_id.to_owned();
+    let token_for_write = token.to_owned();
+    let public_key_for_write = public_key.to_owned();
+    let origin_for_write = origin.clone();
+    let record_for_write = record.clone();
+    store
+        .transaction_with(move |tx| {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM runtime_federation_peers WHERE id=?1",
+                    [&state_id_for_write],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(StoreError::from)?;
+            if let Some(existing) = existing {
+                let existing: Value = serde_json::from_str(&existing).map_err(|_| {
+                    StoreError::SchemaMismatch("invalid federation peer".to_owned())
+                })?;
+                if existing["inviteId"] != invite_id_for_write
+                    || existing["inviteToken"] != token_for_write
+                    || existing["publicKey"] != public_key_for_write
+                    || existing["origin"] != origin_for_write
+                {
+                    return Err(FederationError::Refused(
+                        "A different pairing invitation already exists for this server".to_owned(),
+                    ));
+                }
+            } else {
+                tx.execute(
+                    "INSERT INTO runtime_federation_peers(id,record) VALUES(?1,?2)",
+                    rusqlite::params![state_id_for_write, record_for_write.to_string()],
+                )
+                .map_err(StoreError::from)?;
             }
-        } else {
-            tx.execute(
-                "INSERT INTO runtime_federation_peers(id,record) VALUES(?1,?2)",
-                rusqlite::params![state_id, record.to_string()],
-            )
-            .map_err(StoreError::from)?;
-        }
-        Ok::<_, FederationError>(())
-    })?;
+            Ok::<_, FederationError>(())
+        })
+        .await?;
 
-    let mut transport = crate::federation_delivery::HttpsFederationTransport;
+    let transport = crate::federation_delivery::HttpsFederationTransport;
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    if crate::federation_delivery::pair_peer(store, state_id, now, &mut transport, &cancelled)
-        .is_err()
+    if crate::federation_delivery::pair_peer(
+        Arc::clone(&store),
+        &state_id,
+        now,
+        &transport,
+        Arc::new(cancelled),
+    )
+    .await
+    .is_err()
     {
-        store.transaction_with(|tx| {
+        let state_id = state_id.to_owned();
+        store.transaction_with(move |tx| {
             tx.execute(
                 "UPDATE runtime_federation_peers SET record=json_set(record,'$.lastError',?1) WHERE id=?2",
                 rusqlite::params!["Connection unavailable; the pairing attempt will retry", state_id],
             )
             .map_err(StoreError::from)?;
             Ok::<_, StoreError>(())
-        })?;
+        }).await?;
     }
-    snapshot(store)
+    snapshot(&store)
 }
 
-fn local_lead_name(store: &RuntimeStore) -> Result<String, FederationError> {
-    let value = store.read_transaction(|connection| {
-        connection
-            .query_row(
-                "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
-                [],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map(|value| value.flatten())
-            .map_err(StoreError::from)
-    })?;
+async fn local_lead_name(store: Arc<RuntimeStore>) -> Result<String, FederationError> {
+    let value = tokio::task::spawn_blocking(move || {
+        store.read_transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(|value| value.flatten())
+                .map_err(StoreError::from)
+        })
+    })
+    .await
+    .map_err(|_| FederationError::Refused("federation identity lookup failed".to_owned()))??;
     Ok(value
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Lead".to_owned()))
@@ -384,30 +434,36 @@ mod tests {
     use super::manage_with_origin_and_whoami;
     use serde_json::json;
 
-    #[test]
-    fn create_invite_uses_injected_tailscale_whoami_without_host_access() {
+    #[tokio::test]
+    async fn create_invite_uses_injected_tailscale_whoami_without_host_access() {
         let root = tempfile::tempdir().expect("isolated federation state");
-        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
-            .expect("runtime store opens");
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         manage_with_origin_and_whoami(
-            &store,
+            std::sync::Arc::clone(&store),
             &json!({"action":"set_enabled","enabled":true}),
             None,
             None,
         )
+        .await
         .expect("federation can be enabled locally");
         let whoami = json!({"status":"verified","user":"owner@example.test","node":"node-1"});
         let result = manage_with_origin_and_whoami(
-            &store,
+            std::sync::Arc::clone(&store),
             &json!({"action":"create_invite","label":"Test server"}),
             Some("https://studio.example.ts.net"),
             Some(&whoami),
         )
+        .await
         .expect("fake whoami invitation succeeds");
         assert_eq!(result["invitation"]["tailscaleUser"], "owner@example.test");
         assert_eq!(result["invitation"]["tailscaleStatus"], "verified");
-        let identity = store
-            .read_transaction(|tx| {
+        let store_for_read = std::sync::Arc::clone(&store);
+        let identity = tokio::task::spawn_blocking(move || {
+            store_for_read.read_transaction(|tx| {
                 tx.query_row(
                     "SELECT record FROM runtime_federation_identity WHERE id='local'",
                     [],
@@ -415,7 +471,10 @@ mod tests {
                 )
                 .map_err(studio_runtime_store::StoreError::from)
             })
-            .expect("identity row reads");
+        })
+        .await
+        .expect("identity read worker completes")
+        .expect("identity row reads");
         let identity: serde_json::Value = serde_json::from_str(&identity).expect("identity JSON");
         assert_eq!(identity["tailscaleUser"], "owner@example.test");
         assert_eq!(identity["tailscaleStatus"], "verified");

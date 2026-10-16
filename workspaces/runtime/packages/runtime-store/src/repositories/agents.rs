@@ -113,17 +113,20 @@ mod invalid_agent_repair_tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn valid_agent_repair_clears_the_invalid_record_hold() {
+    #[tokio::test]
+    async fn valid_agent_repair_clears_the_invalid_record_hold() {
         let directory = tempfile::tempdir().expect("temporary runtime");
-        let store = crate::RuntimeStore::open(Some(directory.path())).expect("runtime opens");
+        let store = crate::RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime opens");
         let agent = AgentRecord::from_value(json!({
             "id":"agent", "rootId":"agent", "epoch":1, "status":"idle"
         }))
         .expect("valid repair record");
+        let seed_agent = agent.clone();
         store
-            .transaction(|tx| {
-                AgentRepository::put(tx, &agent)?;
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &seed_agent)?;
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,'{}')",
                     rusqlite::params![
@@ -133,10 +136,12 @@ mod invalid_agent_repair_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed agent and hold");
 
         store
-            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .transaction(move |tx| AgentRepository::put(tx, &agent))
+            .await
             .expect("typed repair saves and clears hold atomically");
 
         let connection = store.read().expect("reader opens");

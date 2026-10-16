@@ -707,13 +707,13 @@ mod runtime;
 mod storage;
 pub(super) use storage::recover;
 #[cfg(test)]
-pub(super) fn test_submitted(
+pub(super) async fn test_submitted(
     store: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
     ticket: Option<&RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
-    storage::submitted(store, call, request, ticket)
+    storage::submitted(store, call, request, ticket).await
 }
 
 pub mod consumers;

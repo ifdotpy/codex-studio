@@ -138,28 +138,21 @@ async fn directories(
         let server = server.to_owned();
         let now = studio_runtime_services::event_write::unix_time()
             .map_err(|_| ApiError::internal())? as i64;
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/system_reads/remote-directories",
-            move || {
-                driver
-                    .exchange(
-                        &server,
-                        "folders",
-                        &serde_json::json!({"cwd":path}),
-                        &request_id,
-                        now,
-                    )
-                    .map_err(|error| {
-                        ApiError::new(
-                            StatusCode::from_u16(error.status())
-                                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
-                            error.to_string(),
-                        )
-                    })
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+        let result = driver
+            .exchange(
+                &server,
+                "folders",
+                &serde_json::json!({"cwd":path}),
+                &request_id,
+                now,
+            )
+            .await
+            .map_err(|error| {
+                ApiError::new(
+                    StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                    error.to_string(),
+                )
+            })?;
         let value = match result {
             studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Applied(
                 value,
@@ -217,6 +210,7 @@ async fn diagnostics(
             }
         };
     let store = state.store.ok_or_else(ApiError::internal)?;
+    let provider = provider_port.snapshot().await;
     let (
         provider,
         supervisor,
@@ -228,7 +222,6 @@ async fn diagnostics(
     ) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/system_reads",
         move || {
-            let provider = provider_port.snapshot();
             let supervisor = supervisor_port.snapshot();
             let (process_tree, host_resources) =
                 studio_runtime_services::diagnostics::system_snapshot(

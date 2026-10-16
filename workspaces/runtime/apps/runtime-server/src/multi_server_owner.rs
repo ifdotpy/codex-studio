@@ -4,6 +4,7 @@
 //! comes from `tailscale whois --json <forwarded address>` and is compared to
 //! the optional Tailscale-User-Login header.
 
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::{
     io::Read,
@@ -21,16 +22,28 @@ const MAX_OUTPUT: usize = 1024 * 1024;
 pub struct TailscaleOwnerLookup;
 
 impl OwnerLookup for TailscaleOwnerLookup {
-    fn observe(
-        &self,
-        address: &str,
-        supplied_logins: &[String],
-        _auto_pair_origin: Option<&str>,
-    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
-        let status = tailscale_json(&["status", "--json"])?;
-        let whois = tailscale_json(&["whois", "--json", address])?;
-        let owner = OwnerObservation::from_json(address, supplied_logins, &status, &whois)?;
-        Ok((owner, None))
+    fn observe<'a>(
+        &'a self,
+        address: &'a str,
+        supplied_logins: &'a [String],
+        _auto_pair_origin: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(OwnerObservation, Option<Value>), AccessError>> {
+        let address = address.to_owned();
+        let supplied_logins = supplied_logins.to_vec();
+        Box::pin(async move {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/multi-server-owner",
+                move || {
+                    let status = tailscale_json(&["status", "--json"])?;
+                    let whois = tailscale_json(&["whois", "--json", &address])?;
+                    let owner =
+                        OwnerObservation::from_json(&address, &supplied_logins, &status, &whois)?;
+                    Ok((owner, None))
+                },
+            )
+            .await
+            .map_err(|_| unavailable())?
+        })
     }
 }
 

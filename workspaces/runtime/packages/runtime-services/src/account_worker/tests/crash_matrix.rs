@@ -17,6 +17,23 @@ pub(super) struct Context {
     pub agent_seed: std::sync::Mutex<Option<studio_runtime_store::AgentRecord>>,
 }
 tokio::task_local! { pub(super) static MATRIX: Arc<Context>; }
+
+async fn read_on_pool<T, F>(store: Arc<RuntimeStore>, operation: F) -> Result<T, WorkerError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, WorkerError> + Send + 'static,
+{
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_crash_matrix_read",
+        move || {
+            let connection = store.read()?;
+            operation(&connection)
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+}
+
 async fn scenario(index: usize) {
     match index {
         0 => scenario_normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement().await,
@@ -84,10 +101,18 @@ async fn execute(
 }
 async fn restart(context: &Context, label: &str) {
     let (bridge, agent, epoch, root) = context.state.lock().unwrap().take().unwrap();
-    bridge.run(|store| store.transaction_with(|tx| {
-        tx.execute_batch("DROP TRIGGER IF EXISTS no_flush; DROP TRIGGER IF EXISTS journal_error; DROP TRIGGER IF EXISTS retain_effect;")?;
-        Ok(())
-    })).await.unwrap();
+    bridge
+        .run(|store| async move {
+            store
+                .transaction_with(|tx| {
+                    tx.execute_batch("DROP TRIGGER IF EXISTS no_flush; DROP TRIGGER IF EXISTS journal_error; DROP TRIGGER IF EXISTS retain_effect;")?;
+                    Ok(())
+                })
+                .await
+                .map_err(WorkerError::from)
+        })
+        .await
+        .unwrap();
     // The failed worker must release ownership before the replacement starts.
     tokio::time::timeout(std::time::Duration::from_secs(120), async {
         loop {
@@ -207,13 +232,15 @@ async fn restart(context: &Context, label: &str) {
         let interrupt_generation = interrupt["generation"]
             .as_u64()
             .expect("unknown interrupt has a generation");
-        let receipt_count = bridge.run(move |store| {
-            Ok(store.read()?.query_row(
+        let receipt_count = read_on_pool(bridge.store.clone(), move |db| {
+            Ok(db.query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%:submitted' AND json_extract(result,'$.request.id')=?1 AND json_extract(result,'$.request.generation')=?2 AND json_extract(result,'$.request.method')='turn/interrupt'",
                 rusqlite::params![ticket, i64::try_from(interrupt_generation).unwrap()],
                 |row| row.get::<_, i64>(0),
             )?)
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let held_unknown = interrupt["outcome"].as_str() == Some("unknown")
             && tracked_turn
             && interrupt["threadId"] == "fake-thread-0"
@@ -246,23 +273,21 @@ async fn restart(context: &Context, label: &str) {
         let written_id = format!("account-worker:{operation}:written");
         let submitted = submitted_id.clone();
         let written = written_id.clone();
-        let receipt_state = bridge
-            .run(move |store| {
-                let db = store.read()?;
-                let submitted: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                    [submitted],
-                    |row| row.get(0),
-                )?;
-                let written: i64 = db.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                    [written],
-                    |row| row.get(0),
-                )?;
-                Ok((submitted, written))
-            })
-            .await
-            .unwrap();
+        let receipt_state = read_on_pool(bridge.store.clone(), move |db| {
+            let submitted: i64 = db.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                [submitted],
+                |row| row.get(0),
+            )?;
+            let written: i64 = db.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                [written],
+                |row| row.get(0),
+            )?;
+            Ok((submitted, written))
+        })
+        .await
+        .unwrap();
         if receipt_state == (1, 0) {
             unresolved_callback = Some((cursor, frame, submitted_id, written_id));
             break;
@@ -298,23 +323,21 @@ async fn restart(context: &Context, label: &str) {
             );
             let submitted = submitted_id.clone();
             let written = written_id.clone();
-            let receipts = bridge
-                .run(move |store| {
-                    let db = store.read()?;
-                    let submitted: i64 = db.query_row(
-                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                        [submitted],
-                        |row| row.get(0),
-                    )?;
-                    let written: i64 = db.query_row(
-                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                        [written],
-                        |row| row.get(0),
-                    )?;
-                    Ok((submitted, written))
-                })
-                .await
-                .unwrap();
+            let receipts = read_on_pool(bridge.store.clone(), move |db| {
+                let submitted: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                    [submitted],
+                    |row| row.get(0),
+                )?;
+                let written: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                    [written],
+                    |row| row.get(0),
+                )?;
+                Ok((submitted, written))
+            })
+            .await
+            .unwrap();
             assert_eq!(receipts, (1, 0), "callback intent remains held as Unknown");
             let mut health_peer = Peer::identity("default", generation, None);
             health_peer.cursor = marker;
@@ -357,10 +380,7 @@ async fn restart(context: &Context, label: &str) {
                     .map(str::to_owned)
             })
     };
-    state
-        .bridge
-        .run(move |store| {
-            let db = store.read()?;
+    read_on_pool(state.bridge.store.clone(), move |db| {
             for id in expected_inputs {
                 let status: String = db.query_row(
                     "SELECT status FROM runtime_events WHERE id=?1",
@@ -424,11 +444,14 @@ async fn prove_ready_for_new_turn(
     let epoch = seed.epoch;
     state
         .bridge
-        .run(move |store| {
-            store.transaction_with(|tx| {
-                AgentRepository::put(tx, &seed)?;
-                Ok(())
-            })
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    AgentRepository::put(tx, &seed)?;
+                    Ok(())
+                })
+                .await
+                .map_err(WorkerError::from)
         })
         .await
         .unwrap();

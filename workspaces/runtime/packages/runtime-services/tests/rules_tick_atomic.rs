@@ -1,9 +1,9 @@
 #[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 
 use serde_json::{Value, json};
 use studio_runtime_services::rules_engine::{CheckResult, RuleCheck};
@@ -60,9 +60,9 @@ fn rule(store: &RuntimeStore) -> Value {
         .value()
         .clone()
 }
-fn change(store: &RuntimeStore, fields: Value) {
+async fn change(store: &RuntimeStore, fields: Value) {
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let mut value = RulesRepository::get(tx, "rule")?
                 .expect("rule exists")
                 .value()
@@ -72,6 +72,7 @@ fn change(store: &RuntimeStore, fields: Value) {
             }
             RulesRepository::put(tx, &RuleRecord::from_value(value)?)
         })
+        .await
         .expect("change rule");
 }
 fn events(store: &RuntimeStore) -> Vec<(String, String)> {
@@ -86,25 +87,36 @@ fn events(store: &RuntimeStore) -> Vec<(String, String)> {
 
 struct CapturingMonitor<'a> {
     store: &'a RuntimeStore,
-    calls: RefCell<Vec<RuleCheck>>,
+    calls: Mutex<Vec<RuleCheck>>,
     unknown: bool,
 }
 impl RuleMonitor for CapturingMonitor<'_> {
     fn available(&self) -> bool {
         true
     }
-    fn launch(&self, check: &RuleCheck) -> CheckSubmission {
-        // Independent read sees the reservation only if its transaction committed.
-        assert_eq!(rule(self.store)["inFlight"], true);
-        self.calls.borrow_mut().push(check.clone());
-        if self.unknown {
-            CheckSubmission::Unknown
-        } else {
-            CheckSubmission::Accepted
-        }
+    fn launch<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+        Box::pin(async move {
+            // Independent read sees the reservation only if its transaction committed.
+            assert_eq!(rule(self.store)["inFlight"], true);
+            self.calls
+                .lock()
+                .expect("monitor calls")
+                .push(check.clone());
+            if self.unknown {
+                CheckSubmission::Unknown
+            } else {
+                CheckSubmission::Accepted
+            }
+        })
     }
-    fn cancel(&self, _monitor_id: &str) -> Result<(), RulesTickError> {
-        Ok(())
+    fn cancel<'a>(
+        &'a self,
+        _monitor_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 struct EditingFiles<'a> {
@@ -112,14 +124,19 @@ struct EditingFiles<'a> {
     changes: Value,
 }
 impl RuleFiles for EditingFiles<'_> {
-    fn fingerprint(&self, _path: &str) -> Result<Option<(i64, u64, u64)>, RulesTickError> {
-        change(self.store, self.changes.clone());
-        Ok(Some((200, 2, 3)))
+    fn fingerprint<'a>(
+        &'a self,
+        _path: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>> {
+        Box::pin(async move {
+            change(self.store, self.changes.clone()).await;
+            Ok(Some((200, 2, 3)))
+        })
     }
 }
 
-#[test]
-fn tick_commit_restart_and_callback_failpoint_matrix() {
+#[tokio::test]
+async fn tick_commit_restart_and_callback_failpoint_matrix() {
     let template = Template::new();
     // Fail before and after each durable table write in the no-command path.
     // Rollback must include canonical views, queue owner and wake; a restart retries
@@ -146,11 +163,11 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
             let state = template.clone_state();
             let store = RuntimeStore::open(Some(state.path())).expect("Python database opens");
             let initial = rule(&store);
-            store.transaction(|tx| {
+            store.transaction(move |tx| {
                 tx.execute_batch(&format!("CREATE TRIGGER rules_fail_insert {timing} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END; CREATE TRIGGER rules_fail_update {timing} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END;"))?;
                 Ok(())
-            }).expect("arm write failure");
-            let result = tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor);
+            }).await.expect("arm write failure");
+            let result = tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor).await;
             assert!(
                 result.is_err(),
                 "failpoint {timing}/{table} was not reached"
@@ -161,23 +178,28 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 "no wake on rollback {timing}/{table}"
             );
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute_batch(
                         "DROP TRIGGER rules_fail_insert; DROP TRIGGER rules_fail_update",
                     )?;
                     Ok(())
                 })
+                .await
                 .expect("remove failpoint");
             drop(store);
             let store = RuntimeStore::open(Some(state.path())).expect("reopen after rollback");
-            recover_batch(&store, 0, NOW, &UnavailableMonitor).expect("recover");
+            recover_batch(&store, 0, NOW, &UnavailableMonitor)
+                .await
+                .expect("recover");
             tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
+                .await
                 .expect("retry uncommitted tick");
             assert_eq!(
                 events(&store),
                 [("rule-wake:rule:1".to_owned(), "pending".to_owned())]
             );
             tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
+                .await
                 .expect("retry committed tick");
             assert_eq!(events(&store).len(), 1);
         }
@@ -186,31 +208,37 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
     for unknown in if full { vec![false, true] } else { vec![true] } {
         let state = template.clone_state();
         let store = RuntimeStore::open(Some(state.path())).expect("open");
-        change(&store, json!({"command":"printf fixture"}));
+        change(&store, json!({"command":"printf fixture"})).await;
         let monitor = CapturingMonitor {
             store: &store,
-            calls: RefCell::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
             unknown,
         };
-        tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor).expect("reserve and submit");
-        tick_batch(&store, 0, NOW + 60.0, &LocalRuleFiles, &monitor).expect("in-flight tick");
-        assert_eq!(monitor.calls.borrow().len(), 1);
-        let check = monitor.calls.borrow()[0].clone();
+        tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+            .await
+            .expect("reserve and submit");
+        tick_batch(&store, 0, NOW + 60.0, &LocalRuleFiles, &monitor)
+            .await
+            .expect("in-flight tick");
+        assert_eq!(monitor.calls.lock().expect("monitor calls").len(), 1);
+        let check = monitor.calls.lock().expect("monitor calls")[0].clone();
         drop(monitor);
         drop(store);
         let store = RuntimeStore::open(Some(state.path())).expect("restart");
         recover_batch(&store, 0, NOW + 120.0, &UnavailableMonitor)
+            .await
             .expect("recovery holds unknown check");
         assert_eq!(rule(&store)["status"], "paused");
         assert_eq!(rule(&store)["restartCheck"]["monitorId"], check.monitor_id);
         let monitor = CapturingMonitor {
             store: &store,
-            calls: RefCell::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
             unknown,
         };
         tick_batch(&store, 0, NOW + 180.0, &LocalRuleFiles, &monitor)
+            .await
             .expect("held checks do not resend");
-        assert!(monitor.calls.borrow().is_empty());
+        assert!(monitor.calls.lock().expect("monitor calls").is_empty());
         assert!(
             finish(
                 &store,
@@ -223,6 +251,7 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 },
                 NOW + 180.0
             )
+            .await
             .expect("exact durable receipt")
         );
         assert!(
@@ -237,26 +266,29 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 },
                 NOW + 180.0
             )
+            .await
             .expect("duplicate receipt")
         );
         assert_eq!(events(&store).len(), 1);
     }
 }
 
-#[test]
-fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
+#[tokio::test]
+async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
     let template = Template::new();
     let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
     change(
         &store,
         json!({"kind":"file","path":"/disposable/watch","fingerprint":[100,2,3]}),
-    );
+    )
+    .await;
     let files = EditingFiles {
         store: &store,
         changes: json!({"name":"changed during stat"}),
     };
     let report = tick_batch(&store, 0, NOW, &files, &UnavailableMonitor)
+        .await
         .expect("stale file sample discarded");
     assert_eq!(report.changed, 0);
     assert_eq!(rule(&store)["checks"], 0);
@@ -264,20 +296,23 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
     change(
         &store,
         json!({"kind":"interval","command":"printf fixture"}),
-    );
+    )
+    .await;
     let before = rule(&store);
     assert!(matches!(
-        tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor),
+        tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor).await,
         Err(RulesTickError::MonitorUnavailable)
     ));
     assert_eq!(rule(&store), before);
     let monitor = CapturingMonitor {
         store: &store,
-        calls: RefCell::new(Vec::new()),
+        calls: Mutex::new(Vec::new()),
         unknown: false,
     };
-    tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor).expect("launch");
-    let check = monitor.calls.borrow()[0].clone();
+    tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+        .await
+        .expect("launch");
+    let check = monitor.calls.lock().expect("monitor calls")[0].clone();
     let mut wrong_checks = Vec::new();
     let mut wrong = check.clone();
     wrong.epoch += 1;
@@ -314,26 +349,30 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
                 },
                 NOW
             )
+            .await
             .expect("foreign receipt")
         );
         assert_eq!(rule(&store), before);
         assert!(events(&store).is_empty());
     }
     // A caller's transaction rollback also rolls back the rule's finish and wake.
-    let rolled_back: Result<(), RulesTickError> = store.transaction_with(|tx| {
-        assert!(finish_in_transaction(
-            tx,
-            &check,
-            CheckResult {
-                code: Some(0),
-                error: None,
-                cancelled: false,
-                output: "ok"
-            },
-            NOW
-        )?);
-        Err(StoreError::SchemaMismatch("injected monitor commit failure".into()).into())
-    });
+    let check_for_rollback = check.clone();
+    let rolled_back: Result<(), RulesTickError> = store
+        .transaction_with(move |tx| {
+            assert!(finish_in_transaction(
+                tx,
+                &check_for_rollback,
+                CheckResult {
+                    code: Some(0),
+                    error: None,
+                    cancelled: false,
+                    output: "ok"
+                },
+                NOW
+            )?);
+            Err(StoreError::SchemaMismatch("injected monitor commit failure".into()).into())
+        })
+        .await;
     assert!(rolled_back.is_err());
     assert_eq!(rule(&store), before);
     assert!(events(&store).is_empty());
@@ -349,6 +388,7 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
             },
             NOW
         )
+        .await
         .expect("finish")
     );
     assert!(
@@ -363,13 +403,15 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
             },
             NOW
         )
+        .await
         .expect("duplicate")
     );
     assert_eq!(events(&store).len(), 1);
     change(
         &store,
         json!({"kind":"event","event":"worker_completed","command":"","status":"active"}),
-    );
+    )
+    .await;
     let event = || RuleEvent {
         agent_id: "owner",
         kind: "child_result",
@@ -379,20 +421,26 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
     };
     // Event delivery consumes its identity in the same transaction as its wake.
     let result = store
-        .transaction_with::<_, RulesTickError>(|tx| event_in_transaction(tx, event(), 0, false));
+        .transaction_with::<_, RulesTickError>(move |tx| {
+            event_in_transaction(tx, event(), 0, false)
+        })
+        .await;
     let (report, checks) = result.expect("event hook");
     assert_eq!(report.changed, 1);
     assert!(checks.is_empty());
     let count = events(&store).len();
     let (report, _) = store
-        .transaction_with::<_, RulesTickError>(|tx| event_in_transaction(tx, event(), 0, false))
+        .transaction_with::<_, RulesTickError>(move |tx| {
+            event_in_transaction(tx, event(), 0, false)
+        })
+        .await
         .expect("replay");
     assert_eq!(report.changed, 0);
     assert_eq!(events(&store).len(), count);
 }
 
-#[test]
-fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
+#[tokio::test]
+async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
     let template = Template::new();
     let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
@@ -407,17 +455,19 @@ fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
             "nextAt":NOW,
             "command":"printf fake-runner"
         }),
-    );
+    )
+    .await;
     let monitor = CapturingMonitor {
         store: &store,
-        calls: RefCell::new(Vec::new()),
+        calls: Mutex::new(Vec::new()),
         unknown: false,
     };
 
     let report = tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+        .await
         .expect("schedule and submit the due check");
     assert_eq!(report.launched, 1);
-    let check = monitor.calls.borrow()[0].clone();
+    let check = monitor.calls.lock().expect("monitor calls")[0].clone();
     assert_eq!(check.command, "printf fake-runner");
     assert_eq!(check.check_number, 1);
     assert_eq!(rule(&store)["inFlight"], true);
@@ -434,6 +484,7 @@ fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
             },
             NOW + 2.0,
         )
+        .await
         .expect("persist fake runner result")
     );
     let completed = rule(&store);
@@ -444,8 +495,8 @@ fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
     assert_eq!(events(&store).len(), 1);
 }
 
-#[test]
-fn cancelled_paused_check_settles_its_durable_launch_intent() {
+#[tokio::test]
+async fn cancelled_paused_check_settles_its_durable_launch_intent() {
     let template = Template::new();
     let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path())).expect("open Python state");
@@ -460,14 +511,16 @@ fn cancelled_paused_check_settles_its_durable_launch_intent() {
             "nextAt":NOW,
             "command":"printf fixture"
         }),
-    );
+    )
+    .await;
     let monitor = CapturingMonitor {
         store: &store,
-        calls: RefCell::new(Vec::new()),
+        calls: Mutex::new(Vec::new()),
         unknown: false,
     };
     assert_eq!(
         tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+            .await
             .expect("reserve a rule check")
             .launched,
         1
@@ -476,7 +529,7 @@ fn cancelled_paused_check_settles_its_durable_launch_intent() {
     // The monitor callback must consume its exact durable reservation even if the
     // current rule snapshot derives a different timeout from the persisted request.
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let mut value = RulesRepository::get(tx, "rule")?
                 .expect("rule exists")
                 .value()
@@ -486,6 +539,7 @@ fn cancelled_paused_check_settles_its_durable_launch_intent() {
             value["launchIntent"]["timeoutMs"] = json!(30_000);
             RulesRepository::put(tx, &RuleRecord::from_value(value)?)
         })
+        .await
         .expect("pause with the pending intent retained");
     let intent = rule(&store)["launchIntent"].clone();
     let check: RuleCheck = serde_json::from_value(intent).expect("persisted monitor intent");
@@ -501,6 +555,7 @@ fn cancelled_paused_check_settles_its_durable_launch_intent() {
             },
             NOW + 1.0,
         )
+        .await
         .expect("settle the cancelled monitor")
     );
     let settled = rule(&store);
@@ -510,13 +565,14 @@ fn cancelled_paused_check_settles_its_durable_launch_intent() {
     assert!(settled.get("launchIntent").is_none());
 }
 
-#[test]
-fn local_metadata_reports_size_timestamp_and_missing_file() {
+#[tokio::test]
+async fn local_metadata_reports_size_timestamp_and_missing_file() {
     let root = tempfile::tempdir().expect("file root");
     let path = root.path().join("watch");
     std::fs::write(&path, "abc").expect("file write");
     let observed = LocalRuleFiles
         .fingerprint(path.to_str().expect("path"))
+        .await
         .expect("file metadata")
         .expect("file exists");
     assert_eq!(observed.1, 3);
@@ -524,6 +580,7 @@ fn local_metadata_reports_size_timestamp_and_missing_file() {
     assert_eq!(
         LocalRuleFiles
             .fingerprint(root.path().join("missing").to_str().expect("path"))
+            .await
             .expect("missing file"),
         None
     );
@@ -534,73 +591,93 @@ impl RuleMonitor for CrashBeforeLaunch {
     fn available(&self) -> bool {
         true
     }
-    fn launch(&self, _check: &RuleCheck) -> CheckSubmission {
-        // The adapter committed the intent, but no monitor or transport has run.
-        std::process::exit(71)
+    fn launch<'a>(
+        &'a self,
+        _check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+        Box::pin(async { std::process::exit(71) })
     }
-    fn cancel(&self, _id: &str) -> Result<(), RulesTickError> {
-        Ok(())
+    fn cancel<'a>(
+        &'a self,
+        _id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
 struct DurableMonitor<'a> {
     store: &'a RuntimeStore,
     unknown: bool,
-    deliveries: std::cell::Cell<usize>,
+    deliveries: Mutex<usize>,
 }
 impl RuleMonitor for DurableMonitor<'_> {
     fn available(&self) -> bool {
         true
     }
-    fn reconcile(&self, check: &RuleCheck) -> CheckReconciliation {
-        if self.unknown {
-            return CheckReconciliation::Unknown;
-        }
-        let row = studio_runtime_store::MonitorsRepository::get(
-            &self.store.read().expect("read monitor"),
-            &check.monitor_id,
-        )
-        .expect("monitor row");
-        match row {
-            None => CheckReconciliation::NotSubmitted,
-            Some(row)
-                if row.value()["check"] == serde_json::to_value(check).expect("check JSON") =>
-            {
-                CheckReconciliation::Submitted
+    fn reconcile<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckReconciliation> {
+        Box::pin(async move {
+            if self.unknown {
+                return CheckReconciliation::Unknown;
             }
-            Some(_) => CheckReconciliation::Unknown,
-        }
+            let row = studio_runtime_store::MonitorsRepository::get(
+                &self.store.read().expect("read monitor"),
+                &check.monitor_id,
+            )
+            .expect("monitor row");
+            match row {
+                None => CheckReconciliation::NotSubmitted,
+                Some(row)
+                    if row.value()["check"] == serde_json::to_value(check).expect("check JSON") =>
+                {
+                    CheckReconciliation::Submitted
+                }
+                Some(_) => CheckReconciliation::Unknown,
+            }
+        })
     }
-    fn launch(&self, check: &RuleCheck) -> CheckSubmission {
-        assert!(!self.unknown, "unknown outcome must never resend");
-        let record = json!({"id":check.monitor_id,"agent":check.agent_id,"ruleId":check.rule_id,"status":"running","check":check});
-        let inserted = self
-            .store
-            .transaction(|tx| {
-                Ok(tx.execute(
-                    "INSERT OR IGNORE INTO runtime_monitors(id,record) VALUES(?1,?2)",
-                    rusqlite::params![check.monitor_id, record.to_string()],
-                )?)
-            })
-            .expect("reserve durable fake monitor");
-        self.deliveries.set(self.deliveries.get() + inserted);
-        assert_eq!(self.reconcile(check), CheckReconciliation::Submitted);
-        CheckSubmission::Accepted
+    fn launch<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+        Box::pin(async move {
+            assert!(!self.unknown, "unknown outcome must never resend");
+            let record = json!({"id":check.monitor_id,"agent":check.agent_id,"ruleId":check.rule_id,"status":"running","check":check});
+            let monitor_id = check.monitor_id.clone();
+            let inserted = self
+                .store
+                .transaction(move |tx| {
+                    Ok(tx.execute(
+                        "INSERT OR IGNORE INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        rusqlite::params![monitor_id, record.to_string()],
+                    )?)
+                })
+                .await
+                .expect("reserve durable fake monitor");
+            *self.deliveries.lock().expect("delivery count") += inserted;
+            assert_eq!(self.reconcile(check).await, CheckReconciliation::Submitted);
+            CheckSubmission::Accepted
+        })
     }
-    fn cancel(&self, _id: &str) -> Result<(), RulesTickError> {
-        Ok(())
+    fn cancel<'a>(
+        &'a self,
+        _id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
-#[test]
-fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
+#[tokio::test]
+async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
     const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
     if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {
         let store =
             RuntimeStore::open(Some(std::path::Path::new(&path))).expect("child opens state");
         if rule(&store)["kind"] == "event" {
             let (_, checks) = store
-                .transaction_with::<_, RulesTickError>(|tx| {
+                .transaction_with::<_, RulesTickError>(move |tx| {
                     event_in_transaction(
                         tx,
                         RuleEvent {
@@ -614,10 +691,15 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                         true,
                     )
                 })
+                .await
                 .expect("child event transaction");
-            submit_check(&store, &checks[0], NOW, &CrashBeforeLaunch).expect("child event launch");
+            submit_check(&store, &checks[0], NOW, &CrashBeforeLaunch)
+                .await
+                .expect("child event launch");
         } else {
-            tick_batch(&store, 0, NOW, &LocalRuleFiles, &CrashBeforeLaunch).expect("child tick");
+            tick_batch(&store, 0, NOW, &LocalRuleFiles, &CrashBeforeLaunch)
+                .await
+                .expect("child tick");
         }
         panic!("crash boundary was not reached");
     }
@@ -634,7 +716,8 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 change(
                     &store,
                     json!({"kind":kind,"event":"worker_completed","command":"printf fixture"}),
-                );
+                )
+                .await;
             }
             let child = Command::new(std::env::current_exe().expect("test binary"))
                 .args(["--exact", CASE, "--nocapture"])
@@ -655,12 +738,14 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
             let monitor = DurableMonitor {
                 store: &store,
                 unknown: state_kind == CheckReconciliation::Unknown,
-                deliveries: std::cell::Cell::new(0),
+                deliveries: Mutex::new(0),
             };
             if state_kind == CheckReconciliation::Submitted {
                 monitor.launch(&check);
             }
-            let report = recover_batch(&store, 0, NOW + 1.0, &monitor).expect("reconcile startup");
+            let report = recover_batch(&store, 0, NOW + 1.0, &monitor)
+                .await
+                .expect("reconcile startup");
             assert_eq!(
                 report.launched,
                 usize::from(state_kind == CheckReconciliation::NotSubmitted)
@@ -673,12 +758,13 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                         .expect("visible hold")
                         .contains("Outcome unknown")
                 );
-                assert_eq!(monitor.deliveries.get(), 0);
+                assert_eq!(*monitor.deliveries.lock().expect("delivery count"), 0);
             } else {
                 assert_eq!(rule(&store)["status"], "active");
-                assert_eq!(monitor.deliveries.get(), 1);
+                assert_eq!(*monitor.deliveries.lock().expect("delivery count"), 1);
                 assert_eq!(
                     recover_batch(&store, 0, NOW + 2.0, &monitor)
+                        .await
                         .expect("repeat recovery")
                         .launched,
                     0
@@ -686,9 +772,10 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 // Even a duplicate postcommit caller cannot send an already reserved identity twice.
                 assert!(
                     submit_check(&store, &check, NOW + 2.0, &monitor)
+                        .await
                         .expect("idempotent monitor boundary")
                 );
-                assert_eq!(monitor.deliveries.get(), 1);
+                assert_eq!(*monitor.deliveries.lock().expect("delivery count"), 1);
             }
             assert!(
                 finish(
@@ -702,18 +789,21 @@ fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                     },
                     NOW + 3.0
                 )
+                .await
                 .expect("exact completion")
             );
             assert!(rule(&store).get("launchIntent").is_none());
             assert_eq!(events(&store).len(), 1);
             assert_eq!(
                 recover_batch(&store, 0, NOW + 4.0, &monitor)
+                    .await
                     .expect("completed intent absent")
                     .launched,
                 0
             );
             assert!(
                 !submit_check(&store, &check, NOW + 4.0, &monitor)
+                    .await
                     .expect("stale postcommit caller")
             );
         }

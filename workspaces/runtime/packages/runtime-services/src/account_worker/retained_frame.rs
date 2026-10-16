@@ -106,8 +106,8 @@ impl Worker {
         let signature = json!({"scope":scope,"operation":operation,"frame":String::from_utf8(encoded).map_err(|_|WorkerError::Capacity)?});
         let save_key = key.clone();
         let replay = self
-            .db("retained_frame_intent", move |s| {
-                s.transaction_with(|tx| {
+            .db("retained_frame_intent", move |s| async move {
+                s.transaction_with(move |tx| {
                     if let Some(old) = store::receipt(tx, &save_key, "frame")? {
                         if old != signature {
                             return Ok(Err(PortError::Identity));
@@ -119,6 +119,7 @@ impl Worker {
                     store::save(tx, &save_key, "frame", signature)?;
                     Ok(Ok(None))
                 })
+                .await
             })
             .await?;
         match replay {
@@ -178,8 +179,8 @@ impl Worker {
         let Some(pending) = self.retained_frames.remove(operation) else {
             return Ok(false);
         };
-        self.db("retained_frame_written", move |s| {
-            s.transaction_with(|tx| {
+        self.db("retained_frame_written", move |s| async move {
+            s.transaction_with(move |tx| {
                 store::save(
                     tx,
                     &pending.key,
@@ -191,6 +192,7 @@ impl Worker {
                     }),
                 )
             })
+            .await
         })
         .await?;
         let _ignored = pending.reply.send(Ok(outcome));

@@ -4,6 +4,7 @@
 //! operation routing, missing-capability refusals, monitor ownership checks,
 //! and durable input receipt interpretation.
 
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use studio_runtime_store::RuntimeStore;
 
@@ -230,70 +231,71 @@ pub(crate) struct RulesActionResult {
 }
 
 pub(crate) trait StatusWatchPort: Send + Sync {
-    fn status(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
+    fn status<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
         now: f64,
-    ) -> Result<Value, Error>;
+    ) -> BoxFuture<'a, Result<Value, Error>>;
 
-    fn rules(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn rules<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<RulesActionResult, Error>;
+    ) -> BoxFuture<'a, Result<RulesActionResult, Error>>;
 }
 
 pub(crate) trait ChildCreationPort: Send + Sync {
-    fn spawn(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn spawn<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<OperationResult, Error>;
+    ) -> BoxFuture<'a, Result<OperationResult, Error>>;
 
-    fn review(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn review<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<OperationResult, Error>;
+    ) -> BoxFuture<'a, Result<OperationResult, Error>>;
 }
 
 pub(crate) trait MonitorCreatePort: Send + Sync {
-    fn create(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
+    fn create<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        actor: &'a Actor,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<Value, Error>;
+    ) -> BoxFuture<'a, Result<Value, Error>>;
 }
 
 pub(crate) trait InterruptPort: Send + Sync {
-    fn stop_by_agent(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        target_id: &str,
-        request_id: &str,
+    fn stop_by_agent<'a>(
+        &'a self,
+        store: std::sync::Arc<RuntimeStore>,
+        actor: &'a Actor,
+        target_id: &'a str,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<DispatchedOperation, Error>;
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>>;
 }
 
 pub(crate) trait MonitorInputPort: Send + Sync {
     /// The authenticated caller is explicit even though the retained native
     /// runtime's input method takes the owner from the persisted monitor.
-    fn input(&self, request: MonitorInputRequest<'_>) -> Result<Value, Error>;
+    fn input<'a>(&'a self, request: MonitorInputRequest<'a>)
+    -> BoxFuture<'a, Result<Value, Error>>;
 }
 
 pub(crate) struct MonitorInputRequest<'a> {
@@ -306,7 +308,12 @@ pub(crate) struct MonitorInputRequest<'a> {
 }
 
 pub(crate) trait MonitorCancelPort: Send + Sync {
-    fn cancel_monitor(&self, monitor_id: &str, owner: &str, now: f64) -> Result<Value, Error>;
+    fn cancel_monitor<'a>(
+        &'a self,
+        monitor_id: &'a str,
+        owner: &'a str,
+        now: f64,
+    ) -> BoxFuture<'a, Result<Value, Error>>;
 }
 
 #[derive(Clone)]
@@ -320,7 +327,7 @@ pub(crate) struct ManagedToolRuntimePorts {
 }
 
 pub(super) struct DispatchRequest<'a> {
-    pub(super) store: &'a RuntimeStore,
+    pub(super) store: std::sync::Arc<RuntimeStore>,
     pub(super) actor: &'a Actor,
     pub(super) context: &'a crate::provider_callbacks::CallbackContext,
     pub(super) tool: &'a str,
@@ -330,7 +337,9 @@ pub(super) struct DispatchRequest<'a> {
     pub(super) ports: &'a ManagedToolRuntimePorts,
 }
 
-pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<DispatchedOperation>, Error> {
+pub(super) async fn dispatch(
+    request: DispatchRequest<'_>,
+) -> Result<Option<DispatchedOperation>, Error> {
     let DispatchRequest {
         store,
         actor,
@@ -341,6 +350,7 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
         now,
         ports,
     } = request;
+    let store_ref = store.as_ref();
     let actor_id = actor.record().id.0.as_str();
     let actor_epoch = actor.record().epoch;
     let dispatched = match tool {
@@ -355,7 +365,7 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                     "model-directory/status-and-dispatch-capacity",
                 ))));
             };
-            written(port.status(store, actor, args, now)?, Vec::new())
+            written(port.status(store_ref, actor, args, now).await?, Vec::new())
         }
         "orchestration_watch" => {
             let action = args["action"].as_str().unwrap_or("list");
@@ -369,14 +379,16 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                     "model-directory/status-and-dispatch-capacity",
                 ))));
             };
-            let result = port.rules(store, actor, args, request_id, now)?;
+            let result = port.rules(store_ref, actor, args, request_id, now).await?;
             for monitor_id in result.cancel_monitor_ids {
                 let Some(monitor_port) = ports.monitor_cancel.as_ref() else {
                     return Ok(Some(not_sent(Error::Unavailable(
                         "monitor-runtime/rule-cancel",
                     ))));
                 };
-                monitor_port.cancel_monitor(&monitor_id, actor_id, now)?;
+                monitor_port
+                    .cancel_monitor(&monitor_id, actor_id, now)
+                    .await?;
             }
             written(result.value, Vec::new())
         }
@@ -387,9 +399,9 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                 ))));
             };
             let result = if tool == "orchestration_spawn" {
-                port.spawn(store, actor, args, request_id, now)?
+                port.spawn(store_ref, actor, args, request_id, now).await?
             } else {
-                port.review(store, actor, args, request_id, now)?
+                port.review(store_ref, actor, args, request_id, now).await?
             };
             child_creation_result(result)
         }
@@ -405,8 +417,16 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                 .ok_or(Error::Invalid(
                     "Supply agent_id for orchestration_interrupt",
                 ))?;
-            let target = super::services::resolve_interrupt_target(store, context, target)?;
-            port.stop_by_agent(store, actor, &target, request_id, now)?
+            let target =
+                super::services::resolve_interrupt_target(store_ref, context, target).await?;
+            port.stop_by_agent(
+                std::sync::Arc::clone(&store),
+                actor,
+                &target,
+                request_id,
+                now,
+            )
+            .await?
         }
         "orchestration_monitor" if args["action"].as_str() != Some("cancel") => {
             let Some(port) = ports.monitor_create.as_ref() else {
@@ -415,7 +435,7 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                 ))));
             };
             written(
-                port.create(store, actor, args, request_id, now)?,
+                port.create(store_ref, actor, args, request_id, now).await?,
                 Vec::new(),
             )
         }
@@ -431,17 +451,20 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
                 .ok_or(Error::Invalid("Missing monitor_id"))?;
             let input: Value = serde_json::from_value(args.clone())
                 .map_err(|_| Error::Invalid("Invalid monitor input"))?;
-            authorize_monitor_input(store, actor, monitor_id)?;
-            match port.input(MonitorInputRequest {
-                caller_id: actor_id,
-                caller_epoch: actor_epoch,
-                monitor_id,
-                ticket: request_id,
-                input: &input,
-                now,
-            }) {
+            authorize_monitor_input(store_ref, actor, monitor_id)?;
+            match port
+                .input(MonitorInputRequest {
+                    caller_id: actor_id,
+                    caller_epoch: actor_epoch,
+                    monitor_id,
+                    ticket: request_id,
+                    input: &input,
+                    now,
+                })
+                .await
+            {
                 Ok(value) => written(value, Vec::new()),
-                Err(error) => match input_attempt(store, monitor_id, request_id) {
+                Err(error) => match input_attempt(store_ref, monitor_id, request_id) {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
                     Ok(None) => not_sent(error),
                     Err(_) => unknown_input(),

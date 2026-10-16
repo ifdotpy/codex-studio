@@ -36,11 +36,11 @@ pub struct SafetyAction<'a> {
 
 /// Execute the complete retry action against the agent's retained Codex session.
 /// Every request is journaled in runtime_safety_retries before hand-off.
-pub fn execute_action(
-    store: &RuntimeStore,
+pub async fn execute_action(
+    store: Arc<RuntimeStore>,
     provider: &dyn AccountSessionPort,
     resources: &Arc<PreparationResources>,
-    lifecycle: Option<&dyn LifecyclePorts>,
+    lifecycle: Option<Arc<dyn LifecyclePorts>>,
     action: SafetyAction<'_>,
 ) -> Result<Value, Error> {
     let SafetyAction {
@@ -55,17 +55,24 @@ pub fn execute_action(
     if !matches!(choice, "wait" | "retry" | "cancel") {
         return Err(Error::InvalidChoice);
     }
-    let account = store.transaction_with(|tx| {
-        let agent = read_agent(tx, agent_id)?;
-        if agent.get("epoch").and_then(Value::as_i64) != Some(actor.epoch) {
-            return Err(Error::StaleRetry);
-        }
-        Ok(agent
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .to_owned())
-    })?;
+    let agent_id = agent_id.to_owned();
+    let turn_id = turn_id.to_owned();
+    let choice = choice.to_owned();
+    let account_agent_id = agent_id.clone();
+    let actor_epoch = actor.epoch;
+    let account = store
+        .transaction_with(move |tx| {
+            let agent = read_agent(tx, &account_agent_id)?;
+            if agent.get("epoch").and_then(Value::as_i64) != Some(actor_epoch) {
+                return Err(Error::StaleRetry);
+            }
+            Ok(agent
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned())
+        })
+        .await?;
     let scope = provider.current_scope(&account);
     if scope.as_ref().is_some_and(|scope| scope.account != account) {
         return Err(Error::StaleRetry);
@@ -73,117 +80,134 @@ pub fn execute_action(
     let identity = format!("{agent_id}:{turn_id}");
     let now = unix_seconds();
     let fresh_attempt = uuid::Uuid::new_v4().to_string();
-    let decision = store.transaction_with(|tx| {
-        let mut agent = read_agent(tx, agent_id)?;
-        if agent.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
-            || agent
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                != account
-        {
-            return Err(Error::StaleRetry);
-        }
-        let existing = read_retry(tx, &identity)?;
-        if let Some(mut operation) = existing {
-            let mut stage = Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
-            if operation.get("accountKey").and_then(Value::as_str) != Some(&account)
-                || operation.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
-                || operation.get("agent").and_then(Value::as_str) != Some(agent_id)
-                || operation.get("turnId").and_then(Value::as_str) != Some(turn_id)
-                || operation.get("id").and_then(Value::as_str) != Some(&identity)
+    let decision_agent_id = agent_id.clone();
+    let decision_turn_id = turn_id.clone();
+    let decision_choice = choice.clone();
+    let decision_account = account.clone();
+    let decision_scope = scope.clone();
+    let decision_identity = identity.clone();
+    let decision_attempt = fresh_attempt.clone();
+    let decision_actor = actor.clone();
+    let decision = store
+        .transaction_with(move |tx| {
+            let mut agent = read_agent(tx, &decision_agent_id)?;
+            if agent.get("epoch").and_then(Value::as_i64) != Some(decision_actor.epoch)
+                || agent
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    != decision_account
             {
                 return Err(Error::StaleRetry);
             }
-            if operation_has_unknown_receipt(&operation, stage)? {
-                operation["stage"] = json!(Stage::Unknown.as_str());
-                operation["dispatch"] = json!("unknown");
-                operation["error"] = json!("Provider request outcome is unknown");
-                operation["updated"] = json!(now);
-                save_operation(tx, &mut agent, &operation)?;
-                stage = Stage::Unknown;
-            }
-            if choice == "cancel" && super::ACTIVE_STAGES.contains(&stage) {
-                if operation.get("rpcMethod").and_then(Value::as_str) == Some("turn/start") {
-                    return Err(Error::StartAlreadySubmitted);
-                }
-                operation["stage"] = json!(Stage::Cancelled.as_str());
-                operation["dispatch"] = json!("cancelled");
-                operation["error"] = Value::Null;
-                if let Some(buffering) = agent
-                    .get_mut("nativeSafetyBuffering")
-                    .and_then(Value::as_object_mut)
+            let existing = read_retry(tx, &decision_identity)?;
+            if let Some(mut operation) = existing {
+                let mut stage =
+                    Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
+                if operation.get("accountKey").and_then(Value::as_str)
+                    != Some(decision_account.as_str())
+                    || operation.get("epoch").and_then(Value::as_i64) != Some(decision_actor.epoch)
+                    || operation.get("agent").and_then(Value::as_str)
+                        != Some(decision_agent_id.as_str())
+                    || operation.get("turnId").and_then(Value::as_str)
+                        != Some(decision_turn_id.as_str())
+                    || operation.get("id").and_then(Value::as_str)
+                        != Some(decision_identity.as_str())
                 {
-                    buffering.insert("dismissed".into(), Value::Bool(true));
+                    return Err(Error::StaleRetry);
                 }
-                if agent.get("inFlight").and_then(Value::as_bool) != Some(true) {
-                    agent["status"] = json!("interrupted");
+                if operation_has_unknown_receipt(&operation, stage)? {
+                    operation["stage"] = json!(Stage::Unknown.as_str());
+                    operation["dispatch"] = json!("unknown");
+                    operation["error"] = json!("Provider request outcome is unknown");
+                    operation["updated"] = json!(now);
+                    save_operation(tx, &mut agent, &operation)?;
+                    stage = Stage::Unknown;
                 }
-                save_operation(tx, &mut agent, &operation)?;
-                return Ok(ActionPlan::Return(public_receipt(&operation)?));
-            }
-            let public = public_receipt(&operation)?;
-            if choice == "retry"
-                && !matches!(
-                    stage,
-                    Stage::Unknown | Stage::Running | Stage::Failed | Stage::Cancelled
-                )
-                && operation.get("dispatch").and_then(Value::as_str) != Some("unknown")
-            {
-                return Ok(ActionPlan::Drive(operation));
-            }
-            return Ok(ActionPlan::Return(public));
-        }
-        if choice == "cancel" {
-            return Err(Error::NoRetryToCancel);
-        }
-        let scope = scope
-            .as_ref()
-            .ok_or(Error::Requires("provider-session/native-request"))?;
-        let buffering = agent
-            .get("nativeSafetyBuffering")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let active_scope = buffering.get("connectionId").and_then(Value::as_str)
-            == Some(scope.connection.as_str());
-        let thread_open = !crate::continuation::native_thread_blocked(&agent);
-        let snapshot = SafetySnapshot::from_agent(&agent, active_scope, thread_open)?;
-        match decide_action(
-            &snapshot,
-            choice,
-            turn_id,
-            None,
-            &identity,
-            &fresh_attempt,
-            now,
-        )? {
-            SafetyDecision::Replay { receipt } => Ok(ActionPlan::Return(receipt)),
-            SafetyDecision::Cancelled { .. } => Err(Error::InvalidStoredState),
-            SafetyDecision::Waiting { .. } => {
-                if let Some(buffering) = agent
-                    .get_mut("nativeSafetyBuffering")
-                    .and_then(Value::as_object_mut)
+                if decision_choice == "cancel" && super::ACTIVE_STAGES.contains(&stage) {
+                    if operation.get("rpcMethod").and_then(Value::as_str) == Some("turn/start") {
+                        return Err(Error::StartAlreadySubmitted);
+                    }
+                    operation["stage"] = json!(Stage::Cancelled.as_str());
+                    operation["dispatch"] = json!("cancelled");
+                    operation["error"] = Value::Null;
+                    if let Some(buffering) = agent
+                        .get_mut("nativeSafetyBuffering")
+                        .and_then(Value::as_object_mut)
+                    {
+                        buffering.insert("dismissed".into(), Value::Bool(true));
+                    }
+                    if agent.get("inFlight").and_then(Value::as_bool) != Some(true) {
+                        agent["status"] = json!("interrupted");
+                    }
+                    save_operation(tx, &mut agent, &operation)?;
+                    return Ok(ActionPlan::Return(public_receipt(&operation)?));
+                }
+                let public = public_receipt(&operation)?;
+                if decision_choice == "retry"
+                    && !matches!(
+                        stage,
+                        Stage::Unknown | Stage::Running | Stage::Failed | Stage::Cancelled
+                    )
+                    && operation.get("dispatch").and_then(Value::as_str) != Some("unknown")
                 {
-                    buffering.insert("dismissed".into(), Value::Bool(true));
+                    return Ok(ActionPlan::Drive(operation));
                 }
-                put_agent(tx, &agent)?;
-                Ok(ActionPlan::Return(json!({"stage":"waiting"})))
+                return Ok(ActionPlan::Return(public));
             }
-            SafetyDecision::BeginRetry { receipt } => {
-                let mut operation = receipt;
-                operation["scope"] =
-                    serde_json::to_value(scope).map_err(|_| Error::InvalidStoredState)?;
-                operation["responses"] = json!({});
-                operation["receipts"] = json!({});
-                operation["dispatch"] = json!("ready");
-                save_operation(tx, &mut agent, &operation)?;
-                Ok(ActionPlan::Drive(operation))
+            if decision_choice == "cancel" {
+                return Err(Error::NoRetryToCancel);
             }
-        }
-    })?;
+            let scope = decision_scope
+                .as_ref()
+                .ok_or(Error::Requires("provider-session/native-request"))?;
+            let buffering = agent
+                .get("nativeSafetyBuffering")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let active_scope = buffering.get("connectionId").and_then(Value::as_str)
+                == Some(scope.connection.as_str());
+            let thread_open = !crate::continuation::native_thread_blocked(&agent);
+            let snapshot = SafetySnapshot::from_agent(&agent, active_scope, thread_open)?;
+            match decide_action(
+                &snapshot,
+                &decision_choice,
+                &decision_turn_id,
+                None,
+                &decision_identity,
+                &decision_attempt,
+                now,
+            )? {
+                SafetyDecision::Replay { receipt } => Ok(ActionPlan::Return(receipt)),
+                SafetyDecision::Cancelled { .. } => Err(Error::InvalidStoredState),
+                SafetyDecision::Waiting { .. } => {
+                    if let Some(buffering) = agent
+                        .get_mut("nativeSafetyBuffering")
+                        .and_then(Value::as_object_mut)
+                    {
+                        buffering.insert("dismissed".into(), Value::Bool(true));
+                    }
+                    put_agent(tx, &agent)?;
+                    Ok(ActionPlan::Return(json!({"stage":"waiting"})))
+                }
+                SafetyDecision::BeginRetry { receipt } => {
+                    let mut operation = receipt;
+                    operation["scope"] =
+                        serde_json::to_value(scope).map_err(|_| Error::InvalidStoredState)?;
+                    operation["responses"] = json!({});
+                    operation["receipts"] = json!({});
+                    operation["dispatch"] = json!("ready");
+                    save_operation(tx, &mut agent, &operation)?;
+                    Ok(ActionPlan::Drive(operation))
+                }
+            }
+        })
+        .await?;
     match decision {
         ActionPlan::Return(receipt) => Ok(receipt),
-        ActionPlan::Drive(operation) => drive(store, provider, resources, lifecycle, operation),
+        ActionPlan::Drive(operation) => {
+            drive(store, provider, resources, lifecycle, operation).await
+        }
     }
 }
 
@@ -192,11 +216,11 @@ enum ActionPlan {
     Drive(Value),
 }
 
-fn drive(
-    store: &RuntimeStore,
+async fn drive(
+    store: Arc<RuntimeStore>,
     provider: &dyn AccountSessionPort,
     resources: &Arc<PreparationResources>,
-    lifecycle: Option<&dyn LifecyclePorts>,
+    lifecycle: Option<Arc<dyn LifecyclePorts>>,
     mut operation: Value,
 ) -> Result<Value, Error> {
     loop {
@@ -225,14 +249,14 @@ fn drive(
         if let Some(response) =
             recorded_written_response(&operation, stage, &operation_id, &saved_scope)?
         {
-            match advance_stage(store, &mut operation, stage, response, lifecycle) {
+            match advance_stage(&store, &mut operation, stage, response, lifecycle.clone()).await {
                 Ok(true) => continue,
                 Ok(false) => return public_receipt(&operation),
                 Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
                     operation["stage"] = json!(Stage::Failed.as_str());
                     operation["dispatch"] = json!("rejected");
                     operation["error"] = json!("Safety retry stage was refused");
-                    persist_operation(store, &mut operation)?;
+                    persist_operation(&store, &mut operation).await?;
                     return Err(error);
                 }
                 Err(Error::ProviderUnknown) => {
@@ -240,15 +264,30 @@ fn drive(
                     operation["dispatch"] = json!("unknown");
                     operation["error"] =
                         json!("Provider response did not identify the resulting thread or turn");
-                    persist_operation(store, &mut operation)?;
+                    persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
                 }
                 Err(error) => return Err(error),
             }
         }
-        let (method, params) =
-            request_for_stage(store, resources, &operation, stage, scope.generation)?;
-        if !persist_intent(store, &mut operation, stage, &operation_id, method, &params)? {
+        let (method, params) = request_for_stage(
+            Arc::clone(&store),
+            resources,
+            &operation,
+            stage,
+            scope.generation,
+        )
+        .await?;
+        if !persist_intent(
+            &store,
+            &mut operation,
+            stage,
+            &operation_id,
+            method,
+            &params,
+        )
+        .await?
+        {
             return public_receipt(&operation);
         }
         let request = ProviderRequest {
@@ -269,10 +308,10 @@ fn drive(
         };
         let mut sent_retry = 0;
         let receipt = loop {
-            match provider.provider_request(request.clone()) {
+            match provider.provider_request(request.clone()).await {
                 Ok(receipt) => {
                     validate_receipt(&receipt, &operation_id, &saved_scope)?;
-                    if !persist_stage_receipt(store, &mut operation, stage, &receipt)? {
+                    if !persist_stage_receipt(&store, &mut operation, stage, &receipt).await? {
                         return public_receipt(&operation);
                     }
                     if receipt.certainty == RequestCertainty::NotSent
@@ -280,7 +319,7 @@ fn drive(
                     {
                         sent_retry += 1;
                         operation["dispatch"] = json!("intent");
-                        persist_operation(store, &mut operation)?;
+                        persist_operation(&store, &mut operation).await?;
                         if Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?
                             != stage
                         {
@@ -293,74 +332,81 @@ fn drive(
                 Err(AccountSessionError::Requires(name)) => return Err(Error::Requires(name)),
                 Err(AccountSessionError::Unknown) => {
                     if !persist_unknown_receipt(
-                        store,
+                        &store,
                         &mut operation,
                         stage,
                         &operation_id,
                         "unknown",
-                    )? {
+                    )
+                    .await?
+                    {
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Unknown.as_str());
                     operation["dispatch"] = json!("unknown");
                     operation["error"] = json!("Provider request outcome is unknown");
-                    persist_operation(store, &mut operation)?;
+                    persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
                 }
                 Err(AccountSessionError::Refused(_)) => {
                     if !persist_unknown_receipt(
-                        store,
+                        &store,
                         &mut operation,
                         stage,
                         &operation_id,
                         "refused",
-                    )? {
+                    )
+                    .await?
+                    {
                         return public_receipt(&operation);
                     }
                     if stage == Stage::Start
                         && !settle_start_rejected(
-                            store,
+                            &store,
                             &mut operation,
                             None,
                             "Provider refused turn/start",
-                        )?
+                        )
+                        .await?
                     {
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Failed.as_str());
                     operation["dispatch"] = json!("rejected");
                     operation["error"] = json!("Provider request refused");
-                    persist_operation(store, &mut operation)?;
+                    persist_operation(&store, &mut operation).await?;
                     return Err(Error::ProviderRejected);
                 }
                 Err(_) => {
                     if !persist_unknown_receipt(
-                        store,
+                        &store,
                         &mut operation,
                         stage,
                         &operation_id,
                         "unknown",
-                    )? {
+                    )
+                    .await?
+                    {
                         return public_receipt(&operation);
                     }
                     operation["stage"] = json!(Stage::Unknown.as_str());
                     operation["dispatch"] = json!("unknown");
                     operation["error"] = json!("Provider request outcome is unknown");
-                    persist_operation(store, &mut operation)?;
+                    persist_operation(&store, &mut operation).await?;
                     return public_receipt(&operation);
                 }
             }
         };
         if receipt.certainty == RequestCertainty::NotSent {
             operation["dispatch"] = json!("ready");
-            persist_operation(store, &mut operation)?;
+            persist_operation(&store, &mut operation).await?;
             return public_receipt(&operation);
         }
         if receipt.certainty == RequestCertainty::Unknown {
             operation["stage"] = json!(Stage::Unknown.as_str());
             operation["dispatch"] = json!("unknown");
             operation["error"] = json!("Provider request outcome is unknown");
-            persist_operation(store, &mut operation)?;
+            persist_operation(&store, &mut operation).await?;
             return public_receipt(&operation);
         }
         let body = match receipt.result {
@@ -368,25 +414,26 @@ fn drive(
             Some(ProviderResponse::Rejected(_)) => {
                 if stage == Stage::Start
                     && !settle_start_rejected(
-                        store,
+                        &store,
                         &mut operation,
                         receipt.ticket.as_ref(),
                         "Provider rejected turn/start",
-                    )?
+                    )
+                    .await?
                 {
                     return public_receipt(&operation);
                 }
                 operation["stage"] = json!(Stage::Failed.as_str());
                 operation["dispatch"] = json!("rejected");
                 operation["error"] = json!("Provider rejected the safety retry request");
-                persist_operation(store, &mut operation)?;
+                persist_operation(&store, &mut operation).await?;
                 return Err(Error::ProviderRejected);
             }
             None => {
                 operation["stage"] = json!(Stage::Unknown.as_str());
                 operation["dispatch"] = json!("unknown");
                 operation["error"] = json!("Provider receipt has no result");
-                persist_operation(store, &mut operation)?;
+                persist_operation(&store, &mut operation).await?;
                 return public_receipt(&operation);
             }
         };
@@ -396,14 +443,14 @@ fn drive(
             .ok_or(Error::InvalidStoredState)?
             .insert(stage.as_str().into(), body.clone());
         operation["dispatch"] = json!("received");
-        match advance_stage(store, &mut operation, stage, body, lifecycle) {
+        match advance_stage(&store, &mut operation, stage, body, lifecycle.clone()).await {
             Ok(true) => (),
             Ok(false) => return public_receipt(&operation),
             Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
                 operation["stage"] = json!(Stage::Failed.as_str());
                 operation["dispatch"] = json!("rejected");
                 operation["error"] = json!("Safety retry stage was refused");
-                persist_operation(store, &mut operation)?;
+                persist_operation(&store, &mut operation).await?;
                 return Err(error);
             }
             Err(Error::ProviderUnknown) => {
@@ -411,7 +458,7 @@ fn drive(
                 operation["dispatch"] = json!("unknown");
                 operation["error"] =
                     json!("Provider response did not identify the resulting thread or turn");
-                persist_operation(store, &mut operation)?;
+                persist_operation(&store, &mut operation).await?;
                 return public_receipt(&operation);
             }
             Err(error) => return Err(error),
@@ -423,8 +470,8 @@ fn drive(
     }
 }
 
-fn request_for_stage(
-    store: &RuntimeStore,
+async fn request_for_stage(
+    store: Arc<RuntimeStore>,
     resources: &Arc<PreparationResources>,
     operation: &Value,
     stage: Stage,
@@ -468,6 +515,7 @@ fn request_for_stage(
                         .ok_or(Error::InvalidStoredState)?,
                 },
             )
+            .await
             .map_err(|error| Error::Preparation(error.to_string()))?;
             if stage == Stage::Fork {
                 prepared.fork_params
@@ -483,7 +531,7 @@ fn request_for_stage(
     Ok((method, params))
 }
 
-fn persist_intent(
+async fn persist_intent(
     store: &RuntimeStore,
     operation: &mut Value,
     stage: Stage,
@@ -497,45 +545,51 @@ fn persist_intent(
     operation["operationId"] = json!(operation_id);
     operation["requestParams"] = params.clone();
     operation["updated"] = json!(unix_seconds());
-    store.transaction_with(|tx| {
-        let current =
-            read_retry(tx, required_str(operation, "id")?)?.ok_or(Error::InvalidStoredState)?;
-        if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
-            *operation = current;
-            return Ok(false);
-        }
-        let mut agent = read_agent(tx, required_str(operation, "agent")?)?;
-        validate_current(&agent, operation, stage)?;
-        if stage == Stage::Start {
-            let attempt = json!({
-                "id":required_str(operation,"attemptId")?,
-                "epoch":operation.get("epoch").cloned().ok_or(Error::InvalidStoredState)?,
-                "events":[],"action":"safety","submitted":true,
-                "accountKey":required_str(operation,"accountKey")?,
-                "connectionId":required_str(operation,"connectionId")?,
-                "threadId":required_str(operation,"newThreadId")?
-            });
-            let program = if agent.get("daybreakEnabled").and_then(Value::as_bool) == Some(true) {
-                agent
-                    .get("cyberAccessProgram")
+    let pending = operation.clone();
+    let id = required_str(&pending, "id")?.to_owned();
+    let agent_id = required_str(&pending, "agent")?.to_owned();
+    let result = store
+        .transaction_with_error(move |tx| -> Result<_, Error> {
+            let current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
+            if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
+                return Ok((current, false));
+            }
+            let mut agent = read_agent(tx, &agent_id)?;
+            validate_current(&agent, &pending, stage)?;
+            if stage == Stage::Start {
+                let attempt = json!({
+                    "id":required_str(&pending,"attemptId")?,
+                    "epoch":pending.get("epoch").cloned().ok_or(Error::InvalidStoredState)?,
+                    "events":[],"action":"safety","submitted":true,
+                    "accountKey":required_str(&pending,"accountKey")?,
+                    "connectionId":required_str(&pending,"connectionId")?,
+                    "threadId":required_str(&pending,"newThreadId")?
+                });
+                let program = if agent.get("daybreakEnabled").and_then(Value::as_bool) == Some(true)
+                {
+                    agent
+                        .get("cyberAccessProgram")
+                        .cloned()
+                        .unwrap_or_else(|| json!("standard"))
+                } else {
+                    json!("standard")
+                };
+                agent["cyberAccessProgram"] = program;
+                agent["status"] = json!("starting");
+                agent["inFlight"] = json!(true);
+                agent["turnEpoch"] = pending
+                    .get("epoch")
                     .cloned()
-                    .unwrap_or_else(|| json!("standard"))
-            } else {
-                json!("standard")
-            };
-            agent["cyberAccessProgram"] = program;
-            agent["status"] = json!("starting");
-            agent["inFlight"] = json!(true);
-            agent["turnEpoch"] = operation
-                .get("epoch")
-                .cloned()
-                .ok_or(Error::InvalidStoredState)?;
-            agent["error"] = Value::Null;
-            agent["startAttempt"] = attempt;
-        }
-        save_operation(tx, &mut agent, operation)?;
-        Ok(true)
-    })
+                    .ok_or(Error::InvalidStoredState)?;
+                agent["error"] = Value::Null;
+                agent["startAttempt"] = attempt;
+            }
+            save_operation(tx, &mut agent, &pending)?;
+            Ok((pending, true))
+        })
+        .await?;
+    *operation = result.0;
+    Ok(result.1)
 }
 
 fn validate_current(agent: &Value, operation: &Value, stage: Stage) -> Result<(), Error> {
@@ -584,25 +638,28 @@ fn validate_current(agent: &Value, operation: &Value, stage: Stage) -> Result<()
     Ok(())
 }
 
-fn advance_stage(
+async fn advance_stage(
     store: &RuntimeStore,
     operation: &mut Value,
     stage: Stage,
     response: Value,
-    lifecycle: Option<&dyn LifecyclePorts>,
+    lifecycle: Option<Arc<dyn LifecyclePorts>>,
 ) -> Result<bool, Error> {
-    let mut committed_interrupt = false;
-    store
-        .transaction_with(|tx| {
-            let id = required_str(operation, "id")?;
+    let target = operation;
+    let mut operation = target.clone();
+    let lifecycle_after = lifecycle.clone();
+    let (updated, advanced, committed_interrupt) = store
+        .transaction_with(move |tx| {
+            let mut committed_interrupt = false;
+            let id = required_str(&operation, "id")?;
             let current = read_retry(tx, id)?.ok_or(Error::InvalidStoredState)?;
             if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
-                *operation = current;
-                return Ok(false);
+                operation = current;
+                return Ok((operation, false, false));
             }
-            let mut agent = read_agent(tx, required_str(operation, "agent")?)?;
+            let mut agent = read_agent(tx, required_str(&operation, "agent")?)?;
             if stage != Stage::Start {
-                validate_current(&agent, operation, stage)?;
+                validate_current(&agent, &operation, stage)?;
             }
             match stage {
                 Stage::Turns | Stage::VerifyTurns => {
@@ -719,28 +776,28 @@ fn advance_stage(
                         .ok_or(Error::InvalidStoredState)?;
                     let settled = SchedulerRepository::settle_safety_started_provider(
                         tx,
-                        required_str(operation, "agent")?,
+                        required_str(&operation, "agent")?,
                         operation
                             .get("epoch")
                             .and_then(Value::as_i64)
                             .ok_or(Error::InvalidStoredState)?,
-                        required_str(operation, "attemptId")?,
+                        required_str(&operation, "attemptId")?,
                         &request_id,
-                        required_str(operation, "accountKey")?,
+                        required_str(&operation, "accountKey")?,
                         generation,
-                        required_str(operation, "newThreadId")?,
+                        required_str(&operation, "newThreadId")?,
                         accepted,
                     )?;
                     // The lifecycle owner may decline a stale acceptance or request an
                     // interrupt after an intervening stop. Keep the durable start receipt
                     // at this stage so recovery can reapply the same correlated decision.
                     if settled.is_none() {
-                        return Ok(false);
+                        return Ok((operation, false, false));
                     }
                     if settled == Some(true) {
                         let ports =
                             lifecycle.ok_or(Error::Requires("account-worker/agent-interrupt"))?;
-                        let accepted_agent = read_agent(tx, required_str(operation, "agent")?)?;
+                        let accepted_agent = read_agent(tx, required_str(&operation, "agent")?)?;
                         let mut before = accepted_agent.clone();
                         before["epoch"] = operation
                             .get("epoch")
@@ -763,24 +820,25 @@ fn advance_stage(
                     operation["stage"] = json!("running");
                     operation["acceptedTurnId"] = json!(accepted);
                     operation["error"] = Value::Null;
-                    agent = read_agent(tx, required_str(operation, "agent")?)?;
+                    agent = read_agent(tx, required_str(&operation, "agent")?)?;
                 }
                 _ => return Err(Error::InvalidStoredState),
             }
             operation["dispatch"] = json!("ready");
             operation["updated"] = json!(unix_seconds());
-            save_operation(tx, &mut agent, operation)?;
-            Ok(true)
+            save_operation(tx, &mut agent, &operation)?;
+            Ok((operation, true, committed_interrupt))
         })
-        .and_then(|advanced| {
-            if committed_interrupt {
-                lifecycle
-                    .ok_or(Error::Requires("account-worker/agent-interrupt"))?
-                    .committed()
-                    .map_err(lifecycle_error)?;
-            }
-            Ok(advanced)
-        })
+        .await?;
+    *target = updated;
+    if committed_interrupt {
+        lifecycle_after
+            .ok_or(Error::Requires("account-worker/agent-interrupt"))?
+            .committed()
+            .await
+            .map_err(lifecycle_error)?;
+    }
+    Ok(advanced)
 }
 
 fn validate_receipt(
@@ -794,64 +852,70 @@ fn validate_receipt(
     Ok(())
 }
 
-fn settle_start_rejected(
+async fn settle_start_rejected(
     store: &RuntimeStore,
     operation: &mut Value,
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     reason: &str,
 ) -> Result<bool, Error> {
     let id = required_str(operation, "id")?.to_owned();
-    let (current, settled) = store.transaction_with::<_, Error>(|tx| {
-        let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
-        if current.get("stage").and_then(Value::as_str) != Some(Stage::Start.as_str()) {
-            return Ok((current, false));
-        }
-        let agent_id = required_str(&current, "agent")?.to_owned();
-        let epoch = current
-            .get("epoch")
-            .and_then(Value::as_i64)
-            .ok_or(Error::InvalidStoredState)?;
-        let attempt_id = required_str(&current, "attemptId")?.to_owned();
-        let account = required_str(&current, "accountKey")?.to_owned();
-        let thread = required_str(&current, "newThreadId")?.to_owned();
-        let request_id = ticket
-            .map(|ticket| request_id_string(&ticket.id))
-            .or_else(|| {
-                current
-                    .get("requestId")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value::<RequestId>(value).ok())
-                    .map(|id| request_id_string(&id))
-            })
-            .ok_or(Error::InvalidStoredState)?;
-        let generation = ticket
-            .map(|ticket| ticket.generation)
-            .or_else(|| current.get("requestGeneration").and_then(Value::as_u64))
-            .ok_or(Error::InvalidStoredState)?;
-        SchedulerRepository::settle_safety_start_rejected_provider(
-            tx,
-            &agent_id,
-            epoch,
-            &attempt_id,
-            &request_id,
-            &account,
-            generation,
-            &thread,
-            reason,
-        )?;
-        current["stage"] = json!(Stage::Failed.as_str());
-        current["dispatch"] = json!("rejected");
-        current["error"] = json!(reason);
-        current["updated"] = json!(unix_seconds());
-        let mut agent = read_agent(tx, &agent_id)?;
-        save_operation(tx, &mut agent, &current)?;
-        Ok((current, true))
-    })?;
+    let ticket = ticket.cloned();
+    let reason = reason.to_owned();
+    let (current, settled) = store
+        .transaction_with::<_, Error>(move |tx| {
+            let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
+            if current.get("stage").and_then(Value::as_str) != Some(Stage::Start.as_str()) {
+                return Ok((current, false));
+            }
+            let agent_id = required_str(&current, "agent")?.to_owned();
+            let epoch = current
+                .get("epoch")
+                .and_then(Value::as_i64)
+                .ok_or(Error::InvalidStoredState)?;
+            let attempt_id = required_str(&current, "attemptId")?.to_owned();
+            let account = required_str(&current, "accountKey")?.to_owned();
+            let thread = required_str(&current, "newThreadId")?.to_owned();
+            let request_id = ticket
+                .as_ref()
+                .map(|ticket| request_id_string(&ticket.id))
+                .or_else(|| {
+                    current
+                        .get("requestId")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value::<RequestId>(value).ok())
+                        .map(|id| request_id_string(&id))
+                })
+                .ok_or(Error::InvalidStoredState)?;
+            let generation = ticket
+                .as_ref()
+                .map(|ticket| ticket.generation)
+                .or_else(|| current.get("requestGeneration").and_then(Value::as_u64))
+                .ok_or(Error::InvalidStoredState)?;
+            SchedulerRepository::settle_safety_start_rejected_provider(
+                tx,
+                &agent_id,
+                epoch,
+                &attempt_id,
+                &request_id,
+                &account,
+                generation,
+                &thread,
+                &reason,
+            )?;
+            current["stage"] = json!(Stage::Failed.as_str());
+            current["dispatch"] = json!("rejected");
+            current["error"] = json!(reason);
+            current["updated"] = json!(unix_seconds());
+            let mut agent = read_agent(tx, &agent_id)?;
+            save_operation(tx, &mut agent, &current)?;
+            Ok((current, true))
+        })
+        .await?;
     *operation = current;
     Ok(settled)
 }
 
-fn persist_stage_receipt(
+async fn persist_stage_receipt(
     store: &RuntimeStore,
     operation: &mut Value,
     stage: Stage,
@@ -879,77 +943,91 @@ fn persist_stage_receipt(
         "result":result
     });
     let id = required_str(operation, "id")?.to_owned();
-    let (current, still_active) = store.transaction_with::<_, Error>(|tx| {
-        let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
-        if current.get("agent") != operation.get("agent")
-            || current.get("epoch") != operation.get("epoch")
-            || current.get("accountKey") != operation.get("accountKey")
-        {
-            return Err(Error::StaleRetry);
-        }
-        current
-            .get_mut("receipts")
-            .and_then(Value::as_object_mut)
-            .ok_or(Error::InvalidStoredState)?
-            .entry(stage.as_str())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or(Error::InvalidStoredState)?
-            .push(receipt_value.clone());
-        let mut still_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
-        if still_active {
-            if let Some(ticket) = receipt.ticket.as_ref() {
-                current["requestId"] =
-                    serde_json::to_value(&ticket.id).map_err(|_| Error::InvalidStoredState)?;
-                current["requestGeneration"] = json!(ticket.generation);
-                if stage == Stage::Start
-                    && (ticket.method != Method::TurnStart
-                        || ticket.generation != receipt.scope.generation)
-                {
-                    return Err(Error::StaleRetry);
-                }
-            }
-            if let Some(ProviderResponse::Reply(value)) = receipt.result.as_ref() {
-                current
-                    .get_mut("responses")
-                    .and_then(Value::as_object_mut)
-                    .ok_or(Error::InvalidStoredState)?
-                    .insert(stage.as_str().into(), value.clone());
-            }
-            if receipt.certainty == RequestCertainty::Unknown {
-                current["stage"] = json!(Stage::Unknown.as_str());
-                current["dispatch"] = json!("unknown");
-                current["error"] = json!("Provider request outcome is unknown");
-                still_active = false;
-            } else {
-                current["dispatch"] = json!("received");
-            }
-            current["updated"] = json!(unix_seconds());
-            let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
-            if stage == Stage::Start
-                && let Some(ticket) = receipt.ticket.as_ref()
+    let expected_agent = operation.get("agent").cloned();
+    let expected_epoch = operation.get("epoch").cloned();
+    let expected_account = operation.get("accountKey").cloned();
+    let ticket = receipt.ticket.clone();
+    let certainty_unknown = receipt.certainty == RequestCertainty::Unknown;
+    let receipt_generation = receipt.scope.generation;
+    let reply = match &receipt.result {
+        Some(ProviderResponse::Reply(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let receipt_value = receipt_value;
+    let (current, still_active) = store
+        .transaction_with::<_, Error>(move |tx| {
+            let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
+            if current.get("agent") != expected_agent.as_ref()
+                || current.get("epoch") != expected_epoch.as_ref()
+                || current.get("accountKey") != expected_account.as_ref()
             {
-                let attempt = agent
-                    .get_mut("startAttempt")
-                    .and_then(Value::as_object_mut)
-                    .ok_or(Error::InvalidStoredState)?;
-                if attempt.get("id").and_then(Value::as_str)
-                    != current.get("attemptId").and_then(Value::as_str)
-                {
-                    return Err(Error::StaleRetry);
-                }
-                attempt.insert("requestTicket".into(), json!(request_id_string(&ticket.id)));
-                attempt.insert("connectionGeneration".into(), json!(ticket.generation));
+                return Err(Error::StaleRetry);
             }
-            save_operation(tx, &mut agent, &current)?;
-        } else {
-            tx.execute(
-                "UPDATE runtime_safety_retries SET record=?1 WHERE id=?2",
-                params![current.to_string(), id],
-            )?;
-        }
-        Ok((current, still_active))
-    })?;
+            current
+                .get_mut("receipts")
+                .and_then(Value::as_object_mut)
+                .ok_or(Error::InvalidStoredState)?
+                .entry(stage.as_str())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or(Error::InvalidStoredState)?
+                .push(receipt_value);
+            let mut still_active =
+                current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
+            if still_active {
+                if let Some(ticket) = ticket.as_ref() {
+                    current["requestId"] =
+                        serde_json::to_value(&ticket.id).map_err(|_| Error::InvalidStoredState)?;
+                    current["requestGeneration"] = json!(ticket.generation);
+                    if stage == Stage::Start
+                        && (ticket.method != Method::TurnStart
+                            || ticket.generation != receipt_generation)
+                    {
+                        return Err(Error::StaleRetry);
+                    }
+                }
+                if let Some(value) = reply.as_ref() {
+                    current
+                        .get_mut("responses")
+                        .and_then(Value::as_object_mut)
+                        .ok_or(Error::InvalidStoredState)?
+                        .insert(stage.as_str().into(), value.clone());
+                }
+                if certainty_unknown {
+                    current["stage"] = json!(Stage::Unknown.as_str());
+                    current["dispatch"] = json!("unknown");
+                    current["error"] = json!("Provider request outcome is unknown");
+                    still_active = false;
+                } else {
+                    current["dispatch"] = json!("received");
+                }
+                current["updated"] = json!(unix_seconds());
+                let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
+                if stage == Stage::Start
+                    && let Some(ticket) = ticket.as_ref()
+                {
+                    let attempt = agent
+                        .get_mut("startAttempt")
+                        .and_then(Value::as_object_mut)
+                        .ok_or(Error::InvalidStoredState)?;
+                    if attempt.get("id").and_then(Value::as_str)
+                        != current.get("attemptId").and_then(Value::as_str)
+                    {
+                        return Err(Error::StaleRetry);
+                    }
+                    attempt.insert("requestTicket".into(), json!(request_id_string(&ticket.id)));
+                    attempt.insert("connectionGeneration".into(), json!(ticket.generation));
+                }
+                save_operation(tx, &mut agent, &current)?;
+            } else {
+                tx.execute(
+                    "UPDATE runtime_safety_retries SET record=?1 WHERE id=?2",
+                    params![current.to_string(), id],
+                )?;
+            }
+            Ok((current, still_active))
+        })
+        .await?;
     *operation = current;
     Ok(still_active)
 }
@@ -1008,7 +1086,7 @@ fn recorded_written_response(
         .cloned())
 }
 
-fn persist_unknown_receipt(
+async fn persist_unknown_receipt(
     store: &RuntimeStore,
     operation: &mut Value,
     stage: Stage,
@@ -1016,54 +1094,61 @@ fn persist_unknown_receipt(
     certainty: &str,
 ) -> Result<bool, Error> {
     let id = required_str(operation, "id")?.to_owned();
-    let (current, still_active) = store.transaction_with::<_, Error>(|tx| {
-        let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
-        current
-            .get_mut("receipts")
-            .and_then(Value::as_object_mut)
-            .ok_or(Error::InvalidStoredState)?
-            .entry(stage.as_str())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or(Error::InvalidStoredState)?
-            .push(json!({"operation":operation_id,"certainty":certainty}));
-        let stage_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
-        let mut still_active = stage_active;
-        if stage_active {
-            if certainty == "unknown" {
-                current["stage"] = json!(Stage::Unknown.as_str());
-                current["dispatch"] = json!("unknown");
-                current["error"] = json!("Provider request outcome is unknown");
-                still_active = false;
+    let operation_id = operation_id.to_owned();
+    let certainty = certainty.to_owned();
+    let (current, still_active) = store
+        .transaction_with::<_, Error>(move |tx| {
+            let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
+            current
+                .get_mut("receipts")
+                .and_then(Value::as_object_mut)
+                .ok_or(Error::InvalidStoredState)?
+                .entry(stage.as_str())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or(Error::InvalidStoredState)?
+                .push(json!({"operation":operation_id,"certainty":certainty}));
+            let stage_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
+            let mut still_active = stage_active;
+            if stage_active {
+                if certainty == "unknown" {
+                    current["stage"] = json!(Stage::Unknown.as_str());
+                    current["dispatch"] = json!("unknown");
+                    current["error"] = json!("Provider request outcome is unknown");
+                    still_active = false;
+                }
+                current["updated"] = json!(unix_seconds());
+                let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
+                save_operation(tx, &mut agent, &current)?;
+            } else {
+                tx.execute(
+                    "UPDATE runtime_safety_retries SET record=?1 WHERE id=?2",
+                    params![current.to_string(), id],
+                )?;
             }
-            current["updated"] = json!(unix_seconds());
-            let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
-            save_operation(tx, &mut agent, &current)?;
-        } else {
-            tx.execute(
-                "UPDATE runtime_safety_retries SET record=?1 WHERE id=?2",
-                params![current.to_string(), id],
-            )?;
-        }
-        Ok((current, still_active))
-    })?;
+            Ok((current, still_active))
+        })
+        .await?;
     *operation = current;
     Ok(still_active)
 }
 
-fn persist_operation(store: &RuntimeStore, operation: &mut Value) -> Result<(), Error> {
+async fn persist_operation(store: &RuntimeStore, operation: &mut Value) -> Result<(), Error> {
     operation["updated"] = json!(unix_seconds());
-    let updated = store.transaction_with::<_, Error>(|tx| {
-        let agent_id = required_str(operation, "agent")?;
-        if let Some(current) = read_retry(tx, required_str(operation, "id")?)?
-            && current.get("stage").and_then(Value::as_str) == Some(Stage::Cancelled.as_str())
-        {
-            return Ok(current);
-        }
-        let mut agent = read_agent(tx, agent_id)?;
-        save_operation(tx, &mut agent, operation)?;
-        Ok(operation.clone())
-    })?;
+    let pending = operation.clone();
+    let updated = store
+        .transaction_with::<_, Error>(move |tx| {
+            let agent_id = required_str(&pending, "agent")?;
+            if let Some(current) = read_retry(tx, required_str(&pending, "id")?)?
+                && current.get("stage").and_then(Value::as_str) == Some(Stage::Cancelled.as_str())
+            {
+                return Ok(current);
+            }
+            let mut agent = read_agent(tx, agent_id)?;
+            save_operation(tx, &mut agent, &pending)?;
+            Ok(pending)
+        })
+        .await?;
     *operation = updated;
     Ok(())
 }

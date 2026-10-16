@@ -11,7 +11,7 @@ use studio_runtime_services::notification_dispatch::{
 use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
 use studio_runtime_store::RuntimeStore;
 
-fn journal(
+async fn journal(
     store: &RuntimeStore,
     frame: &Value,
     cursor: u64,
@@ -24,56 +24,60 @@ fn journal(
         .expect("test invariant")
         .remove(0);
     let publication = PublicationContext::load(store).expect("test invariant");
-    store.transaction_with(|tx| {
-        let raw: String = tx
-            .query_row("SELECT payload FROM p06_buffer WHERE id=1", [], |row| {
-                row.get(0)
-            })
-            .map_err(studio_runtime_store::StoreError::from)?;
-        let streams: NotificationStreamBuffer = serde_json::from_str(&raw)?;
-        let dispatched = dispatch_notification_with_effects(
-            tx,
-            "agent",
-            &publication,
-            &streams,
-            &ProviderDeliveryIdentity {
-                provider_handle: "account:default".into(),
-                generation: 7,
-                cursor,
-            },
-            &frame,
-            1234.5,
-            &RuntimeNotificationEffects,
-        )?;
-        let next = dispatched.stream_update.unwrap_or(streams);
-        if !dispatched.post_commit.is_empty() {
-            if fail {
-                return Err(NotificationDispatchError::InvalidNotification);
+    store
+        .transaction_with(move |tx| {
+            let raw: String = tx
+                .query_row("SELECT payload FROM p06_buffer WHERE id=1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let streams: NotificationStreamBuffer = serde_json::from_str(&raw)?;
+            let dispatched = dispatch_notification_with_effects(
+                tx,
+                "agent",
+                &publication,
+                &streams,
+                &ProviderDeliveryIdentity {
+                    provider_handle: "account:default".into(),
+                    generation: 7,
+                    cursor,
+                },
+                &frame,
+                1234.5,
+                &RuntimeNotificationEffects,
+            )?;
+            let next = dispatched.stream_update.unwrap_or(streams);
+            if !dispatched.post_commit.is_empty() {
+                if fail {
+                    return Err(NotificationDispatchError::InvalidNotification);
+                }
+                tx.execute(
+                    "INSERT INTO p06_journal(id,sequence,payload,ack) VALUES(?1,?2,?3,0)",
+                    params![
+                        format!(
+                            "hash-order-{:020}",
+                            u64::MAX - dispatched.post_commit.sequence
+                        ),
+                        i64::try_from(dispatched.post_commit.sequence).expect("test invariant"),
+                        serde_json::to_string(&dispatched.post_commit)?
+                    ],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
             }
             tx.execute(
-                "INSERT INTO p06_journal(id,sequence,payload,ack) VALUES(?1,?2,?3,0)",
-                params![
-                    format!(
-                        "hash-order-{:020}",
-                        u64::MAX - dispatched.post_commit.sequence
-                    ),
-                    i64::try_from(dispatched.post_commit.sequence).expect("test invariant"),
-                    serde_json::to_string(&dispatched.post_commit)?
-                ],
+                "UPDATE p06_buffer SET payload=?1 WHERE id=1",
+                [serde_json::to_string(&next)?],
             )
             .map_err(studio_runtime_store::StoreError::from)?;
-        }
-        tx.execute(
-            "UPDATE p06_buffer SET payload=?1 WHERE id=1",
-            [serde_json::to_string(&next)?],
-        )
-        .map_err(studio_runtime_store::StoreError::from)?;
-        Ok(())
-    })
+            Ok(())
+        })
+        .await
 }
 
-fn drain(root: &Path, crash_after_publish: bool) {
-    let store = RuntimeStore::open(Some(root)).expect("test invariant");
+async fn drain(root: &Path, crash_after_publish: bool) {
+    let store = RuntimeStore::open(Some(root))
+        .await
+        .expect("test invariant");
     let mut sink = Connection::open(root.join("p06-sink.sqlite3")).expect("test invariant");
     sink.execute_batch("CREATE TABLE IF NOT EXISTS applied(position INTEGER PRIMARY KEY AUTOINCREMENT,sequence INTEGER,ordinal INTEGER,payload TEXT,UNIQUE(sequence,ordinal));").expect("test invariant");
     let batches: Vec<NotificationPublicationBatch> = {
@@ -104,22 +108,24 @@ fn drain(root: &Path, crash_after_publish: bool) {
                 return;
             }
         }
+        let sequence = batch.sequence;
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "UPDATE p06_journal SET ack=1 WHERE sequence=?1",
-                    [i64::try_from(batch.sequence).expect("test invariant")],
+                    [i64::try_from(sequence).expect("test invariant")],
                 )?;
                 Ok(())
             })
+            .await
             .expect("test invariant");
     }
 }
 
-#[test]
-fn wave7_p06_commit_publication_restart_preserves_order() {
+#[tokio::test]
+async fn wave7_p06_commit_publication_restart_preserves_order() {
     if let Some(root) = std::env::var_os("P06_PUBLICATION_CHILD") {
-        drain(Path::new(&root), true);
+        drain(Path::new(&root), true).await;
         return;
     }
     let root = State(std::env::temp_dir().join(format!("p06-publication-{}", std::process::id())));
@@ -135,13 +141,15 @@ fn wave7_p06_commit_publication_restart_preserves_order() {
     let rust = root.0.join("case/rust");
     let expected = oracle
         .call(json!({"command":"seed","root":root.0.join("case/python"),"rust":rust,"case":case}));
-    let store = RuntimeStore::open(Some(&rust)).expect("test invariant");
+    let store = RuntimeStore::open(Some(&rust))
+        .await
+        .expect("test invariant");
     store.transaction(|tx| {
         tx.execute_batch("CREATE TABLE p06_journal(id TEXT PRIMARY KEY,sequence INTEGER UNIQUE,payload TEXT,ack INTEGER); CREATE TABLE p06_buffer(id INTEGER PRIMARY KEY,payload TEXT);")?;
         tx.execute("INSERT INTO p06_buffer VALUES(1,?1)",[serde_json::to_string(&NotificationStreamBuffer::default()).expect("test invariant")])?; Ok(())
-    }).expect("test invariant");
+    }).await.expect("test invariant");
     let first = &case["steps"][0]["frame"];
-    assert!(journal(&store, first, 1, true).is_err());
+    assert!(journal(&store, first, 1, true).await.is_err());
     assert_eq!(store.read().expect("test invariant").query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%'",[],|r|r.get::<_,i64>(0)).expect("test invariant"),0,"journal staging failure must roll receipt back");
     for (index, step) in case["steps"]
         .as_array()
@@ -149,7 +157,9 @@ fn wave7_p06_commit_publication_restart_preserves_order() {
         .iter()
         .enumerate()
     {
-        journal(&store, &step["frame"], index as u64 + 1, false).expect("test invariant");
+        journal(&store, &step["frame"], index as u64 + 1, false)
+            .await
+            .expect("test invariant");
     }
     let order: Vec<i64> = store
         .read()
@@ -181,7 +191,9 @@ fn wave7_p06_commit_publication_restart_preserves_order() {
         "{}",
         String::from_utf8_lossy(&child.stderr)
     );
-    let reopened = RuntimeStore::open(Some(&rust)).expect("test invariant");
+    let reopened = RuntimeStore::open(Some(&rust))
+        .await
+        .expect("test invariant");
     assert_eq!(
         reopened
             .read()
@@ -199,11 +211,13 @@ fn wave7_p06_commit_publication_restart_preserves_order() {
         .iter()
         .enumerate()
     {
-        journal(&reopened, &step["frame"], index as u64 + 1, false).expect("test invariant");
+        journal(&reopened, &step["frame"], index as u64 + 1, false)
+            .await
+            .expect("test invariant");
     }
     drop(reopened);
-    drain(&rust, false);
-    drain(&rust, false); // ACKed batches cannot republish.
+    drain(&rust, false).await;
+    drain(&rust, false).await; // ACKed batches cannot republish.
     let sink = Connection::open(rust.join("p06-sink.sqlite3")).expect("test invariant");
     let published: Vec<Value> = sink
         .prepare("SELECT payload FROM applied ORDER BY position")

@@ -1,25 +1,27 @@
 use super::*;
+use std::sync::Arc;
 
-pub fn peer_team_write(
-    store: &RuntimeStore,
-    body: &Value,
-    default_account: &str,
-    known_accounts: &[Value],
+pub async fn peer_team_write(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
     if action == "radio" {
-        return crate::radio_runtime::manage_http(store, body);
+        return crate::radio_runtime::manage_http(Arc::clone(&store), &body).await;
     }
     if action == "convert" {
-        return crate::peer_conversion::convert(store, body);
+        return crate::peer_conversion::convert(Arc::clone(&store), &body).await;
     }
-    if !matches!(action, "save" | "delete" | "move") {
+    if !matches!(action.as_str(), "save" | "delete" | "move") {
         return Err(ProjectsError::Invalid("unknown peer team action"));
     }
-    let path = project_key(body.get("path"), false)?;
+    let path_value = body.get("path").cloned();
     let revision = body
         .get("expected_revision")
         .and_then(Value::as_u64)
@@ -41,6 +43,10 @@ pub fn peer_team_write(
                 .map_err(|_| ProjectsError::Invalid("peer team ID is invalid"))
         })
         .transpose()?;
+    let member = body
+        .get("member")
+        .and_then(Value::as_str)
+        .map(|value| python_strip(value).to_owned());
     if (action != "move" || body.get("team_id").is_some_and(|value| !value.is_null()))
         && team_id.is_none()
     {
@@ -82,15 +88,14 @@ pub fn peer_team_write(
     let signature =
         sha256_hex(python_json(&json!({"operation":"peer-team","body":body})).as_bytes());
     let key = format!("peer-team:{request_id}");
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|tx| {
+    let (prepared, path) = super::prepare_path(store.clone(), path_value, false).await?;
+    store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
         if let Some(result) = replay(tx, &key, &signature, "peer team")? { return Ok(result); }
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
-            None => { let account = project_account(&prepared, tx, &path, default_account)?; new_project(&prepared, &path, &project_name(None, &path)?, &account, known_accounts)? }
+            None => { let account = project_account(&prepared, tx, &path, &default_account)?; new_project(&prepared, &path, &project_name(None, &path)?, &account, &known_accounts)? }
         };
         let current = revision_of(Some(&project), "peerTeamsRevision", &path)?;
         if revision != current { return Err(ProjectsError::Conflict("Peer teams changed. Reload before saving")); }
@@ -106,7 +111,7 @@ pub fn peer_team_write(
         let mut statement = tx.prepare_cached("SELECT id FROM sync_entities WHERE collection='peerTeam' AND json_extract(payload,'$.value.projectPath')=?1")?;
         previous_ids.extend(statement.query_map([&path], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?);
         drop(statement);
-        match action {
+        match action.as_str() {
             "save" => {
                 let team_id = team_id.as_deref().ok_or(ProjectsError::Invalid("peer team ID is invalid"))?;
                 for member in &members {
@@ -122,7 +127,7 @@ pub fn peer_team_write(
             }
             "delete" => teams.retain(|team| team.get("id").and_then(Value::as_str) != team_id.as_deref()),
             "move" => {
-                let member = python_strip(body.get("member").and_then(Value::as_str).ok_or(ProjectsError::Invalid("peer team member is required"))?);
+                let member = member.as_deref().ok_or(ProjectsError::Invalid("peer team member is required"))?;
                 if member.is_empty() || member.chars().count() > 255 || !agents.get(member).is_some_and(|agent| is_project_lead(agent, &path, &prepared)) { return Err(ProjectsError::Invalid("select a live lead chat from this project only")); }
                 let source = teams.iter().position(|team| team.get("members").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.as_str() == Some(member))));
                 let target = team_id.as_deref().and_then(|id| teams.iter().position(|team| team.get("id").and_then(Value::as_str) == Some(id)));
@@ -154,7 +159,7 @@ pub fn peer_team_write(
         refresh_project_rooms(tx, &path, &prepared)?;
         save_operation_receipt(tx, &key, &signature, &project)?;
         Ok(project)
-    })
+    }).await
 }
 
 pub(crate) fn replay(
@@ -303,7 +308,7 @@ pub(crate) fn refresh_project_rooms(
     Ok(())
 }
 
-pub(super) fn reorder(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsError> {
+pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Value, ProjectsError> {
     let request_id = python_strip(
         body.get("request_id")
             .and_then(Value::as_str)
@@ -348,34 +353,38 @@ pub(super) fn reorder(store: &RuntimeStore, body: &Value) -> Result<Value, Proje
     let signature =
         sha256_hex(python_json(&json!({"operation":"sidebar-order","body":body})).as_bytes());
     let key = format!("sidebar-order:{request_id}");
-    store.transaction_with(|tx| -> Result<Value, ProjectsError> {
-        if let Some(result) = replay(tx, &key, &signature, "sidebar")? {
-            return Ok(result);
-        }
-        let current = ProjectsRepository::sidebar_order(tx)?;
-        let revision = current.get("revision").and_then(Value::as_u64).ok_or(
-            ProjectsError::InvalidStored {
-                table: "runtime_sidebar_order",
-                id: "current".to_owned(),
-            },
-        )?;
-        if revision != expected {
-            return Err(ProjectsError::Conflict(
-                "Sidebar order changed. Refreshed from the server",
-            ));
-        }
-        if current
-            .get("groups")
-            .is_some_and(|groups| !groups.is_null())
-            && body.get("migration").and_then(Value::as_bool) == Some(true)
-        {
-            return Err(ProjectsError::Conflict(
-                "Sidebar order changed. Refreshed from the server",
-            ));
-        }
-        let result = json!({"revision": revision.saturating_add(1), "groups": groups});
-        ProjectsRepository::put_sidebar_order(tx, &result)?;
-        save_operation_receipt(tx, &key, &signature, &result)?;
-        Ok(result)
-    })
+    let groups = body["groups"].take();
+    let migration = body.get("migration").and_then(Value::as_bool) == Some(true);
+    store
+        .transaction_with(move |tx| -> Result<Value, ProjectsError> {
+            if let Some(result) = replay(tx, &key, &signature, "sidebar")? {
+                return Ok(result);
+            }
+            let current = ProjectsRepository::sidebar_order(tx)?;
+            let revision = current.get("revision").and_then(Value::as_u64).ok_or(
+                ProjectsError::InvalidStored {
+                    table: "runtime_sidebar_order",
+                    id: "current".to_owned(),
+                },
+            )?;
+            if revision != expected {
+                return Err(ProjectsError::Conflict(
+                    "Sidebar order changed. Refreshed from the server",
+                ));
+            }
+            if current
+                .get("groups")
+                .is_some_and(|groups| !groups.is_null())
+                && migration
+            {
+                return Err(ProjectsError::Conflict(
+                    "Sidebar order changed. Refreshed from the server",
+                ));
+            }
+            let result = json!({"revision": revision.saturating_add(1), "groups": groups});
+            ProjectsRepository::put_sidebar_order(tx, &result)?;
+            save_operation_receipt(tx, &key, &signature, &result)?;
+            Ok(result)
+        })
+        .await
 }

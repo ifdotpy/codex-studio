@@ -199,7 +199,7 @@ pub fn answer_value(
     }).collect::<Result<Vec<_>, CallbackError>>()?;
     Ok((result, json!(history)))
 }
-pub fn answer(
+pub async fn answer(
     store: &RuntimeStore,
     context: &CallbackContext,
     id: &str,
@@ -215,7 +215,12 @@ pub fn answer(
     if !data.is_object() || data.to_string().len() > MAX_BYTES || !now.is_finite() {
         return Err(CallbackError::Invalid("Invalid callback answer"));
     }
-    store.transaction_with(|tx| answer_in(tx, context, id, data, now))
+    let context = context.clone();
+    let id = id.to_owned();
+    let data = data.clone();
+    store
+        .transaction_with(move |tx| answer_in(tx, &context, &id, &data, now))
+        .await
 }
 fn answer_in(
     tx: &Transaction<'_>,
@@ -297,12 +302,14 @@ fn answer_in(
 }
 
 /// Disconnect/stop/restart never infers approval or rebinds a replaced bridge.
-pub fn expire(
+pub async fn expire(
     store: &RuntimeStore,
     account: &str,
     connection: &str,
 ) -> Result<usize, CallbackError> {
-    store.transaction_with(|tx| {
+    let account = account.to_owned();
+    let connection = connection.to_owned();
+    store.transaction_with(move |tx| {
         let mut count = 0;
         for mut card in records::all(tx, "runtime_requests")? {
             if card["accountKey"] != account || card["connectionId"] != connection {
@@ -319,9 +326,9 @@ pub fn expire(
             count += 1;
         }
         Ok(count)
-    })
+    }).await
 }
-pub fn resolve(
+pub async fn resolve(
     store: &RuntimeStore,
     context: &CallbackContext,
     rpc_id: &RequestId,
@@ -330,11 +337,14 @@ pub fn resolve(
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
-    store.transaction_with(|tx| {
-        let identity = ReplyIdentity::new(context, rpc_id);
+    let context = context.clone();
+    let rpc_id = rpc_id.clone();
+    store.transaction_with(move |tx| {
+        let rpc_value = serde_json::to_value(&rpc_id)?;
+        let identity = ReplyIdentity::new(&context, &rpc_id);
         let resolution_key = format!("{}:resolved", identity.key());
         let mut card_signature = None;
-        for card in matching_rpc_cards(tx, context, rpc_id)? {
+        for card in matching_rpc_cards(tx, &context, &rpc_id)? {
                 let card_id = card["id"]
                     .as_str()
                     .ok_or_else(|| CallbackError::Stored("runtime_requests/id".into()))?;
@@ -351,7 +361,7 @@ pub fn resolve(
                         .cloned()
                         .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{card_id}")))?,
                 };
-                input.check_context(context)?;
+                input.check_context(&context)?;
                 let signature = input.signature();
                 if card_signature
                     .as_ref()
@@ -406,7 +416,7 @@ pub fn resolve(
                     .pointer("/supervisor/generation")
                     .and_then(Value::as_u64)
                     == Some(context.generation)
-                && card["rpcId"] == serde_json::to_value(rpc_id)?
+                && card["rpcId"] == rpc_value
                 && matches!(card["status"].as_str(), Some("pending" | "answering" | "uncertain" | "blocked"))
             {
                 card["status"] = json!("resolved");
@@ -427,7 +437,7 @@ pub fn resolve(
             }
         }
         Ok(count)
-    })
+    }).await
 }
 
 fn matching_rpc_cards(
@@ -532,7 +542,7 @@ pub fn pending_native_delete_context(
     })
 }
 
-pub fn prepare_user_answer(
+pub async fn prepare_user_answer(
     store: &RuntimeStore,
     id: &str,
     data: &Value,
@@ -542,7 +552,11 @@ pub fn prepare_user_answer(
     if !data.is_object() || data.to_string().len() > MAX_BYTES || !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback answer"));
     }
-    store.transaction_with(|tx| prepare_answer_in(tx, id, data, now, delete))
+    let id = id.to_owned();
+    let data = data.clone();
+    store
+        .transaction_with(move |tx| prepare_answer_in(tx, &id, &data, now, delete))
+        .await
 }
 fn prepare_answer_in(
     tx: &Transaction<'_>,
@@ -587,7 +601,7 @@ fn prepare_answer_in(
     Ok(Some(reply))
 }
 
-pub fn prepare_delete(
+pub async fn prepare_delete(
     store: &RuntimeStore,
     id: &str,
     now: f64,
@@ -595,47 +609,50 @@ pub fn prepare_delete(
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
-    store.transaction_with(|tx| {
-        let mut card = records::get(tx, "runtime_requests", id)?
-            .ok_or(CallbackError::Invalid("Unknown question"))?;
-        let actor = records::get(
-            tx,
-            "runtime_agents",
-            card["agent"].as_str().ok_or(CallbackError::Stale)?,
-        )?
-        .ok_or(CallbackError::Stale)?;
-        let allowed = crate::questions_write::state_only_delete_allowed(
-            &card,
-            studio_runtime_store::truthy(actor.get("deletedAt")),
-            false,
-        )
-        .map_err(|error| match error {
-            crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
-                CallbackError::Invalid(message)
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let mut card = records::get(tx, "runtime_requests", &id)?
+                .ok_or(CallbackError::Invalid("Unknown question"))?;
+            let actor = records::get(
+                tx,
+                "runtime_agents",
+                card["agent"].as_str().ok_or(CallbackError::Stale)?,
+            )?
+            .ok_or(CallbackError::Stale)?;
+            let allowed = crate::questions_write::state_only_delete_allowed(
+                &card,
+                studio_runtime_store::truthy(actor.get("deletedAt")),
+                false,
+            )
+            .map_err(|error| match error {
+                crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
+                    CallbackError::Invalid(message)
+                }
+                crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
+                    CallbackError::Dependency("provider-session/question-answer")
+                }
+                _ => CallbackError::Invalid("Unable to delete question"),
+            })?;
+            if !allowed {
+                return Ok(None);
             }
-            crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
-                CallbackError::Dependency("provider-session/question-answer")
+            let method = card["method"].as_str().unwrap_or_default();
+            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+                // A native answer is only possible for a card tied to a live
+                // provider request. Missing callback identity is a named refusal,
+                // checked before prepare_answer_in writes durable intent.
+                provider_context(tx, &card)?;
+                let data = if method == "mcpServer/elicitation/request" {
+                    json!({"decision":"cancel"})
+                } else {
+                    json!({"answers":{}})
+                };
+                return prepare_answer_in(tx, &id, &data, now, true);
             }
-            _ => CallbackError::Invalid("Unable to delete question"),
-        })?;
-        if !allowed {
-            return Ok(None);
-        }
-        let method = card["method"].as_str().unwrap_or_default();
-        if card["status"] == "pending" && method != "agent/asyncQuestion" {
-            // A native answer is only possible for a card tied to a live
-            // provider request. Missing callback identity is a named refusal,
-            // checked before prepare_answer_in writes durable intent.
-            provider_context(tx, &card)?;
-            let data = if method == "mcpServer/elicitation/request" {
-                json!({"decision":"cancel"})
-            } else {
-                json!({"answers":{}})
-            };
-            return prepare_answer_in(tx, id, &data, now, true);
-        }
-        crate::questions_write::mark_state_only_deleted(&mut card, now);
-        save(tx, &card)?;
-        Ok(None)
-    })
+            crate::questions_write::mark_state_only_deleted(&mut card, now);
+            save(tx, &card)?;
+            Ok(None)
+        })
+        .await
 }

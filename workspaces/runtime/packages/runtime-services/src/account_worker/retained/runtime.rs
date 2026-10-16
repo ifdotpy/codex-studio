@@ -45,7 +45,9 @@ impl Worker {
         let key = call.key();
         let check = call.clone();
         let prior = self
-            .db("retained_replay", move |s| replay(s, &check))
+            .db("retained_replay", move |store| async move {
+                replay(&store, &check).await
+            })
             .await?;
         let retry_ticket = match prior {
             Err(error) => {
@@ -76,12 +78,15 @@ impl Worker {
         let actor_id = call.actor.as_ref().map(|actor| actor.agent.clone());
         let actor_lookup = actor_id.clone();
         let is_vm_actor = if let Some(actor) = actor_lookup {
-            self.db("retained_actor_mode", move |store| {
-                let connection = store.read()?;
-                let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
-                Ok(record.is_some_and(|record| {
-                    record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-                }))
+            self.db("retained_actor_mode", move |store| async move {
+                super::super::blocking_store_read(store, move |store| {
+                    let connection = store.read()?;
+                    let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
+                    Ok(record.is_some_and(|record| {
+                        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                    }))
+                })
+                .await
             })
             .await?
         } else {
@@ -164,8 +169,8 @@ impl Worker {
         let ticket = recovery.ticket.clone();
         let save_call = call.clone();
         let authorized = self
-            .db("retained_submitted", move |s| {
-                submitted(s, &save_call, &recovery, retry_ticket.as_ref())
+            .db("retained_submitted", move |s| async move {
+                submitted(&s, &save_call, &recovery, retry_ticket.as_ref()).await
             })
             .await?;
         if let Err(error) = authorized {
@@ -293,8 +298,8 @@ impl Worker {
             _ => None,
         };
         let accepted = self
-            .db("retained_result", move |s| {
-                scheduler::lifecycle_transaction_with(s, |tx| {
+            .db("retained_result", move |s| async move {
+                scheduler::lifecycle_transaction_with(&s, move |tx| {
                     if let Some(written) = written {
                         store::replace(tx, &key, "written", written)?;
                     }
@@ -317,6 +322,7 @@ impl Worker {
                     store::replace(tx, &key, "result", json!({"result":value,"cursor":cursor}))?;
                     Ok(Some((value, cursor)))
                 })
+                .await
             })
             .await?;
         if let Some((result, cursor)) = accepted
@@ -380,8 +386,8 @@ impl Worker {
                 })
                 .collect();
         let (checkpoints, committed_replies) = self
-            .db("retained_barrier", move |s| {
-                s.transaction_with(|tx| {
+            .db("retained_barrier", move |s| async move {
+                s.transaction_with(move |tx| {
                     let mut checkpoints = BTreeMap::new();
                     for scope in scopes {
                         checkpoints
@@ -399,6 +405,7 @@ impl Worker {
                         .collect::<Result<BTreeSet<_>, _>>()?;
                     Ok((checkpoints, committed))
                 })
+                .await
             })
             .await?;
         self.retained_requests.retain(|id, pending| {

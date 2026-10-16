@@ -2,14 +2,15 @@
 //! mutations cannot be retired by a native delivery error.
 use crate::recovery_policy::{InvalidRecoveryRecord, RecoverySnapshot};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 const MAX_RECEIPTS: usize = 2;
 #[derive(Clone)]
 pub struct TaskRecoverySnapshot {
     agent: RecoverySnapshot,
-    task: Value,
+    task: Arc<Value>,
     pub(crate) aliases: Vec<String>,
-    pub(crate) receipts: Vec<(String, Value)>,
+    pub(crate) receipts: Vec<(String, Arc<Value>)>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum TaskRecoveryDecision {
@@ -58,13 +59,16 @@ impl TaskRecoverySnapshot {
         }
         Ok(Self {
             agent,
-            task,
+            task: Arc::new(task),
             aliases,
-            receipts,
+            receipts: receipts
+                .into_iter()
+                .map(|(key, receipt)| (key, Arc::new(receipt)))
+                .collect(),
         })
     }
     pub fn task(&self) -> &Value {
-        &self.task
+        self.task.as_ref()
     }
     pub fn agent(&self) -> &RecoverySnapshot {
         &self.agent
@@ -92,7 +96,13 @@ impl TaskRecoverySnapshot {
         ((r["stage"] == "completed" && r["outcome"] == "applied")
             || ((r["stage"] == "completed" || r["stage"] == "failed")
                 && r["outcome"] == "not_applied"))
-            .then_some(r)
+            .then_some(r.as_ref())
+    }
+    pub fn terminal_receipt_arc(&self) -> Option<Arc<Value>> {
+        self.terminal_receipt()?;
+        self.receipts
+            .first()
+            .map(|(_, receipt)| Arc::clone(receipt))
     }
     pub fn decide(
         &self,
@@ -178,28 +188,30 @@ impl TaskRecoverySnapshot {
 }
 /// The worker supplies payload resolution and its canonical task completion
 /// writer. It rechecks owner scope, the raw task and aliases/receipts atomically.
-pub trait TaskRecoveryEffects {
-    fn apply_absence(
-        &mut self,
-        expected: &TaskRecoverySnapshot,
-        scope: &crate::recovery_history::ConnectionScope,
-        observation: &crate::recovery_absence::RecoveryObservation,
+pub trait TaskRecoveryEffects: Send {
+    fn apply_absence<'a>(
+        &'a mut self,
+        expected: &'a TaskRecoverySnapshot,
+        scope: &'a crate::recovery_history::ConnectionScope,
+        observation: &'a crate::recovery_absence::RecoveryObservation,
         decision: crate::recovery_absence::TaskAbsenceDecision,
-    ) -> Result<bool, crate::recovery::RecoveryError>;
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, crate::recovery::RecoveryError>>;
 
-    fn resolve_receipt(&mut self, receipt: &Value)
-    -> Result<Value, crate::recovery::RecoveryError>;
-    fn complete(
-        &mut self,
-        expected: &TaskRecoverySnapshot,
-        scope: &crate::recovery_history::ConnectionScope,
+    fn resolve_receipt<'a>(
+        &'a mut self,
+        receipt: Arc<Value>,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, crate::recovery::RecoveryError>>;
+    fn complete<'a>(
+        &'a mut self,
+        expected: &'a TaskRecoverySnapshot,
+        scope: &'a crate::recovery_history::ConnectionScope,
         item: Value,
-    ) -> Result<bool, crate::recovery::RecoveryError>;
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, crate::recovery::RecoveryError>>;
 }
 /// Recover one exact task without issuing provider mutations. The dispatcher
 /// groups at most 32 jobs per scan; each native history read has a five-second
 /// budget. Unavailable proof persists a named hold; absence never authorizes replay.
-pub fn recover_task(
+pub async fn recover_task(
     snapshot: &TaskRecoverySnapshot,
     scope: crate::recovery_history::ConnectionScope,
     reader: &mut dyn crate::recovery_history::RecoveryReader,
@@ -226,18 +238,20 @@ pub fn recover_task(
         std::time::Instant::now() + std::time::Duration::from_secs(5),
     );
     let decision = if snapshot.has_local_receipt() {
-        let Some(receipt) = snapshot.terminal_receipt() else {
+        let Some(receipt) = snapshot.terminal_receipt_arc() else {
             let observation = read.observation()?;
-            return effects.apply_absence(
-                snapshot,
-                &scope,
-                &observation,
-                crate::recovery_absence::TaskAbsenceDecision::Hold {
-                    reason: "local-outcome-unknown".into(),
-                },
-            );
+            return effects
+                .apply_absence(
+                    snapshot,
+                    &scope,
+                    &observation,
+                    crate::recovery_absence::TaskAbsenceDecision::Hold {
+                        reason: "local-outcome-unknown".into(),
+                    },
+                )
+                .await;
         };
-        let resolved = effects.resolve_receipt(receipt)?;
+        let resolved = effects.resolve_receipt(receipt).await?;
         snapshot.decide(&[], Some(&resolved))
     } else {
         let thread = a["threadId"]
@@ -246,42 +260,48 @@ pub fn recover_task(
         let turn = snapshot.task["turnId"]
             .as_str()
             .ok_or(HistoryError::Invalid("turnId"))?;
-        if snapshot.task["type"] == "commandExecution" && read.barrier().is_err() {
+        if snapshot.task["type"] == "commandExecution" && read.barrier().await.is_err() {
             let observation = read.observation()?;
-            return effects.apply_absence(
-                snapshot,
-                &scope,
-                &observation,
-                crate::recovery_absence::TaskAbsenceDecision::Hold {
-                    reason: "native-event-barrier-unavailable".into(),
-                },
-            );
-        }
-        let items = match read.task_items(thread, turn) {
-            Ok(items) => items,
-            Err(HistoryError::Unsupported) => vec![],
-            Err(_) => {
-                let observation = read.observation()?;
-                return effects.apply_absence(
+            return effects
+                .apply_absence(
                     snapshot,
                     &scope,
                     &observation,
                     crate::recovery_absence::TaskAbsenceDecision::Hold {
-                        reason: "native-history-unavailable".into(),
+                        reason: "native-event-barrier-unavailable".into(),
                     },
-                );
+                )
+                .await;
+        }
+        let items = match read.task_items(thread, turn).await {
+            Ok(items) => items,
+            Err(HistoryError::Unsupported) => vec![],
+            Err(_) => {
+                let observation = read.observation()?;
+                return effects
+                    .apply_absence(
+                        snapshot,
+                        &scope,
+                        &observation,
+                        crate::recovery_absence::TaskAbsenceDecision::Hold {
+                            reason: "native-history-unavailable".into(),
+                        },
+                    )
+                    .await;
             }
         };
-        if read.barrier().is_err() {
+        if read.barrier().await.is_err() {
             let observation = read.observation()?;
-            return effects.apply_absence(
-                snapshot,
-                &scope,
-                &observation,
-                crate::recovery_absence::TaskAbsenceDecision::Hold {
-                    reason: "native-event-barrier-unavailable".into(),
-                },
-            );
+            return effects
+                .apply_absence(
+                    snapshot,
+                    &scope,
+                    &observation,
+                    crate::recovery_absence::TaskAbsenceDecision::Hold {
+                        reason: "native-event-barrier-unavailable".into(),
+                    },
+                )
+                .await;
         }
         let decision = snapshot.decide(&items, None);
         if decision == TaskRecoveryDecision::Unconfirmed {
@@ -303,41 +323,49 @@ pub fn recover_task(
                 && candidate
                 && observation.quiet
             {
-                match read.thread_state(thread) {
+                match read.thread_state(thread).await {
                     Ok(state) if matches!(state["type"].as_str(), Some("idle" | "notLoaded")) => {
-                        read.background_terminals(thread).ok().map(|terminals| {
-                            terminals.iter().all(|t| {
-                                t["itemId"] != snapshot.task["itemId"]
-                                    && t["processId"].as_str()
-                                        != process_identity(&snapshot.task["processId"]).as_deref()
+                        read.background_terminals(thread)
+                            .await
+                            .ok()
+                            .map(|terminals| {
+                                terminals.iter().all(|t| {
+                                    t["itemId"] != snapshot.task["itemId"]
+                                        && t["processId"].as_str()
+                                            != process_identity(&snapshot.task["processId"])
+                                                .as_deref()
+                                })
                             })
-                        })
                     }
                     _ => None,
                 }
             } else {
                 None
             };
-            let barrier = read.barrier().is_ok();
+            let barrier = read.barrier().await.is_ok();
             let observation = read.observation()?;
             let decision = snapshot.absence_decision(&observation, barrier && absent == Some(true));
-            return effects.apply_absence(snapshot, &scope, &observation, decision);
+            return effects
+                .apply_absence(snapshot, &scope, &observation, decision)
+                .await;
         }
         decision
     };
     match decision {
         TaskRecoveryDecision::Unconfirmed => {
             let observation = read.observation()?;
-            effects.apply_absence(
-                snapshot,
-                &scope,
-                &observation,
-                crate::recovery_absence::TaskAbsenceDecision::Hold {
-                    reason: "task-outcome-unconfirmed".into(),
-                },
-            )
+            effects
+                .apply_absence(
+                    snapshot,
+                    &scope,
+                    &observation,
+                    crate::recovery_absence::TaskAbsenceDecision::Hold {
+                        reason: "task-outcome-unconfirmed".into(),
+                    },
+                )
+                .await
         }
-        TaskRecoveryDecision::Complete(item) => effects.complete(snapshot, &scope, item),
+        TaskRecoveryDecision::Complete(item) => effects.complete(snapshot, &scope, item).await,
     }
 }
 

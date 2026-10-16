@@ -193,60 +193,64 @@ async fn update_profiles(
     let action = body.action.unwrap_or_default();
     let requested_id = body.id.flatten().unwrap_or_default();
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/panels",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let id = if requested_id.is_empty() {
-                ProfileRepository::new_id(&connection).map_err(|_| ApiError::internal())?
-            } else {
-                requested_id
-            };
-            drop(connection);
-            if action == crate::generated::ProfileBodyAction::Delete {
-                store
-                    .transaction(|transaction| ProfileRepository::delete(transaction, &id))
-                    .map_err(|_| ApiError::internal())?;
-                return Ok(json!({"deleted": id}));
-            }
-
-            let name = body
-                .name
-                .flatten()
-                .ok_or_else(|| validation_error("name"))?;
-            let model = body
-                .model
-                .flatten()
-                .ok_or_else(|| validation_error("model"))?;
-            let role = match body.role.unwrap_or_default() {
-                crate::generated::ProfileBodyRole::Reviewer => ProfileRole::Reviewer,
-                crate::generated::ProfileBodyRole::Implementer => ProfileRole::Implementer,
-            };
-            let effort = body.effort.flatten().map(|effort| match effort {
-                crate::generated::ProfileBodyEffort::Low => ReasoningEffort::Low,
-                crate::generated::ProfileBodyEffort::Medium => ReasoningEffort::Medium,
-                crate::generated::ProfileBodyEffort::High => ReasoningEffort::High,
-                crate::generated::ProfileBodyEffort::Xhigh => ReasoningEffort::Xhigh,
-                crate::generated::ProfileBodyEffort::Max => ReasoningEffort::Max,
-                crate::generated::ProfileBodyEffort::Ultra => ReasoningEffort::Ultra,
-            });
-            let profile = panels::make_profile(
-                id,
-                &name,
-                role,
-                &model,
-                effort,
-                body.instructions.as_deref().unwrap_or_default(),
-            )
-            .map_err(profile_field_error)?;
-            store
-                .transaction(|transaction| ProfileRepository::save(transaction, &profile))
-                .map_err(profile_read_error)?;
-            serde_json::to_value(profile).map_err(|_| ApiError::internal())
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let id = if requested_id.is_empty() {
+        let id_store = store.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/panels",
+            move || {
+                let connection = id_store.read().map_err(|_| ApiError::internal())?;
+                ProfileRepository::new_id(&connection).map_err(|_| ApiError::internal())
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??
+    } else {
+        requested_id
+    };
+    let result = if action == crate::generated::ProfileBodyAction::Delete {
+        let deleted_id = id.clone();
+        store
+            .transaction_with(move |transaction| ProfileRepository::delete(transaction, &id))
+            .await
+            .map_err(|_| ApiError::internal())?;
+        json!({"deleted": deleted_id})
+    } else {
+        let name = body
+            .name
+            .flatten()
+            .ok_or_else(|| validation_error("name"))?;
+        let model = body
+            .model
+            .flatten()
+            .ok_or_else(|| validation_error("model"))?;
+        let role = match body.role.unwrap_or_default() {
+            crate::generated::ProfileBodyRole::Reviewer => ProfileRole::Reviewer,
+            crate::generated::ProfileBodyRole::Implementer => ProfileRole::Implementer,
+        };
+        let effort = body.effort.flatten().map(|effort| match effort {
+            crate::generated::ProfileBodyEffort::Low => ReasoningEffort::Low,
+            crate::generated::ProfileBodyEffort::Medium => ReasoningEffort::Medium,
+            crate::generated::ProfileBodyEffort::High => ReasoningEffort::High,
+            crate::generated::ProfileBodyEffort::Xhigh => ReasoningEffort::Xhigh,
+            crate::generated::ProfileBodyEffort::Max => ReasoningEffort::Max,
+            crate::generated::ProfileBodyEffort::Ultra => ReasoningEffort::Ultra,
+        });
+        let profile = panels::make_profile(
+            id,
+            &name,
+            role,
+            &model,
+            effort,
+            body.instructions.as_deref().unwrap_or_default(),
+        )
+        .map_err(profile_field_error)?;
+        let response = serde_json::to_value(&profile).map_err(|_| ApiError::internal())?;
+        store
+            .transaction_with(move |transaction| ProfileRepository::save(transaction, &profile))
+            .await
+            .map_err(profile_read_error)?;
+        response
+    };
     Ok(Json(super::generated_json::<
         crate::generated::ProfileMutation,
     >(result)?))

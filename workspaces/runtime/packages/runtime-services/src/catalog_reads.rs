@@ -105,7 +105,7 @@ pub async fn provider_exchange(
 /// Read discovery methods through the selected account's already retained
 /// provider session. The account worker owns the durable intent and receipt;
 /// this adapter only accepts a written reply bound to the captured connection.
-pub fn account_session_exchange(
+pub async fn account_session_exchange(
     session: &dyn crate::account_session_runtime::AccountSessionPort,
     account: &str,
     requests: Vec<ProviderRequest>,
@@ -144,6 +144,7 @@ pub fn account_session_exchange(
                 params: request.params,
                 deadline,
             })
+            .await
             .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
         if receipt.scope != scope
             || receipt.operation != operation
@@ -832,46 +833,48 @@ mod tests {
             })
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: crate::account_session_runtime::ProviderRequest,
-        ) -> Result<
+        ) -> crate::account_session_runtime::AccountSessionFuture<
+            'a,
             crate::account_session_runtime::SessionReceipt,
-            crate::account_session_runtime::AccountSessionError,
         > {
-            use crate::account_session_runtime::{
-                ProviderResponse, RequestCertainty, SessionReceipt,
-            };
-            let scope = request
-                .expected_scope
-                .clone()
-                .expect("captured fixture scope");
-            assert!(request.deadline > std::time::Instant::now());
-            let method = request.method;
-            let operation = request.operation.clone();
-            let response = if method == studio_runtime_providers::Method::SkillsList {
-                json!({"data":[{"cwd":"/repo","skills":[]}]})
-            } else {
-                json!({"servers":[],"nextCursor":null})
-            };
-            self.calls.lock().expect("discovery calls").push(json!({
-                "account":request.account,
-                "operation":operation,
-                "method":method.as_str(),
-                "params":request.params,
-            }));
-            Ok(SessionReceipt {
-                scope,
-                operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    generation: 7,
-                    id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
-                    method,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(response)),
-                not_sent_reason: None,
-                replayed: false,
+            Box::pin(async move {
+                use crate::account_session_runtime::{
+                    ProviderResponse, RequestCertainty, SessionReceipt,
+                };
+                let scope = request
+                    .expected_scope
+                    .clone()
+                    .expect("captured fixture scope");
+                assert!(request.deadline > std::time::Instant::now());
+                let method = request.method;
+                let operation = request.operation.clone();
+                let response = if method == studio_runtime_providers::Method::SkillsList {
+                    json!({"data":[{"cwd":"/repo","skills":[]}]})
+                } else {
+                    json!({"servers":[],"nextCursor":null})
+                };
+                self.calls.lock().expect("discovery calls").push(json!({
+                    "account":request.account,
+                    "operation":operation,
+                    "method":method.as_str(),
+                    "params":request.params,
+                }));
+                Ok(SessionReceipt {
+                    scope,
+                    operation,
+                    ticket: Some(studio_runtime_providers::RequestTicket {
+                        generation: 7,
+                        id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
+                        method,
+                    }),
+                    certainty: RequestCertainty::Written,
+                    result: Some(ProviderResponse::Reply(response)),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }
@@ -1193,8 +1196,8 @@ mod tests {
         assert_eq!(calls[3]["params"]["threadId"], "thread");
     }
 
-    #[test]
-    fn account_session_discovery_uses_bound_written_read_receipts() {
+    #[tokio::test]
+    async fn account_session_discovery_uses_bound_written_read_receipts() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let session = RetainedDiscovery {
             calls: Arc::clone(&calls),
@@ -1214,6 +1217,7 @@ mod tests {
             ],
             Duration::from_secs(5),
         )
+        .await
         .expect("written discovery replies");
         assert_eq!(
             responses,

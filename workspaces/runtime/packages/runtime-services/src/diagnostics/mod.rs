@@ -24,6 +24,8 @@
 //! and SQLite busy-error counters are not available. Startup marks capture
 //! opt-in Linux current RSS; peak RSS and allocation traces are unavailable.
 
+use futures_util::future::BoxFuture;
+
 mod allocator;
 mod host;
 mod http;
@@ -152,10 +154,10 @@ const SITE_LIMIT: usize = 256;
 /// Provider-owned snapshot required to fill the diagnostics schema's account,
 /// loaded-thread, and queue fields. Implementations may issue bounded read-only
 /// requests through already-retained provider sessions; they must never launch
-/// a CLI, open another connection, or perform a provider mutation. The HTTP
-/// caller invokes this on a blocking pool.
+/// a CLI, open another connection, or perform a provider mutation. Local file
+/// and SQLite snapshots stay on a blocking pool; provider requests are awaited.
 pub trait ProviderDiagnosticsPort: Send + Sync {
-    fn snapshot(&self) -> ProviderDiagnosticsSnapshot;
+    fn snapshot<'a>(&'a self) -> BoxFuture<'a, ProviderDiagnosticsSnapshot>;
 }
 
 #[derive(Clone, Debug)]

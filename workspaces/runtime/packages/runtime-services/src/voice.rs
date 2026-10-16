@@ -69,6 +69,8 @@ pub enum VoiceError {
     Coordination(#[from] crate::coordination::CoordinationError),
     #[error("Not implemented: requires {0}")]
     RequiresDependency(&'static str),
+    #[error("voice preparation blocking task failed")]
+    PreparationWorker,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -95,7 +97,7 @@ pub fn status(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError>
     Ok(json!({"configured": true, "transport": "native", "auth": "chatgpt"}))
 }
 
-pub fn record(store: &RuntimeStore, input: VoiceRecordInput) -> Result<Value, VoiceError> {
+pub async fn record(store: &RuntimeStore, input: VoiceRecordInput) -> Result<Value, VoiceError> {
     let VoiceRecordInput {
         agent_id,
         session_id,
@@ -141,39 +143,41 @@ pub fn record(store: &RuntimeStore, input: VoiceRecordInput) -> Result<Value, Vo
         return Err(VoiceError::InvalidRequest("Invalid playback status"));
     }
 
-    store.transaction_with_error(|transaction| {
-        checked_agent(transaction, &agent_id)?;
-        if !input.session.is_empty()
-            && !VoiceRepository::session_exists(transaction, &agent_id, &input.session)?
-        {
-            return Err(VoiceError::InvalidRequest("Unknown voice session"));
-        }
-        if let Some(previous) = VoiceRepository::record(transaction, &input.id)? {
-            validate_record(&previous)?;
-            let old_payload: Value = serde_json::from_str(&previous.payload)
-                .map_err(|_| invalid("voice_records", &previous.id))?;
-            if previous.agent != input.agent
-                || previous.session != input.session
-                || previous.kind != input.kind
-                || previous.text != input.text
-                || previous.item_id != input.item_id
-                || previous.previous_item_id != input.previous_item_id
-                || old_payload != payload
+    store
+        .transaction_with_error(move |transaction| {
+            checked_agent(transaction, &agent_id)?;
+            if !input.session.is_empty()
+                && !VoiceRepository::session_exists(transaction, &agent_id, &input.session)?
             {
-                return Err(VoiceError::Conflict(
-                    "Voice event identity conflicts with its original content",
-                ));
+                return Err(VoiceError::InvalidRequest("Unknown voice session"));
             }
-            return previous.value().map_err(VoiceError::from);
-        }
-        let mut saved = input;
-        saved.created = event_write::unix_time()?;
-        VoiceRepository::insert_record(transaction, &saved)?;
-        VoiceRepository::record(transaction, &saved.id)?
-            .ok_or_else(|| invalid("voice_records", &saved.id))?
-            .value()
-            .map_err(VoiceError::from)
-    })
+            if let Some(previous) = VoiceRepository::record(transaction, &input.id)? {
+                validate_record(&previous)?;
+                let old_payload: Value = serde_json::from_str(&previous.payload)
+                    .map_err(|_| invalid("voice_records", &previous.id))?;
+                if previous.agent != input.agent
+                    || previous.session != input.session
+                    || previous.kind != input.kind
+                    || previous.text != input.text
+                    || previous.item_id != input.item_id
+                    || previous.previous_item_id != input.previous_item_id
+                    || old_payload != payload
+                {
+                    return Err(VoiceError::Conflict(
+                        "Voice event identity conflicts with its original content",
+                    ));
+                }
+                return previous.value().map_err(VoiceError::from);
+            }
+            let mut saved = input;
+            saved.created = event_write::unix_time()?;
+            VoiceRepository::insert_record(transaction, &saved)?;
+            VoiceRepository::record(transaction, &saved.id)?
+                .ok_or_else(|| invalid("voice_records", &saved.id))?
+                .value()
+                .map_err(VoiceError::from)
+        })
+        .await
 }
 
 pub fn records(store: &RuntimeStore, agent_id: &str, after: i64) -> Result<Value, VoiceError> {
@@ -236,8 +240,8 @@ pub fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceErr
     Ok(json!({"requests": requests}))
 }
 
-pub fn submit(
-    store: &RuntimeStore,
+pub async fn submit(
+    store: std::sync::Arc<RuntimeStore>,
     agent_id: &str,
     message_id: &str,
     record_ids: &[String],
@@ -260,19 +264,33 @@ pub fn submit(
         ));
     }
 
-    let admission = crate::message_admission::PreparedAdmission::load(&*store.read()?, agent_id)?;
+    let store_for_preparation = std::sync::Arc::clone(&store);
+    let agent_for_preparation = agent_id.to_owned();
+    let admission = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice",
+        move || {
+            let connection = store_for_preparation.read()?;
+            crate::message_admission::PreparedAdmission::load(&connection, &agent_for_preparation)
+        },
+    )
+    .await
+    .map_err(|_| VoiceError::PreparationWorker)??;
     #[cfg(test)]
     ingress_tests::support::after_preparation(agent_id);
-    store.transaction_with_error(|transaction| {
-        checked_agent(transaction, agent_id)?;
-        let input_records = serde_json::to_string(record_ids)?;
-        let text = match VoiceRepository::delivery(transaction, message_id)? {
+    let agent_id = agent_id.to_owned();
+    let message_id = message_id.to_owned();
+    let record_ids = record_ids.to_vec();
+    let edited_text = edited_text.map(str::to_owned);
+    store.transaction_with_error(move |transaction| {
+        checked_agent(transaction, &agent_id)?;
+        let input_records = serde_json::to_string(&record_ids)?;
+        let text = match VoiceRepository::delivery(transaction, &message_id)? {
             Some(old) => {
                 let old_records: Vec<String> = serde_json::from_str(&old.records)
                     .map_err(|_| invalid("voice_deliveries", &old.id))?;
                 if old.agent != agent_id
                     || old_records != record_ids
-                    || old.edited_text.as_deref() != edited_text
+                    || old.edited_text.as_deref() != edited_text.as_deref()
                 {
                     return Err(VoiceError::Conflict(
                         "Voice delivery identity conflicts with its original content",
@@ -282,7 +300,7 @@ pub fn submit(
             }
             None => {
                 let mut reserved = BTreeSet::new();
-                for (delivery_id, batch) in VoiceRepository::deliveries(transaction, agent_id)? {
+                for (delivery_id, batch) in VoiceRepository::deliveries(transaction, &agent_id)? {
                     let identities: Vec<String> = serde_json::from_str(&batch)
                         .map_err(|_| invalid("voice_deliveries", &delivery_id))?;
                     reserved.extend(identities);
@@ -294,12 +312,12 @@ pub fn submit(
                 }
                 let mut selected = Vec::with_capacity(record_ids.len());
                 for id in record_ids {
-                    let Some(row) = VoiceRepository::record(transaction, id)? else {
+                    let Some(row) = VoiceRepository::record(transaction, &id)? else {
                         return Err(VoiceError::InvalidRequest("Unknown transcript record"));
                     };
                     validate_record(&row)?;
                     let payload: Value = serde_json::from_str(&row.payload)
-                        .map_err(|_| invalid("voice_records", id))?;
+                        .map_err(|_| invalid("voice_records", &id))?;
                     if row.agent != agent_id || !matches!(row.kind.as_str(), "user" | "courier") {
                         return Err(VoiceError::InvalidRequest("Unknown transcript record"));
                     }
@@ -339,7 +357,7 @@ pub fn submit(
                         .collect::<Vec<_>>()
                         .join("\n\n")
                 );
-                let text = edited_text.unwrap_or(&generated).to_owned();
+                let text = edited_text.as_deref().unwrap_or(&generated).to_owned();
                 if text.chars().count() > MAX_DELIVERY_TEXT {
                     return Err(VoiceError::InvalidRequest(
                         "The transcript exceeds 32000 characters. Send a smaller selection; no text was truncated",
@@ -347,11 +365,11 @@ pub fn submit(
                 }
                 VoiceRepository::insert_delivery(
                     transaction,
-                    message_id,
-                    agent_id,
+                    &message_id,
+                    &agent_id,
                     &input_records,
                     &text,
-                    edited_text,
+                    edited_text.as_deref(),
                 )?;
                 text
             }
@@ -363,8 +381,8 @@ pub fn submit(
         let result = crate::coordination::post_message_with_admission(
             transaction,
             crate::coordination::PostManagedMessage {
-                room: agent_id,
-                id: message_id,
+                room: &agent_id,
+                id: &message_id,
                 text: &text,
                 delivery: "queue",
                 assets: &[],
@@ -373,6 +391,7 @@ pub fn submit(
         )?;
         Ok(result.receipt)
     })
+    .await
 }
 
 pub fn end(store: &RuntimeStore, agent_id: &str, session_id: &str) -> Result<Value, VoiceError> {
@@ -446,12 +465,19 @@ pub fn speech_receipt(
     ))
 }
 
-pub fn approval_speech(
-    store: &RuntimeStore,
+pub async fn approval_speech(
+    store: std::sync::Arc<RuntimeStore>,
     agent_id: &str,
     request_id: &str,
 ) -> Result<Value, VoiceError> {
-    let approvals = approvals(store, agent_id)?;
+    let store_for_read = std::sync::Arc::clone(&store);
+    let agent_for_read = agent_id.to_owned();
+    let approvals = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice",
+        move || approvals(&store_for_read, &agent_for_read),
+    )
+    .await
+    .map_err(|_| VoiceError::PreparationWorker)??;
     let request = approvals
         .get("requests")
         .and_then(Value::as_array)
@@ -472,7 +498,7 @@ pub fn approval_speech(
         ));
     }
     record(
-        store,
+        &store,
         VoiceRecordInput {
             agent_id: agent_id.to_owned(),
             session_id: String::new(),
@@ -485,6 +511,7 @@ pub fn approval_speech(
             internal: true,
         },
     )
+    .await
 }
 
 pub(super) fn approval_fingerprint(request: &Value) -> String {

@@ -6,6 +6,8 @@ use crate::notification_dispatch::{
     NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
 };
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::Transaction;
@@ -157,19 +159,30 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// Implementations deduplicate by the effect's `observation.delivery`; a
 /// process may crash after publication and before the durable row is deleted.
 pub trait NotificationPostCommitSink: Send + Sync {
-    fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError>;
+    fn publish<'a>(
+        &'a self,
+        effect: &'a NotificationPostCommit,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>>;
 
-    fn invalidate_state(&self, _request_id: &str) -> Result<(), NotificationDispatchError> {
-        Ok(())
+    fn invalidate_state<'a>(
+        &'a self,
+        _request_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
 pub struct UnavailablePostCommitSink;
 
 impl NotificationPostCommitSink for UnavailablePostCommitSink {
-    fn publish(&self, _effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
-        // Non-host/test callers have no HTTP publication hubs attached.
-        Ok(())
+    fn publish<'a>(
+        &'a self,
+        _effect: &'a NotificationPostCommit,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
+        Box::pin(async {
+            // Non-host/test callers have no HTTP publication hubs attached.
+            Ok(())
+        })
     }
 }
 
@@ -181,7 +194,34 @@ pub struct RuntimeNotificationPostCommitSink {
 }
 
 impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
-    fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+    fn publish<'a>(
+        &'a self,
+        effect: &'a NotificationPostCommit,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
+        Box::pin(async move { self.publish_effect(effect).await })
+    }
+
+    fn invalidate_state<'a>(
+        &'a self,
+        request_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.resources
+                .publish_once(&serde_json::json!({
+                    "requestId": request_id,
+                    "resources": [{"kind":"state"}],
+                }))
+                .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+            Ok(())
+        })
+    }
+}
+
+impl RuntimeNotificationPostCommitSink {
+    async fn publish_effect(
+        &self,
+        effect: &NotificationPostCommit,
+    ) -> Result<(), NotificationDispatchError> {
         if let NotificationPostCommit::Recovered { identity, .. } = effect {
             self.resources
                 .publish_once(&serde_json::json!({
@@ -201,14 +241,15 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
                 observation,
                 budget_capture_value: _,
             } => {
-                self.capture_analytics(effect, observation, None)?;
+                self.capture_analytics(effect, observation, None).await?;
                 self.project_token_rate(effect)?;
             }
             NotificationPostCommit::AnalyticsStream {
                 observation,
                 metrics,
             } => {
-                self.capture_analytics(effect, observation, Some(metrics))?;
+                self.capture_analytics(effect, observation, Some(metrics.clone()))
+                    .await?;
             }
             NotificationPostCommit::Recovered { .. } => {
                 return Err(NotificationDispatchError::InvalidNotification);
@@ -247,18 +288,6 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
         Ok(())
     }
 
-    fn invalidate_state(&self, request_id: &str) -> Result<(), NotificationDispatchError> {
-        self.resources
-            .publish_once(&serde_json::json!({
-                "requestId": request_id,
-                "resources": [{"kind":"state"}],
-            }))
-            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
-        Ok(())
-    }
-}
-
-impl RuntimeNotificationPostCommitSink {
     fn project_token_rate(
         &self,
         effect: &NotificationPostCommit,
@@ -278,11 +307,11 @@ impl RuntimeNotificationPostCommitSink {
         Ok(())
     }
 
-    fn capture_analytics(
+    async fn capture_analytics(
         &self,
         effect: &NotificationPostCommit,
         observation: &NotificationObservation,
-        stream: Option<&crate::notification_dispatch::NotificationStreamMetrics>,
+        stream: Option<crate::notification_dispatch::NotificationStreamMetrics>,
     ) -> Result<bool, NotificationDispatchError> {
         let agent = observation
             .agent
@@ -297,19 +326,20 @@ impl RuntimeNotificationPostCommitSink {
         )
         .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))?;
         let kind = match effect {
-            NotificationPostCommit::Analytics { .. } => "analytics",
-            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
+            NotificationPostCommit::Analytics { .. } => "analytics".to_owned(),
+            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream".to_owned(),
             _ => return Err(NotificationDispatchError::InvalidNotification),
         };
         crate::analytics_capture::capture_notification_effect(
             &self.analytics_store,
-            &observation.delivery.provider_handle,
+            observation.delivery.provider_handle.clone(),
             observation.delivery.generation,
             observation.delivery.cursor,
             kind,
-            &prepared,
+            prepared,
             stream,
         )
+        .await
         .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))
     }
 }

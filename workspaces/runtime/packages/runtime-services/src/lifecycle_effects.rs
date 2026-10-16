@@ -14,6 +14,7 @@
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -92,6 +93,27 @@ const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 // Ordinary voice stops can remain in flight until their 30-second deadline.
 const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
 
+async fn measure_runtime_stage_async<T>(
+    name: &'static str,
+    operation: impl Future<Output = T>,
+) -> T {
+    use std::sync::OnceLock;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| {
+        std::env::var("CODEX_RUNTIME_STAGE_TIMINGS").is_ok_and(|value| value == "1")
+    }) {
+        return operation.await;
+    }
+    let started = Instant::now();
+    let result = operation.await;
+    eprintln!(
+        "runtime_stage name={name} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    result
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
     Accepted,
@@ -164,18 +186,25 @@ impl ProductionLifecyclePorts {
 
     /// Run the production stop/delete adapter. Effect intents and lifecycle
     /// rows commit together; broker dispatch begins only after that commit.
-    pub fn execute(&self, action: &Action, now: f64) -> Result<Value, ManagementError> {
+    pub async fn execute(
+        self: &Arc<Self>,
+        action: &Action,
+        now: f64,
+    ) -> Result<Value, ManagementError> {
         // Retry startup settlement here and surface storage failures before
         // making a new lifecycle decision.
-        self.reconcile_deleted_tombstones()?;
+        self.reconcile_deleted_tombstones().await?;
+        let concrete_ports = Arc::clone(self);
+        let lifecycle_ports: Arc<dyn LifecyclePorts> = concrete_ports;
         let result = crate::agent_management_store::execute_prepared(
-            &self.store,
+            Arc::clone(&self.store),
             action,
             now,
-            Some(self),
+            Some(lifecycle_ports),
             || {},
-        )?;
-        self.committed()?;
+        )
+        .await?;
+        self.committed().await?;
         Ok(result)
     }
 
@@ -288,7 +317,7 @@ impl ProductionLifecyclePorts {
         Ok(())
     }
 
-    fn dispatch_prepared(&self) -> Result<(), ManagementError> {
+    async fn dispatch_prepared(&self) -> Result<(), ManagementError> {
         let pending = {
             let mut queue = self
                 .prepared
@@ -322,28 +351,32 @@ impl ProductionLifecyclePorts {
             if !persisted {
                 continue;
             }
-            let outcome = request_interrupt(self.interrupt_broker.as_ref(), &request);
+            let outcome = request_interrupt(self.interrupt_broker.as_ref(), &request).await;
             let (state, error) = match outcome {
                 InterruptWriteResult::Accepted => ("accepted", None),
                 InterruptWriteResult::Rejected => ("rejected", None),
                 InterruptWriteResult::NotSent => ("unsent", None),
                 InterruptWriteResult::Unknown => ("unknown", None),
             };
-            self.store.transaction_with_error(|tx| {
-                SchedulerRepository::settle_interrupt_result(
-                    tx,
-                    &request.ticket,
-                    request.scope.generation,
-                    state,
-                    error,
-                )?;
-                Ok::<_, ManagementError>(())
-            })?;
+            let request_ticket = request.ticket.clone();
+            let generation = request.scope.generation;
+            self.store
+                .transaction_with_error(move |tx| {
+                    SchedulerRepository::settle_interrupt_result(
+                        tx,
+                        &request_ticket,
+                        generation,
+                        state,
+                        error,
+                    )?;
+                    Ok::<_, ManagementError>(())
+                })
+                .await?;
         }
         Ok(())
     }
 
-    fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
+    async fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
         let pending = self.store.read_transaction(|tx| {
             let mut statement = tx.prepare(
                 "SELECT id,server,body FROM runtime_server_outbox \
@@ -386,14 +419,17 @@ impl ProductionLifecyclePorts {
             };
             // The signed driver preserves the exact request identity. A lost
             // reply stays pending and is replayed only under the same identity.
-            if let Err(error) = driver.exchange(&server, "stop", payload, &request_id, now) {
+            if let Err(error) = driver
+                .exchange(&server, "stop", payload, &request_id, now)
+                .await
+            {
                 eprintln!("cross-server stop remains queued ({request_id}): {error}");
             }
         }
         Ok(())
     }
 
-    fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
+    async fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
         let pending = self.store.read_transaction(|tx| {
             let mut pending = Vec::new();
             for (id, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
@@ -408,34 +444,38 @@ impl ProductionLifecyclePorts {
         if pending.is_empty() {
             return Ok(());
         }
-        self.store.transaction_with_error(|tx| {
-            for id in &pending {
-                finalize_deleted(tx, id)?;
-            }
-            Ok::<_, ManagementError>(())
-        })?;
+        self.store
+            .transaction_with_error(move |tx| {
+                for id in &pending {
+                    finalize_deleted(tx, id)?;
+                }
+                Ok::<_, ManagementError>(())
+            })
+            .await?;
         Ok(())
     }
 }
 
-fn request_interrupt(
+async fn request_interrupt(
     port: &dyn AccountSessionPort,
     request: &InterruptRequest,
 ) -> InterruptWriteResult {
     let expected = request.scope.clone();
-    let receipt = port.provider_request(ProviderRequest {
-        account: request.scope.account.clone(),
-        operation: request.ticket.clone(),
-        actor: Some(RequestActor {
-            agent: request.agent.clone(),
-            epoch: request.epoch,
-        }),
-        deleted_actor_session: None,
-        expected_scope: Some(expected.clone()),
-        method: studio_runtime_providers::Method::TurnInterrupt,
-        params: json!({"threadId":request.thread,"turnId":request.turn}),
-        deadline: Instant::now() + INTERRUPT_TIMEOUT,
-    });
+    let receipt = port
+        .provider_request(ProviderRequest {
+            account: request.scope.account.clone(),
+            operation: request.ticket.clone(),
+            actor: Some(RequestActor {
+                agent: request.agent.clone(),
+                epoch: request.epoch,
+            }),
+            deleted_actor_session: None,
+            expected_scope: Some(expected.clone()),
+            method: studio_runtime_providers::Method::TurnInterrupt,
+            params: json!({"threadId":request.thread,"turnId":request.turn}),
+            deadline: Instant::now() + INTERRUPT_TIMEOUT,
+        })
+        .await;
     match receipt {
         Ok(receipt)
             if receipt.operation == request.ticket && receipt.scope.account == expected.account =>
@@ -495,40 +535,55 @@ impl LifecyclePorts for ProductionLifecyclePorts {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        crate::diagnostics::measure_runtime_stage("ports.committed", || {
-            self.monitor_wake.notify_one();
-            self.lifecycle_wake.notify_one();
-            if let Some(wake) = &self.continuation_wake {
-                wake.notify_one();
-            }
-            crate::diagnostics::measure_runtime_stage(
-                "ports.committed.reconcile_tombstones_before",
-                || self.reconcile_deleted_tombstones(),
-            )?;
-            crate::diagnostics::measure_runtime_stage("ports.committed.dispatch_prepared", || {
-                self.dispatch_prepared()
-            })?;
-            crate::diagnostics::measure_runtime_stage(
-                "ports.committed.reconcile_tombstones_after",
-                || self.reconcile_deleted_tombstones(),
-            )?;
-            crate::diagnostics::measure_runtime_stage(
-                "ports.committed.dispatch_deleted_voice",
-                || self.dispatch_deleted_voice_sessions(),
-            )?;
-            crate::diagnostics::measure_runtime_stage(
-                "ports.committed.dispatch_active_voice",
-                || self.dispatch_active_voice_stops(),
-            )?;
-            crate::diagnostics::measure_runtime_stage("ports.committed.dispatch_remote", || {
-                self.dispatch_remote_stops()
-            })?;
-            crate::diagnostics::measure_runtime_stage("ports.committed.workspace_cleanup", || {
-                crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
+    fn committed(&self) -> crate::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async move {
+            measure_runtime_stage_async("ports.committed", async {
+                self.monitor_wake.notify_one();
+                self.lifecycle_wake.notify_one();
+                if let Some(wake) = &self.continuation_wake {
+                    wake.notify_one();
+                }
+                measure_runtime_stage_async(
+                    "ports.committed.reconcile_tombstones_before",
+                    self.reconcile_deleted_tombstones(),
+                )
+                .await?;
+                measure_runtime_stage_async(
+                    "ports.committed.dispatch_prepared",
+                    self.dispatch_prepared(),
+                )
+                .await?;
+                measure_runtime_stage_async(
+                    "ports.committed.reconcile_tombstones_after",
+                    self.reconcile_deleted_tombstones(),
+                )
+                .await?;
+                measure_runtime_stage_async(
+                    "ports.committed.dispatch_deleted_voice",
+                    self.dispatch_deleted_voice_sessions(),
+                )
+                .await?;
+                measure_runtime_stage_async(
+                    "ports.committed.dispatch_active_voice",
+                    self.dispatch_active_voice_stops(),
+                )
+                .await?;
+                measure_runtime_stage_async(
+                    "ports.committed.dispatch_remote",
+                    self.dispatch_remote_stops(),
+                )
+                .await?;
+                measure_runtime_stage_async("ports.committed.workspace_cleanup", async {
+                    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(Arc::clone(
+                        &self.store,
+                    ))
+                    .await
                     .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))
-            })?;
-            Ok(())
+                })
+                .await?;
+                Ok(())
+            })
+            .await
         })
     }
 }
@@ -615,7 +670,7 @@ impl ProductionLifecyclePorts {
 }
 
 impl ProductionLifecyclePorts {
-    fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
+    async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
         let intents = self.store.read_transaction(|tx| {
             let mut statement = tx.prepare(
                 "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
@@ -665,14 +720,17 @@ impl ProductionLifecyclePorts {
                 .await
                 {
                     eprintln!("voice sessions remain stopped-pending for {agent_id}: {error}");
-                } else if let Err(error) = completion_store.transaction(|tx| {
-                    tx.execute(
-                        "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2 \
+                } else if let Err(error) = completion_store
+                    .transaction(move |tx| {
+                        tx.execute(
+                            "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2 \
                          AND json_extract(result,'$.status')='pending'",
-                        rusqlite::params![completion_intent, VOICE_STOP_SIGNATURE],
-                    )?;
-                    Ok(())
-                }) {
+                            rusqlite::params![completion_intent, VOICE_STOP_SIGNATURE],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                {
                     eprintln!("voice stop intent remains pending for {agent_id}: {error}");
                 }
                 dispatching
@@ -684,8 +742,9 @@ impl ProductionLifecyclePorts {
         Ok(())
     }
 
-    fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
+    async fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
         let intents = crate::voice::provider::pending_delete_intents(&self.store)
+            .await
             .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
         if intents.is_empty() {
             return Ok(());
@@ -719,7 +778,8 @@ impl ProductionLifecyclePorts {
                 let mut session_attempts = HashMap::<String, usize>::new();
                 let mut poll_attempt = 0;
                 loop {
-                    let pending = match crate::voice::provider::pending_delete_intents(&store) {
+                    let pending = match crate::voice::provider::pending_delete_intents(&store).await
+                    {
                         Ok(intents) => intents
                             .into_iter()
                             .find(|pending| pending.id == intent.id)
@@ -1176,7 +1236,7 @@ mod tests {
         assert_eq!(voice_delete_retry_delay(4), Duration::from_millis(1_600));
         assert_eq!(voice_delete_retry_delay(7), Duration::from_millis(1_600));
     }
-    use crate::account_session_runtime::{NotSentReason, SessionReceipt};
+    use crate::account_session_runtime::{AccountSessionFuture, NotSentReason, SessionReceipt};
     use studio_runtime_providers::{RequestId, RequestTicket};
 
     struct Broker {
@@ -1191,40 +1251,42 @@ mod tests {
             self.scope.clone()
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            let certainty = if self.scope.is_none() {
-                RequestCertainty::NotSent
-            } else {
-                self.certainty
-            };
-            let receipt = SessionReceipt {
-                scope: self.scope.clone().unwrap_or_else(|| {
-                    request
-                        .expected_scope
-                        .clone()
-                        .expect("test broker request expected scope")
-                }),
-                operation: request.operation.clone(),
-                ticket: Some(RequestTicket {
-                    generation: request
-                        .expected_scope
-                        .as_ref()
-                        .expect("test broker request expected scope")
-                        .generation,
-                    id: RequestId::String(request.operation.clone()),
-                    method: request.method,
-                }),
-                certainty,
-                result: self.response.clone(),
-                not_sent_reason: (certainty == RequestCertainty::NotSent)
-                    .then_some(NotSentReason::WorkerNotSent),
-                replayed: false,
-            };
-            *self.observed.lock().expect("observed request lock") = Some(request);
-            Ok(receipt)
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                let certainty = if self.scope.is_none() {
+                    RequestCertainty::NotSent
+                } else {
+                    self.certainty
+                };
+                let receipt = SessionReceipt {
+                    scope: self.scope.clone().unwrap_or_else(|| {
+                        request
+                            .expected_scope
+                            .clone()
+                            .expect("test broker request expected scope")
+                    }),
+                    operation: request.operation.clone(),
+                    ticket: Some(RequestTicket {
+                        generation: request
+                            .expected_scope
+                            .as_ref()
+                            .expect("test broker request expected scope")
+                            .generation,
+                        id: RequestId::String(request.operation.clone()),
+                        method: request.method,
+                    }),
+                    certainty,
+                    result: self.response.clone(),
+                    not_sent_reason: (certainty == RequestCertainty::NotSent)
+                        .then_some(NotSentReason::WorkerNotSent),
+                    replayed: false,
+                };
+                *self.observed.lock().expect("observed request lock") = Some(request);
+                Ok(receipt)
+            })
         }
     }
 
@@ -1243,8 +1305,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn interrupt_dispatch_binds_expected_scope_and_actor() {
+    #[tokio::test]
+    async fn interrupt_dispatch_binds_expected_scope_and_actor() {
         let request = request();
         let broker = Broker {
             scope: Some(request.scope.clone()),
@@ -1254,7 +1316,7 @@ mod tests {
         };
 
         assert_eq!(
-            request_interrupt(&broker, &request),
+            request_interrupt(&broker, &request).await,
             InterruptWriteResult::Accepted
         );
         let observed = broker.observed.lock().expect("observed request lock");
@@ -1276,8 +1338,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interrupt_uses_broker_scope_guard_and_preserves_unknown() {
+    #[tokio::test]
+    async fn interrupt_uses_broker_scope_guard_and_preserves_unknown() {
         let request = request();
         let broker = Broker {
             scope: None,
@@ -1286,7 +1348,7 @@ mod tests {
             observed: Mutex::new(None),
         };
         assert_eq!(
-            request_interrupt(&broker, &request),
+            request_interrupt(&broker, &request).await,
             InterruptWriteResult::NotSent
         );
         let observed = broker.observed.lock().expect("observed request lock");
@@ -1305,13 +1367,13 @@ mod tests {
             observed: Mutex::new(None),
         };
         assert_eq!(
-            request_interrupt(&broker, &request),
+            request_interrupt(&broker, &request).await,
             InterruptWriteResult::Unknown
         );
     }
 
-    #[test]
-    fn interrupt_rejection_is_written_not_unknown() {
+    #[tokio::test]
+    async fn interrupt_rejection_is_written_not_unknown() {
         let request = request();
         let broker = Broker {
             scope: Some(request.scope.clone()),
@@ -1320,7 +1382,7 @@ mod tests {
             observed: Mutex::new(None),
         };
         assert_eq!(
-            request_interrupt(&broker, &request),
+            request_interrupt(&broker, &request).await,
             InterruptWriteResult::Rejected
         );
     }

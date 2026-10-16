@@ -353,8 +353,26 @@ impl BrowserCallbackReceiver {
 }
 
 impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbackReceiver {
-    fn receive(&self, envelope: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
-        self.receive(&envelope["payload"])
+    fn receive<'a>(
+        &'a self,
+        envelope: &'a Value,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, crate::multi_server_auth::AccessError>>
+    {
+        Box::pin(async move {
+            let store = Arc::clone(&self.store);
+            let payload = envelope["payload"].clone();
+            tokio::task::spawn_blocking(move || {
+                BrowserCallbackReceiver::new(store).receive(&payload)
+            })
+            .await
+            .map_err(|_| {
+                crate::multi_server_auth::refused(
+                    503,
+                    "browser_callback_unknown",
+                    "The browser callback outcome is unknown",
+                )
+            })?
+        })
     }
 }
 

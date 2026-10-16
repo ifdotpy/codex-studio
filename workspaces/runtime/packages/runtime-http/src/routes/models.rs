@@ -132,7 +132,7 @@ async fn ensure_session(
             "provider-session/account-session",
         ),
     )?;
-    session.ensure_session_async(account).await?;
+    session.ensure_session(account).await?;
     Ok(())
 }
 
@@ -312,21 +312,7 @@ mod tests {
 
     struct EnsuredSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl studio_runtime_services::account_session_runtime::AccountSessionPort for EnsuredSession {
-        fn ensure_session(
-            &self,
-            _account: &str,
-        ) -> Result<
-            studio_runtime_services::account_session_runtime::ConnectionScope,
-            studio_runtime_services::account_session_runtime::AccountSessionError,
-        > {
-            Err(
-                studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
-                    "sync ensure must not be called",
-                ),
-            )
-        }
-
-        fn ensure_session_async<'a>(
+        fn ensure_session<'a>(
             &'a self,
             account: &'a str,
         ) -> std::pin::Pin<
@@ -360,20 +346,26 @@ mod tests {
     }
 
     impl studio_runtime_services::account_session_runtime::AccountSessionPort for CatalogSession {
-        fn ensure_session(
-            &self,
-            account: &str,
-        ) -> Result<
-            studio_runtime_services::account_session_runtime::ConnectionScope,
-            studio_runtime_services::account_session_runtime::AccountSessionError,
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            studio_runtime_services::account_session_runtime::ConnectionScope,
+                            studio_runtime_services::account_session_runtime::AccountSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
         > {
-            Ok(
-                studio_runtime_services::account_session_runtime::ConnectionScope {
-                    account: account.to_owned(),
-                    connection: "fixture-connection".into(),
-                    generation: 1,
-                },
-            )
+            let scope = studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: account.to_owned(),
+                connection: "fixture-connection".into(),
+                generation: 1,
+            };
+            Box::pin(async move { Ok(scope) })
         }
 
         fn current_scope(
@@ -389,12 +381,19 @@ mod tests {
             )
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: studio_runtime_services::account_session_runtime::ProviderRequest,
-        ) -> Result<
-            studio_runtime_services::account_session_runtime::SessionReceipt,
-            studio_runtime_services::account_session_runtime::AccountSessionError,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            studio_runtime_services::account_session_runtime::SessionReceipt,
+                            studio_runtime_services::account_session_runtime::AccountSessionError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
         > {
             use studio_runtime_services::account_session_runtime::{
                 ProviderResponse, RequestCertainty, SessionReceipt,
@@ -406,7 +405,7 @@ mod tests {
                     "/".into(),
                 )
             })?;
-            Ok(SessionReceipt {
+            let result = Ok(SessionReceipt {
                 scope: self.current_scope(&request.account).expect("scope"),
                 operation: request.operation,
                 ticket: Some(studio_runtime_providers::RequestTicket {
@@ -418,7 +417,8 @@ mod tests {
                 result: Some(ProviderResponse::Reply(page)),
                 not_sent_reason: None,
                 replayed: false,
-            })
+            });
+            Box::pin(async move { result })
         }
     }
 

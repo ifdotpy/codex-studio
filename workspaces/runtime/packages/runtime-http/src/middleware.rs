@@ -401,7 +401,12 @@ pub(crate) async fn response_safety(
     if api {
         response = with_api_headers(response, response_request_id.as_ref());
     }
-    if response.status() == StatusCode::INTERNAL_SERVER_ERROR {
+    if response.status() == StatusCode::INTERNAL_SERVER_ERROR
+        && response
+            .extensions()
+            .get::<crate::mutation_tasks::TrackedTaskPanicLogged>()
+            .is_none()
+    {
         let cause = response
             .extensions()
             .get::<InternalErrorCause>()
@@ -460,7 +465,7 @@ pub(crate) async fn response_safety(
     response
 }
 
-fn safe_request_id(value: &str) -> bool {
+pub(crate) fn safe_request_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
@@ -483,7 +488,7 @@ fn write_internal_error_log(
     )
 }
 
-fn log_internal_error(route: &str, request_id: Option<&str>, cause: InternalErrorKind) {
+pub(crate) fn log_internal_error(route: &str, request_id: Option<&str>, cause: InternalErrorKind) {
     let stderr = std::io::stderr();
     let mut stderr = stderr.lock();
     if let Err(error) = write_internal_error_log(&mut stderr, route, request_id, cause) {

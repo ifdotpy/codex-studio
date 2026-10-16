@@ -226,67 +226,78 @@ impl RetainedMonitorPort {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resources);
     }
 
-    fn request(
-        &self,
-        operation: &Operation,
+    fn request<'a>(
+        &'a self,
+        operation: &'a Operation,
         request_operation: String,
         method: Method,
         params: Value,
         deadline: Instant,
         actor: bool,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        let scope = self
-            .session
-            .current_scope(&operation.account_key)
-            .ok_or(AccountSessionError::Refused("No live provider session"))?;
+    ) -> futures_util::future::BoxFuture<'a, Result<SessionReceipt, AccountSessionError>> {
+        let Some(scope) = self.session.current_scope(&operation.account_key) else {
+            return Box::pin(async {
+                Err(AccountSessionError::Refused("No live provider session"))
+            });
+        };
         if scope.account != operation.account_key {
-            return Err(AccountSessionError::Refused(
-                "Provider account scope changed",
-            ));
+            return Box::pin(async {
+                Err(AccountSessionError::Refused(
+                    "Provider account scope changed",
+                ))
+            });
         }
-        self.session.provider_request(ProviderRequest {
-            account: operation.account_key.clone(),
-            operation: request_operation,
-            actor: actor.then(|| RequestActor {
-                agent: operation.agent.clone(),
-                epoch: operation.epoch,
-            }),
-            deleted_actor_session: None,
-            expected_scope: Some(scope),
-            method,
-            params,
-            deadline,
+        Box::pin(async move {
+            self.session
+                .provider_request(ProviderRequest {
+                    account: operation.account_key.clone(),
+                    operation: request_operation,
+                    actor: actor.then(|| RequestActor {
+                        agent: operation.agent.clone(),
+                        epoch: operation.epoch,
+                    }),
+                    deleted_actor_session: None,
+                    expected_scope: Some(scope),
+                    method,
+                    params,
+                    deadline,
+                })
+                .await
         })
     }
 
-    fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
+    async fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
         use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository};
 
-        let (monitor, actor) = self.store.transaction_with(|tx| {
-            let (snapshot, _actor) = studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
-            if snapshot.record()["status"] != "starting"
-                || snapshot
-                    .record()
-                    .get("ruleId")
-                    .is_some_and(|value| !value.is_null())
-                || snapshot.operation().is_some()
-            {
-                return Err(MonitorError::Refused(
-                    "Monitor is not awaiting its first start",
-                ));
-            }
-            let saved = MonitorsRepository::get(tx, id)?
-                .ok_or(MonitorError::Refused("Unknown command watch"))?;
-            let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent()))?
-                .ok_or(MonitorError::Refused("Unknown agent"))?;
-            if agent.id().as_ref() != snapshot.agent() {
-                return Err(MonitorError::Refused("Monitor owner changed"));
-            }
-            Ok((
-                saved.value().clone(),
-                serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
-            ))
-        })?;
+        let (monitor, actor) = self
+            .store
+            .transaction_with(|tx| {
+                let (snapshot, _actor) =
+                    studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
+                if snapshot.record()["status"] != "starting"
+                    || snapshot
+                        .record()
+                        .get("ruleId")
+                        .is_some_and(|value| !value.is_null())
+                    || snapshot.operation().is_some()
+                {
+                    return Err(MonitorError::Refused(
+                        "Monitor is not awaiting its first start",
+                    ));
+                }
+                let saved = MonitorsRepository::get(tx, id)?
+                    .ok_or(MonitorError::Refused("Unknown command watch"))?;
+                let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent()))?
+                    .ok_or(MonitorError::Refused("Unknown agent"))?;
+                if agent.id().as_ref() != snapshot.agent() {
+                    return Err(MonitorError::Refused("Monitor owner changed"));
+                }
+                Ok((
+                    saved.value().clone(),
+                    serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
+                ))
+            })
+            .await?;
         let agent_id = monitor["agent"]
             .as_str()
             .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
@@ -332,14 +343,22 @@ impl RetainedMonitorPort {
             .ok_or(MonitorError::Unavailable(
                 "account-worker/monitor-preparation",
             ))?;
-        let prepared =
-            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
-                &self.store,
-                &resources,
-                agent_id,
-                epoch,
-            )
-            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let store = Arc::clone(&self.store);
+        let prepared_agent = agent_id.to_owned();
+        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/monitor-command-preparation",
+            move || {
+                studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+                    &store,
+                    &resources,
+                    &prepared_agent,
+                    epoch,
+                )
+            },
+        )
+        .await
+        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?
+        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
         let config_receipt = self
             .request(
                 &operation,
@@ -349,6 +368,7 @@ impl RetainedMonitorPort {
                 Instant::now() + Duration::from_secs(20),
                 true,
             )
+            .await
             .map_err(|_| MonitorError::Unavailable("provider-session/monitor-config"))?;
         if config_receipt.operation != format!("monitor-config:{id}:{epoch}")
             || config_receipt.scope != scope
@@ -386,7 +406,8 @@ impl RetainedMonitorPort {
             operation,
             params,
         };
-        let _ = studio_runtime_services::monitor_driver::start(&self.store, self, id, &start, now)?;
+        let _ = studio_runtime_services::monitor_driver::start(&self.store, self, id, &start, now)
+            .await?;
         Ok(())
     }
 
@@ -410,7 +431,7 @@ impl RetainedMonitorPort {
         }
     }
 
-    fn persist_rule_monitor(&self, check: &RuleCheck) -> Result<Value, String> {
+    async fn persist_rule_monitor(&self, check: &RuleCheck) -> Result<Value, String> {
         use studio_runtime_store::{AgentId, AgentRepository, RulesRepository};
         let request_id = format!("rule:{}:{}", check.rule_id, check.check_number);
         let request = json!({
@@ -502,10 +523,11 @@ impl RetainedMonitorPort {
                 }
                 Ok(saved.value().clone())
             })
+            .await
             .map_err(|error: MonitorError| error.to_string())
     }
 
-    fn launch_rule_check(&self, check: &RuleCheck) -> Result<CheckSubmission, String> {
+    async fn launch_rule_check(&self, check: &RuleCheck) -> Result<CheckSubmission, String> {
         let actor = {
             let db = self.store.read().map_err(|error| error.to_string())?;
             studio_runtime_store::AgentRepository::get(
@@ -529,15 +551,21 @@ impl RetainedMonitorPort {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(|| "account-worker/monitor-preparation is unavailable".to_owned())?;
-        let prepared_action =
-            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
-                &self.store,
-                &resources,
-                &check.agent_id,
-                check.epoch,
-            )
-            .map_err(|error| error.to_string())?;
-        let monitor = self.persist_rule_monitor(check)?;
+        let store = Arc::clone(&self.store);
+        let agent_id = check.agent_id.clone();
+        let epoch = check.epoch;
+        let prepared_action = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/rule-monitor-preparation",
+            move || {
+                studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+                    &store, &resources, &agent_id, epoch,
+                )
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let monitor = self.persist_rule_monitor(check).await?;
         if monitor["status"] == "approval" || monitor["status"] != "starting" {
             return Ok(CheckSubmission::Accepted);
         }
@@ -567,6 +595,7 @@ impl RetainedMonitorPort {
             json!({"cwd":cwd,"includeLayers":false}),
             Instant::now() + Duration::from_secs(20),
         )
+        .await
         .map_err(|error| format!("Monitor configuration was not read: {error}"))?;
         let config = match config.result {
             Some(ProviderResponse::Reply(value))
@@ -607,7 +636,9 @@ impl RetainedMonitorPort {
             &check.monitor_id,
             &prepared,
             now,
-        ) {
+        )
+        .await
+        {
             Ok(result) => result,
             Err(error) if error.store_failure_for_task() => return Ok(CheckSubmission::Unknown),
             Err(error) => return Err(error.to_string()),
@@ -621,16 +652,18 @@ impl RetainedMonitorPort {
         })
     }
 
-    fn reconcile_rule_check(&self, check: &RuleCheck) -> CheckReconciliation {
-        let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> =
-            self.store.transaction_with(|tx| {
+    async fn reconcile_rule_check(&self, check: &RuleCheck) -> CheckReconciliation {
+        let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> = self
+            .store
+            .transaction_with(|tx| {
                 let Some(record) = MonitorsRepository::get(tx, &check.monitor_id)? else {
                     return Ok(None);
                 };
                 let (snapshot, _) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &check.monitor_id)?;
                 Ok(Some((record.value().clone(), snapshot)))
-            });
+            })
+            .await;
         let Ok(Some((record, snapshot))) = loaded else {
             return CheckReconciliation::Unknown;
         };
@@ -648,14 +681,17 @@ impl RetainedMonitorPort {
             return CheckReconciliation::Unknown;
         };
         let operation_id = format!("monitor:{}", check.monitor_id);
-        match self.request(
-            operation,
-            format!("monitor-status:{}", check.monitor_id),
-            Method::OperationStatus,
-            json!({"operationId":operation_id}),
-            Instant::now() + Duration::from_secs(10),
-            false,
-        ) {
+        match self
+            .request(
+                operation,
+                format!("monitor-status:{}", check.monitor_id),
+                Method::OperationStatus,
+                json!({"operationId":operation_id}),
+                Instant::now() + Duration::from_secs(10),
+                false,
+            )
+            .await
+        {
             Ok(receipt) if receipt.certainty == RequestCertainty::Written => {
                 let Some(ProviderResponse::Reply(result)) = receipt.result else {
                     return CheckReconciliation::Unknown;
@@ -675,7 +711,8 @@ impl RetainedMonitorPort {
                                 code,
                                 error.as_deref(),
                                 studio_runtime_services::event_write::unix_time().unwrap_or(0.0),
-                            );
+                            )
+                            .await;
                             if queued.is_err() {
                                 return CheckReconciliation::Unknown;
                             }
@@ -688,27 +725,31 @@ impl RetainedMonitorPort {
                         .as_str()
                         .unwrap_or("Native monitor command was not accepted");
                     let now = studio_runtime_services::event_write::unix_time().unwrap_or(0.0);
-                    let finished = self.store.transaction_with(|tx| {
-                        let (current, actor) = studio_runtime_services::monitor_runtime::snapshot(
-                            tx,
-                            &check.monitor_id,
-                        )?;
-                        if current.operation() != Some(operation) {
-                            return Err(MonitorError::Refused(
-                                "Monitor operation identity changed",
-                            ));
-                        }
-                        let decision = studio_runtime_services::monitor_policy::finish(
-                            &current,
-                            Some(operation),
-                            None,
-                            Some(reason),
-                            now,
-                        )?;
-                        studio_runtime_services::monitor_runtime::apply(
-                            tx, &current, &actor, &decision, now,
-                        )
-                    });
+                    let finished = self
+                        .store
+                        .transaction_with(|tx| {
+                            let (current, actor) =
+                                studio_runtime_services::monitor_runtime::snapshot(
+                                    tx,
+                                    &check.monitor_id,
+                                )?;
+                            if current.operation() != Some(operation) {
+                                return Err(MonitorError::Refused(
+                                    "Monitor operation identity changed",
+                                ));
+                            }
+                            let decision = studio_runtime_services::monitor_policy::finish(
+                                &current,
+                                Some(operation),
+                                None,
+                                Some(reason),
+                                now,
+                            )?;
+                            studio_runtime_services::monitor_runtime::apply(
+                                tx, &current, &actor, &decision, now,
+                            )
+                        })
+                        .await;
                     if finished.is_ok() {
                         CheckReconciliation::Submitted
                     } else {
@@ -722,143 +763,161 @@ impl RetainedMonitorPort {
         }
     }
 
-    fn fail_unsubmitted_rule_check(&self, check: &RuleCheck, error: &str) -> Option<bool> {
+    async fn fail_unsubmitted_rule_check(&self, check: &RuleCheck, error: &str) -> Option<bool> {
         let now = studio_runtime_services::event_write::unix_time().ok()?;
-        let outcome: Result<Option<bool>, MonitorError> = self.store.transaction_with(|tx| {
-            let Some(record) = MonitorsRepository::get(tx, &check.monitor_id)? else {
-                return Ok(None);
-            };
-            if record.get("ruleId").and_then(Value::as_str) != Some(&check.rule_id)
-                || record.get("status").and_then(Value::as_str) != Some("starting")
-                || record
-                    .get("operation")
-                    .is_some_and(|operation| !operation.is_null())
-            {
-                return Ok(Some(false));
-            }
-            studio_runtime_services::monitor_runtime::finish_in_transaction(
-                tx,
-                &check.monitor_id,
-                None,
-                None,
-                Some(error),
-                now,
-            )?;
-            Ok(Some(true))
-        });
+        let outcome: Result<Option<bool>, MonitorError> = self
+            .store
+            .transaction_with(|tx| {
+                let Some(record) = MonitorsRepository::get(tx, &check.monitor_id)? else {
+                    return Ok(None);
+                };
+                if record.get("ruleId").and_then(Value::as_str) != Some(&check.rule_id)
+                    || record.get("status").and_then(Value::as_str) != Some("starting")
+                    || record
+                        .get("operation")
+                        .is_some_and(|operation| !operation.is_null())
+                {
+                    return Ok(Some(false));
+                }
+                studio_runtime_services::monitor_runtime::finish_in_transaction(
+                    tx,
+                    &check.monitor_id,
+                    None,
+                    None,
+                    Some(error),
+                    now,
+                )?;
+                Ok(Some(true))
+            })
+            .await;
         outcome.ok().flatten()
     }
 }
 
 impl MonitorNative for RetainedMonitorPort {
-    fn submit(&self, operation: &Operation, effect: &Effect) -> Submission {
-        let Effect::Native {
-            identity,
-            method,
-            params,
-        } = effect
-        else {
-            return Submission::NotSent {
-                reason: NotSentReason::Transient,
-                error: "Invalid monitor native effect".into(),
-            };
-        };
-        let Some(method) = Method::from_wire(method) else {
-            return Submission::NotSent {
-                reason: NotSentReason::Transient,
-                error: "Unknown monitor provider method".into(),
-            };
-        };
-        let timeout = if method == Method::CommandExec {
-            params["timeoutMs"]
-                .as_u64()
-                .unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS)
-                .saturating_add(MONITOR_TIMEOUT_GRACE_MS)
-                .min(MAX_MONITOR_TIMEOUT_WITH_GRACE_MS)
-        } else {
-            30_000
-        };
-        let result = self.request(
-            operation,
-            identity.clone(),
-            method,
-            params.clone(),
-            Instant::now() + Duration::from_millis(timeout),
-            true,
-        );
-        let receipt = match result {
-            Ok(receipt) => receipt,
-            Err(AccountSessionError::Unknown) => return Submission::Unknown,
-            Err(error) => {
+    fn submit<'a>(
+        &'a self,
+        operation: &'a Operation,
+        effect: &'a Effect,
+    ) -> futures_util::future::BoxFuture<'a, Submission> {
+        Box::pin(async move {
+            let Effect::Native {
+                identity,
+                method,
+                params,
+            } = effect
+            else {
                 return Submission::NotSent {
-                    reason: NotSentReason::SessionMissing,
-                    error: error.to_string(),
+                    reason: NotSentReason::Transient,
+                    error: "Invalid monitor native effect".into(),
                 };
-            }
-        };
-        if receipt.operation != *identity {
-            return Submission::Unknown;
-        }
-        if receipt.certainty != RequestCertainty::Written {
-            return Self::submission(receipt, identity);
-        }
-        if method == Method::CommandExec {
-            if let Err(error) = self.session.callback_barrier(
-                &receipt.scope.account,
-                &receipt.scope,
-                Instant::now() + Duration::from_secs(10),
-            ) {
-                return if matches!(error, AccountSessionError::Unknown) {
-                    Submission::Unknown
-                } else {
-                    Submission::NotSent {
-                        reason: NotSentReason::Transient,
+            };
+            let Some(method) = Method::from_wire(method) else {
+                return Submission::NotSent {
+                    reason: NotSentReason::Transient,
+                    error: "Unknown monitor provider method".into(),
+                };
+            };
+            let timeout = if method == Method::CommandExec {
+                params["timeoutMs"]
+                    .as_u64()
+                    .unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS)
+                    .saturating_add(MONITOR_TIMEOUT_GRACE_MS)
+                    .min(MAX_MONITOR_TIMEOUT_WITH_GRACE_MS)
+            } else {
+                30_000
+            };
+            let result = self
+                .request(
+                    operation,
+                    identity.clone(),
+                    method,
+                    params.clone(),
+                    Instant::now() + Duration::from_millis(timeout),
+                    true,
+                )
+                .await;
+            let receipt = match result {
+                Ok(receipt) => receipt,
+                Err(AccountSessionError::Unknown) => return Submission::Unknown,
+                Err(error) => {
+                    return Submission::NotSent {
+                        reason: NotSentReason::SessionMissing,
                         error: error.to_string(),
-                    }
+                    };
+                }
+            };
+            if receipt.operation != *identity {
+                return Submission::Unknown;
+            }
+            if receipt.certainty != RequestCertainty::Written {
+                return Self::submission(receipt, identity);
+            }
+            if method == Method::CommandExec {
+                if let Err(error) = self
+                    .session
+                    .callback_barrier(
+                        &receipt.scope.account,
+                        &receipt.scope,
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .await
+                {
+                    return if matches!(error, AccountSessionError::Unknown) {
+                        Submission::Unknown
+                    } else {
+                        Submission::NotSent {
+                            reason: NotSentReason::Transient,
+                            error: error.to_string(),
+                        }
+                    };
+                }
+                let id = params["processId"].as_str().unwrap_or_default();
+                if id.is_empty() {
+                    return Submission::Unknown;
+                }
+                let (code, error) = match receipt.result {
+                    Some(ProviderResponse::Reply(result)) => (
+                        result["exitCode"].as_i64(),
+                        result["error"].as_str().map(str::to_owned),
+                    ),
+                    Some(ProviderResponse::Rejected(result)) => (None, Some(result.to_string())),
+                    None => return Submission::Unknown,
                 };
+                if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+                    return Submission::Unknown;
+                }
+                if monitor_event_queue::enqueue_exit(
+                    &self.store,
+                    id,
+                    operation,
+                    &format!("provider-result:{identity}"),
+                    code,
+                    error.as_deref(),
+                    studio_runtime_services::event_write::unix_time().unwrap_or(0.0),
+                )
+                .await
+                .is_err()
+                {
+                    return Submission::Unknown;
+                }
+                self.wake_dispatch();
+            } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
+                let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
+                let reply = match receipt.result {
+                    Some(ProviderResponse::Reply(value)) => InputReply::Acknowledged(value),
+                    Some(ProviderResponse::Rejected(value)) => {
+                        InputReply::Rejected(value.to_string())
+                    }
+                    None => InputReply::Unknown("Input acknowledgement is pending".into()),
+                };
+                self.input_replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(ticket, reply);
             }
-            let id = params["processId"].as_str().unwrap_or_default();
-            if id.is_empty() {
-                return Submission::Unknown;
-            }
-            let (code, error) = match receipt.result {
-                Some(ProviderResponse::Reply(result)) => (
-                    result["exitCode"].as_i64(),
-                    result["error"].as_str().map(str::to_owned),
-                ),
-                Some(ProviderResponse::Rejected(result)) => (None, Some(result.to_string())),
-                None => return Submission::Unknown,
-            };
-            if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
-                return Submission::Unknown;
-            }
-            if monitor_event_queue::enqueue_exit(
-                &self.store,
-                id,
-                operation,
-                &format!("provider-result:{identity}"),
-                code,
-                error.as_deref(),
-                studio_runtime_services::event_write::unix_time().unwrap_or(0.0),
-            )
-            .is_err()
-            {
-                return Submission::Unknown;
-            }
-            self.wake_dispatch();
-        } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
-            let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
-            let reply = match receipt.result {
-                Some(ProviderResponse::Reply(value)) => InputReply::Acknowledged(value),
-                Some(ProviderResponse::Rejected(value)) => InputReply::Rejected(value.to_string()),
-                None => InputReply::Unknown("Input acknowledgement is pending".into()),
-            };
-            self.input_replies
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(ticket, reply);
-        }
-        Submission::Written
+            Submission::Written
+        })
     }
 }
 
@@ -869,36 +928,50 @@ impl RuleMonitor for RetainedMonitorPort {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
     }
-    fn launch(&self, check: &RuleCheck) -> CheckSubmission {
-        match self.launch_rule_check(check) {
-            Ok(submission) => submission,
-            Err(error) => match self.fail_unsubmitted_rule_check(check, &error) {
-                Some(true) | None => CheckSubmission::NotSubmitted { error },
-                Some(false) => CheckSubmission::Unknown,
-            },
-        }
+    fn launch<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+        Box::pin(async move {
+            match self.launch_rule_check(check).await {
+                Ok(submission) => submission,
+                Err(error) => match self.fail_unsubmitted_rule_check(check, &error).await {
+                    Some(true) | None => CheckSubmission::NotSubmitted { error },
+                    Some(false) => CheckSubmission::Unknown,
+                },
+            }
+        })
     }
-    fn reconcile(&self, check: &RuleCheck) -> CheckReconciliation {
-        self.reconcile_rule_check(check)
+    fn reconcile<'a>(
+        &'a self,
+        check: &'a RuleCheck,
+    ) -> futures_util::future::BoxFuture<'a, CheckReconciliation> {
+        Box::pin(self.reconcile_rule_check(check))
     }
-    fn cancel(&self, monitor_id: &str) -> Result<(), RulesTickError> {
-        let record = self.store.read()?;
-        let Some(monitor) = MonitorsRepository::get(&record, monitor_id)? else {
-            return Ok(());
-        };
-        let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
-            return Err(RulesTickError::MonitorUnavailable);
-        };
-        studio_runtime_services::monitor_driver::cancel(
-            &self.store,
-            self,
-            monitor_id,
-            Some(agent),
-            studio_runtime_services::event_write::unix_time()
-                .map_err(|_| RulesTickError::MonitorUnavailable)?,
-        )
-        .map_err(|_| RulesTickError::MonitorUnavailable)?;
-        Ok(())
+    fn cancel<'a>(
+        &'a self,
+        monitor_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+        Box::pin(async move {
+            let record = self.store.read()?;
+            let Some(monitor) = MonitorsRepository::get(&record, monitor_id)? else {
+                return Ok(());
+            };
+            let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
+                return Err(RulesTickError::MonitorUnavailable);
+            };
+            studio_runtime_services::monitor_driver::cancel(
+                &self.store,
+                self,
+                monitor_id,
+                Some(agent),
+                studio_runtime_services::event_write::unix_time()
+                    .map_err(|_| RulesTickError::MonitorUnavailable)?,
+            )
+            .await
+            .map_err(|_| RulesTickError::MonitorUnavailable)?;
+            Ok(())
+        })
     }
 }
 
@@ -927,162 +1000,217 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedRu
 }
 
 impl MonitorPort for RetainedMonitorPort {
-    fn start_monitor(&self, id: &str, now: f64) -> Result<(), MonitorError> {
-        self.dispatch_monitor_start(id, now)
+    fn start_monitor<'a>(
+        &'a self,
+        id: &'a str,
+        now: f64,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+        Box::pin(self.dispatch_monitor_start(id, now))
     }
 
-    fn next(&self) -> Result<Option<Delivery>, MonitorError> {
-        monitor_event_queue::next(&self.store)
+    fn next<'a>(
+        &'a self,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
+        Box::pin(async move { monitor_event_queue::next(&self.store) })
     }
 
-    fn acknowledge(&self, delivery: &Delivery) -> Result<(), MonitorError> {
-        monitor_event_queue::acknowledge(&self.store, delivery)
+    fn acknowledge<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+        Box::pin(monitor_event_queue::acknowledge(&self.store, delivery))
     }
 
-    fn reattach(&self, snapshot: &MonitorSnapshot) -> Result<Option<ReattachProof>, MonitorError> {
-        let Some(operation) = snapshot.operation() else {
-            return Ok(None);
-        };
-        let operation_id = format!("monitor:{}", snapshot.id());
-        let Some(scope) = self.session.current_scope(&operation.account_key) else {
-            return Ok(None);
-        };
-        let receipt = match self.request(
-            operation,
-            format!("monitor-status:{}", snapshot.id()),
-            Method::OperationStatus,
-            json!({"operationId":operation_id}),
-            Instant::now() + Duration::from_secs(10),
-            false,
-        ) {
-            Ok(receipt) => receipt,
-            Err(AccountSessionError::Unknown) => return Ok(None),
-            Err(AccountSessionError::Requires(name)) => {
-                return Err(MonitorError::Unavailable(name));
-            }
-            Err(_) => return Ok(None),
-        };
-        if receipt.certainty != RequestCertainty::Written {
-            return Ok(None);
-        }
-        let Some(ProviderResponse::Reply(result)) = receipt.result else {
-            return Ok(None);
-        };
-        if result["accepted"] != true {
-            let reason = result["reason"]
-                .as_str()
-                .unwrap_or("operation_not_accepted");
-            persist_not_reattachable(&self.store, snapshot, operation, reason)?;
-            return Ok(None);
-        }
-        let Some(native_id) = result["nativeId"].as_u64() else {
-            return Ok(None);
-        };
-        if let Some(response) = result.get("response").filter(|value| !value.is_null()) {
-            if self
-                .session
-                .callback_barrier(
-                    &receipt.scope.account,
-                    &receipt.scope,
+    fn reattach<'a>(
+        &'a self,
+        snapshot: &'a MonitorSnapshot,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>> {
+        Box::pin(async move {
+            let Some(operation) = snapshot.operation() else {
+                return Ok(None);
+            };
+            let operation_id = format!("monitor:{}", snapshot.id());
+            let Some(scope) = self.session.current_scope(&operation.account_key) else {
+                return Ok(None);
+            };
+            let receipt = match self
+                .request(
+                    operation,
+                    format!("monitor-status:{}", snapshot.id()),
+                    Method::OperationStatus,
+                    json!({"operationId":operation_id}),
                     Instant::now() + Duration::from_secs(10),
+                    false,
                 )
-                .is_err()
+                .await
             {
+                Ok(receipt) => receipt,
+                Err(AccountSessionError::Unknown) => return Ok(None),
+                Err(AccountSessionError::Requires(name)) => {
+                    return Err(MonitorError::Unavailable(name));
+                }
+                Err(_) => return Ok(None),
+            };
+            if receipt.certainty != RequestCertainty::Written {
                 return Ok(None);
             }
-            let response_value = response.get("result").unwrap_or(response);
-            let code = response_value["exitCode"].as_i64();
-            let error = response_value["error"]
-                .as_str()
-                .map(str::to_owned)
-                .or_else(|| response.get("error").map(Value::to_string));
-            if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+            let Some(ProviderResponse::Reply(result)) = receipt.result else {
+                return Ok(None);
+            };
+            if result["accepted"] != true {
+                let reason = result["reason"]
+                    .as_str()
+                    .unwrap_or("operation_not_accepted");
+                persist_not_reattachable(&self.store, snapshot, operation, reason).await?;
                 return Ok(None);
             }
-            monitor_event_queue::enqueue_exit(
-                &self.store,
-                snapshot.id(),
-                operation,
-                &format!("operation-status:{operation_id}"),
-                code,
-                error.as_deref(),
-                studio_runtime_services::event_write::unix_time()
-                    .map_err(|_| MonitorError::Refused("System clock unavailable"))?,
-            )?;
-            self.wake_dispatch();
-            return Ok(None);
-        }
-        Ok(Some(ReattachProof {
-            operation: operation.clone(),
-            operation_id,
-            native_id,
-            current_connection: scope.connection,
-        }))
+            let Some(native_id) = result["nativeId"].as_u64() else {
+                return Ok(None);
+            };
+            if let Some(response) = result.get("response").filter(|value| !value.is_null()) {
+                if self
+                    .session
+                    .callback_barrier(
+                        &receipt.scope.account,
+                        &receipt.scope,
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return Ok(None);
+                }
+                let response_value = response.get("result").unwrap_or(response);
+                let code = response_value["exitCode"].as_i64();
+                let error = response_value["error"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| response.get("error").map(Value::to_string));
+                if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+                    return Ok(None);
+                }
+                monitor_event_queue::enqueue_exit(
+                    &self.store,
+                    snapshot.id(),
+                    operation,
+                    &format!("operation-status:{operation_id}"),
+                    code,
+                    error.as_deref(),
+                    studio_runtime_services::event_write::unix_time()
+                        .map_err(|_| MonitorError::Refused("System clock unavailable"))?,
+                )
+                .await?;
+                self.wake_dispatch();
+                return Ok(None);
+            }
+            Ok(Some(ReattachProof {
+                operation: operation.clone(),
+                operation_id,
+                native_id,
+                current_connection: scope.connection,
+            }))
+        })
     }
 
-    fn probe(&self, id: &str, generation: i64, command: &str) -> Result<(), MonitorError> {
-        let (snapshot, actor) = self
-            .store
-            .transaction_with(|tx| studio_runtime_services::monitor_runtime::snapshot(tx, id))?;
-        let operation = snapshot
-            .operation()
-            .cloned()
-            .ok_or(MonitorError::Refused("Monitor operation is unavailable"))?;
-        let resources = self
-            .preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .ok_or(MonitorError::Unavailable(
-                "account-worker/monitor-preparation",
-            ))?;
-        let store = Arc::clone(&self.store);
-        let session = Arc::clone(&self.session);
-        let dispatch_wake = self
-            .dispatch_wake
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let id = id.to_owned();
-        let command = command.to_owned();
-        std::thread::Builder::new()
-            .name(format!("monitor-probe-{id}-{generation}"))
-            .spawn(move || {
-                let result = run_probe(
-                    &store,
-                    session.as_ref(),
-                    resources.as_ref(),
-                    MonitorProbeRequest {
-                        id: &id,
-                        generation,
-                        command: &command,
-                        operation: &operation,
-                        actor: actor.value(),
+    fn probe<'a>(
+        &'a self,
+        id: &'a str,
+        generation: i64,
+        command: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+        Box::pin(async move {
+            let (snapshot, actor) = self
+                .store
+                .transaction_with(|tx| studio_runtime_services::monitor_runtime::snapshot(tx, id))
+                .await?;
+            let operation = snapshot
+                .operation()
+                .cloned()
+                .ok_or(MonitorError::Refused("Monitor operation is unavailable"))?;
+            let resources = self
+                .preparation
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .ok_or(MonitorError::Unavailable(
+                    "account-worker/monitor-preparation",
+                ))?;
+            let store = Arc::clone(&self.store);
+            let session = Arc::clone(&self.session);
+            let dispatch_wake = self
+                .dispatch_wake
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let id = id.to_owned();
+            let command = command.to_owned();
+            let actor = serde_json::to_value(actor)
+                .map_err(|_| MonitorError::Refused("Monitor actor is invalid"))?;
+            let probe_task = tokio::spawn(async move {
+                let prepare_store = Arc::clone(&store);
+                let prepare_resources = Arc::clone(&resources);
+                let prepare_agent = operation.agent.clone();
+                let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/monitor-liveness-preparation",
+                    move || {
+                        prepare_monitor_permissions(
+                            &prepare_store,
+                            &prepare_resources,
+                            &prepare_agent,
+                            u64::try_from(generation)
+                                .map_err(|_| "Invalid liveness generation".to_owned())?,
+                        )
                     },
                 )
-                .unwrap_or_else(|error| json!({"error":error}));
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+                let result = match prepared {
+                    Ok(settings) => run_probe(
+                        session.as_ref(),
+                        MonitorProbeRequest {
+                            id: &id,
+                            generation,
+                            command: &command,
+                            operation: &operation,
+                            actor,
+                        },
+                        settings,
+                    )
+                    .await
+                    .unwrap_or_else(|error| json!({"error":error})),
+                    Err(error) => json!({"error":error}),
+                };
                 if monitor_event_queue::enqueue_probe(&store, &id, &operation, generation, &result)
+                    .await
                     .is_err()
                 {
                     eprintln!("monitor liveness probe result could not be persisted");
                 } else if let Some(wake) = dispatch_wake {
                     wake.notify_one();
                 }
-            })
-            .map_err(|_| MonitorError::Refused("Could not schedule monitor liveness probe"))?;
-        Ok(())
+            });
+            drop(probe_task);
+            Ok(())
+        })
     }
 
-    fn input_reply(&self, _operation: &Operation, ticket: &str) -> InputReply {
-        self.input_replies
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(ticket)
-            .unwrap_or_else(|| InputReply::Unknown("Input acknowledgement is unknown".into()))
+    fn input_reply<'a>(
+        &'a self,
+        _operation: &'a Operation,
+        ticket: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, InputReply> {
+        Box::pin(async move {
+            self.input_replies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(ticket)
+                .unwrap_or_else(|| InputReply::Unknown("Input acknowledgement is unknown".into()))
+        })
     }
 }
 
-fn persist_not_reattachable(
+async fn persist_not_reattachable(
     store: &RuntimeStore,
     expected: &MonitorSnapshot,
     operation: &Operation,
@@ -1090,25 +1218,27 @@ fn persist_not_reattachable(
 ) -> Result<(), MonitorError> {
     let now = studio_runtime_services::event_write::unix_time()
         .map_err(|_| MonitorError::Refused("System clock unavailable"))?;
-    store.transaction_with(|tx| {
-        let (current, actor) =
-            studio_runtime_services::monitor_runtime::snapshot(tx, expected.id())?;
-        if current.operation() != Some(operation)
-            || current.record()["status"] != "lost"
-            || current.record()["reattachRecovery"]["status"] != "running"
-        {
-            return Err(MonitorError::Refused("Monitor reattach state changed"));
-        }
-        let mut decision = studio_runtime_services::monitor_policy::Decision {
-            record: current.record().clone(),
-            effects: Vec::new(),
-            response: Value::Null,
-        };
-        decision.record["reattachRecovery"]["status"] = json!("not_reattachable");
-        decision.record["reattachRecovery"]["proof"] =
-            json!(reason.chars().take(12000).collect::<String>());
-        studio_runtime_services::monitor_runtime::apply(tx, &current, &actor, &decision, now)
-    })
+    store
+        .transaction_with(|tx| {
+            let (current, actor) =
+                studio_runtime_services::monitor_runtime::snapshot(tx, expected.id())?;
+            if current.operation() != Some(operation)
+                || current.record()["status"] != "lost"
+                || current.record()["reattachRecovery"]["status"] != "running"
+            {
+                return Err(MonitorError::Refused("Monitor reattach state changed"));
+            }
+            let mut decision = studio_runtime_services::monitor_policy::Decision {
+                record: current.record().clone(),
+                effects: Vec::new(),
+                response: Value::Null,
+            };
+            decision.record["reattachRecovery"]["status"] = json!("not_reattachable");
+            decision.record["reattachRecovery"]["proof"] =
+                json!(reason.chars().take(12000).collect::<String>());
+            studio_runtime_services::monitor_runtime::apply(tx, &current, &actor, &decision, now)
+        })
+        .await
 }
 
 /// Monitor command preparation uses the shared permission builder without a
@@ -1135,11 +1265,10 @@ struct MonitorProbeRequest<'a> {
     actor: Value,
 }
 
-fn run_probe(
-    store: &RuntimeStore,
+async fn run_probe(
     session: &dyn AccountSessionPort,
-    resources: &studio_runtime_services::account_worker::preparation::PreparationResources,
     request: MonitorProbeRequest<'_>,
+    settings: Value,
 ) -> Result<Value, String> {
     let MonitorProbeRequest {
         id,
@@ -1159,12 +1288,6 @@ fn run_probe(
         .as_str()
         .filter(|cwd| Path::new(cwd).is_absolute())
         .ok_or_else(|| "Thread working directory is unavailable".to_owned())?;
-    let settings = prepare_monitor_permissions(
-        store,
-        resources,
-        &operation.agent,
-        u64::try_from(generation).map_err(|_| "Invalid liveness generation")?,
-    )?;
     let config_operation = format!("monitor-config:{id}:{generation}");
     let config_receipt = provider_request(
         session,
@@ -1173,7 +1296,8 @@ fn run_probe(
         Method::ConfigRead,
         json!({"cwd":cwd,"includeLayers":false}),
         Instant::now() + Duration::from_secs(20),
-    )?;
+    )
+    .await?;
     let config = match config_receipt.result {
         Some(ProviderResponse::Reply(value))
             if config_receipt.certainty == RequestCertainty::Written =>
@@ -1203,7 +1327,8 @@ fn run_probe(
         Method::CommandExec,
         params,
         Instant::now() + Duration::from_secs(65),
-    )?;
+    )
+    .await?;
     if receipt.certainty != RequestCertainty::Written {
         return Err("Liveness command outcome is unknown; it will not be resent".into());
     }
@@ -1234,7 +1359,7 @@ fn run_probe(
     }
 }
 
-fn provider_request(
+async fn provider_request(
     session: &dyn AccountSessionPort,
     operation: &studio_runtime_services::monitor_policy::Operation,
     identity: String,
@@ -1261,6 +1386,7 @@ fn provider_request(
             params,
             deadline,
         })
+        .await
         .map_err(|error| error.to_string())?;
     if receipt.operation != expected_operation || receipt.scope != expected_scope {
         return Err("Provider receipt identity is unknown".into());

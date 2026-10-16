@@ -1,5 +1,5 @@
-//! One Tokio task owns an account. SQLite work is serialized through StoreBridge;
-//! dropping a handle signals shutdown and never aborts an in-flight commit.
+//! One Tokio task owns an account. SQLite writes are submitted to RuntimeStore's
+//! bounded actor; dropping a handle signals shutdown and drains an in-flight job.
 use crate::{
     notification_dispatch::NotificationStreamBuffer,
     provider_session_task::{
@@ -107,12 +107,28 @@ fn vm_account_generation_matches(
         .is_some_and(|scope| scope.generation == request.generation)
 }
 
-/// Share one bridge among all account workers of a runtime. The permit bounds
-/// queued blocking work as well as SQLite access; no database call runs on Tokio.
+/// Keep legacy synchronous raw reads off Tokio workers while the dedicated
+/// async reader migration remains outstanding. This helper must only wrap
+/// read-only operations; all writes use RuntimeStore's async actor API.
+pub(super) async fn blocking_store_read<T: Send + 'static>(
+    store: Arc<RuntimeStore>,
+    operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+) -> Result<T, WorkerError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_read",
+        move || operation(&store),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+}
+
+/// Share one bridge among all account workers of a runtime. This permit orders
+/// complete logical account operations; SQLite admission and callback lifetime
+/// are owned by RuntimeStore's actor.
 #[derive(Clone)]
 pub struct StoreBridge {
     store: Arc<RuntimeStore>,
-    slot: Arc<Semaphore>,
+    operation_slot: Arc<Semaphore>,
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
@@ -129,7 +145,7 @@ impl StoreBridge {
     pub async fn new(store: Arc<RuntimeStore>) -> Result<Self, WorkerError> {
         let bridge = Self {
             store,
-            slot: Arc::new(Semaphore::new(1)),
+            operation_slot: Arc::new(Semaphore::new(1)),
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
@@ -142,7 +158,7 @@ impl StoreBridge {
             account_released: Arc::default(),
         };
         bridge
-            .run(|store| Ok(scheduler::recover_on_startup(store)?))
+            .run(|store| async move { Ok(scheduler::recover_on_startup(&store).await?) })
             .await?;
         Ok(bridge)
     }
@@ -199,32 +215,32 @@ impl StoreBridge {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-    async fn run<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+    async fn run<T, F, Fut>(&self, operation: F) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         let permit = self
-            .slot
+            .operation_slot
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| WorkerError::Closed)?;
-        let store = self.store.clone();
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker",
-            move || {
-                let _permit = permit;
-                operation(&store)
-            },
-        )
-        .await
-        .map_err(|_| WorkerError::TaskFailed)?
+        let result = operation(self.store.clone()).await;
+        drop(permit);
+        result
     }
-    async fn prepare_run<T: Send + 'static>(
+    async fn prepare_run<T, F, Fut>(
         &self,
         name: &'static str,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+        operation: F,
+    ) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         #[cfg(test)]
         let index = self.faults.before(name, None)?;
         #[cfg(test)]
@@ -237,34 +253,35 @@ impl StoreBridge {
             .acquire_owned()
             .await
             .map_err(|_| WorkerError::Closed)?;
-        let store = self.store.clone();
-        // The blocking owner retains its permit even if its caller is cancelled.
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker",
-            move || {
-                let _permit = permit;
-                operation(&store)
-            },
-        )
-        .await
-        .map_err(|_| WorkerError::TaskFailed)?;
+        let result = operation(self.store.clone()).await;
+        drop(permit);
         #[cfg(test)]
         self.faults.after(index, result.is_ok())?;
         result
     }
-    async fn worker_run<T: Send + 'static>(
+    async fn worker_run<T, F, Fut>(
         &self,
         _name: &'static str,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+        operation: F,
+    ) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         self.worker_run_identified(_name, None, operation).await
     }
-    async fn worker_run_identified<T: Send + 'static>(
+    async fn worker_run_identified<T, F, Fut>(
         &self,
         _name: &'static str,
         identity: Option<String>,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+        operation: F,
+    ) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         #[cfg(test)]
         let index = self.faults.before(_name, identity)?;
         #[cfg(not(test))]
@@ -479,8 +496,8 @@ pub async fn start_account_worker_with_publication_sink(
     let recovered = loop {
         let recovery_account = account.clone();
         match bridge
-            .worker_run("recover", move |store| {
-                store::recover(store, &recovery_account, generation)
+            .worker_run("recover", move |store| async move {
+                store::recover(&store, &recovery_account, generation).await
             })
             .await
         {
@@ -493,14 +510,15 @@ pub async fn start_account_worker_with_publication_sink(
                 let reason = reason.to_owned();
                 let diagnostic = error.to_string();
                 bridge
-                    .worker_run("hold_invalid_agent", move |store| {
+                    .worker_run("hold_invalid_agent", move |store| async move {
                         store::hold_invalid_agent_record(
-                            store,
+                            &store,
                             &invalid_id,
                             &pointer,
                             &reason,
                             &diagnostic,
                         )
+                        .await
                     })
                     .await?;
             }
@@ -510,8 +528,8 @@ pub async fn start_account_worker_with_publication_sink(
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let recovery_account = account.clone();
     let retained = bridge
-        .worker_run("recover_retained", move |s| {
-            retained::recover(s, &recovery_account, generation.0)
+        .worker_run("recover_retained", move |s| async move {
+            retained::recover(&s, &recovery_account, generation.0).await
         })
         .await?;
     config
@@ -531,11 +549,14 @@ pub async fn start_account_worker_with_publication_sink(
     let connection_id = uuid::Uuid::new_v4().to_string();
     let effect_account = account.clone();
     let (effects, streams) = bridge
-        .worker_run("restore_effects_streams", move |store| {
-            Ok((
-                store::recover_effects(store, &effect_account)?,
-                store::restore_streams(store, &effect_account)?,
-            ))
+        .worker_run("restore_effects_streams", move |store| async move {
+            let read_account = effect_account.clone();
+            let effects = blocking_store_read(store.clone(), move |store| {
+                store::recover_effects(store, &read_account)
+            })
+            .await?;
+            let streams = store::restore_streams(&store, &effect_account).await?;
+            Ok((effects, streams))
         })
         .await?;
     let events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
@@ -822,8 +843,8 @@ impl Worker {
                     .and_then(|adapter| adapter.recovery_needed.clone())
                 {
                     let scope = self.journal_scope(Some(&source.actor_id));
-                    self.db("vm_session_recovery", move |store| {
-                        store::save_recovery(store, &scope, &recovery)
+                    self.db("vm_session_recovery", move |store| async move {
+                        store::save_recovery(&store, &scope, &recovery).await
                     })
                     .await?;
                 }
@@ -856,14 +877,15 @@ impl Worker {
                     let account = self.account.clone();
                     let generation = self.generation.0;
                     let disconnect_actor = source.actor_id.clone();
-                    self.db("vm_actor_disconnected", move |store| {
+                    self.db("vm_actor_disconnected", move |store| async move {
                         store::disconnect_vm_actor(
-                            store,
+                            &store,
                             &disconnect_actor,
                             source.epoch,
                             &account,
                             generation,
                         )
+                        .await
                     })
                     .await?;
                     self.retire_vm_actor(&source.actor_id);
@@ -1019,8 +1041,8 @@ impl Worker {
                 if !self.closing
                     && let Some(key) = durable
                 {
-                    self.db("complete_effect", move |store| {
-                        store::complete_effect(store, &key)
+                    self.db("complete_effect", move |store| async move {
+                        store::complete_effect(&store, &key).await
                     })
                     .await?;
                 }
@@ -1053,16 +1075,12 @@ impl Worker {
                                 scope: self.retained_session.scope().clone(),
                                 session: self.retained_session.clone(),
                                 agent_id,
-                                runtime: tokio::runtime::Handle::current(),
                             };
                             let commands = self.commands.clone();
                             self.connection_recovery.spawn(async move {
-                                let result = tokio::task::spawn_blocking(move || {
-                                    connection_recovery::run(request)
-                                }).await;
-                                let (response, streams) = match result {
-                                    Ok(Ok(completed)) => (Ok(completed.receipt), completed.streams),
-                                    Ok(Err(_)) | Err(_) => (Err(retained::PortError::Unknown), None),
+                                let (response, streams) = match connection_recovery::run(request).await {
+                                    Ok(completed) => (Ok(completed.receipt), completed.streams),
+                                    Err(_) => (Err(retained::PortError::Unknown), None),
                                 };
                                 let (done, acknowledged) = tokio::sync::oneshot::channel();
                                 if commands.send(AccountCommand::ConnectionRecoveryComplete {
@@ -1145,11 +1163,12 @@ impl Worker {
             }
         }
     }
-    async fn db<T: Send + 'static>(
-        &mut self,
-        name: &'static str,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+    async fn db<T, F, Fut>(&mut self, name: &'static str, operation: F) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         let bridge = self.bridge.clone();
         let job = bridge.worker_run(name, operation);
         tokio::pin!(job);
@@ -1158,12 +1177,17 @@ impl Worker {
             result = &mut job => result,
         }
     }
-    async fn db_identified<T: Send + 'static>(
+    async fn db_identified<T, F, Fut>(
         &mut self,
         name: &'static str,
         identity: String,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+        operation: F,
+    ) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         let bridge = self.bridge.clone();
         let job = bridge.worker_run_identified(name, Some(identity), operation);
         tokio::pin!(job);
@@ -1172,11 +1196,16 @@ impl Worker {
             result = &mut job => result,
         }
     }
-    async fn prepare<T: Send + 'static>(
+    async fn prepare<T, F, Fut>(
         &mut self,
         name: &'static str,
-        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
-    ) -> Result<T, WorkerError> {
+        operation: F,
+    ) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<RuntimeStore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, WorkerError>> + Send + 'static,
+    {
         let bridge = self.bridge.clone();
         let job = bridge.prepare_run(name, operation);
         tokio::pin!(job);
@@ -1270,8 +1299,11 @@ impl Worker {
         self.retry_at = None;
         let account = self.account.clone();
         let pending = self
-            .db("retry_preparations", move |store| {
-                store::pending_preparations(store, &account)
+            .db("retry_preparations", move |store| async move {
+                blocking_store_read(store, move |store| {
+                    store::pending_preparations(store, &account)
+                })
+                .await
             })
             .await?;
         if !pending.is_empty() {
@@ -1313,8 +1345,9 @@ impl Worker {
             .as_secs_f64();
         let account = self.account.clone();
         let waits = self
-            .db("claude_auth_due_waits", move |store| {
-                crate::claude_auth_runtime::due_waits(store, &account, now)
+            .db("claude_auth_due_waits", move |store| async move {
+                crate::claude_auth_runtime::due_waits(&store, &account, now)
+                    .await
                     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
             })
             .await?;
@@ -1409,8 +1442,8 @@ impl Worker {
             let account = self.account.clone();
             let claim_agent = agent.clone();
             match self
-                .db("claim", move |store| {
-                    store::claim(store, &account, &claim_agent, epoch)
+                .db("claim", move |store| async move {
+                    store::claim(store, &account, &claim_agent, epoch).await
                 })
                 .await
             {
@@ -1423,14 +1456,15 @@ impl Worker {
                     let reason = reason.to_owned();
                     let was_requested_agent = invalid_id == agent;
                     let diagnostic = error.to_string();
-                    self.db("hold_invalid_agent", move |store| {
+                    self.db("hold_invalid_agent", move |store| async move {
                         store::hold_invalid_agent_record(
-                            store,
+                            &store,
                             &invalid_id,
                             &pointer,
                             &reason,
                             &diagnostic,
                         )
+                        .await
                     })
                     .await?;
                     if was_requested_agent {
@@ -1486,8 +1520,8 @@ impl Worker {
                 method.as_str()
             );
             if self
-                .db("was_submitted", move |store| {
-                    store::was_submitted(store, &operation)
+                .db("was_submitted", move |store| async move {
+                    store::was_submitted(&store, &operation).await
                 })
                 .await?
             {
@@ -1514,19 +1548,25 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(selection) = self
-                .prepare("preparation", move |s| {
+                .prepare("preparation", move |s| async move {
                     if method == Method::TurnStart {
                         crate::account_transfer_executor::before_start(
-                            s,
+                            Arc::clone(&s),
                             resources.account_session.clone(),
                             &resources.model_catalog,
                             &resources,
                             &i.agent_id,
                             now(),
                         )
+                        .await
                         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
                     }
-                    store::preparation_step(s, &i, || preparation::admit(s, &resources, &i))
+                    store::preparation_step(
+                        &s,
+                        &i,
+                        preparation::admit(Arc::clone(&s), &resources, &i),
+                    )
+                    .await
                 })
                 .await?
             else {
@@ -1536,8 +1576,13 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(token) = self
-                .prepare("workspace", move |s| {
-                    store::preparation_step(s, &i, || preparation::workspace(s, &resources, &i))
+                .prepare("workspace", move |s| async move {
+                    store::preparation_step(
+                        &s,
+                        &i,
+                        preparation::workspace(Arc::clone(&s), &resources, &i),
+                    )
+                    .await
                 })
                 .await?
             else {
@@ -1547,10 +1592,10 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(prepared) = self
-                .prepare("preparation", move |s| {
-                    store::preparation_step(s, &i, || {
+                .prepare("preparation", move |s| async move {
+                    store::preparation_step(&s, &i, {
                         preparation::prepare_ready(
-                            s,
+                            Arc::clone(&s),
                             &resources,
                             &i,
                             method,
@@ -1560,6 +1605,7 @@ impl Worker {
                             token,
                         )
                     })
+                    .await
                 })
                 .await?
             else {
@@ -1595,8 +1641,8 @@ impl Worker {
         }
         let prior = operation.clone();
         if self
-            .db("was_submitted", move |store| {
-                store::was_submitted(store, &prior)
+            .db("was_submitted", move |store| async move {
+                store::was_submitted(&store, &prior).await
             })
             .await?
         {
@@ -1619,10 +1665,11 @@ impl Worker {
                 Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
                     let blocked_intent = context.intent.clone();
                     let _settled = self
-                        .db("vm-session-identity-blocked", move |store| {
-                            store::preparation_step(store, &blocked_intent, || {
+                        .db("vm-session-identity-blocked", move |store| async move {
+                            store::preparation_step(&store, &blocked_intent, async move {
                                 Err::<(), WorkerError>(WorkerError::PreparationRefused(reason))
                             })
+                            .await
                         })
                         .await?;
                     return Ok(());
@@ -1671,19 +1718,20 @@ impl Worker {
         let save_context = context.clone();
         let account = self.account.clone();
         let authorized = self
-            .db("submitted", move |store| {
+            .db("submitted", move |store| async move {
                 store::submitted(
-                    store,
-                    &save_context,
+                    &store,
+                    save_context,
                     &account,
-                    &recovery,
+                    recovery,
                     store::SubmissionEvidence {
-                        turn: interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
-                        submission: submission.as_ref(),
-                        guard: guard.as_ref(),
-                        connection_id: &connection_id,
+                        turn: interrupt_turn.as_ref().map(|(turn, _)| turn.clone()),
+                        submission,
+                        guard,
+                        connection_id,
                     },
                 )
+                .await
             })
             .await?;
         if !authorized || self.closing {
@@ -1753,49 +1801,52 @@ impl Worker {
         let intent_epoch = intent.epoch;
         let generation = self.generation.0;
         let launch_request = self
-            .db("vm_launch_request", move |store| {
-                let connection = store.read()?;
-                let Some(record) =
-                    AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
-                else {
-                    return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
-                };
-                if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-                    return Ok(None);
-                }
-                if !crate::linux_vm_provider::vm_actor_matches(
-                    &connection,
-                    &record.id.0,
-                    intent_epoch,
-                    &account_key,
-                    Some(&provider),
-                )? {
-                    return Err(WorkerError::PreparationRefused(
-                        "vm-agent/identity-changed".into(),
-                    ));
-                }
-                let cwd = record
-                    .extra
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .or(intent_cwd.as_deref())
-                    .filter(|value| value.starts_with('/'))
-                    .ok_or_else(|| WorkerError::PreparationRefused("vm-agent/cwd".into()))?;
-                let guest_home = record
-                    .extra
-                    .get("layrHome")
-                    .and_then(Value::as_str)
-                    .filter(|value| value.starts_with('/'))
-                    .unwrap_or("/home/studio");
-                Ok(Some(preparation::VmProviderLaunchRequest {
-                    agent_id: record.id.0,
-                    epoch: record.epoch,
-                    generation,
-                    account_key,
-                    provider,
-                    cwd: cwd.to_owned(),
-                    guest_home: guest_home.to_owned(),
-                }))
+            .db("vm_launch_request", move |store| async move {
+                blocking_store_read(store, move |store| {
+                    let connection = store.read()?;
+                    let Some(record) =
+                        AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
+                    else {
+                        return Err(WorkerError::PreparationRefused("vm-agent/missing".into()));
+                    };
+                    if record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                        return Ok(None);
+                    }
+                    if !crate::linux_vm_provider::vm_actor_matches(
+                        &connection,
+                        &record.id.0,
+                        intent_epoch,
+                        &account_key,
+                        Some(&provider),
+                    )? {
+                        return Err(WorkerError::PreparationRefused(
+                            "vm-agent/identity-changed".into(),
+                        ));
+                    }
+                    let cwd = record
+                        .extra
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .or(intent_cwd.as_deref())
+                        .filter(|value| value.starts_with('/'))
+                        .ok_or_else(|| WorkerError::PreparationRefused("vm-agent/cwd".into()))?;
+                    let guest_home = record
+                        .extra
+                        .get("layrHome")
+                        .and_then(Value::as_str)
+                        .filter(|value| value.starts_with('/'))
+                        .unwrap_or("/home/studio");
+                    Ok(Some(preparation::VmProviderLaunchRequest {
+                        agent_id: record.id.0,
+                        epoch: record.epoch,
+                        generation,
+                        account_key,
+                        provider,
+                        cwd: cwd.to_owned(),
+                        guest_home: guest_home.to_owned(),
+                    }))
+                })
+                .await
             })
             .await?;
         let Some(request) = launch_request else {
@@ -1831,33 +1882,39 @@ impl Worker {
             let resolved = resolved?;
             let actor = request.agent_id.clone();
             let expected = request.clone();
-            self.db("vm_launch_revalidate", move |store| {
-                let connection = store.read()?;
-                if !crate::linux_vm_provider::vm_actor_matches(
-                    &connection,
-                    &actor,
-                    expected.epoch,
-                    &expected.account_key,
-                    Some(&expected.provider),
-                )? {
-                    return Err(WorkerError::PreparationRefused(
-                        "vm-agent/identity-changed".into(),
-                    ));
-                }
-                Ok(())
+            self.db("vm_launch_revalidate", move |store| async move {
+                blocking_store_read(store, move |store| {
+                    let connection = store.read()?;
+                    if !crate::linux_vm_provider::vm_actor_matches(
+                        &connection,
+                        &actor,
+                        expected.epoch,
+                        &expected.account_key,
+                        Some(&expected.provider),
+                    )? {
+                        return Err(WorkerError::PreparationRefused(
+                            "vm-agent/identity-changed".into(),
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
             })
             .await?;
             let recovery_agent = request.agent_id.clone();
             let recovery_account = self.account.clone();
             let generation = self.generation.0;
             let recovered = self
-                .db("vm_actor_recovery", move |store| {
-                    store::recover_vm_actor_requests(
-                        store,
-                        &recovery_account,
-                        &recovery_agent,
-                        generation,
-                    )
+                .db("vm_actor_recovery", move |store| async move {
+                    blocking_store_read(store, move |store| {
+                        store::recover_vm_actor_requests(
+                            store,
+                            &recovery_account,
+                            &recovery_agent,
+                            generation,
+                        )
+                    })
+                    .await
                 })
                 .await?;
             let factory = Arc::new(crate::linux_vm_provider::GuestProviderTaskFactory::new(
@@ -2009,43 +2066,46 @@ impl Worker {
         let expected_account_key = account_key.clone();
         let generation = self.generation.0;
         let expected = self
-            .db("retained_vm_session_identity", move |store| {
-                let connection = store.read()?;
-                let Some(record) =
-                    AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
-                else {
-                    return Ok(None);
-                };
-                let provider = record
-                    .extra
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex");
-                if !crate::linux_vm_provider::vm_actor_matches(
-                    &connection,
-                    &record.id.0,
-                    epoch,
-                    &account_key,
-                    Some(provider),
-                )? {
-                    return Ok(None);
-                }
-                let cwd = record.extra.get("cwd").and_then(Value::as_str);
-                if cwd.is_some_and(|value| !value.starts_with('/')) {
-                    return Ok(None);
-                }
-                let guest_home = record
-                    .extra
-                    .get("layrHome")
-                    .and_then(Value::as_str)
-                    .filter(|value| value.starts_with('/'))
-                    .unwrap_or("/home/studio");
-                Ok(Some((
-                    record.id.0,
-                    provider.to_owned(),
-                    cwd.map(str::to_owned),
-                    guest_home.to_owned(),
-                )))
+            .db("retained_vm_session_identity", move |store| async move {
+                blocking_store_read(store, move |store| {
+                    let connection = store.read()?;
+                    let Some(record) =
+                        AgentRepository::get(&connection, &AgentId::from(lookup_id.as_str()))?
+                    else {
+                        return Ok(None);
+                    };
+                    let provider = record
+                        .extra
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or("codex");
+                    if !crate::linux_vm_provider::vm_actor_matches(
+                        &connection,
+                        &record.id.0,
+                        epoch,
+                        &account_key,
+                        Some(provider),
+                    )? {
+                        return Ok(None);
+                    }
+                    let cwd = record.extra.get("cwd").and_then(Value::as_str);
+                    if cwd.is_some_and(|value| !value.starts_with('/')) {
+                        return Ok(None);
+                    }
+                    let guest_home = record
+                        .extra
+                        .get("layrHome")
+                        .and_then(Value::as_str)
+                        .filter(|value| value.starts_with('/'))
+                        .unwrap_or("/home/studio");
+                    Ok(Some((
+                        record.id.0,
+                        provider.to_owned(),
+                        cwd.map(str::to_owned),
+                        guest_home.to_owned(),
+                    )))
+                })
+                .await
             })
             .await?;
         let Some((id, provider, cwd, guest_home)) = expected else {
@@ -2076,8 +2136,9 @@ impl Worker {
         let admission_operation = operation.clone();
         let admission_signature = signature.clone();
         if self
-            .db("vm_auth_bootstrap_admission", move |store| {
-                store::vm_bootstrap_admission(store, &admission_operation, &admission_signature)
+            .db("vm_auth_bootstrap_admission", move |store| async move {
+                store::vm_bootstrap_admission(&store, &admission_operation, &admission_signature)
+                    .await
             })
             .await?
         {
@@ -2125,8 +2186,9 @@ impl Worker {
             } => {
                 let settled_operation = operation.clone();
                 let settled_signature = signature.clone();
-                self.db("vm_auth_bootstrap_settled", move |store| {
-                    store::vm_bootstrap_settled(store, &settled_operation, &settled_signature)
+                self.db("vm_auth_bootstrap_settled", move |store| async move {
+                    store::vm_bootstrap_settled(&store, &settled_operation, &settled_signature)
+                        .await
                 })
                 .await
             }
@@ -2140,7 +2202,9 @@ impl Worker {
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let effect = self
-            .db("stop", move |store| store::stop(store, &account, &agent))
+            .db("stop", move |store| async move {
+                store::stop(&store, &account, &agent).await
+            })
             .await?;
         if let Some(effect) = effect {
             self.push(effect)?;
@@ -2154,8 +2218,11 @@ impl Worker {
         turn: String,
     ) -> Result<(), WorkerError> {
         let intent = self
-            .db("interrupt_intent", move |store| {
-                store::interrupt_intent(store, &agent, &thread)
+            .db("interrupt_intent", move |store| async move {
+                blocking_store_read(store, move |store| {
+                    store::interrupt_intent(store, &agent, &thread)
+                })
+                .await
             })
             .await?;
         if let Some((intent, stop_epoch)) = intent {
@@ -2276,8 +2343,9 @@ impl Worker {
                     // durable attempt identity.
                     let epoch = source.epoch;
                     let generation = self.generation.0;
-                    self.db("vm_actor_disconnected", move |store| {
-                        store::disconnect_vm_actor(store, &actor, epoch, &account, generation)
+                    self.db("vm_actor_disconnected", move |store| async move {
+                        store::disconnect_vm_actor(&store, &actor, epoch, &account, generation)
+                            .await
                     })
                     .await?;
                 }
@@ -2327,8 +2395,8 @@ impl Worker {
                 let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
                 let identity = operation.clone();
-                self.db_identified("callback_written", identity, move |store| {
-                    store::callback_written(store, &operation, write_outcome)
+                self.db_identified("callback_written", identity, move |store| async move {
+                    store::callback_written(&store, &operation, write_outcome).await
                 })
                 .await?;
                 if !written {
@@ -2336,8 +2404,8 @@ impl Worker {
                 }
                 let journal_scope = self.journal_scope(callback_actor.as_deref());
                 let generation = self.generation.0;
-                self.db("callback_settled", move |store| {
-                    store::callback_settled(store, &journal_scope, generation, cursor.0)
+                self.db("callback_settled", move |store| async move {
+                    store::callback_settled(&store, &journal_scope, generation, cursor.0).await
                 })
                 .await?;
                 self.managed_callback_cursors.remove(&(
@@ -2401,10 +2469,10 @@ impl Worker {
                 }
             };
             let account = self.account.clone();
-            let resources = self.resources.clone();
+            let resources = Arc::new(self.resources.clone());
             let (retire, effect) = self
-                .db_identified("outcome", identity, move |store| {
-                    store::outcome(store, &account, &resources, pending.as_ref(), outcome)
+                .db_identified("outcome", identity, move |store| async move {
+                    store::outcome(store, account, resources, pending, outcome).await
                 })
                 .await?;
             if retire && let Some(id) = id {
@@ -2503,8 +2571,8 @@ impl Worker {
             let account = self.account.clone();
             let generation = self.generation.0;
             let actor = source.actor_id.clone();
-            self.db("vm_actor_disconnected", move |store| {
-                store::disconnect_vm_actor(store, &actor, source.epoch, &account, generation)
+            self.db("vm_actor_disconnected", move |store| async move {
+                store::disconnect_vm_actor(&store, &actor, source.epoch, &account, generation).await
             })
             .await?;
             self.retire_vm_actor_if_current(&source);
@@ -2577,7 +2645,7 @@ impl Worker {
             .zip(actor_epoch)
             .map(|(actor, epoch)| (actor.to_owned(), epoch));
         let (previous, committed) = self
-            .db("journal", move |store| {
+            .db("journal", move |store| async move {
                 let result = store::journal_batch(
                     store,
                     &account,
@@ -2588,7 +2656,8 @@ impl Worker {
                     expected_vm_actor
                         .as_ref()
                         .map(|(actor, epoch)| (actor.as_str(), *epoch)),
-                );
+                )
+                .await;
                 Ok((streams, result))
             })
             .await?;
@@ -2705,28 +2774,20 @@ impl Worker {
                         Some(callback::tool_call_failure(request, dependency)),
                     );
                 }
-                let callback_actor = actor.clone();
-                let response = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/account_callback",
-                    move || {
-                        callback::managed_response(
-                            &store,
-                            &account,
-                            generation,
-                            callback_actor.as_deref(),
-                            &frame,
-                            now,
-                            callback::ManagedResponseDependencies {
-                                wake,
-                                monitor_dispatch_wake,
-                                managed_runtime: managed_tool_runtime,
-                            },
-                        )
+                let response = callback::managed_response(
+                    &store,
+                    &account,
+                    generation,
+                    actor.as_deref(),
+                    &frame,
+                    now,
+                    callback::ManagedResponseDependencies {
+                        wake,
+                        monitor_dispatch_wake,
+                        managed_runtime: managed_tool_runtime,
                     },
                 )
-                .await
-                .ok()
-                .flatten();
+                .await;
                 (cursor, actor, actor_epoch, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
@@ -2914,16 +2975,19 @@ impl Worker {
             let epoch = expected.epoch;
             let provider = expected.provider.clone();
             if !self
-                .db("vm_callback_revalidate", move |store| {
-                    let connection = store.read()?;
-                    crate::linux_vm_provider::vm_actor_matches(
-                        &connection,
-                        &actor,
-                        epoch,
-                        &account,
-                        Some(&provider),
-                    )
-                    .map_err(WorkerError::from)
+                .db("vm_callback_revalidate", move |store| async move {
+                    blocking_store_read(store, move |store| {
+                        let connection = store.read()?;
+                        crate::linux_vm_provider::vm_actor_matches(
+                            &connection,
+                            &actor,
+                            epoch,
+                            &account,
+                            Some(&provider),
+                        )
+                        .map_err(WorkerError::from)
+                    })
+                    .await
                 })
                 .await?
             {
@@ -2992,8 +3056,8 @@ impl Worker {
         let key = operation.clone();
         let generation = self.generation.0;
         let admission = self
-            .db("callback_admission", move |store| {
-                store::callback_admission(store, &key, &journal_scope, generation, cursor.0)
+            .db("callback_admission", move |store| async move {
+                store::callback_admission(&store, &key, &journal_scope, generation, cursor.0).await
             })
             .await?;
         if admission {
@@ -3049,20 +3113,23 @@ impl Worker {
             }
             let actor = actor.to_owned();
             let revalidated = self
-                .db("vm_callback_submit_revalidate", move |store| {
-                    let connection = store.read()?;
-                    if !crate::linux_vm_provider::vm_actor_matches(
-                        &connection,
-                        &actor,
-                        expected.epoch,
-                        &expected.account_key,
-                        Some(&expected.provider),
-                    )? {
-                        return Err(WorkerError::PreparationRefused(
-                            "account-worker/vm-notification-actor-changed".into(),
-                        ));
-                    }
-                    Ok(())
+                .db("vm_callback_submit_revalidate", move |store| async move {
+                    blocking_store_read(store, move |store| {
+                        let connection = store.read()?;
+                        if !crate::linux_vm_provider::vm_actor_matches(
+                            &connection,
+                            &actor,
+                            expected.epoch,
+                            &expected.account_key,
+                            Some(&expected.provider),
+                        )? {
+                            return Err(WorkerError::PreparationRefused(
+                                "account-worker/vm-notification-actor-changed".into(),
+                            ));
+                        }
+                        Ok(())
+                    })
+                    .await
                 })
                 .await;
             match revalidated {
@@ -3095,8 +3162,8 @@ impl Worker {
             if definite_rejection(&error) {
                 self.callbacks.remove(&operation);
                 let identity = operation.clone();
-                self.db_identified("callback_written", identity, move |store| {
-                    store::callback_written(store, &operation, WriteOutcome::NotSent)
+                self.db_identified("callback_written", identity, move |store| async move {
+                    store::callback_written(&store, &operation, WriteOutcome::NotSent).await
                 })
                 .await?;
             }
@@ -3114,7 +3181,9 @@ impl Worker {
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
-        let flush = move |store: &RuntimeStore| store::flush_streams(store, &account, streams);
+        let flush = move |store: Arc<RuntimeStore>| async move {
+            store::flush_streams(store, &account, streams).await
+        };
         #[cfg(test)]
         let updated_streams = self
             .db_identified(
@@ -3151,8 +3220,8 @@ impl Worker {
         let account = self.account.clone();
         let sink = Arc::clone(&self.publication_sink);
         match self
-            .db("drain_publications", move |store| {
-                store::drain_publications(store, &account, sink.as_ref())
+            .db("drain_publications", move |store| async move {
+                store::drain_publications(store, account, sink).await
             })
             .await
         {
@@ -3259,13 +3328,14 @@ impl Worker {
         let cleanup_error = exit.adapter.as_ref().and_then(|a| a.cleanup_error.clone());
         let identity = format!("account={account};generation={generation}");
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
-        self.db_identified("finish", identity, move |store| {
+        self.db_identified("finish", identity, move |store| async move {
             if let Some(recovery) = recovery {
-                store::save_recovery(store, &account, &recovery)?;
+                store::save_recovery(&store, &account, &recovery).await?;
             }
-            scheduler::lifecycle_transaction(store, |tx| {
+            scheduler::lifecycle_transaction(&store, move |tx| {
                 SchedulerRepository::disconnect_account(tx, &account, generation, now(), false)
-            })?;
+            })
+            .await?;
             Ok(())
         })
         .await?;

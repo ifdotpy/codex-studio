@@ -759,9 +759,7 @@ impl LoginService {
         {
             return Ok(());
         }
-        let chats = self.chats.clone();
-        let key = job.snapshot.account_key().to_owned();
-        blocking(move || chats.refresh(&key)).await?;
+        self.chats.refresh(job.snapshot.account_key()).await?;
         let mut record = job.snapshot.record().clone();
         record["receipt"]["chatsRefreshed"] = json!(true);
         let next = LoginSnapshot::from_record(record)?;

@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
+use std::{sync::Arc, time::Duration};
 use studio_runtime_services::federation_credentials::CredentialError;
 use studio_runtime_services::multi_server::{self, MultiServerError};
 use studio_runtime_services::remote_transport::{self, MultiServerExchangeInput};
@@ -100,18 +101,13 @@ async fn snapshot(
     let credentials = state.credentials;
     let origin = state.public_origin;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server",
-        move || {
-            let identity = credentials
-                .identity(&store, origin.as_deref())
-                .map_err(map_credential_error)?;
-            multi_server::snapshot(&store, &identity).map_err(map_service_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?;
-    let result = result?;
+    let identity = credentials
+        .identity(Arc::clone(&store), origin.as_deref())
+        .await
+        .map_err(map_credential_error)?;
+    let result = multi_server::snapshot(&store, &identity)
+        .await
+        .map_err(map_service_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::AccessSnapshot,
     >(result)?))
@@ -121,17 +117,13 @@ pub(super) async fn read_snapshot(state: &HttpState) -> Result<Value, ApiError> 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let credentials = state.credentials.clone();
     let origin = state.public_origin.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server/snapshot",
-        move || {
-            let identity = credentials
-                .identity(&store, origin.as_deref())
-                .map_err(map_credential_error)?;
-            multi_server::snapshot_for_comparison(&store, &identity).map_err(map_service_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let identity = credentials
+        .identity(Arc::clone(&store), origin.as_deref())
+        .await
+        .map_err(map_credential_error)?;
+    multi_server::snapshot_for_comparison(&store, &identity)
+        .await
+        .map_err(map_service_error)
 }
 
 pub(super) fn publish_resource_change(notifications: &ResourceNotifications, request_id: &str) {
@@ -224,36 +216,36 @@ async fn manage(
         let origin = state.public_origin.clone();
         let whoami = state.tailscale_whoami.clone();
         let notifications = state.resource_notifications.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/multi_server/invite",
-            move || {
-                if origin.as_deref().is_none_or(str::is_empty) {
-                    return Err(ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "Configure Tailscale Serve HTTPS before pairing",
-                    ));
-                }
-                let identity = credentials
-                    .identity(&store, origin.as_deref())
-                    .map_err(map_credential_error)?;
-                let owner = whoami
-                    .and_then(|probe| probe())
-                    .and_then(|value| tailscale_login(&value))
-                    .ok_or_else(|| {
-                        ApiError::new(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "The Tailscale owner identity is unavailable",
-                        )
-                    })?;
-                let result =
-                    multi_server::create_invite(&store, &identity, &body, "local", Some(&owner))
-                        .map_err(map_service_error)?;
-                publish_resource_change(&notifications, &request_id);
-                Ok(result)
-            },
+        if origin.as_deref().is_none_or(str::is_empty) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Configure Tailscale Serve HTTPS before pairing",
+            ));
+        }
+        let identity = credentials
+            .identity(Arc::clone(&store), origin.as_deref())
+            .await
+            .map_err(map_credential_error)?;
+        let owner = match whoami {
+            Some(probe) => probe().await.and_then(|value| tailscale_login(&value)),
+            None => None,
+        }
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The Tailscale owner identity is unavailable",
+            )
+        })?;
+        let result = multi_server::create_invite(
+            Arc::clone(&store),
+            &identity,
+            &body,
+            "local",
+            Some(&owner),
         )
         .await
-        .map_err(|_| ApiError::internal())??;
+        .map_err(map_service_error)?;
+        publish_resource_change(&notifications, &request_id);
         return Ok(Json(result).into_response());
     }
     if action == "accept_invite" {
@@ -266,21 +258,24 @@ async fn manage(
         let origin = state.public_origin.clone();
         let whoami = state.tailscale_whoami.clone();
         let notifications = state.resource_notifications.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/multi_server/accept-invite",
-            move || match accept_invite(&store, &credentials, origin.as_deref(), whoami, &body) {
-                Ok(result) => {
-                    publish_resource_change(&notifications, &request_id);
-                    Ok(result)
-                }
-                Err(error) => {
-                    publish_uncertain_write_hint(&notifications);
-                    Err(error)
-                }
-            },
+        let result = match accept_invite(
+            Arc::clone(&store),
+            &credentials,
+            origin.as_deref(),
+            whoami,
+            &body,
         )
         .await
-        .map_err(|_| ApiError::internal())??;
+        {
+            Ok(result) => {
+                publish_resource_change(&notifications, &request_id);
+                result
+            }
+            Err(error) => {
+                publish_uncertain_write_hint(&notifications);
+                return Err(error);
+            }
+        };
         return Ok(Json(result).into_response());
     }
     if action == "ui_invite" {
@@ -290,16 +285,8 @@ async fn manage(
             .to_owned();
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let notifications = state.resource_notifications.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/multi_server/ui-invite",
-            move || {
-                let result = ui_invite(&store, &body)?;
-                publish_resource_change(&notifications, &request_id);
-                Ok::<_, ApiError>(result)
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+        let result = ui_invite(Arc::clone(&store), &body).await?;
+        publish_resource_change(&notifications, &request_id);
         return Ok(Json(result).into_response());
     }
     if action == "discover"
@@ -317,29 +304,23 @@ async fn manage(
             .clone()
             .ok_or_else(|| unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES))?;
         let notifications = state.resource_notifications.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/multi_server",
-            move || {
-                let identity = credentials
-                    .identity(&store, Some(&origin))
-                    .map_err(map_credential_error)?;
-                let result = discovery
-                    .discover(&store, &identity, &origin)
-                    .map_err(map_discovery_error);
-                match result {
-                    Ok(result) => {
-                        notify_snapshot_change(&notifications, &request_id, &before, &result);
-                        Ok(result)
-                    }
-                    Err(error) => {
-                        publish_uncertain_write_hint(&notifications);
-                        Err(error)
-                    }
-                }
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+        let identity = credentials
+            .identity(Arc::clone(&store), Some(&origin))
+            .await
+            .map_err(map_credential_error)?;
+        let result = match discovery
+            .discover(Arc::clone(&store), &identity, &origin)
+            .await
+        {
+            Ok(result) => {
+                notify_snapshot_change(&notifications, &request_id, &before, &result);
+                result
+            }
+            Err(error) => {
+                publish_uncertain_write_hint(&notifications);
+                return Err(map_discovery_error(error));
+            }
+        };
         return Ok(
             Json(super::generated_json::<crate::generated::AccessSnapshot>(
                 result,
@@ -361,58 +342,57 @@ async fn manage(
         let credentials = state.credentials.clone();
         let origin = state.public_origin.clone();
         let notifications = state.resource_notifications.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/multi_server",
-            move || {
-                let action = body["action"].as_str().unwrap_or_default();
-                if action == "name" {
-                    let target = body["serverId"].as_str().unwrap_or_default();
-                    let local_target = credentials
-                        .is_local_target(&store, target)
-                        .map_err(map_credential_error)?;
-                    if local_target {
-                        credentials
-                            .rename_with_notification(
-                                &store,
-                                target,
-                                body["label"].as_str().unwrap_or_default(),
-                                body["requestId"].as_str().unwrap_or_default(),
-                                "local",
-                                |request_id| publish_resource_change(&notifications, request_id),
-                            )
-                            .map_err(map_credential_error)?;
-                    } else {
-                        remote_set_server_name(
-                            &store,
-                            &credentials,
-                            origin.as_deref(),
-                            target,
-                            body["label"].as_str().unwrap_or_default(),
-                            body["requestId"].as_str().unwrap_or_default(),
-                        )?;
-                        publish_resource_change(
-                            &notifications,
-                            body["requestId"].as_str().unwrap_or_default(),
-                        );
-                    }
-                }
-                let identity = credentials
-                    .identity(&store, origin.as_deref())
+        let action = body["action"].as_str().unwrap_or_default();
+        if action == "name" {
+            let target = body["serverId"].as_str().unwrap_or_default();
+            let local_target = credentials
+                .is_local_target(Arc::clone(&store), target)
+                .await
+                .map_err(map_credential_error)?;
+            if local_target {
+                credentials
+                    .rename_with_notification(
+                        Arc::clone(&store),
+                        target,
+                        body["label"].as_str().unwrap_or_default(),
+                        body["requestId"].as_str().unwrap_or_default(),
+                        "local",
+                        |request_id| publish_resource_change(&notifications, request_id),
+                    )
+                    .await
                     .map_err(map_credential_error)?;
-                let result = if matches!(action, "name" | "discover") {
-                    multi_server::snapshot(&store, &identity).map_err(map_service_error)
-                } else {
-                    multi_server::manage(&store, &identity, &body, "local")
-                        .map_err(map_service_error)
-                }?;
-                if action != "name" {
-                    notify_snapshot_change(&notifications, &request_id, &before, &result);
-                }
-                Ok::<Value, ApiError>(result)
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
+            } else {
+                remote_set_server_name(
+                    &store,
+                    &credentials,
+                    origin.as_deref(),
+                    target,
+                    body["label"].as_str().unwrap_or_default(),
+                    body["requestId"].as_str().unwrap_or_default(),
+                )
+                .await?;
+                publish_resource_change(
+                    &notifications,
+                    body["requestId"].as_str().unwrap_or_default(),
+                );
+            }
+        }
+        let identity = credentials
+            .identity(Arc::clone(&store), origin.as_deref())
+            .await
+            .map_err(map_credential_error)?;
+        let result = if matches!(action, "name" | "discover") {
+            multi_server::snapshot(&store, &identity)
+                .await
+                .map_err(map_service_error)?
+        } else {
+            multi_server::manage(&store, &identity, &body, "local")
+                .await
+                .map_err(map_service_error)?
+        };
+        if action != "name" {
+            notify_snapshot_change(&notifications, &request_id, &before, &result);
+        }
         return Ok(
             Json(super::generated_json::<crate::generated::AccessSnapshot>(
                 result,
@@ -442,11 +422,15 @@ pub(super) fn tailscale_login(value: &Value) -> Option<String> {
         .map(|login| login.trim().to_ascii_lowercase())
 }
 
-fn accept_invite(
-    store: &studio_runtime_store::RuntimeStore,
+async fn accept_invite(
+    store: Arc<studio_runtime_store::RuntimeStore>,
     credentials: &studio_runtime_services::federation_credentials::Credentials,
     local_origin: Option<&str>,
-    whoami: Option<std::sync::Arc<dyn Fn() -> Option<Value> + Send + Sync>>,
+    whoami: Option<
+        std::sync::Arc<
+            dyn Fn() -> futures_util::future::BoxFuture<'static, Option<Value>> + Send + Sync,
+        >,
+    >,
     body: &Value,
 ) -> Result<Value, ApiError> {
     let invitation = body
@@ -484,18 +468,21 @@ fn accept_invite(
                 "Configure Tailscale Serve HTTPS before pairing",
             )
         })?;
-    let owner = whoami
-        .and_then(|probe| probe())
-        .and_then(|value| tailscale_login(&value))
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The Tailscale owner identity is unavailable",
-            )
-        })?;
+    let owner = match whoami {
+        Some(probe) => probe().await.and_then(|value| tailscale_login(&value)),
+        None => None,
+    }
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The Tailscale owner identity is unavailable",
+        )
+    })?;
     let local = credentials
-        .identity(store, Some(origin_local))
+        .identity(Arc::clone(&store), Some(origin_local))
+        .await
         .map_err(map_credential_error)?;
+    let signing_identity = load_signing_identity(Arc::clone(&store)).await?;
     let local_id = local["serverId"].as_str().unwrap_or_default();
     let local_label = local["label"].as_str().unwrap_or("Studio server");
     let request_body = serde_json::json!({
@@ -507,14 +494,12 @@ fn accept_invite(
     let raw = remote_transport::canonical_json(&request_body)
         .map_err(|_| ApiError::internal())?
         .into_bytes();
-    let identity = remote_transport::load_multi_server_identity(store.root())
-        .map_err(|_| ApiError::internal())?;
     let timestamp = unix_time_seconds()?;
     let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
     let url = format!("{origin}/api/multi-server/v1/pair");
     let response = remote_transport::exchange_multi_server(
-        store,
-        &identity,
+        Arc::clone(&store),
+        &signing_identity,
         &MultiServerExchangeInput {
             server_id,
             method: "POST",
@@ -524,10 +509,11 @@ fn accept_invite(
             nonce: &nonce,
             body: &raw,
             expected_public_key: public_key,
-            timeout: std::time::Duration::from_secs(15),
+            timeout: Duration::from_secs(20),
         },
         timestamp,
     )
+    .await
     .map_err(|_| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -547,17 +533,26 @@ fn accept_invite(
         ));
     }
     let now = timestamp as f64;
-    let prior = store
-        .read_transaction(|tx| {
-            tx.query_row(
-                "SELECT record FROM runtime_access_clients WHERE id=?1",
-                [server_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(Into::into)
-        })
-        .map_err(ApiError::stored)?;
+    let prior_store = Arc::clone(&store);
+    let server_id_for_read = server_id.to_owned();
+    let prior = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server/accept-invite-prior",
+        move || {
+            prior_store
+                .read_transaction(|tx| {
+                    tx.query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [server_id_for_read],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(Into::into)
+                })
+                .map_err(ApiError::stored)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     if let Some(prior) = prior {
         let prior: Value = serde_json::from_str(&prior).map_err(|_| {
             ApiError::new(
@@ -573,24 +568,31 @@ fn accept_invite(
         }
     } else {
         let record = serde_json::json!({"id":server_id,"clientId":server_id,"serverId":server_id,"kind":"server","origin":origin,"publicKey":public_key,"label":invitation["label"],"tailscaleUser":response["tailscaleUser"],"status":"paired","created":now,"lastAccess":null,"revoked":null});
+        let server_id_for_save = server_id.to_owned();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
-                    rusqlite::params![server_id, record.to_string()],
+                    rusqlite::params![server_id_for_save, record.to_string()],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_access_audit(client,actor,action,created) VALUES(?1,'local','accept_invite',?2)",
-                    rusqlite::params![server_id, now],
+                    rusqlite::params![server_id_for_save, now],
                 )?;
                 Ok(())
             })
+            .await
             .map_err(ApiError::stored)?;
     }
-    multi_server::snapshot(store, &local).map_err(map_service_error)
+    multi_server::snapshot(&store, &local)
+        .await
+        .map_err(map_service_error)
 }
 
-fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result<Value, ApiError> {
+async fn ui_invite(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    body: &Value,
+) -> Result<Value, ApiError> {
     let server_id = body["serverId"]
         .as_str()
         .filter(|v| !v.is_empty())
@@ -599,13 +601,24 @@ fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result
         .as_str()
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The request ID is invalid"))?;
-    let peer: Value = store.read_transaction(|tx| {
-        tx.query_row("SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'", [server_id], |row| row.get::<_, String>(0))
-            .optional()?
-            .map(|raw| serde_json::from_str(&raw).map_err(|_| studio_runtime_store::StoreError::SchemaMismatch("invalid stored object runtime_access_clients".into())))
-            .transpose()
-            .map(|value| value.unwrap_or(Value::Null))
-    }).map_err(ApiError::stored)?;
+    let peer_store = Arc::clone(&store);
+    let server_id_for_read = server_id.to_owned();
+    let peer = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server/ui-invite-peer",
+        move || {
+            peer_store
+                .read_transaction(|tx| {
+                    tx.query_row("SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'", [server_id_for_read], |row| row.get::<_, String>(0))
+                        .optional()?
+                        .map(|raw| serde_json::from_str(&raw).map_err(|_| studio_runtime_store::StoreError::SchemaMismatch("invalid stored object runtime_access_clients".into())))
+                        .transpose()
+                        .map(|value| value.unwrap_or(Value::Null))
+                })
+                .map_err(ApiError::stored)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     if peer.is_null() {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -630,8 +643,7 @@ fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result
                 "The remote server identity is unavailable",
             )
         })?;
-    let identity = remote_transport::load_multi_server_identity(store.root())
-        .map_err(|_| ApiError::internal())?;
+    let identity = load_signing_identity(Arc::clone(&store)).await?;
     let local_id = identity.id();
     let key = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
@@ -646,7 +658,7 @@ fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result
     let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
     let url = format!("{origin}/api/multi-server");
     let result = remote_transport::exchange_multi_server(
-        store,
+        Arc::clone(&store),
         &identity,
         &MultiServerExchangeInput {
             server_id,
@@ -657,10 +669,11 @@ fn ui_invite(store: &studio_runtime_store::RuntimeStore, body: &Value) -> Result
             nonce: &nonce,
             body: &raw,
             expected_public_key: public_key,
-            timeout: std::time::Duration::from_secs(15),
+            timeout: Duration::from_secs(20),
         },
         timestamp,
     )
+    .await
     .map_err(|_| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -687,8 +700,20 @@ fn unix_time_seconds() -> Result<i64, ApiError> {
         .as_secs() as i64)
 }
 
-fn remote_set_server_name(
-    store: &studio_runtime_store::RuntimeStore,
+async fn load_signing_identity(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+) -> Result<remote_transport::RemoteIdentity, ApiError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server/signing-identity",
+        move || remote_transport::load_multi_server_identity(store.root()),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal())
+}
+
+async fn remote_set_server_name(
+    store: &Arc<studio_runtime_store::RuntimeStore>,
     credentials: &studio_runtime_services::federation_credentials::Credentials,
     local_origin: Option<&str>,
     target: &str,
@@ -709,17 +734,26 @@ fn remote_set_server_name(
             "Invalid server name request",
         ));
     }
-    let raw_peer = store
-        .read_transaction(|tx| {
-            tx.query_row(
-                "SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'",
-                [target],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(Into::into)
-        })
-        .map_err(ApiError::stored)?;
+    let peer_store = Arc::clone(store);
+    let target_for_read = target.to_owned();
+    let raw_peer = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server/remote-name-peer",
+        move || {
+            peer_store
+                .read_transaction(|tx| {
+                    tx.query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'",
+                        [target_for_read],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(Into::into)
+                })
+                .map_err(ApiError::stored)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let Some(raw_peer) = raw_peer else {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -740,24 +774,29 @@ fn remote_set_server_name(
             "Invalid stored object runtime_access_clients",
         ));
     }
-    let reserved = store
-        .transaction_with(|tx| {
+    let reserve_store = Arc::clone(store);
+    let target_for_reservation = target.to_owned();
+    let label_for_reservation = label.to_owned();
+    let request_for_reservation = request_id.to_owned();
+    let reserved = reserve_store
+        .transaction_with(move |tx| {
             let previous = tx
                 .query_row(
                     "SELECT server,label FROM runtime_access_name_targets WHERE id=?1",
-                    [request_id],
+                    [request_for_reservation.as_str()],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            if previous.is_some_and(|(server, old_label)| server != target || old_label != label) {
+            if previous.is_some_and(|(server, old_label)| server != target_for_reservation || old_label != label_for_reservation) {
                 return Ok::<_, studio_runtime_store::StoreError>(false);
             }
             tx.execute(
                 "INSERT OR IGNORE INTO runtime_access_name_targets(id,server,label) VALUES(?1,?2,?3)",
-                rusqlite::params![request_id, target, label],
+                rusqlite::params![request_for_reservation, target_for_reservation, label_for_reservation],
             )?;
             Ok(true)
         })
+        .await
         .map_err(ApiError::stored)?;
     if !reserved {
         return Err(ApiError::new(
@@ -766,14 +805,9 @@ fn remote_set_server_name(
         ));
     }
     credentials
-        .identity(store, local_origin)
+        .identity(Arc::clone(store), local_origin)
+        .await
         .map_err(map_credential_error)?;
-    let identity = remote_transport::load_multi_server_identity(store.root()).map_err(|_| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The local server identity is unavailable",
-        )
-    })?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| ApiError::internal())?
@@ -786,9 +820,10 @@ fn remote_set_server_name(
     .map_err(|_| ApiError::internal())?
     .into_bytes();
     let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
+    let signing_identity = load_signing_identity(Arc::clone(store)).await?;
     remote_transport::exchange_multi_server(
-        store,
-        &identity,
+        Arc::clone(store),
+        &signing_identity,
         &MultiServerExchangeInput {
             server_id: target,
             method: "POST",
@@ -798,10 +833,11 @@ fn remote_set_server_name(
             nonce: &nonce,
             body: &raw,
             expected_public_key: public_key,
-            timeout: std::time::Duration::from_secs(10),
+            timeout: Duration::from_secs(20),
         },
         now,
     )
+    .await
     .map_err(|_| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -813,8 +849,8 @@ fn remote_set_server_name(
     let status_nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
     let status_id = format!("status-{}", status_nonce);
     let status = remote_transport::exchange_multi_server(
-        store,
-        &identity,
+        Arc::clone(store),
+        &signing_identity,
         &MultiServerExchangeInput {
             server_id: target,
             method: "GET",
@@ -824,10 +860,11 @@ fn remote_set_server_name(
             nonce: &status_nonce,
             body: &[],
             expected_public_key: public_key,
-            timeout: std::time::Duration::from_secs(10),
+            timeout: Duration::from_secs(20),
         },
         now,
     )
+    .await
     .map_err(|_| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -844,12 +881,16 @@ fn remote_set_server_name(
             "The remote server identity does not match",
         ));
     }
-    store
-        .transaction_with(|tx| {
+    let finish_store = Arc::clone(store);
+    let target_for_finish = target.to_owned();
+    let public_key_for_finish = public_key.to_owned();
+    let refreshed_label = refreshed_label.to_owned();
+    finish_store
+        .transaction_with(move |tx| {
             let raw = tx
                 .query_row(
                     "SELECT record FROM runtime_access_clients WHERE id=?1",
-                    [target],
+                    [target_for_finish.as_str()],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
@@ -861,16 +902,17 @@ fn remote_set_server_name(
                     "invalid stored object runtime_access_clients".into(),
                 )
             })?;
-            if record["status"] != "paired" || record["publicKey"] != public_key {
+            if record["status"] != "paired" || record["publicKey"] != public_key_for_finish {
                 return Ok(false);
             }
-            record["label"] = Value::String(refreshed_label.to_owned());
+            record["label"] = Value::String(refreshed_label);
             tx.execute(
                 "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
-                rusqlite::params![record.to_string(), target],
+                rusqlite::params![record.to_string(), target_for_finish],
             )?;
             Ok(true)
         })
+        .await
         .map_err(ApiError::stored)?;
     Ok(())
 }
@@ -888,16 +930,10 @@ async fn identity(
     let credentials = state.credentials;
     let origin = state.public_origin;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/multi_server",
-        move || {
-            credentials
-                .identity(&store, origin.as_deref())
-                .map_err(map_credential_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let value = credentials
+        .identity(Arc::clone(&store), origin.as_deref())
+        .await
+        .map_err(map_credential_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::ServerIdentityResponse,
     >(value)?))
@@ -1010,22 +1046,27 @@ mod tests {
     }
 
     impl studio_runtime_services::multi_server_discovery::ServerDiscoveryPort for FakeDiscovery {
-        fn discover(
-            &self,
-            _store: &studio_runtime_store::RuntimeStore,
-            identity: &Value,
-            public_origin: &str,
-        ) -> Result<Value, studio_runtime_services::multi_server_auth::AccessError> {
+        fn discover<'a>(
+            &'a self,
+            _store: &'a studio_runtime_store::RuntimeStore,
+            identity: &'a Value,
+            public_origin: &'a str,
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<Value, studio_runtime_services::multi_server_auth::AccessError>,
+        > {
             self.0.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(identity["origin"], public_origin);
-            Ok(serde_json::json!({
-                "protocol": 1,
-                "identity": identity,
-                "clients": [],
-                "servers": [],
-                "invites": [],
-                "settings": {"autoPair": true, "aliases": {}}
-            }))
+            Box::pin(async move {
+                assert_eq!(identity["origin"], public_origin);
+                Ok(serde_json::json!({
+                    "protocol": 1,
+                    "identity": identity,
+                    "clients": [],
+                    "servers": [],
+                    "invites": [],
+                    "settings": {"autoPair": true, "aliases": {}}
+                }))
+            })
         }
     }
 
@@ -1047,6 +1088,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated discovery state");
         let store = Arc::new(
             studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
                 .expect("runtime store opens"),
         );
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1082,6 +1124,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated multi-server state");
         let store = Arc::new(
             studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
                 .expect("runtime store opens"),
         );
         let credentials =
@@ -1098,7 +1141,9 @@ mod tests {
         )
         .with_credentials(credentials)
         .with_tailscale_whoami(Arc::new(|| {
-            Some(serde_json::json!({"status":"verified","user":"owner@example.test"}))
+            Box::pin(async {
+                Some(serde_json::json!({"status":"verified","user":"owner@example.test"}))
+            })
         }));
         let response = manage(
             State(state),

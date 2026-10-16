@@ -60,12 +60,17 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     let caller_root = tempfile::tempdir().expect("caller state root");
     let caller_store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(caller_root.path()))
+            .await
             .expect("caller store opens"),
     );
     let caller_credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
     let caller_identity = caller_credentials
-        .identity(&caller_store, Some("https://caller.fixture.ts.net"))
+        .identity(
+            Arc::clone(&caller_store),
+            Some("https://caller.fixture.ts.net"),
+        )
+        .await
         .expect("caller identity exists");
     let caller_signing =
         load_multi_server_identity(caller_root.path()).expect("caller signing identity loads");
@@ -73,13 +78,15 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     let receiver_root = tempfile::tempdir().expect("receiver state root");
     let receiver_store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(receiver_root.path()))
+            .await
             .expect("receiver store opens"),
     );
     let receiver_credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
     let origin = "https://receiver.fixture.ts.net";
     let receiver_identity = receiver_credentials
-        .identity(&receiver_store, Some(origin))
+        .identity(Arc::clone(&receiver_store), Some(origin))
+        .await
         .expect("receiver identity exists");
     receiver_store
         .transaction(|tx| {
@@ -103,6 +110,7 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
             )?;
             Ok(())
         })
+        .await
         .expect("receiver trusts the paired fake server");
 
     let boundary = MultiServerBoundary::new(receiver_identity.clone(), Arc::new(FixtureOwner))
@@ -120,7 +128,7 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
     .with_credentials(Arc::clone(&receiver_credentials))
     .with_multi_server_boundary(Arc::new(boundary))
     .with_tailscale_whoami(Arc::new(|| {
-        Some(serde_json::json!({"user":"owner@example.test"}))
+        Box::pin(async { Some(serde_json::json!({"user":"owner@example.test"})) })
     }));
     let app = router(state).expect("receiver router");
     let now = std::time::SystemTime::now()
@@ -275,7 +283,7 @@ async fn paired_fake_servers_create_and_recover_the_same_invitation() {
 }
 #[tokio::test]
 async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write() {
-    let (_root, store) = common::store();
+    let (_root, store) = common::store().await;
     let data = &common::fixture().data;
     let case = &data["auth"][0];
     let state = HttpState::new(
@@ -344,7 +352,7 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
         .find(|case| case["name"] == "auto-pair")
         .expect("valid auto-pair fixture")
         .clone();
-    let (auto_root, auto_store) = common::store();
+    let (auto_root, auto_store) = common::store().await;
     let auto_lookup = common::CountingOwner::new(auto_case.clone());
     let auto_boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
         data["identity"].clone(),
@@ -518,7 +526,7 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
 
 #[tokio::test]
 async fn browser_forward_opens_local_window_without_database_writes() {
-    let (root, store) = common::store();
+    let (root, store) = common::store().await;
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -576,7 +584,7 @@ async fn browser_forward_opens_local_window_without_database_writes() {
 #[tokio::test]
 async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
-    let (root, store) = common::store();
+    let (root, store) = common::store().await;
     let mut parent = AgentRecord {
         id: AgentId::from("event-parent"),
         root_id: AgentId::from("event-parent"),
@@ -678,12 +686,17 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
     let caller_root = tempfile::tempdir().expect("caller state root");
     let caller_store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(caller_root.path()))
+            .await
             .expect("caller store opens"),
     );
     let caller_credentials =
         studio_runtime_services::federation_credentials::Credentials::default();
     let caller_identity = caller_credentials
-        .identity(&caller_store, Some("https://caller.fixture.ts.net"))
+        .identity(
+            Arc::clone(&caller_store),
+            Some("https://caller.fixture.ts.net"),
+        )
+        .await
         .expect("caller identity exists");
     let caller_signing =
         load_multi_server_identity(caller_root.path()).expect("caller signing identity loads");
@@ -691,13 +704,15 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
     let receiver_root = tempfile::tempdir().expect("receiver state root");
     let receiver_store = Arc::new(
         studio_runtime_store::RuntimeStore::open(Some(receiver_root.path()))
+            .await
             .expect("receiver store opens"),
     );
     let receiver_credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
     let origin = "https://receiver.fixture.ts.net";
     let receiver_identity = receiver_credentials
-        .identity(&receiver_store, Some(origin))
+        .identity(Arc::clone(&receiver_store), Some(origin))
+        .await
         .expect("receiver identity exists");
     receiver_store
         .transaction(|tx| {
@@ -721,6 +736,7 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
             )?;
             Ok(())
         })
+        .await
         .expect("receiver trusts the paired fake server");
 
     let policy = Arc::new(
@@ -745,7 +761,7 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
     .with_credentials(Arc::clone(&receiver_credentials))
     .with_multi_server_boundary(Arc::new(boundary))
     .with_tailscale_whoami(Arc::new(|| {
-        Some(serde_json::json!({"user":"owner@example.test"}))
+        Box::pin(async { Some(serde_json::json!({"user":"owner@example.test"})) })
     }))
     .with_lifecycle_ports(Arc::new(NoopLifecycle));
     let app = router(state).expect("receiver router");

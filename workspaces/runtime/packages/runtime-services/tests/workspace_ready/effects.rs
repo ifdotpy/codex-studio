@@ -17,15 +17,15 @@ fn fixture_parent() -> PathBuf {
 
 struct Fixture {
     root: tempfile::TempDir,
-    store: RuntimeStore,
+    store: std::sync::Arc<RuntimeStore>,
     id: String,
     repo: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
-        Self::with_python(false)
+    async fn new() -> Self {
+        Self::with_python(false).await
     }
-    fn with_python(python: bool) -> Self {
+    async fn with_python(python: bool) -> Self {
         let root = tempfile::Builder::new()
             .prefix("cs-workspace-")
             .tempdir_in(fixture_parent())
@@ -61,9 +61,13 @@ impl Fixture {
             seed_schema(&state, &repo.join("project"));
             "workspace-fixture".to_owned()
         };
-        let store = RuntimeStore::open(Some(&state)).expect("open Python state");
+        let store = std::sync::Arc::new(
+            RuntimeStore::open(Some(&state))
+                .await
+                .expect("open Python state"),
+        );
         if !python {
-            store.transaction(|tx| { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)",[])?; Ok(()) }).expect("queued event");
+            store.transaction(|tx| { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)",[])?; Ok(()) }).await.expect("queued event");
         }
         Self {
             root,
@@ -86,16 +90,14 @@ impl Fixture {
             other => panic!("expected plan: {other:?}"),
         }
     }
-    fn reserve(&self, plan: &ProvisionIdentity) {
-        self.store
-            .transaction(|tx| {
-                WorkspaceReadyRepository::reserve(
-                    tx,
-                    &snapshot(&self.store, &self.id).expect("snapshot"),
-                    plan,
-                    now(),
-                )
-            })
+    async fn reserve(&self, plan: &ProvisionIdentity) {
+        let store = std::sync::Arc::clone(&self.store);
+        let id = self.id.clone();
+        let snapshot = snapshot(&self.store, &self.id).expect("snapshot");
+        let plan = plan.clone();
+        store
+            .transaction(move |tx| WorkspaceReadyRepository::reserve(tx, &snapshot, &plan, now()))
+            .await
             .expect("reserve");
     }
     fn actor(&self) -> Value {
@@ -104,15 +106,19 @@ impl Fixture {
             .agent
             .record
     }
-    fn patch(&self, key: &str, value: Value) {
-        self.store
-            .transaction(|tx| {
-                let mut a = CheckpointsRepository::agent(tx, &self.id)?
+    async fn patch(&self, key: &str, value: Value) {
+        let store = std::sync::Arc::clone(&self.store);
+        let id = self.id.clone();
+        let key = key.to_owned();
+        store
+            .transaction(move |tx| {
+                let mut a = CheckpointsRepository::agent(tx, &id)?
                     .expect("actor")
                     .record;
                 a[key] = value;
                 AgentRepository::put(tx, &AgentRecord::from_value(a)?)
             })
+            .await
             .expect("patch actor");
     }
 }
@@ -284,17 +290,19 @@ fn oracle(root: &Path, mut request: Value) -> Value {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[test]
-fn image_readiness_refuses_with_python_message_without_workspace_writes() {
-    let fixture = Fixture::new();
-    fixture.patch("workspaceMode", json!("image"));
-    fixture.patch("imageWorkspace", json!(true));
+#[tokio::test]
+async fn image_readiness_refuses_with_python_message_without_workspace_writes() {
+    let fixture = Fixture::new().await;
+    fixture.patch("workspaceMode", json!("image")).await;
+    fixture.patch("imageWorkspace", json!(true)).await;
     let before = std::fs::read_dir(fixture.root.path())
         .expect("fixture contents")
         .map(|entry| entry.expect("entry").file_name())
         .collect::<std::collections::BTreeSet<_>>();
 
-    let decision = prepare(&fixture.store, &fixture.id).expect("readiness decision");
+    let decision = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("readiness decision");
     assert!(matches!(decision, WorkspaceDecision::Refuse(refusal)
         if refusal.to_string() == crate::image_workspace::PLATFORM_REFUSAL));
 
@@ -306,12 +314,14 @@ fn image_readiness_refuses_with_python_message_without_workspace_writes() {
     assert!(!fixture.repo.join(".worktrees").exists());
 }
 
-#[test]
-fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
+    let fixture = Fixture::new().await;
     let original = std::fs::read(fixture.repo.join(".git/index")).expect("source index");
-    let result = prepare(&fixture.store, &fixture.id).expect("prepare");
-    let cwd = admitted(&fixture, result);
+    let result = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    let cwd = admitted(&fixture, result).await;
     assert_eq!(
         std::fs::read_to_string(cwd.join("file")).expect("checkout"),
         "base\n"
@@ -347,7 +357,9 @@ fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
     // Lost successful response is an ordinary readiness check, preserving user dirt and new HEAD.
     std::fs::write(cwd.join("file"), "user edits\n").expect("dirty file");
     assert_eq!(
-        prepare(&fixture.store, &fixture.id).expect("replay"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("replay"),
         WorkspaceDecision::Ready {
             token: ReadyToken::new(&fixture.actor(), cwd.clone())
         }
@@ -358,12 +370,12 @@ fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
     );
 }
 
-#[test]
-fn crash_before_effect_reuses_identity_and_crash_after_effect_publishes_without_recreation() {
+#[tokio::test]
+async fn crash_before_effect_reuses_identity_and_crash_after_effect_publishes_without_recreation() {
     for effect_finished in [false, true] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan();
-        fixture.reserve(&plan.identity);
+        fixture.reserve(&plan.identity).await;
         if effect_finished {
             git().create(&plan.identity).expect("effect before crash");
         }
@@ -372,7 +384,9 @@ fn crash_before_effect_reuses_identity_and_crash_after_effect_publishes_without_
             matches!(decision, WorkspaceDecision::Provision(ref p) if p.identity == plan.identity && p.effect == if effect_finished {ProvisionEffect::Publish} else {ProvisionEffect::Create})
         );
         assert!(matches!(
-            prepare(&fixture.store, &fixture.id).expect("recover"),
+            prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                .await
+                .expect("recover"),
             WorkspaceDecision::Ready { .. }
         ));
         let count: i64 = fixture.store.read().expect("read").query_row("SELECT count(*) FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='provision'", [], |r|r.get(0)).expect("count");
@@ -380,8 +394,8 @@ fn crash_before_effect_reuses_identity_and_crash_after_effect_publishes_without_
     }
 }
 
-#[test]
-fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
+#[tokio::test]
+async fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
     for scenario in [
         "dirty",
         "branch-only",
@@ -390,9 +404,9 @@ fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
         "missing-file",
         "unregistered",
     ] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan();
-        fixture.reserve(&plan.identity);
+        fixture.reserve(&plan.identity).await;
         match scenario {
             "branch-only" => {
                 command(&fixture.repo, &["branch", &plan.identity.branch]);
@@ -432,7 +446,9 @@ fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
         }
         assert!(
             matches!(
-                prepare(&fixture.store, &fixture.id).expect("refusal"),
+                prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                    .await
+                    .expect("refusal"),
                 WorkspaceDecision::Refuse(_)
             ),
             "{scenario}"
@@ -447,8 +463,8 @@ fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
     }
 }
 
-#[test]
-fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor() {
+#[tokio::test]
+async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor() {
     for (key, value) in [
         ("deletedAt", json!(10)),
         ("autoWake", json!(false)),
@@ -457,20 +473,22 @@ fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor
         ("workspaceReservationId", json!("replacement")),
         ("accountKey", json!("replacement")),
     ] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan();
-        fixture.reserve(&plan.identity);
+        fixture.reserve(&plan.identity).await;
         git().create(&plan.identity).expect("effect");
-        fixture.patch(key, value.clone());
+        fixture.patch(key, value.clone()).await;
+        let identity = plan.identity.clone();
         assert!(
             !fixture
                 .store
-                .transaction(|tx| WorkspaceReadyRepository::publish(
+                .transaction(move |tx| WorkspaceReadyRepository::publish(
                     tx,
-                    &plan.identity,
+                    &identity,
                     Err("fixture"),
                     now()
                 ))
+                .await
                 .expect("stale completion")
         );
         assert_eq!(fixture.actor()[key], value);
@@ -488,9 +506,9 @@ fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor
     }
 }
 
-#[test]
-fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_failure_is_nonfatal() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_failure_is_nonfatal() {
+    let fixture = Fixture::new().await;
     let context = fixture.context();
     let plan = fixture.plan();
     let expired = Git {
@@ -509,15 +527,17 @@ fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_failure_is
     git()
         .create(&plan.identity)
         .expect("later confirmed absent retry");
+    let identity = plan.identity.clone();
     assert!(
         fixture
             .store
-            .transaction(|tx| WorkspaceReadyRepository::publish(
+            .transaction(move |tx| WorkspaceReadyRepository::publish(
                 tx,
-                &plan.identity,
+                &identity,
                 Err("Checkpoint skipped: fixture failure"),
                 now()
             ))
+            .await
             .expect("publish without checkpoint")
     );
     assert_eq!(
@@ -527,14 +547,16 @@ fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_failure_is
     assert_eq!(fixture.actor()["worktreeReady"], true);
 }
 
-#[test]
-fn common_git_directory_serialization_defers_without_starting_another_effect() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn common_git_directory_serialization_defers_without_starting_another_effect() {
+    let fixture = Fixture::new().await;
     let plan = fixture.plan();
     let lock = repository_lock(&plan.identity.common_dir).expect("lock");
     let _guard = lock.lock().expect("held lock");
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("defer"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("defer"),
         WorkspaceDecision::Defer { .. }
     ));
     assert!(!plan.identity.destination.exists());
@@ -547,8 +569,8 @@ fn common_git_directory_serialization_defers_without_starting_another_effect() {
     assert!(other.try_lock().is_ok());
 }
 
-#[test]
-fn workspace_gate_matches_guarded_python_witnesses() {
+#[tokio::test]
+async fn workspace_gate_matches_guarded_python_witnesses() {
     gate_corpus(false);
 }
 
@@ -558,12 +580,12 @@ fn workspace_gate_full_python_corpus() {
     gate_corpus(true);
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "full runtime corpus: real Python writer bootstrap"]
-fn workspace_reads_real_python_written_state() {
-    let fixture = Fixture::with_python(true);
-    compare_publication_with_python(&fixture, true);
-    compare_publication_with_python(&Fixture::with_python(true), false);
+async fn workspace_reads_real_python_written_state() {
+    let fixture = Fixture::with_python(true).await;
+    compare_publication_with_python(&fixture, true).await;
+    compare_publication_with_python(&Fixture::with_python(true).await, false).await;
 }
 
 fn gate_corpus(full: bool) {
@@ -636,9 +658,9 @@ fn gate_corpus(full: bool) {
     }
 }
 
-#[test]
-fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
+    let fixture = Fixture::new().await;
     let base = command(&fixture.repo, &["rev-parse", "HEAD"])
         .trim()
         .to_owned();
@@ -656,42 +678,54 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
             "later",
         ],
     );
-    fixture.patch("workerBaseCommit", json!(base));
+    fixture.patch("workerBaseCommit", json!(base)).await;
     let key = "workspaceMode";
     let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
-    fixture.patch(key, json!("image"));
+    fixture.patch(key, json!("image")).await;
     let before = snapshot(&fixture.store, &fixture.id).expect("before");
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("unsupported"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("unsupported"),
         WorkspaceDecision::Refuse(_)
     ));
     assert_eq!(
         snapshot(&fixture.store, &fixture.id).expect("after"),
         before
     );
-    fixture.patch(key, original);
+    fixture.patch(key, original).await;
     let original_vm_fields = fixture.actor();
-    fixture.patch("executionMode", json!("vm"));
-    fixture.patch("layrReady", json!(true));
-    fixture.patch("layrProjectId", json!("fake-project"));
-    fixture.patch("layrLine", json!("fake-line"));
-    fixture.patch("cwd", json!("/guest/project/lines/fake-line"));
+    fixture.patch("executionMode", json!("vm")).await;
+    fixture.patch("layrReady", json!(true)).await;
+    fixture.patch("layrProjectId", json!("fake-project")).await;
+    fixture.patch("layrLine", json!("fake-line")).await;
+    fixture
+        .patch("cwd", json!("/guest/project/lines/fake-line"))
+        .await;
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("ready VM workspace"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("ready VM workspace"),
         WorkspaceDecision::Ready { .. }
     ));
-    fixture.patch("executionMode", json!("native"));
-    fixture.patch("layrReady", json!(false));
+    fixture.patch("executionMode", json!("native")).await;
+    fixture.patch("layrReady", json!(false)).await;
     for key in ["layrProjectId", "layrLine", "cwd"] {
-        fixture.patch(
-            key,
-            original_vm_fields.get(key).cloned().unwrap_or(Value::Null),
-        );
+        fixture
+            .patch(
+                key,
+                original_vm_fields.get(key).cloned().unwrap_or(Value::Null),
+            )
+            .await;
     }
-    fixture.store.transaction(|tx| {tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('restore:lost-marker',?1)", [json!({"id":"restore:lost-marker","kind":"restore","agent":fixture.id,"cwd":fixture.actor()["cwd"],"phase":"recovery_required"}).to_string()])?;Ok(())}).expect("orphan restore");
+    let fixture_id = fixture.id.clone();
+    let fixture_cwd = fixture.actor()["cwd"].clone();
+    fixture.store.transaction(move |tx| {tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('restore:lost-marker',?1)", [json!({"id":"restore:lost-marker","kind":"restore","agent":fixture_id,"cwd":fixture_cwd,"phase":"recovery_required"}).to_string()])?;Ok(())}).await.expect("orphan restore");
     let before = snapshot(&fixture.store, &fixture.id).expect("before");
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("restore hold"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("restore hold"),
         WorkspaceDecision::Refuse(_)
     ));
     assert_eq!(
@@ -707,52 +741,62 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
             )?;
             Ok(())
         })
+        .await
         .expect("fixture resolves restore");
     let cwd = admitted(
         &fixture,
-        prepare(&fixture.store, &fixture.id).expect("pinned provision"),
-    );
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("pinned provision"),
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(cwd.join("file")).expect("pinned checkout"),
         "base\n"
     );
 }
 
-#[test]
-fn physical_actor_deletion_and_changed_journal_payload_cannot_publish() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn physical_actor_deletion_and_changed_journal_payload_cannot_publish() {
+    let fixture = Fixture::new().await;
     let plan = fixture.plan();
-    fixture.reserve(&plan.identity);
+    fixture.reserve(&plan.identity).await;
     let mut different = plan.identity.clone();
     different.base_commit = "f".repeat(40);
+    let different_snapshot = snapshot(&fixture.store, &fixture.id).expect("snapshot");
     assert!(
         !fixture
             .store
-            .transaction(|tx| WorkspaceReadyRepository::reserve(
+            .transaction(move |tx| WorkspaceReadyRepository::reserve(
                 tx,
-                &snapshot(&fixture.store, &fixture.id).expect("snapshot"),
+                &different_snapshot,
                 &different,
                 now()
             ))
+            .await
             .expect("changed payload conflict")
     );
     git().create(&plan.identity).expect("effect");
+    let deleted_id = fixture.id.clone();
     fixture
         .store
-        .transaction(|tx| {
-            tx.execute("DELETE FROM runtime_agents WHERE id=?1", [&fixture.id])?;
+        .transaction(move |tx| {
+            tx.execute("DELETE FROM runtime_agents WHERE id=?1", [&deleted_id])?;
             Ok(())
         })
+        .await
         .expect("deleted actor");
+    let identity = plan.identity.clone();
     assert!(
         !fixture
             .store
-            .transaction(|tx| WorkspaceReadyRepository::publish(
+            .transaction(move |tx| WorkspaceReadyRepository::publish(
                 tx,
-                &plan.identity,
+                &identity,
                 Err("fixture"),
                 now()
             ))
+            .await
             .expect("orphan completion")
     );
     assert!(plan.identity.cwd.is_dir());
@@ -776,12 +820,12 @@ fn assert_recovery(decision: WorkspaceDecision) {
     );
 }
 
-#[test]
-fn hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete() {
+#[tokio::test]
+async fn hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete() {
     for flag in ["--skip-worktree", "--assume-unchanged", "sparse"] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan().identity;
-        fixture.reserve(&plan);
+        fixture.reserve(&plan).await;
         git().create(&plan).expect("effect completed");
         if flag == "sparse" {
             command(
@@ -792,23 +836,27 @@ fn hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete() {
             command(&plan.destination, &["update-index", flag, "project/file"]);
             // Even unchanged flagged entries are ambiguous; never silently clear the flags.
         }
-        assert_recovery(prepare(&fixture.store, &fixture.id).expect("recovery"));
+        assert_recovery(
+            prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                .await
+                .expect("recovery"),
+        );
         assert_eq!(fixture.actor()["worktreeReady"], false);
     }
 }
 
-fn reserve_other(fixture: &Fixture, cwd: &Path) {
-    fixture.store.transaction(|tx| {
+async fn reserve_other(fixture: &Fixture, cwd: &Path) {
+    fixture.store.transaction(move |tx| {
         tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('other-restore',?1)",
             [json!({"id":"other-restore","agent":"other","kind":"restore","phase":"local_mutation","cwd":cwd}).to_string()])?;
         Ok(())
-    }).expect("other reservation");
+    }).await.expect("other reservation");
 }
 
-#[test]
-fn parent_and_destination_reservations_block_but_progress_does_not() {
+#[tokio::test]
+async fn parent_and_destination_reservations_block_but_progress_does_not() {
     for destination in [false, true] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan().identity;
         reserve_other(
             &fixture,
@@ -817,31 +865,36 @@ fn parent_and_destination_reservations_block_but_progress_does_not() {
             } else {
                 &fixture.repo
             },
+        )
+        .await;
+        assert_recovery(
+            prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                .await
+                .expect("overlap refused"),
         );
-        assert_recovery(prepare(&fixture.store, &fixture.id).expect("overlap refused"));
         assert!(!plan.destination.exists());
     }
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let context = fixture.context();
     let plan = fixture.plan();
-    fixture.patch("progress", json!("ordinary update"));
+    fixture.patch("progress", json!("ordinary update")).await;
     assert!(matches!(
         provision(&fixture.store, &context, plan, &git()).expect("progress ignored"),
         WorkspaceDecision::Ready { .. }
     ));
 }
 
-#[test]
-fn checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_replay() {
+#[tokio::test]
+async fn checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_replay() {
     for change in ["dirty", "reservation", "none"] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan().identity;
-        fixture.reserve(&plan);
+        fixture.reserve(&plan).await;
         git().create(&plan).expect("effect");
         let checkpoint = git().checkpoint(&plan).expect("checkpoint effect");
         match change {
             "dirty" => std::fs::write(plan.cwd.join("file"), "late edit\n").expect("user edit"),
-            "reservation" => reserve_other(&fixture, &plan.destination),
+            "reservation" => reserve_other(&fixture, &plan.destination).await,
             _ => (),
         }
         let decision =
@@ -854,81 +907,101 @@ fn checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_replay(
         }
     }
     // Process died after update-ref, before publication: same reference is an exact replay.
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
-    fixture.reserve(&plan);
+    fixture.reserve(&plan).await;
     git().create(&plan).expect("effect");
     let checkpoint = git().checkpoint(&plan).expect("checkpoint effect");
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("crash replay"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("crash replay"),
         WorkspaceDecision::Ready { .. }
     ));
     assert_eq!(fixture.actor()["checkpointHistoryHead"], checkpoint["id"]);
 }
 
-#[test]
-fn ready_token_requires_current_generation_and_no_conflicting_reservation() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn ready_token_requires_current_generation_and_no_conflicting_reservation() {
+    let fixture = Fixture::new().await;
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("create"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("create"),
         WorkspaceDecision::Ready { .. }
     ));
     let WorkspaceDecision::Ready { token } =
-        prepare(&fixture.store, &fixture.id).expect("already ready")
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("already ready")
     else {
         panic!("ready")
     };
+    let admitted_token = token.clone();
     let cwd = fixture
         .store
-        .transaction(|tx| token.validate(tx))
+        .transaction(move |tx| admitted_token.validate(tx))
+        .await
         .expect("transaction")
         .expect("admit");
-    fixture.patch("progress", json!("does not invalidate"));
+    fixture
+        .patch("progress", json!("does not invalidate"))
+        .await;
+    let unchanged_token = token.clone();
     assert!(
         fixture
             .store
-            .transaction(|tx| token.validate(tx))
+            .transaction(move |tx| unchanged_token.validate(tx))
+            .await
             .expect("admit")
             .is_ok()
     );
-    fixture.patch("epoch", json!(1));
+    fixture.patch("epoch", json!(1)).await;
+    let stale_token = token.clone();
     assert!(
         !fixture
             .store
-            .transaction(|tx| token.validate(tx))
+            .transaction(move |tx| stale_token.validate(tx))
+            .await
             .expect("reject stale generation")
             .is_ok()
     );
-    fixture.patch("epoch", json!(0));
-    fixture.patch("threadId", json!("changed session"));
+    fixture.patch("epoch", json!(0)).await;
+    fixture.patch("threadId", json!("changed session")).await;
+    let changed_token = token.clone();
     assert!(
         !fixture
             .store
-            .transaction(|tx| token.validate(tx))
+            .transaction(move |tx| changed_token.validate(tx))
+            .await
             .expect("reject changed source")
             .is_ok()
     );
+    let actor = fixture.actor();
     fixture
         .store
-        .transaction(|tx| {
-            let mut a = fixture.actor();
+        .transaction(move |tx| {
+            let mut a = actor;
             a.as_object_mut().expect("actor").remove("threadId");
             AgentRepository::put(tx, &AgentRecord::from_value(a)?)
         })
+        .await
         .expect("restore source");
-    reserve_other(&fixture, cwd.parent().expect("root"));
+    reserve_other(&fixture, cwd.parent().expect("root")).await;
+    let reserved_token = token.clone();
     assert!(
         !fixture
             .store
-            .transaction(|tx| token.validate(tx))
+            .transaction(move |tx| reserved_token.validate(tx))
+            .await
             .expect("reject late reservation")
             .is_ok()
     );
 }
 
-#[test]
-fn checkpoint_ref_collision_is_preserved_and_reported() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn checkpoint_ref_collision_is_preserved_and_reported() {
+    let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, plan.id.as_bytes());
     let reference = format!("refs/codex-agents/checkpoints/{}/{id}", fixture.id);
@@ -950,9 +1023,13 @@ fn checkpoint_ref_collision_is_preserved_and_reported() {
         .trim()
         .to_owned();
     command(&fixture.repo, &["update-ref", &reference, &other]);
-    fixture.patch("workerBaseCommit", json!(plan.base_commit));
+    fixture
+        .patch("workerBaseCommit", json!(plan.base_commit))
+        .await;
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("checkpoint failure nonfatal"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("checkpoint failure nonfatal"),
         WorkspaceDecision::Ready { .. }
     ));
     assert_eq!(
@@ -968,10 +1045,10 @@ fn checkpoint_ref_collision_is_preserved_and_reported() {
 }
 
 #[cfg(unix)]
-#[test]
-fn post_effect_symlink_escape_is_refused_without_cleanup() {
+#[tokio::test]
+async fn post_effect_symlink_escape_is_refused_without_cleanup() {
     use std::os::unix::fs::symlink;
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let context = fixture.context();
     let plan = fixture.plan();
     let outside = fixture.root.path().join("outside");
@@ -986,9 +1063,9 @@ fn post_effect_symlink_escape_is_refused_without_cleanup() {
     );
 }
 
-#[test]
-fn linked_worktree_and_submodule_sources_preserve_git_identity() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn linked_worktree_and_submodule_sources_preserve_git_identity() {
+    let fixture = Fixture::new().await;
     let linked = fixture.root.path().join("linked");
     command(
         &fixture.repo,
@@ -1000,15 +1077,17 @@ fn linked_worktree_and_submodule_sources_preserve_git_identity() {
             path_string(&linked).expect("path"),
         ],
     );
-    fixture.patch("cwd", json!(linked.join("project")));
+    fixture.patch("cwd", json!(linked.join("project"))).await;
     let plan = fixture.plan().identity;
     assert_eq!(plan.common_dir, fixture.repo.join(".git"));
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("linked source"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("linked source"),
         WorkspaceDecision::Ready { .. }
     ));
     // A local gitlink fixture, without clone or any network/file transport.
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let oid = command(&fixture.repo, &["rev-parse", "HEAD"]);
     command(
         &fixture.repo,
@@ -1032,17 +1111,19 @@ fn linked_worktree_and_submodule_sources_preserve_git_identity() {
         ],
     );
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("gitlink checkout"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("gitlink checkout"),
         WorkspaceDecision::Ready { .. }
     ));
 }
 
 #[cfg(unix)]
-#[test]
-fn running_git_deadline_kills_child_and_keeps_durable_identity() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
+    let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
-    fixture.reserve(&plan);
+    fixture.reserve(&plan).await;
     command(
         &fixture.repo,
         &[
@@ -1098,8 +1179,8 @@ fn running_git_deadline_kills_child_and_keeps_durable_identity() {
     assert!(!plan.destination.exists());
 }
 
-#[test]
-fn isolated_child_rejects_all_ambient_git_overrides() {
+#[tokio::test]
+async fn isolated_child_rejects_all_ambient_git_overrides() {
     let root = tempfile::Builder::new()
         .prefix("ambient-")
         .tempdir_in(fixture_parent())
@@ -1132,16 +1213,19 @@ fn isolated_child_rejects_all_ambient_git_overrides() {
     );
 }
 
-#[test]
-fn ambient_git_child() {
+#[tokio::test]
+async fn ambient_git_child() {
     if std::env::var_os("WORKSPACE_ENV_CHILD").is_none() {
         return;
     }
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let cwd = admitted(
         &fixture,
-        prepare(&fixture.store, &fixture.id).expect("isolated prepare"),
-    );
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("isolated prepare"),
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(cwd.join("file")).expect("own checkout"),
         "base\n"
@@ -1153,32 +1237,39 @@ fn ambient_git_child() {
     assert!(Path::new(index.trim()).is_file());
 }
 
-#[test]
-fn publication_and_checkpoint_history_match_python() {
-    compare_publication_with_python(&Fixture::new(), true);
+#[tokio::test]
+async fn publication_and_checkpoint_history_match_python() {
+    compare_publication_with_python(&Fixture::new().await, true).await;
 }
 
-fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
+async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
     let items = json!([{"id":"old"}, {"id":"new"}, {"id":"hidden","afterRestore":true}]);
     let parent = if has_parent {
         json!({"id":"parent-checkpoint","agent":fixture.id,"historyBoundary":1})
     } else {
         Value::Null
     };
-    fixture.store.transaction(|tx| {
+    let id = fixture.id.clone();
+    let items_for_store = items.clone();
+    let parent_for_store = parent.clone();
+    fixture.store.transaction(move |tx| {
         // Explicit rowids make the parent boundary and excluded item deterministic.
-        for (i, item) in items.as_array().expect("items").iter().enumerate() {
+        for (i, item) in items_for_store.as_array().expect("items").iter().enumerate() {
             tx.execute("INSERT INTO runtime_items(rowid,id,agent,record,created) VALUES(?1,?2,?3,?4,1)",
-                rusqlite::params![i as i64 + 1, item["id"].as_str(), fixture.id, item.to_string()])?;
+                rusqlite::params![i as i64 + 1, item["id"].as_str(), id, item.to_string()])?;
         }
-        if has_parent { tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent.to_string()])?; }
+        if has_parent { tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent_for_store.to_string()])?; }
         Ok(())
-    }).expect("history fixture");
+    }).await.expect("history fixture");
     if has_parent {
-        fixture.patch("checkpointHistoryHead", json!("parent-checkpoint"));
+        fixture
+            .patch("checkpointHistoryHead", json!("parent-checkpoint"))
+            .await;
     }
-    fixture.patch("lastCompletedTurn", json!("previous-turn"));
-    fixture.patch("threadId", json!("previous-thread"));
+    fixture
+        .patch("lastCompletedTurn", json!("previous-turn"))
+        .await;
+    fixture.patch("threadId", json!("previous-thread")).await;
     let before = fixture.actor();
     let plan = fixture.plan().identity;
     let tree = command(&fixture.repo, &["rev-parse", "HEAD^{tree}"])
@@ -1190,7 +1281,9 @@ fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
         "actor":before, "items":items,"parent":parent,"tree":tree,"commit":plan.base_commit}),
     );
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("publish"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("publish"),
         WorkspaceDecision::Ready { .. }
     ));
     let actor = fixture.actor();
@@ -1248,12 +1341,12 @@ fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
     );
 }
 
-#[test]
-fn stale_reservation_precondition_never_starts_git_effect() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn stale_reservation_precondition_never_starts_git_effect() {
+    let fixture = Fixture::new().await;
     let context = fixture.context();
     let plan = fixture.plan();
-    fixture.patch("epoch", json!(1));
+    fixture.patch("epoch", json!(1)).await;
     assert!(matches!(
         provision(&fixture.store, &context, plan.clone(), &git()).expect("defer"),
         WorkspaceDecision::Defer { .. }
@@ -1266,9 +1359,9 @@ fn stale_reservation_precondition_never_starts_git_effect() {
     );
 }
 
-#[test]
-fn absorbed_submodule_source_provisions_without_network() {
-    let mut fixture = Fixture::new();
+#[tokio::test]
+async fn absorbed_submodule_source_provisions_without_network() {
+    let mut fixture = Fixture::new().await;
     let parent = fixture.root.path().join("superproject");
     std::fs::create_dir(&parent).expect("parent");
     command(&parent, &["init", "-b", "main"]);
@@ -1295,11 +1388,13 @@ fn absorbed_submodule_source_provisions_without_network() {
         ],
     );
     command(&parent, &["submodule", "absorbgitdirs", "submodule"]);
-    fixture.patch("cwd", json!(submodule.join("project")));
+    fixture.patch("cwd", json!(submodule.join("project"))).await;
     let plan = fixture.plan().identity;
     assert_eq!(plan.common_dir, parent.join(".git/modules/submodule"));
     assert!(matches!(
-        prepare(&fixture.store, &fixture.id).expect("submodule source"),
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("submodule source"),
         WorkspaceDecision::Ready { .. }
     ));
     assert_eq!(
@@ -1308,9 +1403,9 @@ fn absorbed_submodule_source_provisions_without_network() {
     );
 }
 
-#[test]
-fn repository_clean_smudge_filter_is_preserved() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn repository_clean_smudge_filter_is_preserved() {
+    let fixture = Fixture::new().await;
     std::fs::write(
         fixture.repo.join(".gitattributes"),
         "project/file filter=fixture\n",
@@ -1339,8 +1434,11 @@ fn repository_clean_smudge_filter_is_preserved() {
     );
     let cwd = admitted(
         &fixture,
-        prepare(&fixture.store, &fixture.id).expect("filtered creation"),
-    );
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("filtered creation"),
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(cwd.join("file")).expect("smudged file"),
         "filtered\n"
@@ -1348,19 +1446,21 @@ fn repository_clean_smudge_filter_is_preserved() {
     assert!(command(&cwd, &["status", "--porcelain=v1"]).is_empty());
 }
 
-fn admitted(fixture: &Fixture, decision: WorkspaceDecision) -> PathBuf {
+async fn admitted(fixture: &Fixture, decision: WorkspaceDecision) -> PathBuf {
     let WorkspaceDecision::Ready { token } = decision else {
         panic!("not ready: {decision:?}")
     };
+    let token = token.clone();
     fixture
         .store
-        .transaction(|tx| token.validate(tx))
+        .transaction(move |tx| token.validate(tx))
+        .await
         .expect("admission transaction")
         .expect("validated cwd")
 }
 
 #[cfg(unix)]
-fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixture {
+async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixture {
     use std::os::unix::fs::PermissionsExt;
     let Fixture {
         root,
@@ -1408,7 +1508,11 @@ sys.exit(result.returncode)
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let store = RuntimeStore::open(Some(&root.path().join("state"))).expect("reopen state");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("reopen state"),
+    );
     Fixture {
         root,
         store,
@@ -1418,16 +1522,22 @@ sys.exit(result.returncode)
 }
 
 #[cfg(unix)]
-#[test]
-fn public_probe_child() {
+#[tokio::test]
+async fn public_probe_child() {
     let Some(root) = std::env::var_os("WORKSPACE_PROBE_ROOT") else {
         return;
     };
     let root = PathBuf::from(root);
     assert!(root.starts_with(fixture_parent()));
-    let store = RuntimeStore::open(Some(&root.join("state"))).expect("probe store");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(&root.join("state")))
+            .await
+            .expect("probe store"),
+    );
     let id = std::env::var("WORKSPACE_PROBE_ID").expect("probe actor");
-    let result = prepare(&store, &id).expect("public prepare");
+    let result = prepare(std::sync::Arc::clone(&store), id.clone())
+        .await
+        .expect("public prepare");
     let expected = std::env::var("WORKSPACE_PROBE_EXPECT").expect("expectation");
     if expected == "recovery" {
         assert_recovery(result);
@@ -1439,8 +1549,10 @@ fn public_probe_child() {
         let WorkspaceDecision::Ready { token } = result else {
             panic!("not ready: {result:?}")
         };
+        let token = token.clone();
         let cwd = store
-            .transaction(|tx| token.validate(tx))
+            .transaction(move |tx| token.validate(tx))
+            .await
             .expect("transaction")
             .expect("validated cwd");
         if expected == "filtered" {
@@ -1461,10 +1573,10 @@ fn public_probe_child() {
 }
 
 #[cfg(unix)]
-#[test]
-fn final_git_observation_does_not_hold_store_writer() {
+#[tokio::test]
+async fn final_git_observation_does_not_hold_store_writer() {
     let fixture = public_probe(
-        Fixture::new(),
+        Fixture::new().await,
         r#"
 if refs and 'diff' in args and '--cached' in args and not marker.exists():
     with sqlite3.connect(root / 'state/canvas.sqlite3', timeout=0.1) as db:
@@ -1474,7 +1586,8 @@ if refs and 'diff' in args and '--cached' in args and not marker.exists():
     marker.write_text('writer was available')
 "#,
         "ready",
-    );
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(fixture.root.path().join("probe-executed")).expect("probe ran"),
         "writer was available"
@@ -1482,10 +1595,10 @@ if refs and 'diff' in args and '--cached' in args and not marker.exists():
 }
 
 #[cfg(unix)]
-#[test]
-fn public_adapter_refuses_escape_after_final_git_observation() {
+#[tokio::test]
+async fn public_adapter_refuses_escape_after_final_git_observation() {
     let fixture = public_probe(
-        Fixture::new(),
+        Fixture::new().await,
         r#"
 if refs and 'diff' in args and '--cached' in args and not marker.exists():
     (repo / '.worktrees').rename(root / 'outside')
@@ -1493,7 +1606,8 @@ if refs and 'diff' in args and '--cached' in args and not marker.exists():
     marker.write_text('escaped')
 "#,
         "recovery",
-    );
+    )
+    .await;
     assert!(fixture.root.path().join("probe-executed").exists());
     assert!(
         fixture
@@ -1508,11 +1622,11 @@ if refs and 'diff' in args and '--cached' in args and not marker.exists():
 }
 
 #[cfg(unix)]
-#[test]
-fn exact_checkpoint_replay_atomically_rejects_ref_changed_after_read() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn exact_checkpoint_replay_atomically_rejects_ref_changed_after_read() {
+    let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
-    fixture.reserve(&plan);
+    fixture.reserve(&plan).await;
     git().create(&plan).expect("effect");
     let checkpoint = git().checkpoint(&plan).expect("checkpoint before crash");
     command(
@@ -1540,7 +1654,7 @@ if 'for-each-ref' in args and any(a.startswith('refs/codex-agents/checkpoints/')
     marker.write_text('ref changed after read')
 "#,
         "ref-conflict",
-    );
+    ).await;
     assert!(fixture.root.path().join("probe-executed").exists());
     assert_eq!(
         command(
@@ -1552,18 +1666,21 @@ if 'for-each-ref' in args and any(a.startswith('refs/codex-agents/checkpoints/')
     );
 }
 
-#[test]
-fn timestamp_only_change_preserves_ready_and_recovery_without_index_writes() {
+#[tokio::test]
+async fn timestamp_only_change_preserves_ready_and_recovery_without_index_writes() {
     for ready in [false, true] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let plan = fixture.plan().identity;
         if ready {
             admitted(
                 &fixture,
-                prepare(&fixture.store, &fixture.id).expect("create"),
-            );
+                prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                    .await
+                    .expect("create"),
+            )
+            .await;
         } else {
-            fixture.reserve(&plan);
+            fixture.reserve(&plan).await;
             git().create(&plan).expect("effect before crash");
         }
         let index = command(
@@ -1580,8 +1697,11 @@ fn timestamp_only_change_preserves_ready_and_recovery_without_index_writes() {
             .expect("timestamp only");
         admitted(
             &fixture,
-            prepare(&fixture.store, &fixture.id).expect("unchanged contents"),
-        );
+            prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+                .await
+                .expect("unchanged contents"),
+        )
+        .await;
         assert_eq!(std::fs::read(index.trim()).expect("index bytes"), before);
         assert_eq!(
             std::fs::read_to_string(plan.cwd.join("file")).expect("content"),
@@ -1591,9 +1711,9 @@ fn timestamp_only_change_preserves_ready_and_recovery_without_index_writes() {
 }
 
 #[cfg(unix)]
-#[test]
-fn required_filter_receives_non_git_caller_environment() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn required_filter_receives_non_git_caller_environment() {
+    let fixture = Fixture::new().await;
     std::fs::write(
         fixture.repo.join(".gitattributes"),
         "project/file filter=fixture\n",
@@ -1628,5 +1748,5 @@ fn required_filter_receives_non_git_caller_environment() {
             "required filter",
         ],
     );
-    public_probe(fixture, "", "filtered");
+    public_probe(fixture, "", "filtered").await;
 }

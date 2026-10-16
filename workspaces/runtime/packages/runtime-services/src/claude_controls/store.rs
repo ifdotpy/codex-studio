@@ -57,17 +57,31 @@ impl ControlStorage for StoredControls {
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
-            blocking(move || {
-                let workspace = checkpoints::capture_context(&store, &request.id)
+            let workspace_store = store.clone();
+            let workspace_id = request.id.clone();
+            let workspace = blocking(move || {
+                let workspace = checkpoints::capture_context(&workspace_store, &workspace_id)
                     .map_err(|_| ControlError::Unavailable)?;
-                let saved = store
-                    .transaction(|tx| Repository::load(tx, &request.id, &request.operation_id()))?;
-                let is_new = saved.as_ref().is_some_and(|(_, op)| op.is_none());
-                if is_new {
-                    checkpoints::ensure_workspace_idle(&workspace, None)
-                        .map_err(|_| ControlError::Busy)?;
-                }
-                let reserved = store.transaction_with(|tx| {
+                Ok(workspace)
+            })
+            .await?;
+            let request_id = request.id.clone();
+            let operation_id = request.operation_id();
+            let saved = store
+                .transaction(move |tx| Repository::load(tx, &request_id, &operation_id))
+                .await?;
+            let is_new = saved.as_ref().is_some_and(|(_, op)| op.is_none());
+            let workspace = Arc::new(workspace);
+            if is_new {
+                let workspace_copy = Arc::clone(&workspace);
+                blocking(move || {
+                    checkpoints::ensure_workspace_idle(&workspace_copy, None)
+                        .map_err(|_| ControlError::Busy)
+                })
+                .await?;
+            }
+            let reserved = store
+                .transaction_with(move |tx| {
                     let (agent, operation) =
                         Repository::load(tx, &request.id, &request.operation_id())?
                             .ok_or(ControlError::Changed)?;
@@ -82,24 +96,36 @@ impl ControlStorage for StoredControls {
                     }
                     let ticket =
                         serde_json::to_value(&binding).map_err(|_| ControlError::Changed)?;
-                    let mut writes = match snapshot.reserve(&request, Repository::pending(tx, &request.id)?, now()) {
+                    let mut writes = match snapshot.reserve(
+                        &request,
+                        Repository::pending(tx, &request.id)?,
+                        now(),
+                    ) {
                         Ok(writes) => writes,
                         Err(ControlError::Unknown) => {
-                            snapshot.check_owned(snapshot.saved.as_ref().ok_or(ControlError::Changed)?)?;
+                            snapshot.check_owned(
+                                snapshot.saved.as_ref().ok_or(ControlError::Changed)?,
+                            )?;
                             return Ok(Some(snapshot));
                         }
                         Err(error) => return Err(error),
                     };
                     if let Some(saved) = &snapshot.saved
                         && saved["phase"] != "completed"
-                        && (saved.get("controlEpoch").and_then(Value::as_u64) != Some(snapshot.epoch())
-                            || (saved.get("provider").is_none_or(Value::is_null) && saved.get("controlTransport") != Some(&ticket))) {
+                        && (saved.get("controlEpoch").and_then(Value::as_u64)
+                            != Some(snapshot.epoch())
+                            || (saved.get("provider").is_none_or(Value::is_null)
+                                && saved.get("controlTransport") != Some(&ticket)))
+                    {
                         snapshot.check_owned(saved)?;
                         writes.operation["phase"] = json!("recovery_required");
-                        writes.operation["error"] = json!("Claude control transport changed; inspect workspace recovery");
+                        writes.operation["error"] =
+                            json!("Claude control transport changed; inspect workspace recovery");
                         writes.agent["workspaceOperation"] = json!("branch_recovery");
                         writes.agent["status"] = json!("paused");
-                        writes.agent["error"] = json!({"message":"Claude control transport changed; inspect workspace recovery"});
+                        writes.agent["error"] = json!({
+                            "message":"Claude control transport changed; inspect workspace recovery"
+                        });
                         Repository::apply(tx, &writes.agent, &writes.operation, &[])?;
                         return Ok(None);
                     }
@@ -110,10 +136,9 @@ impl ControlStorage for StoredControls {
 
                     Repository::apply(tx, &writes.agent, &writes.operation, &[])?;
                     ControlSnapshot::from_records(writes.agent, Some(writes.operation)).map(Some)
-                })?;
-                reserved.ok_or(ControlError::Unknown)
-            })
-            .await
+                })
+                .await?;
+            reserved.ok_or(ControlError::Unknown)
         })
     }
     fn submitted(
@@ -125,15 +150,14 @@ impl ControlStorage for StoredControls {
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
-            blocking(move || {
-                store.transaction_with(|tx| {
+            store
+                .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let operation = current.submitted(&request, &native, &queue, now())?;
                     Repository::apply(tx, &current.raw, &operation, &[])?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })
-            })
-            .await
+                .await
         })
     }
     fn provider(
@@ -143,15 +167,14 @@ impl ControlStorage for StoredControls {
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
-            blocking(move || {
-                store.transaction_with(|tx| {
+            store
+                .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let operation = current.provider_ready(result, now())?;
                     Repository::apply(tx, &current.raw, &operation, &[])?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })
-            })
-            .await
+                .await
         })
     }
     fn complete(
@@ -162,34 +185,74 @@ impl ControlStorage for StoredControls {
         let store = self.store.clone();
         let unload = self.unload.clone();
         Box::pin(async move {
-            blocking(move || {
-                let id = expected.agent.id.clone();
-                let result = store.transaction_with(|tx| {
+            let id = expected.agent.id.clone();
+            let result = store
+                .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let writes = current.complete(&request, now())?;
                     Repository::apply(tx, &writes.agent, &writes.operation, &writes.removed)?;
                     Ok::<_, ControlError>(writes.result)
-                })?;
-                unload(&id);
-                Ok(result)
-            })
-            .await
+                })
+                .await?;
+            unload(&id);
+            Ok(result)
         })
     }
     fn failed(&self, expected: ControlSnapshot, uncertain: bool) -> ControlFuture<'_, ()> {
         let store = self.store.clone();
         Box::pin(async move {
-            blocking(move||store.transaction_with(|tx|{
-  let Some(op)=&expected.operation else{return Ok(())};
-  let Some((mut agent,Some(mut operation)))=Repository::load(tx,&expected.agent.id,&op.id)?else{return Err(ControlError::Changed)};
-  if operation["phase"]=="completed"{return Ok(())}
-  if agent.get("epoch").and_then(Value::as_u64)!=Some(expected.epoch()) || CheckpointsRepository::workspace_source(&agent)!=expected.source() || agent.get("workspaceReservationId")!=operation.get("id")||operation.get("source")!=Some(&expected.source()){return Err(ControlError::Changed)}
-  let unknown=uncertain||truthy(operation.get("provider"));
-  operation["phase"]=json!(if unknown{"recovery_required"}else{"failed"});operation["error"]=json!(if unknown{"Claude control outcome is unknown; inspect workspace recovery"}else{"Claude action was not submitted"});operation["updated"]=json!(now());
-  agent["workspaceOperation"]=if unknown{json!("branch_recovery")}else{Value::Null};
-  if unknown{agent["status"]=json!("paused");agent["error"]=json!({"message":"Claude control outcome is unknown; inspect workspace recovery"});}else{agent.as_object_mut().ok_or(ControlError::Changed)?.remove("workspaceReservationId");}
-  Repository::apply(tx,&agent,&operation,&[])?;Ok(())
- })).await
+            store
+                .transaction_with(move |tx| {
+                    let Some(op) = &expected.operation else {
+                        return Ok(());
+                    };
+                    let Some((mut agent, Some(mut operation))) =
+                        Repository::load(tx, &expected.agent.id, &op.id)?
+                    else {
+                        return Err(ControlError::Changed);
+                    };
+                    if operation["phase"] == "completed" {
+                        return Ok(());
+                    }
+                    if agent.get("epoch").and_then(Value::as_u64) != Some(expected.epoch())
+                        || CheckpointsRepository::workspace_source(&agent) != expected.source()
+                        || agent.get("workspaceReservationId") != operation.get("id")
+                        || operation.get("source") != Some(&expected.source())
+                    {
+                        return Err(ControlError::Changed);
+                    }
+                    let unknown = uncertain || truthy(operation.get("provider"));
+                    operation["phase"] = json!(if unknown {
+                        "recovery_required"
+                    } else {
+                        "failed"
+                    });
+                    operation["error"] = json!(if unknown {
+                        "Claude control outcome is unknown; inspect workspace recovery"
+                    } else {
+                        "Claude action was not submitted"
+                    });
+                    operation["updated"] = json!(now());
+                    agent["workspaceOperation"] = if unknown {
+                        json!("branch_recovery")
+                    } else {
+                        Value::Null
+                    };
+                    if unknown {
+                        agent["status"] = json!("paused");
+                        agent["error"] = json!({
+                            "message":"Claude control outcome is unknown; inspect workspace recovery"
+                        });
+                    } else {
+                        agent
+                            .as_object_mut()
+                            .ok_or(ControlError::Changed)?
+                            .remove("workspaceReservationId");
+                    }
+                    Repository::apply(tx, &agent, &operation, &[])?;
+                    Ok(())
+                })
+                .await
         })
     }
 }

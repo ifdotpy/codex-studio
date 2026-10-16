@@ -123,21 +123,14 @@ impl AccountHandle {
 pub struct HistoryPort {
     port: RetainedSessionPort,
     actor: RequestActor,
-    runtime: tokio::runtime::Handle,
     recovery_id: String,
     read_step: u64,
 }
 impl HistoryPort {
-    pub fn new(
-        port: RetainedSessionPort,
-        actor: RequestActor,
-        runtime: tokio::runtime::Handle,
-        recovery_id: String,
-    ) -> Self {
+    pub fn new(port: RetainedSessionPort, actor: RequestActor, recovery_id: String) -> Self {
         Self {
             port,
             actor,
-            runtime,
             recovery_id,
             read_step: 0,
         }
@@ -152,44 +145,55 @@ fn history_error(error: PortError) -> HistoryError {
     }
 }
 impl crate::recovery_runtime::RetainedHistory for HistoryPort {
-    fn request(
-        &mut self,
+    fn request<'a>(
+        &'a mut self,
         scope: &ConnectionScope,
         method: HistoryMethod,
         params: Value,
         deadline: Instant,
-    ) -> Result<HistoryReceipt, HistoryError> {
+    ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
         if scope != self.port.scope() {
-            return Err(HistoryError::Identity);
+            return Box::pin(async { Err(HistoryError::Identity) });
         }
         let operation = history_operation(&self.recovery_id, self.read_step, method, &params);
         self.read_step = self.read_step.saturating_add(1);
-        let receipt = self
-            .runtime
-            .block_on(self.port.request(SessionRequest {
-                scope: scope.clone(),
-                expected_scope: None,
-                actor: Some(self.actor.clone()),
-                transfer: None,
-                deleted_actor_session: None,
-                operation,
-                method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
-                params,
-                deadline,
-            }))
-            .map_err(history_error)?;
-        match receipt.result {
-            RequestResult::Reply(body) => Ok(HistoryReceipt {
-                scope: receipt.scope,
-                body,
-            }),
-            _ => Err(HistoryError::Unavailable),
-        }
+        let Some(method) = Method::from_wire(method.as_str()) else {
+            return Box::pin(async { Err(HistoryError::Unsupported) });
+        };
+        let request = self.port.request(SessionRequest {
+            scope: scope.clone(),
+            expected_scope: None,
+            actor: Some(self.actor.clone()),
+            transfer: None,
+            deleted_actor_session: None,
+            operation,
+            method,
+            params,
+            deadline,
+        });
+        Box::pin(async move {
+            let receipt = request.await.map_err(history_error)?;
+            match receipt.result {
+                RequestResult::Reply(body) => Ok(HistoryReceipt {
+                    scope: receipt.scope,
+                    body,
+                }),
+                _ => Err(HistoryError::Unavailable),
+            }
+        })
     }
-    fn barrier(&mut self, scope: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError> {
-        self.runtime
-            .block_on(self.port.barrier(scope, deadline))
-            .map_err(history_error)
+    fn barrier<'a>(
+        &'a mut self,
+        scope: &ConnectionScope,
+        deadline: Instant,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>> {
+        let scope = scope.clone();
+        Box::pin(async move {
+            self.port
+                .barrier(&scope, deadline)
+                .await
+                .map_err(history_error)
+        })
     }
 }
 

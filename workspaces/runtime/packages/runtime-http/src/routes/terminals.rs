@@ -9,6 +9,7 @@ use axum::extract::{MatchedPath, State};
 use axum::http::StatusCode;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(unix)]
 use studio_runtime_services::terminal_driver::TerminalCreate;
 use studio_runtime_services::terminal_driver::{self, TerminalError};
@@ -67,12 +68,7 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
     let Some(gate) = state.terminal_write_gate_handle() else {
         return Ok(());
     };
-    let reconciled = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/terminals",
-        move || gate(),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?;
+    let reconciled = gate().await;
     if reconciled {
         Ok(())
     } else {
@@ -118,19 +114,19 @@ async fn output(
         .and_then(Value::as_i64)
         .unwrap_or(65_536);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/terminals",
-        move || {
-            if history {
-                terminal_driver::history_output(&store, &id, offset, limit)
-            } else {
-                terminal_driver::output(&store, &id, offset)
-            }
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(terminal_error)?;
+    let result = if history {
+        terminal_driver::history_output(Arc::clone(&store), &id, offset, limit)
+            .await
+            .map_err(terminal_error)?
+    } else {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/terminals",
+            move || terminal_driver::output(&store, &id, offset),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(terminal_error)?
+    };
     Ok(Json(super::generated_json::<
         crate::generated::TerminalOutput,
     >(result)?))
@@ -176,25 +172,20 @@ async fn create(
         let driver = state
             .terminal_driver_handle()
             .ok_or_else(ApiError::internal)?;
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/terminals",
-            move || {
-                driver.create(TerminalCreate {
-                    request_id: &request_id,
-                    agent: &agent,
-                    agent_cwd: &agent_cwd,
-                    cwd: &cwd,
-                    columns,
-                    rows,
-                    shell: &shell,
-                    environment,
-                    submitted_request: &body,
-                })
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(terminal_body_error)?;
+        let result = driver
+            .create(TerminalCreate {
+                request_id: &request_id,
+                agent: &agent,
+                agent_cwd: &agent_cwd,
+                cwd: &cwd,
+                columns,
+                rows,
+                shell: &shell,
+                environment,
+                submitted_request: &body,
+            })
+            .await
+            .map_err(terminal_body_error)?;
         Ok(Json(super::generated_json::<
             crate::generated::TerminalRecord,
         >(result)?))
@@ -229,13 +220,10 @@ async fn action(
             .unwrap_or_default()
             .to_owned();
         let is_input = action == "input";
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/terminals",
-            move || driver.action(&action, &body),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(terminal_body_error)?;
+        let result = driver
+            .action(&action, &body)
+            .await
+            .map_err(terminal_body_error)?;
         if is_input {
             Ok(Json(TerminalActionResponse::Input(
                 super::generated_json::<crate::generated::TerminalInputResult>(result)?,
@@ -380,7 +368,7 @@ mod tests {
             Some(store.clone()),
             None,
         )
-        .with_terminal_write_gate(Arc::new(|| false));
+        .with_terminal_write_gate(Arc::new(|| Box::pin(async { false })));
         let app = crate::router::router(state).expect("HTTP router composes the terminal route");
         let body = json!({"id":"pending-recovery-create","agent":"agent"});
         let request = Request::builder()

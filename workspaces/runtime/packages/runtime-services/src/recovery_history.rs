@@ -58,7 +58,7 @@ pub enum ExactStart {
     NotApplied,
     Missing,
 }
-pub trait RecoveryReader {
+pub trait RecoveryReader: Send {
     /// Return cached worker state and the injected clock; must perform no I/O or waiting.
     fn observation(
         &mut self,
@@ -66,15 +66,19 @@ pub trait RecoveryReader {
     ) -> Result<crate::recovery_absence::RecoveryObservation, HistoryError>;
     /// Must enforce the deadline and cancellation while waiting, and must not
     /// send the read on a different connection than `scope`.
-    fn read(
-        &mut self,
+    fn read<'a>(
+        &'a mut self,
         scope: &ConnectionScope,
         method: HistoryMethod,
         params: Value,
         deadline: Instant,
-    ) -> Result<HistoryReceipt, HistoryError>;
+    ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>>;
     /// Drain earlier account notifications before snapshot validation/commit.
-    fn barrier(&mut self, scope: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError>;
+    fn barrier<'a>(
+        &'a mut self,
+        scope: &ConnectionScope,
+        deadline: Instant,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>>;
 }
 
 pub struct HistoryRead<'a> {
@@ -105,7 +109,7 @@ impl<'a> HistoryRead<'a> {
         }
         Ok(observation)
     }
-    pub fn background_terminals(&mut self, thread: &str) -> Result<Vec<Value>, HistoryError> {
+    pub async fn background_terminals(&mut self, thread: &str) -> Result<Vec<Value>, HistoryError> {
         let mut cursor = None;
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
@@ -114,7 +118,9 @@ impl<'a> HistoryRead<'a> {
             if let Some(value) = &cursor {
                 params["cursor"] = json!(value);
             }
-            let page = self.call(HistoryMethod::BackgroundTerminals, params)?;
+            let page = self
+                .call(HistoryMethod::BackgroundTerminals, params)
+                .await?;
             for entry in data(&page)? {
                 nonempty(&entry["itemId"])?;
                 nonempty(&entry["processId"])?;
@@ -135,17 +141,21 @@ impl<'a> HistoryRead<'a> {
     pub fn scope(&self) -> &ConnectionScope {
         &self.scope
     }
-    pub fn barrier(&mut self) -> Result<(), HistoryError> {
+    pub async fn barrier(&mut self) -> Result<(), HistoryError> {
         if Instant::now() >= self.deadline {
             return Err(HistoryError::Deadline);
         }
-        self.reader.barrier(&self.scope, self.deadline)?;
+        self.reader.barrier(&self.scope, self.deadline).await?;
         if Instant::now() >= self.deadline {
             return Err(HistoryError::Deadline);
         }
         Ok(())
     }
-    pub fn call(&mut self, method: HistoryMethod, params: Value) -> Result<Value, HistoryError> {
+    pub async fn call(
+        &mut self,
+        method: HistoryMethod,
+        params: Value,
+    ) -> Result<Value, HistoryError> {
         if Instant::now() >= self.deadline {
             return Err(HistoryError::Deadline);
         }
@@ -155,7 +165,8 @@ impl<'a> HistoryRead<'a> {
         self.calls += 1;
         let response = self
             .reader
-            .read(&self.scope, method, params, self.deadline)?;
+            .read(&self.scope, method, params, self.deadline)
+            .await?;
         if Instant::now() >= self.deadline {
             return Err(HistoryError::Deadline);
         }
@@ -167,20 +178,26 @@ impl<'a> HistoryRead<'a> {
         }
         Ok(response.body)
     }
-    pub fn thread_state(&mut self, thread: &str) -> Result<Value, HistoryError> {
-        Ok(self.thread_document(thread)?["status"].clone())
+    pub async fn thread_state(&mut self, thread: &str) -> Result<Value, HistoryError> {
+        Ok(self.thread_document(thread).await?["status"].clone())
     }
-    pub fn thread_document(&mut self, thread: &str) -> Result<Value, HistoryError> {
-        let result = self.call(
-            HistoryMethod::Thread,
-            json!({"threadId":thread,"includeTurns":false}),
-        )?;
+    pub async fn thread_document(&mut self, thread: &str) -> Result<Value, HistoryError> {
+        let result = self
+            .call(
+                HistoryMethod::Thread,
+                json!({"threadId":thread,"includeTurns":false}),
+            )
+            .await?;
         if result["thread"]["id"] != thread {
             return Err(HistoryError::Identity);
         }
         Ok(result["thread"].clone())
     }
-    pub fn exact_turn(&mut self, thread: &str, turn: &str) -> Result<Option<Value>, HistoryError> {
+    pub async fn exact_turn(
+        &mut self,
+        thread: &str,
+        turn: &str,
+    ) -> Result<Option<Value>, HistoryError> {
         let mut cursor: Option<String> = None;
         let mut seen = BTreeSet::new();
         loop {
@@ -188,7 +205,7 @@ impl<'a> HistoryRead<'a> {
             if let Some(c) = &cursor {
                 params["cursor"] = Value::String(c.clone());
             }
-            let page = self.turn_page(params.clone(), thread)?;
+            let page = self.turn_page(params.clone(), thread).await?;
             if let Some(found) = data(&page)?.iter().find(|t| t["id"] == turn) {
                 if found.get("itemsView").is_none_or(|v| v == "full") {
                     return checked_full(found, thread, turn).map(Some);
@@ -203,10 +220,10 @@ impl<'a> HistoryRead<'a> {
                     if let Some(c) = &item_cursor {
                         ip["cursor"] = Value::String(c.clone());
                     }
-                    let item_page = match self.call(HistoryMethod::Items, ip) {
+                    let item_page = match self.call(HistoryMethod::Items, ip).await {
                         Err(HistoryError::Unsupported) => {
                             params["itemsView"] = json!("full");
-                            let fallback = self.turn_page(params, thread)?;
+                            let fallback = self.turn_page(params, thread).await?;
                             let exact = data(&fallback)?
                                 .iter()
                                 .find(|t| t["id"] == turn)
@@ -233,7 +250,7 @@ impl<'a> HistoryRead<'a> {
                         break;
                     }
                 }
-                let confirmation = self.turn_page(params, thread)?;
+                let confirmation = self.turn_page(params, thread).await?;
                 let confirmed = data(&confirmation)?
                     .iter()
                     .find(|t| t["id"] == turn)
@@ -254,7 +271,11 @@ impl<'a> HistoryRead<'a> {
     }
     /// Task proofs retain duplicate receipts: even identical duplicates are
     /// ambiguous to the task reconciler, unlike transcript item coalescing.
-    pub fn task_items(&mut self, thread: &str, turn: &str) -> Result<Vec<Value>, HistoryError> {
+    pub async fn task_items(
+        &mut self,
+        thread: &str,
+        turn: &str,
+    ) -> Result<Vec<Value>, HistoryError> {
         let mut items = Vec::new();
         let mut cursor: Option<String> = None;
         let mut seen = BTreeSet::new();
@@ -264,7 +285,7 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Items, params)?;
+            let page = self.call(HistoryMethod::Items, params).await?;
             for entry in data(&page)? {
                 let item = &entry["item"];
                 if entry["turnId"] != turn
@@ -287,7 +308,7 @@ impl<'a> HistoryRead<'a> {
         }
     }
     /// Find the unique receipt for the exact client input across complete history.
-    pub fn exact_start(
+    pub async fn exact_start(
         &mut self,
         thread: &str,
         message: &str,
@@ -301,7 +322,7 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Turns, params)?;
+            let page = self.call(HistoryMethod::Turns, params).await?;
             let mut page_match = false;
             for turn in data(&page)? {
                 if matches!(
@@ -341,7 +362,7 @@ impl<'a> HistoryRead<'a> {
     }
     /// Return a negative receipt only when native history explicitly names this
     /// client input as not applied. A missing turn remains inconclusive.
-    pub fn exact_start_outcome(
+    pub async fn exact_start_outcome(
         &mut self,
         thread: &str,
         message: &str,
@@ -356,7 +377,7 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Turns, params)?;
+            let page = self.call(HistoryMethod::Turns, params).await?;
             let mut page_match = false;
             for turn in data(&page)? {
                 let matches = turn["clientUserMessageId"] == message
@@ -415,8 +436,8 @@ impl<'a> HistoryRead<'a> {
             }
         }
     }
-    fn turn_page(&mut self, params: Value, thread: &str) -> Result<Value, HistoryError> {
-        let page = self.call(HistoryMethod::Turns, params)?;
+    async fn turn_page(&mut self, params: Value, thread: &str) -> Result<Value, HistoryError> {
+        let page = self.call(HistoryMethod::Turns, params).await?;
         let mut ids = BTreeSet::new();
         for turn in data(&page)? {
             let id = nonempty(&turn["id"])?;

@@ -16,66 +16,97 @@ const MAX_PREPARED_INPUT_ATTEMPTS: usize = 3;
 /// HTTP stop/delete and the tool dispatcher's archive/restore share this entry.
 /// Preconditions, decision, writes and renderer changes commit together. No
 /// caller can replay an unknown external effect because none is submitted here.
-pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value, ManagementError> {
-    let mut result = execute_prepared(store, action, now, None, || {})?;
+pub async fn execute(
+    store: std::sync::Arc<RuntimeStore>,
+    action: &Action,
+    now: f64,
+) -> Result<Value, ManagementError> {
+    let mut result =
+        execute_prepared(std::sync::Arc::clone(&store), action, now, None, || {}).await?;
     if matches!(action, Action::Delete { .. } | Action::Archive { .. }) {
-        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
-            studio_runtime_store::StoreError::RecordContract(
-                "Lifecycle committed; workspace cleanup remains pending",
-            )
-        })?;
+        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
+            .await
+            .map_err(|_| {
+                studio_runtime_store::StoreError::RecordContract(
+                    "Lifecycle committed; workspace cleanup remains pending",
+                )
+            })?;
         if let Some(agent_id) = result
             .get("agent")
             .and_then(|agent| agent.get("id"))
             .and_then(Value::as_str)
-            && let Some(agent) = studio_runtime_store::AgentRepository::get(
-                &*store.read()?,
-                &studio_runtime_store::AgentId::from(agent_id),
-            )?
-            && let Some(agent_archive) = agent.value().get("agentArchive")
         {
-            result["agent"]["agentArchive"] = agent_archive.clone();
+            let read_store = std::sync::Arc::clone(&store);
+            let agent_id = agent_id.to_owned();
+            let agent_archive = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/agent_management/archive_readback",
+                move || {
+                    let reader = read_store.read()?;
+                    Ok::<_, studio_runtime_store::StoreError>(
+                        studio_runtime_store::AgentRepository::get(
+                            &reader,
+                            &studio_runtime_store::AgentId::from(agent_id),
+                        )?
+                        .and_then(|agent| agent.value().get("agentArchive").cloned()),
+                    )
+                },
+            )
+            .await
+            .map_err(|_| {
+                studio_runtime_store::StoreError::RecordContract(
+                    "Agent archive readback worker failed",
+                )
+            })??;
+            if let Some(agent_archive) = agent_archive {
+                result["agent"]["agentArchive"] = agent_archive;
+            }
         }
     }
     Ok(result)
 }
 
-pub(crate) fn execute_prepared(
-    store: &RuntimeStore,
+pub(crate) async fn execute_prepared(
+    store: std::sync::Arc<RuntimeStore>,
     action: &Action,
     now: f64,
-    ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
-    mut on_attempt_boundary: impl FnMut(),
+    ports: Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
+    mut on_attempt_boundary: impl FnMut() + Send,
 ) -> Result<Value, ManagementError> {
     for attempt_index in 0..MAX_PREPARED_INPUT_ATTEMPTS {
-        // The last bounded attempt captures its read-only inputs after writer
-        // admission, then commits against that same transaction. This mirrors
-        // Python's Runtime.lock serialization and makes ordinary concurrent
-        // record writers unable to invalidate the final snapshot.
         if attempt_index + 1 == MAX_PREPARED_INPUT_ATTEMPTS {
-            // The test seam can place a concurrent writer immediately before
-            // admission; after admission, both capture and commit are atomic
-            // with respect to this store's other writers.
+            // The final bounded capture stays inside the sync actor callback.
+            // This preserves the original guarantee that a continuously
+            // changing database cannot invalidate every filesystem-prepared
+            // snapshot before the lifecycle transaction gets writer access.
             on_attempt_boundary();
-            let outcome = store.transaction_with_error(|transaction| {
-                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
-                let projects = ProjectsRepository::list(transaction)?;
-                let vault_snapshot =
-                    crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
-                match ports {
-                    Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
-                        transaction,
-                        action,
-                        now,
-                        ports,
-                        &rooms,
-                        &vault_snapshot,
-                    ),
-                    None => {
-                        execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
+            let action = action.clone();
+            let ports = ports.clone();
+            let state_dir = store.root().to_path_buf();
+            let outcome = store
+                .transaction_with_error(move |transaction| {
+                    let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                    let projects = ProjectsRepository::list(transaction)?;
+                    let vault_snapshot =
+                        crate::sync_policy::ProjectVaultSnapshot::capture(&state_dir, &projects);
+                    match ports.as_deref() {
+                        Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
+                            transaction,
+                            &action,
+                            now,
+                            ports,
+                            &rooms,
+                            &vault_snapshot,
+                        ),
+                        None => execute_in_transaction(
+                            transaction,
+                            &action,
+                            now,
+                            &rooms,
+                            &vault_snapshot,
+                        ),
                     }
-                }
-            });
+                })
+                .await;
             return match outcome {
                 Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
                     "agent management inputs changed after filesystem preparation",
@@ -86,25 +117,43 @@ pub(crate) fn execute_prepared(
             };
         }
 
-        let reader = store.read()?;
-        let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-        let projects = ProjectsRepository::list(&reader)?;
-        let vault_snapshot =
-            crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
-        drop(reader);
+        let capture_store = std::sync::Arc::clone(&store);
+        let state_dir = store.root().to_path_buf();
+        let (rooms, vault_snapshot) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/agent_management/prepared_inputs",
+            move || {
+                let reader = capture_store.read()?;
+                let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+                let projects = ProjectsRepository::list(&reader)?;
+                let vault_snapshot =
+                    crate::sync_policy::ProjectVaultSnapshot::capture(&state_dir, &projects);
+                drop(reader);
+                Ok::<_, studio_runtime_store::StoreError>((rooms, vault_snapshot))
+            },
+        )
+        .await
+        .map_err(|_| {
+            studio_runtime_store::StoreError::RecordContract(
+                "Agent management input preparation worker failed",
+            )
+        })??;
         on_attempt_boundary();
 
-        let attempt = store.transaction_with_error(|transaction| match ports {
-            Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
-                transaction,
-                action,
-                now,
-                ports,
-                &rooms,
-                &vault_snapshot,
-            ),
-            None => execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot),
-        });
+        let action = action.clone();
+        let ports = ports.clone();
+        let attempt = store
+            .transaction_with_error(move |transaction| match ports.as_deref() {
+                Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
+                    transaction,
+                    &action,
+                    now,
+                    ports,
+                    &rooms,
+                    &vault_snapshot,
+                ),
+                None => execute_in_transaction(transaction, &action, now, &rooms, &vault_snapshot),
+            })
+            .await;
         match attempt {
             Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
                 "agent management inputs changed after filesystem preparation",
@@ -122,15 +171,15 @@ pub(crate) fn execute_prepared(
 /// Archive a worker after its accepted result has been merged and verified on
 /// main by the work acceptance service. The caller owns that repository check;
 /// this function performs the shared authorized lifecycle transaction.
-pub fn archive_accepted_result(
-    store: &RuntimeStore,
+pub async fn archive_accepted_result(
+    store: std::sync::Arc<RuntimeStore>,
     actor: &str,
     epoch: i64,
     target: &str,
     now: f64,
 ) -> Result<Value, ManagementError> {
     let result = execute(
-        store,
+        std::sync::Arc::clone(&store),
         &Action::Archive {
             actor: actor.to_owned(),
             epoch,
@@ -139,12 +188,15 @@ pub fn archive_accepted_result(
             unassign_work: false,
         },
         now,
-    )?;
-    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
-        studio_runtime_store::StoreError::RecordContract(
-            "Archive committed; workspace cleanup remains pending",
-        )
-    })?;
+    )
+    .await?;
+    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
+        .await
+        .map_err(|_| {
+            studio_runtime_store::StoreError::RecordContract(
+                "Archive committed; workspace cleanup remains pending",
+            )
+        })?;
     Ok(result)
 }
 

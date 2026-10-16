@@ -170,77 +170,36 @@ impl AnalyticsCaptureRepository {
     }
 }
 impl RuntimeStore {
-    /// Keep the shared writer lock for stable main-store reads through commit:
+    /// Keep the Canvas actor callback occupied for stable main-store reads through commit:
     /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
     /// and analytics_history_repair::{migrate_budget,repair_terminal_errors} rely on it.
     /// Serialize analytics with canvas writes. The callback must do SQLite and
     /// bounded pure decisions only. Analytics commit is the durable receipt;
     /// a lost commit response is Unknown and must be reconciled by the caller.
-    pub fn analytics_transaction<T, E>(
+    pub async fn analytics_transaction<T, E>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>, &Connection) -> Result<T, E>,
+        operation: impl FnOnce(&Transaction<'_>, &Connection) -> Result<T, E> + Send + 'static,
     ) -> Result<T, E>
     where
-        E: From<StoreError>,
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
     {
         let diagnostics_enabled =
             crate::DIAGNOSTICS_ENABLED.load(std::sync::atomic::Ordering::Acquire);
         let waiting = diagnostics_enabled.then(std::time::Instant::now);
-        let mut did_wait = false;
-        let writer = match self.writer.try_lock() {
-            Ok(writer) => writer,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                did_wait = true;
-                let waiters = self
-                    .writer_waiters
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    + 1;
-                self.writer_waiter_peak
-                    .fetch_max(waiters, std::sync::atomic::Ordering::Relaxed);
-                if diagnostics_enabled {
-                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
-                        waiting_threads: waiters,
-                        peak_waiters: self
-                            .writer_waiter_peak
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                    });
-                }
-                let writer = match self.writer.lock() {
-                    Ok(writer) => writer,
-                    Err(_) => {
-                        let waiting_threads = self
-                            .writer_waiters
-                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                            - 1;
-                        if diagnostics_enabled {
-                            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
-                                waiting_threads,
-                                peak_waiters: self
-                                    .writer_waiter_peak
-                                    .load(std::sync::atomic::Ordering::Relaxed),
-                            });
-                        }
-                        return Err(StoreError::WriterPoisoned.into());
-                    }
-                };
-                let waiting_threads = self
-                    .writer_waiters
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                    - 1;
-                if diagnostics_enabled {
-                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
-                        waiting_threads,
-                        peak_waiters: self
-                            .writer_waiter_peak
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                    });
-                }
-                writer
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err(StoreError::WriterPoisoned.into());
-            }
-        };
+        let did_wait = self.writer.available_admissions() == 0;
+        let waiter_registration = did_wait.then(|| {
+            crate::WriterWaiterRegistration::begin(&self.writer_waiters, &self.writer_waiter_peak)
+        });
+        let permit = self
+            .writer
+            .acquire()
+            .await
+            .map_err(|_| {
+                StoreError::CommitActorOutcomeUnknown(tokio_rusqlite::Error::ConnectionClosed)
+            })
+            .map_err(E::from)?;
+        drop(waiter_registration);
         let wait = waiting.map_or(std::time::Duration::ZERO, |start| start.elapsed());
         if diagnostics_enabled {
             crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterAdmission {
@@ -254,33 +213,50 @@ impl RuntimeStore {
                     .load(std::sync::atomic::Ordering::Relaxed),
             });
         }
+
         let holding = diagnostics_enabled.then(std::time::Instant::now);
-        let mut db = self
-            .analytics
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?;
-        let tx = db
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(StoreError::from)?;
-        let result = operation(&tx, &writer)?;
-        let commit_started = diagnostics_enabled.then(std::time::Instant::now);
-        tx.commit().map_err(StoreError::CommitOutcomeUnknown)?;
-        if let Some(started) = commit_started {
-            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
-                database: crate::StoreDatabaseKind::Analytics,
-                elapsed: started.elapsed(),
-            });
-        }
-        drop(db);
-        drop(writer);
-        self.request_wal_checkpoint();
-        if let Some(started) = holding {
-            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
-                wait,
-                hold: started.elapsed(),
-            });
-        }
-        Ok(result)
+        let analytics = std::sync::Arc::clone(&self.analytics);
+        let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        let operation = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
+            let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(StoreError::from)?;
+            match operation(&tx, canvas) {
+                Ok(result) => {
+                    let commit_started = diagnostics_enabled.then(std::time::Instant::now);
+                    tx.commit().map_err(StoreError::CommitOutcomeUnknown)?;
+                    if let Some(started) = commit_started {
+                        crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
+                            database: crate::StoreDatabaseKind::Analytics,
+                            elapsed: started.elapsed(),
+                        });
+                    }
+                    Ok(Ok(result))
+                }
+                Err(error) => {
+                    drop(tx);
+                    Ok(Err(error))
+                }
+            }
+        };
+        let response = self
+            .writer
+            .call_admitted_with_completion(permit, operation, move |result, _disposition| {
+                if result.as_ref().is_ok_and(Result::is_ok) {
+                    checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
+                }
+                if let Some(started) = holding {
+                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
+                        wait,
+                        hold: started.elapsed(),
+                    });
+                }
+            })
+            .await
+            .map_err(crate::actor_transport_outcome_unknown)
+            .map_err(E::from)?;
+        response.resolve_with(|_| {}).map_err(E::from)?
     }
 }
 

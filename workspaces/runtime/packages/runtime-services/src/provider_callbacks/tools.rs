@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
-fn dispatch_gate(key: String) -> Result<Arc<Mutex<()>>, CallbackError> {
-    static GATES: OnceLock<Mutex<std::collections::HashMap<String, Weak<Mutex<()>>>>> =
+fn dispatch_gate(key: String) -> Result<Arc<tokio::sync::Mutex<()>>, CallbackError> {
+    static GATES: OnceLock<Mutex<std::collections::HashMap<String, Weak<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
     let gates = GATES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut gates = gates.lock().map_err(|_| CallbackError::Unknown)?;
     gates.retain(|_, gate| gate.strong_count() > 0);
     Ok(gates.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
-        let gate = Arc::new(Mutex::new(()));
+        let gate = Arc::new(tokio::sync::Mutex::new(()));
         gates.insert(key, Arc::downgrade(&gate));
         gate
     }))
@@ -206,65 +206,76 @@ pub(super) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackEr
     )?;
     Ok(())
 }
-pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
-    store: &RuntimeStore,
+pub(super) async fn dispatch_with_ports(
+    store: Arc<RuntimeStore>,
     context: &CallbackContext,
     input: &Input,
     now: f64,
-    ports: &P,
+    ports: Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>,
 ) -> Result<CallbackDecision, CallbackError> {
     let call = ToolCall::parse(input, context)?;
     // A durable claim prevents duplicate execution across restart. Within one
     // process, serialize the same request so a concurrent replay can observe
     // the first request's committed result instead of racing its service call.
     let gate = dispatch_gate(format!("{}:{}", store.state_dir().display(), call.id))?;
-    let _gate = gate.lock().map_err(|_| CallbackError::Unknown)?;
+    let _gate = gate.lock().await;
     if matches!(call.kind, ToolKind::Unknown) {
         return Ok(CallbackDecision::Unsupported);
     }
-    if let Some(decision) = store.transaction_with(|tx| {
-        storage::saved_decision(tx, &ReplyIdentity::new(context, &input.id), input)
-    })? {
+    let identity = ReplyIdentity::new(context, &input.id);
+    let input_for_replay = input.clone();
+    if let Some(decision) = store
+        .transaction_with(move |tx| storage::saved_decision(tx, &identity, &input_for_replay))
+        .await?
+    {
         return Ok(decision);
     }
     // The complete call identity and arguments commit before a service can act.
-    store.transaction_with(|tx| {
-        let snapshot = storage::snapshot(tx, context)?;
-        snapshot.active()?;
-        if call.name == "orchestration_monitor_input" {
-            let actor = crate::managed_host_tools::Actor::from_record(
-                snapshot.actor(),
-                &context.agent,
-                context.epoch,
-            )
-            .map_err(services::managed_error)?;
-            runtime_dispatch::authorize_monitor_input_in_transaction(
-                tx,
-                &actor,
-                call.args
-                    .get("monitor_id")
-                    .and_then(Value::as_str)
-                    .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
-            )
-            .map_err(services::managed_error)?;
-        }
-        let mut candidate = json!({
-            "id":call.id, "agent":context.agent, "threadId":context.thread,
-            "callId":call.call, "tool":call.name, "signature":call.signature,
-            "arguments":call.args,
-            "rpcId":input.id, "turnId":context.turn, "epoch":context.epoch,
-            "accountKey":context.account, "connectionId":context.connection,
-            "supervisor":{"generation":context.generation},
-            "created":now, "updated":now,
-            "readOnly":services::read_only(&call.name,&call.args),
-            "stage":"queued", "outcome":"pending", "cancelRequested":false
-        });
-        if let Some(alias) = &call.alias {
-            candidate["request_id"] = json!(alias);
-        }
-        admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
-        Ok::<_, CallbackError>(())
-    })?;
+    let context_for_admission = context.clone();
+    let call_for_admission = call.clone();
+    let input_for_admission = input.clone();
+    store
+        .transaction_with(move |tx| {
+            let context = &context_for_admission;
+            let call = &call_for_admission;
+            let input = &input_for_admission;
+            let snapshot = storage::snapshot(tx, context)?;
+            snapshot.active()?;
+            if call.name == "orchestration_monitor_input" {
+                let actor = crate::managed_host_tools::Actor::from_record(
+                    snapshot.actor(),
+                    &context.agent,
+                    context.epoch,
+                )
+                .map_err(services::managed_error)?;
+                runtime_dispatch::authorize_monitor_input_in_transaction(
+                    tx,
+                    &actor,
+                    call.args
+                        .get("monitor_id")
+                        .and_then(Value::as_str)
+                        .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
+                )
+                .map_err(services::managed_error)?;
+            }
+            let mut candidate = json!({
+                "id":call.id, "agent":context.agent, "threadId":context.thread,
+                "callId":call.call, "tool":call.name, "signature":call.signature,
+                "arguments":call.args,
+                "rpcId":input.id, "turnId":context.turn, "epoch":context.epoch,
+                "accountKey":context.account, "connectionId":context.connection,
+                "supervisor":{"generation":context.generation},
+                "created":now, "updated":now,
+                "readOnly":services::read_only(&call.name,&call.args),
+                "stage":"queued", "outcome":"pending", "cancelRequested":false
+            });
+            if let Some(alias) = &call.alias {
+                candidate["request_id"] = json!(alias);
+            }
+            admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
+            Ok::<_, CallbackError>(())
+        })
+        .await?;
     enum DispatchState {
         Existing(CallbackDecision),
         Result(Value),
@@ -274,7 +285,13 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
     // The callback transaction commits only the execution claim. It is the
     // durable intent boundary: any later dispatcher work is associated with
     // this exact tool request and its complete argument signature.
-    let state = store.transaction_with(|tx| {
+    let context_for_claim = context.clone();
+    let input_for_claim = input.clone();
+    let call_for_claim = call.clone();
+    let state = store.transaction_with(move |tx| {
+        let context = &context_for_claim;
+        let input = &input_for_claim;
+        let call = &call_for_claim;
         let snapshot = storage::snapshot(tx, context)?;
         snapshot.active()?;
         let identity = ReplyIdentity::new(context, &input.id);
@@ -309,7 +326,7 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
         } else {
             Ok(DispatchState::Retry)
         }
-    })?;
+    }).await?;
     let state = match state {
         DispatchState::Existing(decision) => return Ok(decision),
         other => other,
@@ -325,10 +342,13 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
                 // result. Python's callback protocol must acknowledge that
                 // state with recovery information and must never repeat the
                 // operation merely because its response was lost.
-                let pending = store.transaction_with(|tx| {
-                    records::get(tx, "runtime_tool_requests", &call.id)?
-                        .ok_or(CallbackError::Invalid("Unknown tool receipt"))
-                })?;
+                let pending_id = call.id.clone();
+                let pending = store
+                    .transaction_with(move |tx| {
+                        records::get(tx, "runtime_tool_requests", &pending_id)?
+                            .ok_or(CallbackError::Invalid("Unknown tool receipt"))
+                    })
+                    .await?;
                 let result = tool_result(
                     json!({
                         "requestId": call.id,
@@ -340,82 +360,130 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
                 );
                 (result, Vec::new())
             } else {
-                let actor = store.transaction_with(|tx| {
-                    let snapshot = storage::snapshot(tx, context)?;
-                    snapshot.active()?;
-                    let actor = crate::managed_host_tools::Actor::from_record(
-                        snapshot.actor(),
-                        &context.agent,
-                        context.epoch,
-                    )
-                    .map_err(services::managed_error)?;
-                    Ok::<_, CallbackError>(actor)
-                })?;
+                let context_for_actor = context.clone();
+                let actor_id = context.agent.clone();
+                let actor_epoch = context.epoch;
+                let actor = store
+                    .transaction_with(move |tx| {
+                        let snapshot = storage::snapshot(tx, &context_for_actor)?;
+                        snapshot.active()?;
+                        let actor = crate::managed_host_tools::Actor::from_record(
+                            snapshot.actor(),
+                            &actor_id,
+                            actor_epoch,
+                        )
+                        .map_err(services::managed_error)?;
+                        Ok::<_, CallbackError>(actor)
+                    })
+                    .await?;
                 let dispatched = {
                     ports
-                        .dispatch_managed(store, &actor, &call.name, &call.args, &call.id, now)
+                        .dispatch_managed(
+                            Arc::clone(&store),
+                            &actor,
+                            &call.name,
+                            &call.args,
+                            &call.id,
+                            now,
+                        )
+                        .await
                         .map_err(services::managed_error)?
                 };
                 if let Some(dispatched) = dispatched {
-                    store.transaction_with(|tx| {
-                        let snapshot = storage::snapshot(tx, context)?;
-                        snapshot.active()?;
-                        let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
-                            .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-                        if record["agent"] != context.agent
-                            || record["epoch"].as_u64() != Some(context.epoch)
-                            || record["connectionId"] != context.connection
-                            || record
-                                .pointer("/supervisor/generation")
-                                .and_then(Value::as_u64)
-                                != Some(context.generation)
-                            || record["signature"] != call.signature
-                        {
-                            return Err(CallbackError::Stale);
-                        }
-                        if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
-                            return Ok((saved, Vec::new()));
-                        }
-                        finalize_dispatched(tx, &call, &mut record, now, dispatched)
-                    })?
+                    let context_for_finish = context.clone();
+                    let call_for_finish = call.clone();
+                    store
+                        .transaction_with(move |tx| {
+                            let context = &context_for_finish;
+                            let call = &call_for_finish;
+                            let snapshot = storage::snapshot(tx, context)?;
+                            snapshot.active()?;
+                            let mut record =
+                                records::get(tx, "runtime_tool_requests", &call.id)?
+                                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+                            if record["agent"] != context.agent
+                                || record["epoch"].as_u64() != Some(context.epoch)
+                                || record["connectionId"] != context.connection
+                                || record
+                                    .pointer("/supervisor/generation")
+                                    .and_then(Value::as_u64)
+                                    != Some(context.generation)
+                                || record["signature"] != call.signature
+                            {
+                                return Err(CallbackError::Stale);
+                            }
+                            if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)?
+                            {
+                                return Ok((saved, Vec::new()));
+                            }
+                            finalize_dispatched(tx, &call, &mut record, now, dispatched)
+                        })
+                        .await?
                 } else {
-                    store.transaction_with(|tx| {
-                        let snapshot = storage::snapshot(tx, context)?;
-                        snapshot.active()?;
-                        let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
-                            .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-                        if record["agent"] != context.agent
-                            || record["epoch"].as_u64() != Some(context.epoch)
-                            || record["connectionId"] != context.connection
-                            || record
-                                .pointer("/supervisor/generation")
-                                .and_then(Value::as_u64)
-                                != Some(context.generation)
-                            || record["signature"] != call.signature
-                        {
-                            return Err(CallbackError::Stale);
-                        }
-                        if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
-                            return Ok((saved, Vec::new()));
-                        }
-                        execute_once(tx, &snapshot, &call, &mut record, now, ports)
-                    })?
+                    let context_for_local = context.clone();
+                    let call_for_local = call.clone();
+                    let ports_for_local = Arc::clone(&ports);
+                    store
+                        .transaction_with(move |tx| {
+                            let context = &context_for_local;
+                            let call = &call_for_local;
+                            let snapshot = storage::snapshot(tx, context)?;
+                            snapshot.active()?;
+                            let mut record =
+                                records::get(tx, "runtime_tool_requests", &call.id)?
+                                    .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+                            if record["agent"] != context.agent
+                                || record["epoch"].as_u64() != Some(context.epoch)
+                                || record["connectionId"] != context.connection
+                                || record
+                                    .pointer("/supervisor/generation")
+                                    .and_then(Value::as_u64)
+                                    != Some(context.generation)
+                                || record["signature"] != call.signature
+                            {
+                                return Err(CallbackError::Stale);
+                            }
+                            if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)?
+                            {
+                                return Ok((saved, Vec::new()));
+                            }
+                            execute_once(
+                                tx,
+                                &snapshot,
+                                &call,
+                                &mut record,
+                                now,
+                                ports_for_local.as_ref(),
+                            )
+                        })
+                        .await?
                 }
             }
         }
         DispatchState::Existing(_) => unreachable!("handled above"),
     };
-    let (decision, signals) = store.transaction_with(|tx| {
-        let identity = ReplyIdentity::new(context, &input.id);
-        if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
-            return Ok((decision, Vec::new()));
-        }
-        let record = records::get(tx, "runtime_tool_requests", &call.id)?
-            .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
-        let projected = super::project_tool_result(&result, &call.id, &record["outcome"])?;
-        let reply = Reply::new(identity, ResponseBody::Result(projected))?;
-        Ok::<_, CallbackError>((CallbackDecision::Answer(reply), signals))
-    })?;
+    let context_for_reply = context.clone();
+    let input_for_reply = input.clone();
+    let call_for_reply = call.clone();
+    let result_for_reply = result.clone();
+    let signals_for_reply = signals.clone();
+    let (decision, signals) = store
+        .transaction_with(move |tx| {
+            let context = &context_for_reply;
+            let input = &input_for_reply;
+            let call = &call_for_reply;
+            let result = &result_for_reply;
+            let identity = ReplyIdentity::new(context, &input.id);
+            if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
+                return Ok((decision, Vec::new()));
+            }
+            let record = records::get(tx, "runtime_tool_requests", &call.id)?
+                .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+            let projected = super::project_tool_result(&result, &call.id, &record["outcome"])?;
+            let reply = Reply::new(identity, ResponseBody::Result(projected))?;
+            Ok::<_, CallbackError>((CallbackDecision::Answer(reply), signals_for_reply))
+        })
+        .await?;
     if !signals.is_empty() {
         ports
             .release(&signals)
@@ -427,14 +495,19 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
     // remain authoritative; replay reconstructs the same reply without executing
     // the operation again.
     if let CallbackDecision::Answer(reply) = &decision {
-        store.transaction_with(|tx| {
-            storage::save_reply(tx, input, reply)?;
-            let key = reply.identity.key();
-            let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-            outbox["toolRequest"] = json!(call.id);
-            storage::update(tx, &key, &outbox)?;
-            Ok::<_, CallbackError>(())
-        })?;
+        let input_for_save = input.clone();
+        let reply_for_save = reply.clone();
+        let call_id = call.id.clone();
+        store
+            .transaction_with(move |tx| {
+                storage::save_reply(tx, &input_for_save, &reply_for_save)?;
+                let key = reply_for_save.identity.key();
+                let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
+                outbox["toolRequest"] = json!(call_id);
+                storage::update(tx, &key, &outbox)?;
+                Ok::<_, CallbackError>(())
+            })
+            .await?;
     }
     Ok(decision)
 }
@@ -471,7 +544,7 @@ fn execute_once(
     call: &ToolCall,
     record: &mut Value,
     now: f64,
-    ports: &impl crate::managed_host_tools::Ports,
+    ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
     put(tx, record)?;
     // A refusal rolls back its effects before recording a not-applied receipt.

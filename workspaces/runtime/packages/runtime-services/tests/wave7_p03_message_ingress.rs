@@ -196,29 +196,40 @@ fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitS
         }
     }
 }
-fn send(
+async fn send(
     store: &RuntimeStore,
     step: &Value,
 ) -> Result<coordination::PostMessageResult, coordination::CoordinationError> {
     let room = step.get("room").and_then(Value::as_str).unwrap_or("agent");
     let prepared = PreparedAdmission::load(&store.read().expect("read"), room)?;
-    if let Some(operation) = step.get("startOperation").and_then(Value::as_str) {
+    if let Some(operation) = step
+        .get("startOperation")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
         // A separate writer wins after filesystem preparation, before admission.
-        store.transaction(|tx| {
-            let mut agent =
-                studio_runtime_store::AgentRepository::get(tx, &room.into())?.expect("agent");
-            agent
-                .extra
-                .insert("workspaceOperation".into(), json!(operation));
-            studio_runtime_store::AgentRepository::put(tx, &agent)?;
-            studio_runtime_services::agents_create::publish_agent(
-                tx,
-                &serde_json::to_value(agent)?,
-            )?;
-            Ok(())
-        })?;
+        let room_for_write = room.to_owned();
+        store
+            .transaction(move |tx| {
+                let mut agent =
+                    studio_runtime_store::AgentRepository::get(tx, &room_for_write.into())?
+                        .expect("agent");
+                agent
+                    .extra
+                    .insert("workspaceOperation".into(), json!(operation));
+                studio_runtime_store::AgentRepository::put(tx, &agent)?;
+                studio_runtime_services::agents_create::publish_agent(
+                    tx,
+                    &serde_json::to_value(agent)?,
+                )?;
+                Ok(())
+            })
+            .await?;
     }
-    store.transaction_with_error(|tx| post(tx, step, &prepared))
+    let step = step.clone();
+    store
+        .transaction_with_error(move |tx| post(tx, &step, &prepared))
+        .await
 }
 
 fn post(
@@ -250,32 +261,33 @@ fn post(
     )
 }
 
-fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
+async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
     for case in cases {
         let name = case["name"].as_str().expect("case name");
         let (root, expected) = oracle.seed(name, &case);
         let store = RuntimeStore::open(Some(&root))
+            .await
             .unwrap_or_else(|error| panic!("{name}: Python state opens: {error}"));
         oracle.call(json!({"configure":root,"case":case}));
         let mut results = Vec::new();
         for step in case["steps"].as_array().expect("steps") {
             if let Some(status) = step.get("status") {
+                let status = status.as_str().map(str::to_owned);
+                let error = step.get("error").and_then(Value::as_str).map(str::to_owned);
                 store
-                    .transaction(|tx| {
+                    .transaction(move |tx| {
                         tx.execute(
                             "UPDATE runtime_events SET status=?1,error=?2 WHERE id='message'",
-                            rusqlite::params![
-                                status.as_str(),
-                                step.get("error").and_then(Value::as_str)
-                            ],
+                            rusqlite::params![status, error],
                         )?;
                         Ok(())
                     })
+                    .await
                     .expect("advance event");
             } else {
-                results.push(match send(&store, step) {
+                results.push(match send(&store, step).await {
                     Ok(posted) => posted.receipt,
                     Err(error) => json!({"error":error.to_string()}),
                 });
@@ -289,13 +301,14 @@ fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
             "{name}: complete send results (existing account-name redaction is explicit)"
         );
         let receipts = store
-            .transaction_with_error(|tx| {
+            .transaction_with_error(move |tx| {
                 studio_runtime_services::coordination_reads::delivery_receipts(
                     tx,
                     "agent",
                     &["message".into(), "missing".into(), "message".into()],
                 )
             })
+            .await
             .unwrap_or_else(|error| json!({"error":error.to_string()}));
         assert_eq!(receipts, expected["receipts"], "{name}: complete receipts");
         let actual = oracle.call(json!({"snapshot":root}));
@@ -380,7 +393,7 @@ const WRITE_BOUNDARIES: &[(&str, &str)] = &[
     ("runtime_capacity_retries", "UPDATE"),
 ];
 
-fn arm_statement(
+async fn arm_statement(
     store: &RuntimeStore,
     table: &str,
     operation: &str,
@@ -393,7 +406,10 @@ fn arm_statement(
     };
     let count = Arc::new(AtomicUsize::new(0));
     let counter = count.clone();
-    store.transaction(|tx| {
+    let table = table.to_owned();
+    let operation = operation.to_owned();
+    let point = point.to_owned();
+    store.transaction(move |tx| {
         tx.create_scalar_function("p03_statement", 0, rusqlite::functions::FunctionFlags::SQLITE_UTF8, move |_| {
             let occurrence = counter.fetch_add(1, Ordering::SeqCst) + 1;
             if occurrence == target { std::process::exit(73); }
@@ -401,7 +417,7 @@ fn arm_statement(
         })?;
         tx.execute_batch(&format!("CREATE TEMP TRIGGER p03_statement {point} {operation} ON {table} BEGIN SELECT p03_statement(); END"))?;
         Ok(())
-    }).expect("arm occurrence-specific boundary");
+    }).await.expect("arm occurrence-specific boundary");
     count
 }
 
@@ -424,12 +440,14 @@ fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrenc
     );
 }
 
-#[test]
-fn ingress_crash_child() {
+#[tokio::test]
+async fn ingress_crash_child() {
     let Some(root) = std::env::var_os("P03_CRASH_ROOT") else {
         return;
     };
-    let store = RuntimeStore::open(Some(Path::new(&root))).expect("child store");
+    let store = RuntimeStore::open(Some(Path::new(&root)))
+        .await
+        .expect("child store");
     let table = std::env::var("P03_CRASH_TABLE").expect("table");
     let point = std::env::var("P03_CRASH_POINT").expect("point");
     if table != "handoff" {
@@ -442,19 +460,22 @@ fn ingress_crash_child() {
                 .expect("occurrence")
                 .parse()
                 .expect("number"),
-        );
-        send(&store, &json!({})).expect("send before crash");
+        )
+        .await;
+        send(&store, &json!({})).await.expect("send before crash");
         panic!("statement boundary was not reached");
     }
     let prepared = PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
+    let before_commit = point == "before_commit";
     let posted = store
-        .transaction_with_error(|tx| {
+        .transaction_with_error(move |tx| {
             let posted = post(tx, &json!({}), &prepared)?;
-            if point == "before_commit" {
+            if before_commit {
                 std::process::exit(73);
             }
             Ok::<_, coordination::CoordinationError>(posted)
         })
+        .await
         .expect("commit");
     if point == "after_commit" || point == "before_wake" {
         std::process::exit(73);
@@ -464,7 +485,9 @@ fn ingress_crash_child() {
     let wakes = std::cell::Cell::new(0);
     assert!(posted.event_inserted);
     posted.notify_committed(|| wakes.set(wakes.get() + 1));
-    let replay = send(&store, &json!({})).expect("committed replay before handoff");
+    let replay = send(&store, &json!({}))
+        .await
+        .expect("committed replay before handoff");
     replay.notify_committed(|| wakes.set(wakes.get() + 1));
     assert_eq!(
         wakes.get(),
@@ -474,7 +497,7 @@ fn ingress_crash_child() {
     std::process::exit(73);
 }
 
-fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mut Oracle) {
+async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mut Oracle) {
     use std::sync::atomic::Ordering;
     let capacity = json!({"capacity":{"id":"retry","status":"scheduled","dueAt":100,"updatedAt":1},"steps":[]});
     let mut reached = 0;
@@ -486,18 +509,21 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mu
         }
         for point in ["BEFORE", "AFTER"] {
             let (root, _) = oracle.seed(&format!("count-{table}-{operation}-{point}"), &capacity);
-            let store = RuntimeStore::open(Some(&root)).expect("count store");
+            let store = RuntimeStore::open(Some(&root)).await.expect("count store");
             oracle.call(json!({"configure":root,"case":capacity}));
-            let count = arm_statement(&store, table, operation, point, usize::MAX);
+            let count = arm_statement(&store, table, operation, point, usize::MAX).await;
             let prepared =
                 PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
             let before = snapshot(&store);
-            let result = store.transaction_with_error(|tx| {
-                post(tx, &json!({}), &prepared)?;
-                Err::<(), _>(coordination::CoordinationError::InvalidRequest(
-                    "census rollback",
-                ))
-            });
+            let prepared = prepared.clone();
+            let result = store
+                .transaction_with_error(move |tx| {
+                    post(tx, &json!({}), &prepared)?;
+                    Err::<(), _>(coordination::CoordinationError::InvalidRequest(
+                        "census rollback",
+                    ))
+                })
+                .await;
             assert!(matches!(
                 result,
                 Err(coordination::CoordinationError::InvalidRequest(
@@ -510,7 +536,9 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mu
             drop(store);
             for occurrence in 1..=occurrences {
                 crash_child(&root, table, operation, point, occurrence);
-                let recovered = RuntimeStore::open(Some(&root)).expect("recover abrupt exit");
+                let recovered = RuntimeStore::open(Some(&root))
+                    .await
+                    .expect("recover abrupt exit");
                 assert_eq!(
                     snapshot(&recovered),
                     before,
@@ -519,29 +547,50 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mu
                 drop(recovered);
                 reached += 1;
             }
-            let store = RuntimeStore::open(Some(&root)).expect("retry store");
-            assert!(send(&store, &json!({})).expect("retry").event_inserted);
+            let store = RuntimeStore::open(Some(&root)).await.expect("retry store");
+            assert!(
+                send(&store, &json!({}))
+                    .await
+                    .expect("retry")
+                    .event_inserted
+            );
             let committed = snapshot(&store);
             drop(store);
-            let store = RuntimeStore::open(Some(&root)).expect("lost-response restart");
-            assert!(!send(&store, &json!({})).expect("replay").event_inserted);
+            let store = RuntimeStore::open(Some(&root))
+                .await
+                .expect("lost-response restart");
+            assert!(
+                !send(&store, &json!({}))
+                    .await
+                    .expect("replay")
+                    .event_inserted
+            );
             assert_eq!(snapshot(&store), committed);
         }
     }
     for point in ["before_commit", "after_commit", "before_wake", "after_wake"] {
         let (root, _) = oracle.seed(point, &json!({"steps":[]}));
-        let store = RuntimeStore::open(Some(&root)).expect("before handoff");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("before handoff");
         let before = snapshot(&store);
         drop(store);
         crash_child(&root, "handoff", "", point, 0);
-        let store = RuntimeStore::open(Some(&root)).expect("handoff restart");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("handoff restart");
         if point == "before_commit" {
             assert_eq!(snapshot(&store), before);
         }
-        let response = send(&store, &json!({})).expect("handoff retry");
+        let response = send(&store, &json!({})).await.expect("handoff retry");
         assert_eq!(response.event_inserted, point == "before_commit");
         let committed = snapshot(&store);
-        assert!(!send(&store, &json!({})).expect("replay").event_inserted);
+        assert!(
+            !send(&store, &json!({}))
+                .await
+                .expect("replay")
+                .event_inserted
+        );
         assert_eq!(snapshot(&store), committed);
         let count: i64 = store
             .read()
@@ -559,13 +608,13 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mu
     );
 }
 
-#[test]
-fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
+#[tokio::test]
+async fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
     let mut oracle = Oracle::new();
     let (root, _) = oracle.seed("projection-failure", &json!({"steps":[]}));
-    let store = RuntimeStore::open(Some(&root)).expect("store");
+    let store = RuntimeStore::open(Some(&root)).await.expect("store");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute_batch(
                 "CREATE TRIGGER fail_event_projection BEFORE INSERT ON sync_entities
                  WHEN NEW.collection='event'
@@ -573,17 +622,21 @@ fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
             )?;
             Ok(())
         })
+        .await
         .expect("arm projection failure");
     let before = snapshot(&store);
     let prepared =
         PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare admission");
-    let result = store.transaction_with_error(|tx| {
-        post(
-            tx,
-            &json!({"id":"projection-failure-message","room":"agent","text":"rollback"}),
-            &prepared,
-        )
-    });
+    let prepared = prepared.clone();
+    let result = store
+        .transaction_with_error(move |tx| {
+            post(
+                tx,
+                &json!({"id":"projection-failure-message","room":"agent","text":"rollback"}),
+                &prepared,
+            )
+        })
+        .await;
     assert!(matches!(
         result,
         Err(coordination::CoordinationError::Store(_))
@@ -591,7 +644,7 @@ fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
     assert_eq!(snapshot(&store), before);
 }
 
-fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: &mut Oracle) {
+async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: &mut Oracle) {
     use studio_runtime_services::coordination::CoordinationError;
     use studio_runtime_services::message_admission::MessageAdmission;
     use studio_runtime_store::{AgentRecord, Transaction};
@@ -625,7 +678,7 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: 
         }
     }
     let (root, _) = oracle.seed("gates", &json!({"steps":[]}));
-    let store = RuntimeStore::open(Some(&root)).expect("store");
+    let store = RuntimeStore::open(Some(&root)).await.expect("store");
     for policy in [
         Policy {
             workspace_denied: true,
@@ -637,7 +690,34 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: 
         },
     ] {
         let before = snapshot(&store);
-        let result = store.transaction_with_error(|tx| {
+        let policy = policy;
+        let result = store
+            .transaction_with_error(move |tx| {
+                coordination::post_message_with_admission(
+                    tx,
+                    PostManagedMessage {
+                        room: "agent",
+                        id: "message",
+                        text: "input",
+                        delivery: "queue",
+                        assets: &[],
+                    },
+                    &policy,
+                )
+            })
+            .await;
+        assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
+        assert_eq!(snapshot(&store), before);
+    }
+    let prepared = PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/unprepared/path','$.workspaceOperation','capture') WHERE id='agent'",[])?;
+        Ok(())
+    }).await.expect("change workspace");
+    let before = snapshot(&store);
+    let prepared = prepared.clone();
+    let result = store
+        .transaction_with_error(move |tx| {
             coordination::post_message_with_admission(
                 tx,
                 PostManagedMessage {
@@ -647,31 +727,10 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: 
                     delivery: "queue",
                     assets: &[],
                 },
-                &policy,
+                &prepared,
             )
-        });
-        assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
-        assert_eq!(snapshot(&store), before);
-    }
-    let prepared = PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
-    store.transaction(|tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/unprepared/path','$.workspaceOperation','capture') WHERE id='agent'",[])?;
-        Ok(())
-    }).expect("change workspace");
-    let before = snapshot(&store);
-    let result = store.transaction_with_error(|tx| {
-        coordination::post_message_with_admission(
-            tx,
-            PostManagedMessage {
-                room: "agent",
-                id: "message",
-                text: "input",
-                delivery: "queue",
-                assets: &[],
-            },
-            &prepared,
-        )
-    });
+        })
+        .await;
     assert!(
         matches!(result, Err(CoordinationError::AdmissionDenied(_))),
         "a changed cwd missing from the prepared snapshot must fail closed: {result:?}"
@@ -679,11 +738,11 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: 
     assert_eq!(snapshot(&store), before);
 }
 
-fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
+async fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
     use studio_runtime_services::voice;
     for operation in ["unrelated", "checkpoint", "capture"] {
         let (root, _) = oracle.seed(operation, &json!({"steps":[]}));
-        let store = RuntimeStore::open(Some(&root)).expect("store");
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(&root)).await.expect("store"));
         let record = studio_runtime_store::VoiceRecord {
             sequence: 0,
             id: "spoken".into(),
@@ -696,11 +755,15 @@ fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
             payload: "{}".into(),
             created: 1.0,
         };
+        let record_id = record.id.clone();
         store
-            .transaction(|tx| studio_runtime_store::VoiceRepository::insert_record(tx, &record))
+            .transaction(move |tx| {
+                studio_runtime_store::VoiceRepository::insert_record(tx, &record)
+            })
+            .await
             .expect("transcript");
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let mut other = studio_runtime_store::AgentRepository::get(tx, &"agent".into())?
                     .expect("agent");
                 other.id = "other".into();
@@ -717,9 +780,17 @@ fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
                 }
                 studio_runtime_store::AgentRepository::put(tx, &other)
             })
+            .await
             .expect("active operation");
-        let receipt = voice::submit(&store, "agent", "voice-message", &[record.id], None)
-            .expect("accepted voice delivery");
+        let receipt = voice::submit(
+            std::sync::Arc::clone(&store),
+            "agent",
+            "voice-message",
+            &[record_id],
+            None,
+        )
+        .await
+        .expect("accepted voice delivery");
         assert_eq!(receipt["status"], "queued", "{operation}");
         assert_eq!(
             receipt.get("waitingFor").is_some(),
@@ -728,22 +799,24 @@ fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
     }
 }
 
-fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracle) {
+async fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracle) {
     let (root, _) = oracle.seed("malformed", &json!({"steps":[]}));
-    let store = RuntimeStore::open(Some(&root)).expect("store");
-    send(&store, &json!({})).expect("accepted");
+    let store = RuntimeStore::open(Some(&root)).await.expect("store");
+    send(&store, &json!({})).await.expect("accepted");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "UPDATE runtime_events SET status='corrupt' WHERE id='message'",
                 [],
             )?;
             Ok(())
         })
+        .await
         .expect("corrupt event");
     let before = snapshot(&store);
     assert!(
         send(&store, &json!({}))
+            .await
             .expect_err("invalid status")
             .to_string()
             .contains("runtime_events/message")
@@ -757,10 +830,11 @@ fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracl
         tx.execute("DROP INDEX IF EXISTS runtime_workspace_operation_agent_phase", [])?;
         tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation','{broken')", [])?;
         Ok(())
-    }).expect("corrupt operation");
+    }).await.expect("corrupt operation");
     let before = snapshot(&store);
     assert!(
         send(&store, &json!({}))
+            .await
             .expect_err("invalid operation JSON")
             .to_string()
             .contains("runtime_workspace_operations/operation")
@@ -768,11 +842,11 @@ fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracl
     assert_eq!(snapshot(&store), before);
 }
 
-fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle) {
+async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle) {
     use studio_runtime_store::AgentRepository;
     for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
         let (root, _) = oracle.seed(scenario, &json!({"steps":[]}));
-        let store = RuntimeStore::open(Some(&root)).expect("store");
+        let store = RuntimeStore::open(Some(&root)).await.expect("store");
         let mut other = AgentRepository::get(&store.read().expect("read"), &"agent".into())
             .expect("get")
             .expect("agent");
@@ -788,7 +862,11 @@ fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle)
         other.extra.insert("cwd".into(), json!(path));
         if scenario != "unknown_alias" {
             store
-                .transaction(|tx| AgentRepository::put(tx, &other))
+                .transaction({
+                    let other = other.clone();
+                    move |tx| AgentRepository::put(tx, &other)
+                })
+                .await
                 .expect("idle other");
         }
         let prepared =
@@ -797,10 +875,17 @@ fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle)
             .extra
             .insert("workspaceOperation".into(), json!("capture"));
         store
-            .transaction(|tx| AgentRepository::put(tx, &other))
+            .transaction({
+                let other = other.clone();
+                move |tx| AgentRepository::put(tx, &other)
+            })
+            .await
             .expect("late operation");
         let before = snapshot(&store);
-        let result = store.transaction_with_error(|tx| post(tx, &json!({}), &prepared));
+        let prepared = prepared.clone();
+        let result = store
+            .transaction_with_error(move |tx| post(tx, &json!({}), &prepared))
+            .await;
         if scenario == "unknown_alias" {
             // A new cwd may alias this workspace: raw string inequality cannot
             // establish independence. Python resolves it under its runtime lock;
@@ -828,13 +913,13 @@ fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle)
     }
 }
 
-#[test]
-fn message_ingress_python_oracle_corpus() {
+#[tokio::test]
+async fn message_ingress_python_oracle_corpus() {
     let mut oracle = Oracle::new();
-    corrupt_replay_and_workspace_operation_errors_name_the_row(&mut oracle);
-    injected_policy_denials_and_changed_workspace_snapshot_write_nothing(&mut oracle);
-    late_operation_paths_use_the_prepared_canonical_relation(&mut oracle);
-    python_send_and_receipt_corpus(&mut oracle);
-    voice_delivery_prepares_workspace_admission(&mut oracle);
-    each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(&mut oracle);
+    corrupt_replay_and_workspace_operation_errors_name_the_row(&mut oracle).await;
+    injected_policy_denials_and_changed_workspace_snapshot_write_nothing(&mut oracle).await;
+    late_operation_paths_use_the_prepared_canonical_relation(&mut oracle).await;
+    python_send_and_receipt_corpus(&mut oracle).await;
+    voice_delivery_prepares_workspace_admission(&mut oracle).await;
+    each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(&mut oracle).await;
 }

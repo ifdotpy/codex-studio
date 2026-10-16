@@ -98,16 +98,25 @@ pub(super) struct RejectingPublicationSink {
     pub(super) attempted: Arc<tokio::sync::Notify>,
 }
 impl crate::notification_runtime_effects::NotificationPostCommitSink for RejectingPublicationSink {
-    fn publish(
-        &self,
-        _: &crate::notification_dispatch::NotificationPostCommit,
-    ) -> Result<(), crate::notification_dispatch::NotificationDispatchError> {
-        self.attempted.notify_one();
-        Err(
-            crate::notification_dispatch::NotificationDispatchError::Dependency(
-                "test/publication-held",
-            ),
-        )
+    fn publish<'a>(
+        &'a self,
+        _: &'a crate::notification_dispatch::NotificationPostCommit,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(), crate::notification_dispatch::NotificationDispatchError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.attempted.notify_one();
+            Err(
+                crate::notification_dispatch::NotificationDispatchError::Dependency(
+                    "test/publication-held",
+                ),
+            )
+        })
     }
 }
 impl Faults {
@@ -5004,31 +5013,33 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
         let state = State::new().await;
         let agent = state.agent.clone();
         let epoch = state.epoch;
-        state.bridge.run(move |store| {
+        state.bridge.run(move |store| async move {
             if mutation == "retired" {
-                store.transaction(|tx| {
+                let mutation_agent = agent.clone();
+                store.transaction_with(move |tx| {
                     tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'", [json!({"complaints":[{"complaint_id":"resolved"}]}).to_string()])?;
-                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":agent,"recipient":"lead","status":"open","responses":[],"author":agent,"text":"A response is needed","created":1.0,"version":1}).to_string()])?;
+                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":mutation_agent,"recipient":"lead","status":"open","responses":[],"author":mutation_agent,"text":"A response is needed","created":1.0,"version":1}).to_string()])?;
                     Ok(())
-                })?;
+                }).await?;
             }
-            let intent = store::claim(store, "default", &agent, epoch)?.unwrap();
-            let prepared = preparation::prepare(store,
+            let intent = store::claim(&store, "default", &agent, epoch).await?.unwrap();
+            let prepared = preparation::prepare(Arc::clone(&store),
                 &test_resources()?,
-                &intent, Method::TurnStart, 1)?;
-            store.transaction(|tx| {
+                &intent, Method::TurnStart, 1).await?;
+            let mutation_agent = agent.clone();
+            store.transaction_with(move |tx| {
                 if mutation == "input" {
                     tx.execute("UPDATE runtime_events SET text='changed after preparation' WHERE id='annotation:input'", [])?;
                 } else if mutation == "retired" {
                     tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.status','resolved') WHERE id='resolved'", [])?;
                 } else if mutation == "stopped" {
-                    let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    let mut row = AgentRepository::get(tx, &AgentId::from(mutation_agent.as_str()))?.unwrap();
                     row.status = studio_runtime_store::AgentStatus::Interrupted;
                     row.epoch += 1;
                     row.extra.insert("autoWake".into(), json!(false));
                     AgentRepository::put(tx, &row)?;
                 } else {
-                    let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    let mut row = AgentRepository::get(tx, &AgentId::from(mutation_agent.as_str()))?.unwrap();
                     if mutation == "workspace" {
                         row.extra.insert("workspaceMode".into(), json!("image"));
                     } else {
@@ -5037,7 +5048,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok(())
-            })?;
+            }).await?;
             let operation = format!("account:default:{}:turn/start", intent.attempt_id);
             let request = RecoveredRequest {
                 ticket: studio_runtime_providers::RequestTicket {
@@ -5059,15 +5070,15 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                     guard: Some(&prepared.guard),
                     connection_id: "test-connection",
                 },
-            )?, "{mutation}");
-            scheduler::lifecycle_transaction_with(store, |tx| {
+            ).await?, "{mutation}");
+            scheduler::lifecycle_transaction_with(&store, move |tx| {
                 assert!(store::receipt(tx, &operation, "submitted")?.is_none());
                 let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();
                 assert_ne!(row["startAttempt"]["settingsFixed"], true, "freeze must roll back: {mutation}");
                 let meta = studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, "annotation:input")?;
                 assert!(meta.as_ref().and_then(|v| v.get("contextManifest")).is_none());
                 Ok::<_, WorkerError>(())
-            })
+            }).await
         }).await.unwrap_or_else(|error| panic!("{mutation}: {error}"));
         assert_eq!(
             state.event_status("input").await,

@@ -2,6 +2,7 @@
 use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 static NULL_VALUE: Value = Value::Null;
 
@@ -24,7 +25,7 @@ pub struct InvalidRecoveryRecord {
 /// Built only from persisted JSON. Keep the source intact for compare-and-apply.
 #[derive(Clone)]
 pub struct RecoverySnapshot {
-    agent: Value,
+    agent: Arc<Value>,
 }
 impl RecoverySnapshot {
     pub fn from_record(agent: Value) -> Result<Self, InvalidRecoveryRecord> {
@@ -37,10 +38,12 @@ impl RecoverySnapshot {
                 location: "runtime_agents.recovery".into(),
             });
         }
-        Ok(Self { agent })
+        Ok(Self {
+            agent: Arc::new(agent),
+        })
     }
     pub fn record(&self) -> &Value {
-        &self.agent
+        self.agent.as_ref()
     }
     pub fn start_attempt(&self) -> &Value {
         self.agent

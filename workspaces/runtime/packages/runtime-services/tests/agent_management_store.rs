@@ -67,8 +67,8 @@ fn cases() -> Vec<Value> {
     );
     serde_json::from_slice(&output.stdout).expect("cases")
 }
-fn seed(store: &RuntimeStore, records: Records) {
-    store.transaction(|tx| {
+async fn seed(store: &RuntimeStore, records: Records) {
+    store.transaction(move |tx| {
         for (table, records) in records.tables {
             for row in records {
                 if table == "runtime_events" {
@@ -77,7 +77,7 @@ fn seed(store: &RuntimeStore, records: Records) {
             }
         }
         Ok(())
-    }).expect("Python rows seed");
+    }).await.expect("Python rows seed");
 }
 fn state(store: &RuntimeStore) -> Value {
     let db = store.read().expect("reader");
@@ -106,31 +106,33 @@ impl LifecyclePorts for AcceptLifecycleEffects {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        Ok(())
+    fn committed(&self) -> agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async { Ok(()) })
     }
 }
 
-#[test]
-fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
+#[tokio::test]
+async fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
     let case = cases()
         .into_iter()
         .find(|case| case["name"] == "stop-capacity-retry-unsubmitted")
         .expect("Python retry-stop case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     let result = agent_lifecycle_runtime::execute(
-        &store,
+        std::sync::Arc::clone(&store),
         &action,
         case["now"].as_f64().expect("time"),
-        &AcceptLifecycleEffects,
+        std::sync::Arc::new(AcceptLifecycleEffects),
     )
+    .await
     .expect("stop");
     assert_eq!(result, case["expected"]["result"]);
     assert_eq!(
@@ -139,8 +141,8 @@ fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
     );
 }
 
-#[test]
-fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
+#[tokio::test]
+async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
     let cases = cases();
     let mut count = 0;
     for case_name in ["unassign", "stop-True"] {
@@ -150,11 +152,13 @@ fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
             .expect("witness");
         let base = tempfile::tempdir().expect("base");
         template(base.path());
-        let store = RuntimeStore::open(Some(base.path())).expect("template opens");
+        let store =
+            std::sync::Arc::new(RuntimeStore::open(Some(base.path())).expect("template opens"));
         seed(
             &store,
             serde_json::from_value(case["records"].clone()).expect("rows"),
-        );
+        )
+        .await;
         drop(store);
         let tables = if case_name == "unassign" {
             vec!["runtime_work", "runtime_agents", "sync_entities"]
@@ -173,18 +177,30 @@ fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
                     fs::copy(base.path().join(database), root.path().join(database))
                         .expect("clone prepared template");
                 }
-                let store = RuntimeStore::open(Some(root.path())).expect("open clone");
+                let store =
+                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open clone"));
                 let before = state(&store);
                 let event = if table == "sync_entities" {
                     "INSERT"
                 } else {
                     "UPDATE"
                 };
-                store.transaction(|tx| { tx.execute_batch(&format!("CREATE TRIGGER lifecycle_fail {timing} {event} ON {table} BEGIN SELECT RAISE(ABORT,'lifecycle failpoint'); END"))?; Ok(()) }).expect("failpoint installed");
+                let trigger = format!(
+                    "CREATE TRIGGER lifecycle_fail {timing} {event} ON {table} BEGIN SELECT RAISE(ABORT,'lifecycle failpoint'); END"
+                );
+                store
+                    .transaction(move |tx| {
+                        tx.execute_batch(&trigger)?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("failpoint installed");
                 let action: Action =
                     serde_json::from_value(case["action"].clone()).expect("action");
                 assert!(
-                    execute(&store, &action, 1234567.5).is_err(),
+                    execute(std::sync::Arc::clone(&store), &action, 1234567.5)
+                        .await
+                        .is_err(),
                     "{case_name} {timing} {table}"
                 );
                 assert_eq!(
@@ -193,7 +209,8 @@ fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
                     "rollback {case_name} {timing} {table}"
                 );
                 drop(store);
-                let store = RuntimeStore::open(Some(root.path())).expect("restart");
+                let store =
+                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("restart"));
                 assert_eq!(
                     state(&store),
                     before,
@@ -204,8 +221,11 @@ fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
                         tx.execute_batch("DROP TRIGGER lifecycle_fail")?;
                         Ok(())
                     })
+                    .await
                     .expect("remove failpoint");
-                let result = execute(&store, &action, 1234567.5).expect("recovery applies once");
+                let result = execute(std::sync::Arc::clone(&store), &action, 1234567.5)
+                    .await
+                    .expect("recovery applies once");
                 assert_eq!(result, case["expected"]["result"]);
                 let saved = state(&store);
                 for (table, rows) in case["expected"]["records"]["tables"]
@@ -225,26 +245,31 @@ fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
     assert_eq!(count, 14);
 }
 
-#[test]
-fn committed_archive_response_loss_replays_after_restart_without_duplicate_release() {
+#[tokio::test]
+async fn committed_archive_response_loss_replays_after_restart_without_duplicate_release() {
     let case = cases()
         .into_iter()
         .find(|c| c["name"] == "unassign")
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
-    );
+    )
+    .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-    let first = execute(&store, &action, 1234567.5).expect("archive");
+    let first = execute(std::sync::Arc::clone(&store), &action, 1234567.5)
+        .await
+        .expect("archive");
     assert_eq!(first, case["expected"]["result"]);
     let committed = state(&store);
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
-    let result = execute(&store, &action, 1234568.0).expect("replay");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("restart"));
+    let result = execute(std::sync::Arc::clone(&store), &action, 1234568.0)
+        .await
+        .expect("replay");
     assert_eq!(result["replayed"], true);
     assert_eq!(state(&store), committed);
     assert_eq!(
@@ -256,19 +281,20 @@ fn committed_archive_response_loss_replays_after_restart_without_duplicate_relea
     );
 }
 
-#[test]
-fn deleted_team_broadcast_projection_survives_repeated_delete() {
+#[tokio::test]
+async fn deleted_team_broadcast_projection_survives_repeated_delete() {
     let case = cases()
         .into_iter()
         .find(|c| c["name"] == "delete")
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
-    );
+    )
+    .await;
     store
         .transaction(|tx| {
             tx.execute(
@@ -280,18 +306,23 @@ fn deleted_team_broadcast_projection_survives_repeated_delete() {
             )?;
             Ok(())
         })
+        .await
         .expect("room");
     let action = Action::Delete {
         target: "lead".to_owned(),
     };
-    execute(&store, &action, 100.0).expect("delete");
+    execute(std::sync::Arc::clone(&store), &action, 100.0)
+        .await
+        .expect("delete");
     let room = |store: &RuntimeStore| -> Value {
         let raw:String=store.read().expect("reader").query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id='broadcast' AND deleted=0",[],|r| r.get(0)).expect("retained broadcast");
         serde_json::from_str::<Value>(&raw).expect("payload")["value"].clone()
     };
     let before = room(&store);
     assert_eq!(before["members"], json!(["lead"]));
-    execute(&store, &action, 200.0).expect("repeated deletion");
+    execute(std::sync::Arc::clone(&store), &action, 200.0)
+        .await
+        .expect("repeated deletion");
     assert_eq!(room(&store), before);
 }
 
@@ -321,19 +352,20 @@ fn cancellation_keeps_reserved_uncertain_and_foreign_events() {
     );
 }
 
-#[test]
-fn lifecycle_effect_refusals_preserve_rows_and_projections() {
+#[tokio::test]
+async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
     let case = cases()
         .into_iter()
         .find(|case| case["name"] == "stop-True")
         .expect("Python seed");
     let base = tempfile::tempdir().expect("base");
     template(base.path());
-    let store = RuntimeStore::open(Some(base.path())).expect("template");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(base.path())).expect("template"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
-    );
+    )
+    .await;
     drop(store);
     for delete in [false, true] {
         for effect in [
@@ -348,7 +380,7 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
             for database in ["canvas.sqlite3", "analytics.sqlite3"] {
                 fs::copy(base.path().join(database), root.path().join(database)).expect("clone");
             }
-            let store = RuntimeStore::open(Some(root.path())).expect("open");
+            let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
             let dependency = if let Some(status) = effect.strip_prefix("monitor-") {
                 store
                     .transaction(|tx| {
@@ -361,13 +393,14 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                         )?;
                         Ok(())
                     })
+                    .await
                     .expect("monitor");
                 "monitor-driver/agent-stop"
             } else if let Some(status) = effect.strip_prefix("voice-") {
                 store.transaction(|tx| {
                     tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('live-voice','worker',1,?1)", [status])?;
                     Ok(())
-                }).expect("voice");
+                }).await.expect("voice");
                 "voice-driver/agent-stop"
             } else {
                 "event-driver/child-stop-notification"
@@ -386,7 +419,7 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 }
             };
             let before = state(&store);
-            let result = execute(&store, &action, 1234567.5);
+            let result = execute(std::sync::Arc::clone(&store), &action, 1234567.5).await;
             if delete && effect.starts_with("voice-") {
                 // This fixture has no native thread or connection identity to
                 // cancel. Deletion can remove its stale session row; live
@@ -420,23 +453,23 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
     }
 }
 
-#[test]
-fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
+#[tokio::test]
+async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
     let case = cases()
         .into_iter()
         .find(|case| case["name"] == "stop-ended-voice")
         .expect("Python ended session");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).expect("store"));
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     records.tables.remove("voice_sessions");
-    seed(&store, records);
+    seed(&store, records).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO voice_sessions(id,agent,created,state,ended) VALUES('ended-voice','lead',1,'ended',?1)", [1234557.5])?;
         tx.execute("INSERT INTO voice_approvals(id,agent,speech,transcript,status) VALUES('saved-approval','lead','speech','transcript','accepted')", [])?;
         Ok(())
-    }).expect("saved voice");
+    }).await.expect("saved voice");
     let result = execute(
         &store,
         &Action::Stop {
@@ -448,6 +481,7 @@ fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
         },
         1234567.5,
     )
+    .await
     .expect("history does not need termination");
     assert_eq!(result, case["expected"]["result"]);
     let saved = state(&store);
@@ -464,6 +498,7 @@ fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
         },
         1234568.0,
     )
+    .await
     .expect("ended voice history is removed with the conversation");
     assert_eq!(result["deleted"], json!(["lead", "worker"]));
     let after_delete = state(&store);

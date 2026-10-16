@@ -8,6 +8,7 @@ mod sends_tests;
 mod work;
 use super::*;
 use crate::{event_write, work_policy};
+use futures_util::future::BoxFuture;
 use studio_runtime_store::WorkItemsRepository;
 
 /// Default local bundle for callback callers. Message ingress reuses the
@@ -483,27 +484,33 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
     }
 }
 impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
-    fn dispatch_managed(
-        &self,
-        store: &studio_runtime_store::RuntimeStore,
-        actor: &crate::managed_host_tools::Actor,
-        tool: &str,
-        args: &Value,
-        request_id: &str,
+    fn dispatch_managed<'a>(
+        &'a self,
+        store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+        actor: &'a crate::managed_host_tools::Actor,
+        tool: &'a str,
+        args: &'a Value,
+        request_id: &'a str,
         now: f64,
-    ) -> Result<
-        Option<crate::managed_host_tools::DispatchedOperation>,
-        crate::managed_host_tools::Error,
+    ) -> BoxFuture<
+        'a,
+        Result<
+            Option<crate::managed_host_tools::DispatchedOperation>,
+            crate::managed_host_tools::Error,
+        >,
     > {
-        super::runtime_dispatch::dispatch(super::runtime_dispatch::DispatchRequest {
-            store,
-            actor,
-            context: &self.context,
-            tool,
-            args,
-            request_id,
-            now,
-            ports: &self.runtime_ports,
+        Box::pin(async move {
+            super::runtime_dispatch::dispatch(super::runtime_dispatch::DispatchRequest {
+                store,
+                actor,
+                context: &self.context,
+                tool,
+                args,
+                request_id,
+                now,
+                ports: &self.runtime_ports,
+            })
+            .await
         })
     }
 
@@ -524,30 +531,34 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
     }
 }
 
-pub(super) fn resolve_interrupt_target(
+pub(super) async fn resolve_interrupt_target(
     store: &studio_runtime_store::RuntimeStore,
     context: &CallbackContext,
     supplied: &str,
 ) -> Result<String, crate::managed_host_tools::Error> {
-    store.transaction_with(|tx| {
-        let snapshot = super::super::storage::snapshot(tx, context)
-            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
-        let target =
-            messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
-                CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
-                CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
-                CallbackError::Invalid(message) => {
-                    crate::managed_host_tools::Error::Invalid(message)
-                }
-                _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
-            })?;
-        if !is_descendant(tx, &context.agent, &target)? {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "You can interrupt only your descendants",
-            ));
-        }
-        Ok(target)
-    })
+    let context = context.clone();
+    let supplied = supplied.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let snapshot = super::super::storage::snapshot(tx, &context)
+                .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+            let target =
+                messages::resolve_agent(tx, &snapshot, &supplied).map_err(|error| match error {
+                    CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                    CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                    CallbackError::Invalid(message) => {
+                        crate::managed_host_tools::Error::Invalid(message)
+                    }
+                    _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+                })?;
+            if !is_descendant(tx, &context.agent, &target)? {
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "You can interrupt only your descendants",
+                ));
+            }
+            Ok(target)
+        })
+        .await
 }
 
 impl From<event_write::EventWriteError> for CallbackError {
@@ -598,7 +609,7 @@ pub(super) fn execute(
     args: &Value,
     id: &str,
     now: f64,
-    ports: &impl crate::managed_host_tools::Ports,
+    ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<crate::managed_host_tools::Staged, CallbackError> {
     let actor = snapshot.actor();
     if studio_runtime_store::truthy(actor.get("executionMove"))
@@ -787,6 +798,9 @@ pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> Callback
         E::Work(crate::work_write::WorkWriteError::Store(error)) => CallbackError::Store(error),
         E::Work(crate::work_write::WorkWriteError::NotImplemented(name)) => {
             CallbackError::Dependency(name)
+        }
+        E::Work(crate::work_write::WorkWriteError::PreparationWorker) => {
+            CallbackError::Dependency("work-write/preparation")
         }
     }
 }

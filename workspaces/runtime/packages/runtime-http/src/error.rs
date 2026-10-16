@@ -66,7 +66,11 @@ impl InternalErrorKind {
             | StoreError::InvalidSyncObjectField { .. }
             | StoreError::Json(_)
             | StoreError::SchemaValidation(_) => Self::StoreData,
-            StoreError::Sqlite(_) | StoreError::CommitOutcomeUnknown(_) => Self::StoreDatabase,
+            StoreError::Sqlite(_)
+            | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::CommitActorOutcomeUnknown(_)
+            | StoreError::WriterActorInitialization(_)
+            | StoreError::WriterActorControl(_) => Self::StoreDatabase,
             StoreError::WriterPoisoned | StoreError::NestedRead => Self::StoreConcurrency,
         }
     }

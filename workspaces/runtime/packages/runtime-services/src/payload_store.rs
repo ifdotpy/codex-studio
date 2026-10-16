@@ -58,7 +58,7 @@ pub fn asset_reference_id(reference: &Value) -> Result<&str, PayloadStoreError> 
 /// Store the decoded bytes first, then insert their record in the same writer
 /// transaction. A crash between those steps leaves an unindexed directory;
 /// the next serialized upload removes unindexed directories before writing.
-pub fn upload(
+pub async fn upload(
     store: &RuntimeStore,
     agent_id: &str,
     name: &str,
@@ -107,56 +107,60 @@ pub fn upload(
     let directory = store.root().join("uploads").join(&id);
     let path = directory.join(&name);
     let path_string = path.to_string_lossy().into_owned();
+    let root = store.root().to_path_buf();
+    let agent_id = agent_id.to_owned();
 
-    store.transaction_with(|transaction| {
-        let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
-            .ok_or(PayloadStoreError::UnknownAgent)?;
-        if crate::event_write::truthy(agent.extra.get("deletedAt")) {
-            return Err(PayloadStoreError::DeletedAgent);
-        }
-
-        if let Some(existing) = WorkspaceFilesRepository::asset(transaction, &id)? {
-            let value = existing.value().clone();
-            let existing_id = existing.id().as_ref().to_owned();
-            if !valid_asset_record(&value, &existing_id, store.root()) {
-                return Err(PayloadStoreError::InvalidStoredAsset { id: existing_id });
+    store
+        .transaction_with(move |transaction| {
+            let agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
+                .ok_or(PayloadStoreError::UnknownAgent)?;
+            if crate::event_write::truthy(agent.extra.get("deletedAt")) {
+                return Err(PayloadStoreError::DeletedAgent);
             }
-            let existing_agent = value.get("agent").and_then(Value::as_str);
-            let existing_name = value.get("name").and_then(Value::as_str);
-            let existing_hash = value.get("hash").and_then(Value::as_str);
-            if existing_agent == Some(agent_id)
-                && existing_name == Some(name.as_str())
-                && existing_hash == Some(digest.as_str())
-            {
-                let mut view = value;
-                if let Some(record) = view.as_object_mut() {
-                    record.remove("path");
+
+            if let Some(existing) = WorkspaceFilesRepository::asset(transaction, &id)? {
+                let value = existing.value().clone();
+                let existing_id = existing.id().as_ref().to_owned();
+                if !valid_asset_record(&value, &existing_id, &root) {
+                    return Err(PayloadStoreError::InvalidStoredAsset { id: existing_id });
                 }
-                return Ok(view);
+                let existing_agent = value.get("agent").and_then(Value::as_str);
+                let existing_name = value.get("name").and_then(Value::as_str);
+                let existing_hash = value.get("hash").and_then(Value::as_str);
+                if existing_agent == Some(agent_id.as_str())
+                    && existing_name == Some(name.as_str())
+                    && existing_hash == Some(digest.as_str())
+                {
+                    let mut view = value;
+                    if let Some(record) = view.as_object_mut() {
+                        record.remove("path");
+                    }
+                    return Ok(view);
+                }
+                return Err(PayloadStoreError::UploadConflict);
             }
-            return Err(PayloadStoreError::UploadConflict);
-        }
 
-        remove_unindexed_uploads(store.root(), transaction)?;
-        atomic_write(store.root(), &directory, &path, &bytes)?;
-        let record = json!({
-            "id": id,
-            "agent": agent_id,
-            "name": name,
-            "path": path_string,
-            "mime": mime,
-            "image": image,
-            "size": bytes.len(),
-            "hash": digest,
-            "created": created,
-        });
-        WorkspaceFilesRepository::insert_asset(transaction, &id, &record)?;
-        let mut view = record;
-        if let Some(record) = view.as_object_mut() {
-            record.remove("path");
-        }
-        Ok(view)
-    })
+            remove_unindexed_uploads(&root, transaction)?;
+            atomic_write(&root, &directory, &path, &bytes)?;
+            let record = json!({
+                "id": &id,
+                "agent": &agent_id,
+                "name": &name,
+                "path": &path_string,
+                "mime": &mime,
+                "image": image,
+                "size": bytes.len(),
+                "hash": &digest,
+                "created": created,
+            });
+            WorkspaceFilesRepository::insert_asset(transaction, &id, &record)?;
+            let mut view = record;
+            if let Some(record) = view.as_object_mut() {
+                record.remove("path");
+            }
+            Ok(view)
+        })
+        .await
 }
 
 fn remove_unindexed_uploads(

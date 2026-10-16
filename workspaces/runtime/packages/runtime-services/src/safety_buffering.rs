@@ -1,7 +1,18 @@
 //! Safety-retry decision core and durable retained-session executor.
 
 mod executor;
-pub use executor::{SafetyAction, execute_action};
+pub use executor::SafetyAction;
+
+/// Execute a persisted safety retry through the retained account session.
+pub async fn execute_action(
+    store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+    provider: &dyn crate::account_session_runtime::AccountSessionPort,
+    resources: &std::sync::Arc<crate::account_worker::preparation::PreparationResources>,
+    lifecycle: Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
+    action: SafetyAction<'_>,
+) -> Result<serde_json::Value, SafetyBufferingError> {
+    executor::execute_action(store, provider, resources, lifecycle, action).await
+}
 
 use serde_json::{Map, Value, json};
 use thiserror::Error;

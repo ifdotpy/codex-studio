@@ -6,6 +6,7 @@ use crate::federation_messaging::{
 use crate::remote_transport::{self as transport, RemoteIdentity};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_store::federation_messaging::{
     FederationMessagingRepository as Repo, FederationTable as Table,
 };
@@ -132,8 +133,8 @@ fn consume_nonce(
 }
 
 /// Consumer entry point for the HTTP adapter. Refuses before writing if origin observation is absent.
-pub fn handle(
-    store: &RuntimeStore,
+pub async fn handle(
+    store: Arc<RuntimeStore>,
     request: SignedRequest<'_>,
     origin: OriginObservation,
     now: f64,
@@ -146,43 +147,63 @@ pub fn handle(
     }
     let body: Value = serde_json::from_slice(request.raw).map_err(|_| Error::Invalid("body"))?;
     if matches!(request.action, FederationAction::Pair) {
-        return handle_pair(store, request, observed, &body, now);
+        return handle_pair(Arc::clone(&store), request, observed, &body, now).await;
     }
-    let identity = transport::load_federation_identity(store)?;
-    let result=store.transaction_with(|tx| {
-        let state=snapshot(tx,request.peer_id,"","",now)?;
-        state.authorize(matches!(request.action,FederationAction::Status))?;
+    let store_for_identity = Arc::clone(&store);
+    let identity = tokio::task::spawn_blocking(move || {
+        transport::load_federation_identity(&store_for_identity)
+    })
+    .await
+    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
+    let identity = Arc::new(identity);
+    let action = request.action;
+    let peer_id = request.peer_id.to_owned();
+    let nonce = request.nonce.to_owned();
+    let timestamp = request.timestamp;
+    let signature = request.signature.to_owned();
+    let raw = request.raw.to_vec();
+    let observed = observed.clone();
+    let body = body.clone();
+    let identity_for_effect = Arc::clone(&identity);
+    let result=store.transaction_with(move |tx| {
+        let state=snapshot(tx,&peer_id,"","",now)?;
+        state.authorize(matches!(action,FederationAction::Status))?;
         if let (Some(observed),Some(expected))=(&observed,&state.peer.whois_user)
             && observed.to_lowercase()!=expected.to_lowercase() { return Err(Error::Forbidden("origin identity mismatch")); }
-        transport::validate_federation_nonce(request.nonce,request.timestamp,now as i64)?;
-        transport::verify_signature(&state.peer.public_key,&transport::federation_signing_bytes("POST",request.action.path(),request.timestamp,request.nonce,request.raw),request.signature)?;
-        match request.action {
+        transport::validate_federation_nonce(&nonce,timestamp,now as i64)?;
+        transport::verify_signature(&state.peer.public_key,&transport::federation_signing_bytes("POST",action.path(),timestamp,&nonce,&raw),&signature)?;
+        match action {
             FederationAction::Pair => return Err(Error::Invalid("action")),
             FederationAction::Message=>core::validate("MessageRequest",&body,"body")?,
             FederationAction::Pull=>core::validate("PullRequest",&body,"body")?,
             FederationAction::Status=>core::validate("StatusRequest",&body,"body")?,
         }
-        consume_nonce(tx,request.peer_id,request.nonce,request.timestamp,now as i64)?;
-        check_identity(tx,&identity)?;
-        match request.action {
+        consume_nonce(tx,&peer_id,&nonce,timestamp,now as i64)?;
+        check_identity(tx,identity_for_effect.as_ref())?;
+        match action {
             FederationAction::Pair => Err(Error::Invalid("action")),
-            FederationAction::Message=>receive_locked(tx,request.peer_id,&body["envelope"],now),
-            FederationAction::Pull=>pull_locked(tx,request.peer_id,&body,&identity,now),
+            FederationAction::Message=>receive_locked(tx,&peer_id,&body["envelope"],now),
+            FederationAction::Pull=>pull_locked(tx,&peer_id,&body,&identity_for_effect,now),
             FederationAction::Status=>Ok(json!({"protocol":PROTOCOL,"approved":state.peer.allowed(),"revoked":state.peer.revoked()})),
         }
-    })?;
+    }).await?;
     signed_response(&identity, result, now as i64)
 }
 
-fn handle_pair(
-    store: &RuntimeStore,
+async fn handle_pair(
+    store: Arc<RuntimeStore>,
     request: SignedRequest<'_>,
     observed: Option<String>,
     body: &Value,
     now: f64,
 ) -> Result<Value> {
     core::validate("PairRequest", body, "body")?;
-    let identity = transport::load_federation_identity(store)?;
+    let store_for_identity = Arc::clone(&store);
+    let identity = tokio::task::spawn_blocking(move || {
+        transport::load_federation_identity(&store_for_identity)
+    })
+    .await
+    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
     let invite_id = body["inviteId"]
         .as_str()
         .ok_or(Error::Invalid("inviteId"))?;
@@ -226,13 +247,26 @@ fn handle_pair(
     } else {
         "missing"
     };
-    let result = store.transaction_with(|tx| {
+    let local_identity_id = identity.id().to_owned();
+    let response_identity_id = local_identity_id.clone();
+    let state_id = state_id.to_owned();
+    let invite_id = invite_id.to_owned();
+    let token = token.to_owned();
+    let label = label.to_owned();
+    let public_key = public_key.to_owned();
+    let origin = origin.to_owned();
+    let nonce = request.nonce.to_owned();
+    let timestamp = request.timestamp;
+    let observed = observed.clone();
+    let body = body.clone();
+    let whois_status = whois_status.to_owned();
+    let result = store.transaction_with(move |tx| {
         let current_identity = tx.query_row(
             "SELECT json_extract(record,'$.stateId') FROM runtime_federation_identity WHERE id='local'",
             [],
             |row| row.get::<_, String>(0),
         ).map_err(StoreError::from)?;
-        if current_identity != identity.id() {
+        if current_identity != local_identity_id {
             return Err(Error::Conflict("local identity changed"));
         }
         let enabled: bool = tx.query_row(
@@ -245,9 +279,9 @@ fn handle_pair(
         }
         if !RemoteTransportRepository::consume_federation_nonce(
             tx,
-            state_id,
-            request.nonce,
-            request.timestamp,
+            &state_id,
+            &nonce,
+            timestamp,
             now as i64,
         )? {
             return Err(Error::Forbidden("nonce replay or peer rate limit"));
@@ -255,7 +289,7 @@ fn handle_pair(
         let invite: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_federation_invites WHERE id=?1",
-                [invite_id],
+                [&invite_id],
                 |row| row.get(0),
             )
             .optional()
@@ -282,7 +316,7 @@ fn handle_pair(
         let existing: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                [state_id],
+                [&state_id],
                 |row| row.get(0),
             )
             .optional()
@@ -327,9 +361,9 @@ fn handle_pair(
             "accepted": true,
             "remoteApproved": peer["localApproved"] == true,
             "whoisStatus": whois_status,
-            "stateId": identity.id(),
+            "stateId": response_identity_id,
         }))
-    })?;
+    }).await?;
     signed_response(&identity, result, now as i64)
 }
 
@@ -355,8 +389,17 @@ pub fn signed_response(identity: &RemoteIdentity, result: Value, now: i64) -> Re
     Ok(proof)
 }
 
-pub fn receive(store: &RuntimeStore, peer: &str, envelope: &Value, now: f64) -> Result<Value> {
-    store.transaction_with(|tx| receive_locked(tx, peer, envelope, now))
+pub async fn receive(
+    store: &RuntimeStore,
+    peer: &str,
+    envelope: &Value,
+    now: f64,
+) -> Result<Value> {
+    let peer = peer.to_owned();
+    let envelope = envelope.clone();
+    store
+        .transaction_with(move |tx| receive_locked(tx, &peer, &envelope, now))
+        .await
 }
 fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) -> Result<Value> {
     let message = core::checked_envelope(envelope)?;
@@ -439,14 +482,24 @@ pub(crate) fn outbound(item: &Value, identity: &RemoteIdentity, now: i64) -> Res
     Ok(envelope)
 }
 
-pub fn pull(store: &RuntimeStore, peer: &str, body: &Value, now: f64) -> Result<Value> {
+pub async fn pull(store: Arc<RuntimeStore>, peer: &str, body: &Value, now: f64) -> Result<Value> {
     core::validate("PullRequest", body, "body")?;
-    let identity = transport::load_federation_identity(store)?;
-    store.transaction_with(|tx| {
-        snapshot(tx, peer, "", "", now)?.authorize(false)?;
-        check_identity(tx, &identity)?;
-        pull_locked(tx, peer, body, &identity, now)
+    let store_for_identity = Arc::clone(&store);
+    let identity = tokio::task::spawn_blocking(move || {
+        transport::load_federation_identity(&store_for_identity)
     })
+    .await
+    .map_err(|_| Error::Unavailable("federation/local-identity"))??;
+    let peer = peer.to_owned();
+    let body = body.clone();
+    let identity = Arc::new(identity);
+    store
+        .transaction_with(move |tx| {
+            snapshot(tx, &peer, "", "", now)?.authorize(false)?;
+            check_identity(tx, &identity)?;
+            pull_locked(tx, &peer, &body, &identity, now)
+        })
+        .await
 }
 fn pull_locked(
     tx: &Transaction<'_>,
@@ -546,7 +599,7 @@ pub(crate) fn acknowledge_outbox(
 }
 
 /// A signed pull response is applied atomically; incoming envelopes each retain their own proof.
-pub(crate) fn reconcile(
+pub(crate) async fn reconcile(
     store: &RuntimeStore,
     peer: &str,
     expected_key: &str,
@@ -562,38 +615,43 @@ pub(crate) fn reconcile(
             return Err(Error::Invalid("pull.batch"));
         }
     }
-    store.transaction_with(|tx| {
-        let state = snapshot(tx, peer, "", "", now)?;
-        state.authorize(false)?;
-        if state.peer.public_key != expected_key {
-            return Err(Error::Conflict("peer key changed"));
-        }
-        for ack in response["acks"]
-            .as_array()
-            .ok_or(Error::Invalid("pull.acks"))?
-        {
-            acknowledge_outbox(tx, peer, ack, now, true)?;
-        }
-        for ack in response["acknowledged"]
-            .as_array()
-            .ok_or(Error::Invalid("pull.acknowledged"))?
-        {
-            let id = ack["id"].as_str().ok_or(Error::Invalid("ack.id"))?;
-            if let Some(mut item) = Repo::record(tx, Table::Inbox, id, peer)?
-                && item["hash"] == ack["hash"]
-            {
-                item["ack"] = json!("confirmed");
-                Repo::put(tx, Table::Inbox, id, peer, &item)?;
+    let peer = peer.to_owned();
+    let expected_key = expected_key.to_owned();
+    let response = response.clone();
+    store
+        .transaction_with(move |tx| {
+            let state = snapshot(tx, &peer, "", "", now)?;
+            state.authorize(false)?;
+            if state.peer.public_key != expected_key {
+                return Err(Error::Conflict("peer key changed"));
             }
-        }
-        for envelope in response["messages"]
-            .as_array()
-            .ok_or(Error::Invalid("pull.messages"))?
-        {
-            receive_locked(tx, peer, envelope, now)?;
-        }
-        Ok(())
-    })
+            for ack in response["acks"]
+                .as_array()
+                .ok_or(Error::Invalid("pull.acks"))?
+            {
+                acknowledge_outbox(tx, &peer, ack, now, true)?;
+            }
+            for ack in response["acknowledged"]
+                .as_array()
+                .ok_or(Error::Invalid("pull.acknowledged"))?
+            {
+                let id = ack["id"].as_str().ok_or(Error::Invalid("ack.id"))?;
+                if let Some(mut item) = Repo::record(tx, Table::Inbox, id, &peer)?
+                    && item["hash"] == ack["hash"]
+                {
+                    item["ack"] = json!("confirmed");
+                    Repo::put(tx, Table::Inbox, id, &peer, &item)?;
+                }
+            }
+            for envelope in response["messages"]
+                .as_array()
+                .ok_or(Error::Invalid("pull.messages"))?
+            {
+                receive_locked(tx, &peer, envelope, now)?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 #[cfg(test)]

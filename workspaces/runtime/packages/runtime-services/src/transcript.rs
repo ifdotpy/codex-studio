@@ -3,6 +3,7 @@
 use crate::event_write::truthy;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_store::{
     AgentId, AgentRecord, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId,
     TranscriptItem, TranscriptRepository, TranscriptStoreError, WorkItemRecord,
@@ -106,74 +107,105 @@ impl From<rusqlite::Error> for TranscriptError {
     }
 }
 
-pub fn pull_scope(
-    store: &RuntimeStore,
+pub async fn pull_scope(
+    store: Arc<RuntimeStore>,
     scope: &str,
     agent: &str,
     after: i64,
 ) -> Result<Value, TranscriptError> {
+    let scope = scope.to_owned();
+    let agent = agent.to_owned();
     let now = crate::transcript_runtime::observed_at()?;
     for attempt in 0..=TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES {
-        let mut reader = store.read()?;
-        let snapshot = reader.transaction()?;
-        let actor = TranscriptRepository::agent(&snapshot, agent)?;
-        let deleted = actor
-            .as_ref()
-            .is_none_or(|value| truthy(value.get("deletedAt")));
-        let deleted_revision = if deleted {
-            snapshot
-                .query_row(
-                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                    [agent],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        drop(snapshot);
-        drop(reader);
-        let (expected_revision, fresh_payload) = if deleted {
-            (deleted_revision, None)
-        } else {
-            let snapshot = crate::transcript_runtime::page_at_snapshot(
-                store,
-                agent,
-                &crate::transcript_runtime::PageRequest::default(),
-                now,
-            );
-            let (payload, revision) = match snapshot {
-                Ok(snapshot) => snapshot,
-                Err(TranscriptError::DeletedConversation)
-                    if attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES =>
-                {
-                    continue;
+        let read_store = Arc::clone(&store);
+        let read_agent = agent.clone();
+        let read_attempt = attempt;
+        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/transcript_scope",
+            move || {
+                let mut reader = read_store.read()?;
+                let snapshot = reader.transaction()?;
+                let actor = TranscriptRepository::agent(&snapshot, &read_agent)?;
+                let deleted = actor
+                    .as_ref()
+                    .is_none_or(|value| truthy(value.get("deletedAt")));
+                let deleted_revision = if deleted {
+                    snapshot
+                        .query_row(
+                            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                            [&read_agent],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                drop(snapshot);
+                drop(reader);
+                if deleted {
+                    return Ok::<_, TranscriptError>(Some((deleted_revision, None)));
                 }
-                Err(error) => return Err(error),
-            };
-            (revision, Some(payload))
+                let snapshot = crate::transcript_runtime::page_at_snapshot(
+                    &read_store,
+                    &read_agent,
+                    &crate::transcript_runtime::PageRequest::default(),
+                    now,
+                );
+                match snapshot {
+                    Ok((payload, revision)) => Ok(Some((revision, Some(payload)))),
+                    Err(TranscriptError::DeletedConversation)
+                        if read_attempt < TRANSCRIPT_SCOPE_SNAPSHOT_RETRIES =>
+                    {
+                        Ok(None)
+                    }
+                    Err(error) => Err(error),
+                }
+            },
+        )
+        .await
+        .map_err(|_| TranscriptError::Store)??;
+        let Some((expected_revision, fresh_payload)) = prepared else {
+            continue;
         };
-        let result = match store.read_transaction_with_error(|transaction| {
-            pull_scope_in(
-                transaction,
-                scope,
-                agent,
-                after,
-                expected_revision,
-                fresh_payload.as_ref(),
-            )
-        }) {
-            Err(TranscriptError::ReadOnlyRepair) => store.transaction_with(|transaction| {
-                pull_scope_in(
-                    transaction,
-                    scope,
-                    agent,
-                    after,
-                    expected_revision,
-                    fresh_payload.as_ref(),
-                )
-            }),
+        let read_store = Arc::clone(&store);
+        let read_scope = scope.clone();
+        let read_agent = agent.clone();
+        let (result, fresh_payload) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/transcript_scope",
+            move || {
+                let result = read_store.read_transaction_with_error(|transaction| {
+                    pull_scope_in(
+                        transaction,
+                        &read_scope,
+                        &read_agent,
+                        after,
+                        expected_revision,
+                        fresh_payload.as_ref(),
+                    )
+                });
+                Ok::<_, TranscriptError>((result, fresh_payload))
+            },
+        )
+        .await
+        .map_err(|_| TranscriptError::Store)??;
+        let result = match result {
+            Err(TranscriptError::ReadOnlyRepair) => {
+                let transaction_scope = scope.clone();
+                let transaction_agent = agent.clone();
+                store
+                    .transaction_with(move |transaction| {
+                        pull_scope_in(
+                            transaction,
+                            &transaction_scope,
+                            &transaction_agent,
+                            after,
+                            expected_revision,
+                            fresh_payload.as_ref(),
+                        )
+                    })
+                    .await
+            }
             result => result,
         };
         if matches!(&result, Err(TranscriptError::SnapshotChanged))

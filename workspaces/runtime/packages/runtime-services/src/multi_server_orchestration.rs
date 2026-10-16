@@ -1,6 +1,7 @@
 //! Durable owner-paired envelopes. A transaction claims each exact request
 //! before transport or execution. Stable-identity peer deliveries may replay
 //! after an unknown reply; provider commands remain one-shot.
+use futures_util::future::BoxFuture;
 use std::sync::Arc;
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -86,12 +87,12 @@ impl ExchangeOutcome {
 /// response verified against that server's saved credential. It must complete
 /// within the supplied deadline; a lost response returns Unknown, never retries.
 pub trait PairedTransport: Send + Sync {
-    fn exchange(
-        &self,
-        server: &str,
-        envelope: &Value,
+    fn exchange<'a>(
+        &'a self,
+        server: &'a str,
+        envelope: &'a Value,
         timeout: std::time::Duration,
-    ) -> Result<Value, AccessError>;
+    ) -> BoxFuture<'a, Result<Value, AccessError>>;
 }
 
 /// Production adapter for existing paired-server credential rows. The shared
@@ -143,114 +144,151 @@ impl HttpsPairedTransport {
 }
 
 impl PairedTransport for HttpsPairedTransport {
-    fn exchange(
-        &self,
-        server: &str,
-        envelope: &Value,
+    fn exchange<'a>(
+        &'a self,
+        server: &'a str,
+        envelope: &'a Value,
         timeout: std::time::Duration,
-    ) -> Result<Value, AccessError> {
-        // The helper returns owned fields, so its pooled reader is dropped before
-        // identity loading, signing, or the potentially 20-second network exchange.
-        let (origin, public_key) = Self::paired_server_identity(&self.store, server)?;
-        let identity = load_multi_server_identity(self.store.root()).map_err(|_| {
-            refused(
-                503,
-                "identity_unavailable",
-                "The local server identity is unavailable",
+    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        Box::pin(async move {
+            let store = Arc::clone(&self.store);
+            let server = server.to_owned();
+            let envelope = envelope.clone();
+            let store_for_identity = Arc::clone(&store);
+            let server_for_lookup = server.clone();
+            let (origin, public_key) = tokio::task::spawn_blocking(move || {
+                Self::paired_server_identity(&store_for_identity, &server_for_lookup)
+            })
+            .await
+            .map_err(|_| refused(503, "client_revoked", "The server is not paired"))??;
+            let root = store.root().to_path_buf();
+            let identity = tokio::task::spawn_blocking(move || load_multi_server_identity(&root))
+                .await
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "identity_unavailable",
+                        "The local server identity is unavailable",
+                    )
+                })?
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "identity_unavailable",
+                        "The local server identity is unavailable",
+                    )
+                })?;
+            let request_id = text(&envelope, "requestId").to_owned();
+            let url = format!("{}/api/servers/orchestration", origin.trim_end_matches('/'));
+            let body = canonical_json(&envelope)
+                .map_err(|_| refused(400, "invalid_request", "Invalid cross-server request"))?
+                .into_bytes();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+                .as_secs() as i64;
+            let nonce = new_nonce()
+                .map_err(|_| refused(503, "nonce_unavailable", "A request nonce is unavailable"))?;
+            let headers = multi_server_signed_headers(
+                &identity,
+                &MultiServerRequest {
+                    server_id: &server,
+                    method: "POST",
+                    url: &url,
+                    request_id: &request_id,
+                    timestamp: now,
+                    nonce: &nonce,
+                    body: &body,
+                },
+                now,
             )
-        })?;
-        let request_id = text(envelope, "requestId");
-        let url = format!("{}/api/servers/orchestration", origin.trim_end_matches('/'));
-        let body = canonical_json(envelope)
-            .map_err(|_| refused(400, "invalid_request", "Invalid cross-server request"))?
-            .into_bytes();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
-            .as_secs() as i64;
-        let nonce = new_nonce()
-            .map_err(|_| refused(503, "nonce_unavailable", "A request nonce is unavailable"))?;
-        let headers = multi_server_signed_headers(
-            &identity,
-            &MultiServerRequest {
-                server_id: server,
-                method: "POST",
-                url: &url,
-                request_id,
-                timestamp: now,
-                nonce: &nonce,
-                body: &body,
-            },
-            now,
-        )
-        .map_err(|_| {
-            refused(
-                503,
-                "signing_unavailable",
-                "The paired request could not be signed",
-            )
-        })?;
-        let mut headers = headers
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
-        headers.push(("Accept-Encoding", "identity"));
-        if !body.is_empty() {
-            headers.push(("Content-Type", "application/json"));
-        }
-        let response = exchange_paired_request(
-            &self.store,
-            PairedRequest {
-                server_id: server,
-                public_key: &public_key,
-                method: "POST",
-                url: &url,
-                headers: &headers,
-                body: &body,
-                timeout,
-                response_limit: MAX_RESPONSE_BYTES,
-            },
-        )
-        .map_err(|_| {
-            refused(
-                503,
-                "exchange_unknown",
-                "The paired delivery outcome is unknown",
-            )
-        })?;
-        if !(200..300).contains(&response.status) {
-            return Err(refused(
-                response.status,
-                "peer_rejected",
-                "The paired server refused the request",
-            ));
-        }
-        let value =
-            verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
+            .map_err(|_| {
                 refused(
                     503,
-                    "invalid_receipt",
-                    "The paired server returned an invalid receipt",
+                    "signing_unavailable",
+                    "The paired request could not be signed",
                 )
             })?;
-        let advert = response
-            .headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
-            .map(|(_, value)| value.as_str());
-        learn_paired_request_link(&self.store, server, advert);
-        Ok(value)
+            let mut owned_headers = headers;
+            owned_headers.push(("Accept-Encoding".to_owned(), "identity".to_owned()));
+            if !body.is_empty() {
+                owned_headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+            }
+            let public_key_for_call = public_key.clone();
+            let server_for_call = server.clone();
+            let url_for_call = url.clone();
+            let response = tokio::task::spawn_blocking(move || {
+                let headers = owned_headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect::<Vec<_>>();
+                exchange_paired_request(
+                    &store,
+                    PairedRequest {
+                        server_id: &server_for_call,
+                        public_key: &public_key_for_call,
+                        method: "POST",
+                        url: &url_for_call,
+                        headers: &headers,
+                        body: &body,
+                        timeout,
+                        response_limit: MAX_RESPONSE_BYTES,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "exchange_unknown",
+                    "The paired delivery outcome is unknown",
+                )
+            })?
+            .map_err(|_| {
+                refused(
+                    503,
+                    "exchange_unknown",
+                    "The paired delivery outcome is unknown",
+                )
+            })?;
+            if !(200..300).contains(&response.status) {
+                return Err(refused(
+                    response.status,
+                    "peer_rejected",
+                    "The paired server refused the request",
+                ));
+            }
+            let value = verify_multi_server_response(&response.body, &server, &public_key)
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "invalid_receipt",
+                        "The paired server returned an invalid receipt",
+                    )
+                })?;
+            let advert = response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+                .map(|(_, value)| value.as_str());
+            learn_paired_request_link(&self.store, &server, advert);
+            Ok(value)
+        })
     }
 }
 /// Missing effects are refused before claiming a receipt. Implementations must
 /// derive actor permissions from the authenticated principal, not the payload.
 pub trait OrchestrationEffects: Send + Sync {
     fn supports(&self, action: &str) -> bool;
-    fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError>;
+    fn execute<'a>(
+        &'a self,
+        principal: &'a str,
+        envelope: &'a Value,
+    ) -> BoxFuture<'a, Result<ExchangeOutcome, AccessError>>;
 }
 
 pub trait BrowserCallbackEffect: Send + Sync {
-    fn receive(&self, envelope: &Value) -> Result<Value, AccessError>;
+    fn receive<'a>(&'a self, envelope: &'a Value) -> BoxFuture<'a, Result<Value, AccessError>>;
 }
 
 /// Idempotent receiver effects shared by the signed HTTP route and tests.
@@ -338,7 +376,7 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
-    fn stop_worker(
+    async fn stop_worker(
         &self,
         principal: &str,
         envelope: &Value,
@@ -382,25 +420,31 @@ impl RuntimeOrchestrationEffects {
             control_epoch,
             reason,
         };
-        crate::agent_lifecycle_runtime::execute(&self.store, &action, now, ports.as_ref())
-            .map(ExchangeOutcome::Applied)
-            .map_err(|error| match error {
-                crate::agent_management::ManagementError::Unavailable(name) => {
-                    refused(501, "orchestration_dependency", name)
-                }
-                crate::agent_management::ManagementError::Invalid(message) => {
-                    refused(409, "stop_refused", message)
-                }
-                crate::agent_management::ManagementError::Stored { .. }
-                | crate::agent_management::ManagementError::Store(_) => refused(
-                    503,
-                    "stop_unavailable",
-                    "The remote stop could not be committed",
-                ),
-            })
+        crate::agent_lifecycle_runtime::execute(
+            Arc::clone(&self.store),
+            &action,
+            now,
+            Arc::clone(ports),
+        )
+        .await
+        .map(ExchangeOutcome::Applied)
+        .map_err(|error| match error {
+            crate::agent_management::ManagementError::Unavailable(name) => {
+                refused(501, "orchestration_dependency", name)
+            }
+            crate::agent_management::ManagementError::Invalid(message) => {
+                refused(409, "stop_refused", message)
+            }
+            crate::agent_management::ManagementError::Stored { .. }
+            | crate::agent_management::ManagementError::Store(_) => refused(
+                503,
+                "stop_unavailable",
+                "The remote stop could not be committed",
+            ),
+        })
     }
 
-    fn project_location(
+    async fn project_location(
         &self,
         principal: &str,
         envelope: &Value,
@@ -419,11 +463,12 @@ impl RuntimeOrchestrationEffects {
                 return Err(refused(400, "invalid_request", "Invalid project location"));
             }
             let registered = crate::projects::write(
-                &self.store,
-                &json!({"action":"register","path":path,"name":name}),
-                &self.default_account,
-                &self.known_accounts,
+                Arc::clone(&self.store),
+                json!({"action":"register","path":path,"name":name}),
+                self.default_account.clone(),
+                self.known_accounts.clone(),
             )
+            .await
             .map_err(|_| {
                 refused(
                     400,
@@ -440,20 +485,47 @@ impl RuntimeOrchestrationEffects {
                     "The project folder is unavailable",
                 ));
             }
-            let local_server = self.store.local_server_id()?.ok_or_else(|| {
+            let store_for_identity = Arc::clone(&self.store);
+            let local_server =
+                tokio::task::spawn_blocking(move || store_for_identity.local_server_id())
+                    .await
+                    .map_err(|_| {
+                        refused(
+                            503,
+                            "identity_unavailable",
+                            "The server identity is unavailable",
+                        )
+                    })??
+                    .ok_or_else(|| {
+                        refused(
+                            503,
+                            "identity_unavailable",
+                            "The server identity is unavailable",
+                        )
+                    })?;
+            let canonical_path_for_info = canonical_path.to_owned();
+            let git_origin = tokio::task::spawn_blocking(move || {
+                crate::projects::peer_location_info(&canonical_path_for_info)
+            })
+            .await
+            .map_err(|_| {
                 refused(
-                    503,
-                    "identity_unavailable",
-                    "The server identity is unavailable",
+                    400,
+                    "location_unavailable",
+                    "The project folder is unavailable",
                 )
-            })?;
-            let git_origin = crate::projects::peer_location_info(canonical_path)
-                .ok()
-                .and_then(|value| value.get("gitOrigin").cloned())
-                .unwrap_or(Value::Null);
-            self.store.transaction_with(|tx| {
+            })?
+            .ok()
+            .and_then(|value| value.get("gitOrigin").cloned())
+            .unwrap_or(Value::Null);
+            let project_id_for_write = project_id.to_owned();
+            let principal_for_write = principal.to_owned();
+            let home_project_for_write = home_project.to_owned();
+            let name_for_write = name.to_owned();
+            let local_server_for_write = local_server.clone();
+            self.store.transaction_with(move |tx| {
                 let (_, mut project) = studio_runtime_store::ProjectsRepository::get(
-                    tx, project_id,
+                    tx, &project_id_for_write,
                 )?
                 .ok_or_else(|| refused(503, "project_unavailable", "The project is unavailable"))?;
                 let aliases = project
@@ -464,18 +536,18 @@ impl RuntimeOrchestrationEffects {
                 let mut aliases = aliases
                     .into_iter()
                     .filter(|alias| {
-                        alias.get("serverId").and_then(Value::as_str) != Some(principal)
-                            || alias.get("projectId").and_then(Value::as_str) != Some(home_project)
+                        alias.get("serverId").and_then(Value::as_str) != Some(principal_for_write.as_str())
+                            || alias.get("projectId").and_then(Value::as_str) != Some(home_project_for_write.as_str())
                     })
                     .collect::<Vec<_>>();
-                if principal != local_server || home_project != project_id {
+                if principal_for_write != local_server_for_write || home_project_for_write != project_id_for_write {
                     aliases
-                        .push(json!({"serverId":principal,"projectId":home_project,"name":name}));
+                        .push(json!({"serverId":principal_for_write,"projectId":home_project_for_write,"name":name_for_write}));
                 }
                 project["projectAliases"] = Value::Array(aliases);
                 studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
                 Ok::<_, AccessError>(())
-            })?;
+            }).await?;
             return Ok(ExchangeOutcome::Applied(json!({
                 "serverId":local_server,"path":path,"canonicalPath":canonical_path,
                 "projectId":project_id,"gitOrigin":git_origin,
@@ -485,35 +557,52 @@ impl RuntimeOrchestrationEffects {
         let location = &payload["location"];
         let project_id = text(location, "projectId");
         if !project_id.is_empty() {
-            self.store.transaction_with(|tx| {
-                if let Some((_, mut project)) =
-                    studio_runtime_store::ProjectsRepository::get(tx, project_id)?
-                {
-                    let aliases = project
-                        .get("projectAliases")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|alias| {
-                            alias.get("serverId").and_then(Value::as_str) != Some(principal)
-                                || alias.get("projectId").and_then(Value::as_str)
-                                    != Some(home_project)
-                        })
-                        .collect::<Vec<_>>();
-                    project["projectAliases"] = Value::Array(aliases);
-                    studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
-                }
-                Ok::<_, AccessError>(())
-            })?;
+            let project_id_for_write = project_id.to_owned();
+            let principal_for_write = principal.to_owned();
+            let home_project_for_write = home_project.to_owned();
+            self.store
+                .transaction_with(move |tx| {
+                    if let Some((_, mut project)) =
+                        studio_runtime_store::ProjectsRepository::get(tx, &project_id_for_write)?
+                    {
+                        let aliases = project
+                            .get("projectAliases")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|alias| {
+                                alias.get("serverId").and_then(Value::as_str)
+                                    != Some(principal_for_write.as_str())
+                                    || alias.get("projectId").and_then(Value::as_str)
+                                        != Some(home_project_for_write.as_str())
+                            })
+                            .collect::<Vec<_>>();
+                        project["projectAliases"] = Value::Array(aliases);
+                        studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                    }
+                    Ok::<_, AccessError>(())
+                })
+                .await?;
         }
-        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        let store_for_identity = Arc::clone(&self.store);
+        let local_server =
+            tokio::task::spawn_blocking(move || store_for_identity.local_server_id())
+                .await
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "identity_unavailable",
+                        "The server identity is unavailable",
+                    )
+                })??
+                .unwrap_or_default();
         Ok(ExchangeOutcome::Applied(
             json!({"removed":true,"serverId":local_server}),
         ))
     }
 
-    fn worker_call(
+    async fn worker_call(
         &self,
         principal: &str,
         envelope: &Value,
@@ -542,165 +631,190 @@ impl RuntimeOrchestrationEffects {
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
-            let connection = self.store.read()?;
+            let store = Arc::clone(&self.store);
+            let target_id = target_id.to_owned();
             Some(
-                crate::message_admission::MessageIngressAdmission::load(
-                    &self.store,
-                    &connection,
-                    target_id,
-                )
-                .map_err(|_| refused(503, "send_admission", "The message could not be admitted"))?,
+                tokio::task::spawn_blocking(move || {
+                    let connection = store.read()?;
+                    crate::message_admission::MessageIngressAdmission::load(
+                        Arc::clone(&store),
+                        &connection,
+                        &target_id,
+                    )
+                    .map_err(|_| {
+                        refused(503, "send_admission", "The message could not be admitted")
+                    })
+                })
+                .await
+                .map_err(|_| {
+                    refused(503, "send_admission", "The message could not be admitted")
+                })??,
             )
         } else {
             None
         };
-        self.store.transaction_with(|tx| {
-            let link_raw: Option<String> = tx
-                .query_row(
-                    "SELECT record FROM runtime_server_links WHERE id=?1",
-                    [link_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let link: Value = serde_json::from_str(link_raw.as_deref().ok_or_else(|| {
-                refused(
-                    404,
-                    "link_unavailable",
-                    "The remote-parent link is unavailable",
-                )
-            })?)
-            .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
-            if link["side"] != "home"
-                || link["server"] != principal
-                || link["parentEpoch"].as_i64() != Some(parent_epoch)
-                || !link["workers"].as_array().is_some_and(|workers| {
-                    workers
-                        .iter()
-                        .any(|worker| worker.as_str() == Some(worker_id))
-                })
-            {
-                return Err(refused(
-                    403,
-                    "link_owner",
-                    "The remote-parent link is invalid",
-                ));
-            }
-            let parent_id = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
-                refused(503, "invalid_record", "The remote-parent link is invalid")
-            })?;
-            let parent = studio_runtime_store::AgentRepository::get(
-                tx,
-                &studio_runtime_store::AgentId::from(parent_id),
-            )?
-            .ok_or_else(|| refused(404, "parent_unavailable", "The parent agent is unavailable"))?;
-            if parent.epoch as i64 != parent_epoch
-                || parent.extra.get("autoWake") != Some(&Value::Bool(true))
-                || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
-            {
-                return Err(refused(409, "parent_stopped", "The home team was stopped"));
-            }
-            let worker = studio_runtime_store::AgentRepository::get(
-                tx,
-                &studio_runtime_store::AgentId::from(worker_id),
-            )?
-            .ok_or_else(|| {
-                refused(
-                    404,
-                    "worker_unavailable",
-                    "The remote worker is unavailable",
-                )
-            })?;
-            let expected_remote = json!({"server":principal,"link":link_id});
-            if worker.epoch != epoch
-                || worker.extra.get("remoteWorker") != Some(&expected_remote)
-                || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
-                || worker.extra.get("autoWake") != Some(&Value::Bool(true))
-                || studio_runtime_store::truthy(worker.extra.get("deletedAt"))
-            {
-                return Err(refused(409, "worker_stopped", "The worker was stopped"));
-            }
-            match action {
-                "message" => {
-                    crate::provider_callbacks::tools::services::messages::send_remote_worker(
-                        tx, worker_id, args, key, now,
+        let link_id = link_id.to_owned();
+        let principal = principal.to_owned();
+        let worker_id = worker_id.to_owned();
+        let key = key.to_owned();
+        let action = action.to_owned();
+        let args = args.clone();
+        self.store
+            .transaction_with(move |tx| {
+                let link_raw: Option<String> = tx
+                    .query_row(
+                        "SELECT record FROM runtime_server_links WHERE id=?1",
+                        [&link_id],
+                        |row| row.get(0),
                     )
-                    .map(ExchangeOutcome::Applied)
-                    .map_err(callback_error)
-                }
-                "move_send" => {
-                    let target_id = args
-                        .get("agent_id")
-                        .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty())
-                        .ok_or_else(|| {
-                            refused(400, "invalid_request", "Invalid move-send request")
-                        })?;
-                    let message = args
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .map(crate::event_write::python_strip)
-                        .filter(|text| {
-                            !text.is_empty() && crate::coordination::message_text_within_limit(text)
-                        })
-                        .ok_or_else(|| {
-                            refused(400, "invalid_request", "Invalid move-send request")
-                        })?;
-                    let delivery = args
-                        .get("delivery")
-                        .and_then(Value::as_str)
-                        .unwrap_or("queue");
-                    if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
-                        return Err(refused(
-                            400,
-                            "invalid_request",
-                            "Invalid move-send delivery mode",
-                        ));
-                    }
-                    let target =
-                        crate::event_write::checked_agent(tx, target_id).map_err(|_| {
-                            refused(404, "target_unavailable", "The target agent is unavailable")
-                        })?;
-                    if target.root_id != worker.root_id
-                        || target.id == worker.id
-                        || !is_descendant_of(tx, target_id, worker_id)?
-                        || target.extra.get("autoWake") != Some(&Value::Bool(true))
-                    {
-                        return Err(refused(
-                            403,
-                            "target_forbidden",
-                            "The worker cannot message this agent",
-                        ));
-                    }
-                    crate::coordination::send_followup(
-                        tx,
-                        crate::coordination::AgentFollowup {
-                            sender_id: worker_id,
-                            sender_epoch: epoch,
-                            recipient_id: target_id,
-                            id: key,
-                            text: message,
-                            delivery,
-                            now,
-                        },
-                        move_admission.as_ref().ok_or_else(|| {
-                            refused(503, "send_admission", "The message could not be admitted")
-                        })?,
+                    .optional()?;
+                let link: Value = serde_json::from_str(link_raw.as_deref().ok_or_else(|| {
+                    refused(
+                        404,
+                        "link_unavailable",
+                        "The remote-parent link is unavailable",
                     )
-                    .map(|result| ExchangeOutcome::Applied(result.receipt))
-                    .map_err(|_| refused(403, "send_refused", "The message was refused"))
+                })?)
+                .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
+                if link["side"] != "home"
+                    || link["server"] != principal
+                    || link["parentEpoch"].as_i64() != Some(parent_epoch)
+                    || !link["workers"].as_array().is_some_and(|workers| {
+                        workers
+                            .iter()
+                            .any(|worker| worker.as_str() == Some(worker_id.as_str()))
+                    })
+                {
+                    return Err(refused(
+                        403,
+                        "link_owner",
+                        "The remote-parent link is invalid",
+                    ));
                 }
-                _ => Err(refused(
-                    501,
-                    "orchestration_effect",
-                    "The cross-server action is unavailable",
-                )),
-            }
-        })
+                let parent_id = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                    refused(503, "invalid_record", "The remote-parent link is invalid")
+                })?;
+                let parent = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(parent_id),
+                )?
+                .ok_or_else(|| {
+                    refused(404, "parent_unavailable", "The parent agent is unavailable")
+                })?;
+                if parent.epoch as i64 != parent_epoch
+                    || parent.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
+                {
+                    return Err(refused(409, "parent_stopped", "The home team was stopped"));
+                }
+                let worker = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(worker_id.as_str()),
+                )?
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "worker_unavailable",
+                        "The remote worker is unavailable",
+                    )
+                })?;
+                let expected_remote = json!({"server":principal,"link":link_id});
+                if worker.epoch != epoch
+                    || worker.extra.get("remoteWorker") != Some(&expected_remote)
+                    || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
+                    || worker.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || studio_runtime_store::truthy(worker.extra.get("deletedAt"))
+                {
+                    return Err(refused(409, "worker_stopped", "The worker was stopped"));
+                }
+                match action.as_str() {
+                    "message" => {
+                        crate::provider_callbacks::tools::services::messages::send_remote_worker(
+                            tx, &worker_id, &args, &key, now,
+                        )
+                        .map(ExchangeOutcome::Applied)
+                        .map_err(callback_error)
+                    }
+                    "move_send" => {
+                        let target_id = args
+                            .get("agent_id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| {
+                                refused(400, "invalid_request", "Invalid move-send request")
+                            })?;
+                        let message = args
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(crate::event_write::python_strip)
+                            .filter(|text| {
+                                !text.is_empty()
+                                    && crate::coordination::message_text_within_limit(text)
+                            })
+                            .ok_or_else(|| {
+                                refused(400, "invalid_request", "Invalid move-send request")
+                            })?;
+                        let delivery = args
+                            .get("delivery")
+                            .and_then(Value::as_str)
+                            .unwrap_or("queue");
+                        if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+                            return Err(refused(
+                                400,
+                                "invalid_request",
+                                "Invalid move-send delivery mode",
+                            ));
+                        }
+                        let target =
+                            crate::event_write::checked_agent(tx, target_id).map_err(|_| {
+                                refused(
+                                    404,
+                                    "target_unavailable",
+                                    "The target agent is unavailable",
+                                )
+                            })?;
+                        if target.root_id != worker.root_id
+                            || target.id == worker.id
+                            || !is_descendant_of(tx, target_id, &worker_id)?
+                            || target.extra.get("autoWake") != Some(&Value::Bool(true))
+                        {
+                            return Err(refused(
+                                403,
+                                "target_forbidden",
+                                "The worker cannot message this agent",
+                            ));
+                        }
+                        crate::coordination::send_followup(
+                            tx,
+                            crate::coordination::AgentFollowup {
+                                sender_id: &worker_id,
+                                sender_epoch: epoch,
+                                recipient_id: target_id,
+                                id: &key,
+                                text: message,
+                                delivery,
+                                now,
+                            },
+                            move_admission.as_ref().ok_or_else(|| {
+                                refused(503, "send_admission", "The message could not be admitted")
+                            })?,
+                        )
+                        .map(|result| ExchangeOutcome::Applied(result.receipt))
+                        .map_err(|_| refused(403, "send_refused", "The message was refused"))
+                    }
+                    _ => Err(refused(
+                        501,
+                        "orchestration_effect",
+                        "The cross-server action is unavailable",
+                    )),
+                }
+            })
+            .await
     }
 }
 
-fn receive_remote_anchor_input(
-    store: &RuntimeStore,
+async fn receive_remote_anchor_input(
+    store: Arc<RuntimeStore>,
     principal: &str,
     envelope: &Value,
 ) -> Result<ExchangeOutcome, AccessError> {
@@ -730,60 +844,20 @@ fn receive_remote_anchor_input(
         ));
     }
 
-    let connection = store.read()?;
-    let raw: Option<String> = connection
-        .query_row(
-            "SELECT record FROM runtime_server_links WHERE id=?1",
-            [link_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let link: Value = raw
-        .as_deref()
-        .and_then(|raw| serde_json::from_str(raw).ok())
-        .ok_or_else(|| {
-            refused(
-                404,
-                "link_unavailable",
-                "The remote-parent link is unavailable",
-            )
-        })?;
-    if link.get("side").and_then(Value::as_str) != Some("home")
-        || link.get("server").and_then(Value::as_str) != Some(principal)
-        || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
-    {
-        return Err(refused(
-            403,
-            "link_owner",
-            "The remote-parent link is invalid",
-        ));
-    }
-    let parent_id = link
-        .get("parent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
-    let parent = studio_runtime_store::AgentRepository::get(
-        &connection,
-        &studio_runtime_store::AgentId::from(parent_id),
-    )?
-    .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
-    if parent.epoch != parent_epoch {
-        return Err(refused(409, "parent_changed", "The home agent changed"));
-    }
-    let admission =
-        crate::message_admission::MessageIngressAdmission::load(store, &connection, parent_id)
-            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-    drop(connection);
-
-    let receipt = store.transaction_with(|tx| {
-        let current_link: Option<String> = tx
+    let store_for_read = Arc::clone(&store);
+    let link_id_for_read = link_id.to_owned();
+    let principal_for_read = principal.to_owned();
+    let parent_epoch_for_read = parent_epoch;
+    let (parent_id, admission) = tokio::task::spawn_blocking(move || {
+        let connection = store_for_read.read()?;
+        let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_server_links WHERE id=?1",
-                [link_id],
+                [link_id_for_read],
                 |row| row.get(0),
             )
             .optional()?;
-        let current_link: Value = current_link
+        let link: Value = raw
             .as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok())
             .ok_or_else(|| {
@@ -793,10 +867,9 @@ fn receive_remote_anchor_input(
                     "The remote-parent link is unavailable",
                 )
             })?;
-        if current_link.get("side").and_then(Value::as_str) != Some("home")
-            || current_link.get("server").and_then(Value::as_str) != Some(principal)
-            || current_link.get("parent").and_then(Value::as_str) != Some(parent_id)
-            || current_link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
+        if link.get("side").and_then(Value::as_str) != Some("home")
+            || link.get("server").and_then(Value::as_str) != Some(principal_for_read.as_str())
+            || link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch_for_read)
         {
             return Err(refused(
                 403,
@@ -804,28 +877,87 @@ fn receive_remote_anchor_input(
                 "The remote-parent link is invalid",
             ));
         }
-        let current = studio_runtime_store::AgentRepository::get(
-            tx,
+        let parent_id = link
+            .get("parent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
+        let parent = studio_runtime_store::AgentRepository::get(
+            &connection,
             &studio_runtime_store::AgentId::from(parent_id),
         )?
         .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
-        if current.epoch != parent_epoch {
+        if parent.epoch != parent_epoch {
             return Err(refused(409, "parent_changed", "The home agent changed"));
         }
-        let posted = crate::coordination::post_message_with_admission(
-            tx,
-            crate::coordination::PostManagedMessage {
-                room: parent_id,
-                id: key,
-                text: event_text,
-                delivery,
-                assets: &[],
-            },
-            &admission,
+        let admission = crate::message_admission::MessageIngressAdmission::load(
+            Arc::clone(&store_for_read),
+            &connection,
+            parent_id,
         )
         .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-        Ok::<_, AccessError>(posted.receipt)
-    })?;
+        Ok::<_, AccessError>((parent_id.to_owned(), admission))
+    })
+    .await
+    .map_err(|_| refused(503, "input_rejected", "The remote input was not admitted"))??;
+
+    let key = key.to_owned();
+    let link_id = link_id.to_owned();
+    let principal = principal.to_owned();
+    let event_text = event_text.to_owned();
+    let delivery = delivery.to_owned();
+    let receipt = store
+        .transaction_with(move |tx| {
+            let current_link: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [&link_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let current_link: Value = current_link
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "link_unavailable",
+                        "The remote-parent link is unavailable",
+                    )
+                })?;
+            if current_link.get("side").and_then(Value::as_str) != Some("home")
+                || current_link.get("server").and_then(Value::as_str) != Some(principal.as_str())
+                || current_link.get("parent").and_then(Value::as_str) != Some(parent_id.as_str())
+                || current_link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch)
+            {
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link is invalid",
+                ));
+            }
+            let current = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id.as_str()),
+            )?
+            .ok_or_else(|| refused(404, "parent_unavailable", "The home agent is unavailable"))?;
+            if current.epoch != parent_epoch {
+                return Err(refused(409, "parent_changed", "The home agent changed"));
+            }
+            let posted = crate::coordination::post_message_with_admission(
+                tx,
+                crate::coordination::PostManagedMessage {
+                    room: &parent_id,
+                    id: &key,
+                    text: &event_text,
+                    delivery: &delivery,
+                    assets: &[],
+                },
+                &admission,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            Ok::<_, AccessError>(posted.receipt)
+        })
+        .await?;
     Ok(ExchangeOutcome::Applied(receipt))
 }
 
@@ -892,8 +1024,8 @@ fn durable_anchor_input_receipt(
         })
 }
 
-fn receive_remote_input(
-    store: &RuntimeStore,
+async fn receive_remote_input(
+    store: Arc<RuntimeStore>,
     principal: &str,
     envelope: &Value,
 ) -> Result<ExchangeOutcome, AccessError> {
@@ -939,87 +1071,51 @@ fn receive_remote_input(
     {
         return Err(refused(400, "invalid_request", "Invalid remote input"));
     }
-    let connection = store.read()?;
-    let raw: Option<String> = connection
-        .query_row(
-            "SELECT record FROM runtime_server_links WHERE id=?1",
-            [link_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let link: Value = raw
-        .as_deref()
-        .and_then(|raw| serde_json::from_str(raw).ok())
-        .ok_or_else(|| {
-            refused(
-                404,
-                "link_unavailable",
-                "The remote-parent link is unavailable",
+    let store_for_read = Arc::clone(&store);
+    let link_id_for_read = link_id.to_owned();
+    let principal_for_read = principal.to_owned();
+    let worker_id_for_read = worker_id.to_owned();
+    let parent_epoch_for_read = parent_epoch;
+    let control_epoch_for_read = control_epoch;
+    let remote_epoch_for_read = remote_epoch;
+    let kind_for_read = kind.to_owned();
+    let preflight = tokio::task::spawn_blocking(move || {
+        let connection = store_for_read.read()?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_server_links WHERE id=?1",
+                [link_id_for_read],
+                |row| row.get(0),
             )
-        })?;
-    if link["side"] != "remote"
-        || link["server"] != principal
-        || link["parentEpoch"].as_i64() != Some(parent_epoch)
-        || !link["workers"].as_array().is_some_and(|workers| {
-            workers
-                .iter()
-                .any(|worker| worker.as_str() == Some(worker_id))
-        })
-    {
-        return Err(refused(
-            403,
-            "link_owner",
-            "The remote-parent link is invalid",
-        ));
-    }
-    let worker = studio_runtime_store::AgentRepository::get(
-        &connection,
-        &studio_runtime_store::AgentId::from(worker_id),
-    )?
-    .ok_or_else(|| {
-        refused(
-            404,
-            "worker_unavailable",
-            "The remote worker is unavailable",
-        )
-    })?;
-    let observed_control = worker
-        .extra
-        .get("remoteControlEpoch")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if observed_control < control_epoch {
-        return Ok(ExchangeOutcome::PreEffectWaiting);
-    }
-    if observed_control != control_epoch
-        || worker
-            .extra
-            .get("remoteEpoch")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            > remote_epoch
-    {
-        return Ok(ExchangeOutcome::NotApplied(
-            "The remote worker epoch changed".to_owned(),
-        ));
-    }
-    let admission = if matches!(kind, "user" | "followup") {
-        Some(
-            crate::message_admission::MessageIngressAdmission::load(store, &connection, worker_id)
-                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?,
-        )
-    } else {
-        None
-    };
-    drop(connection);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
-        .as_secs_f64();
-    let result = store.transaction_with(|tx| {
-        let current = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(worker_id),
+            .optional()?;
+        let link: Value = raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "link_unavailable",
+                    "The remote-parent link is unavailable",
+                )
+            })?;
+        if link["side"] != "remote"
+            || link["server"] != principal_for_read
+            || link["parentEpoch"].as_i64() != Some(parent_epoch_for_read)
+            || !link["workers"].as_array().is_some_and(|workers| {
+                workers
+                    .iter()
+                    .any(|worker| worker.as_str() == Some(worker_id_for_read.as_str()))
+            })
+        {
+            return Err(refused(
+                403,
+                "link_owner",
+                "The remote-parent link is invalid",
+            ));
+        }
+        let worker = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from(worker_id_for_read.as_str()),
         )?
         .ok_or_else(|| {
             refused(
@@ -1028,66 +1124,136 @@ fn receive_remote_input(
                 "The remote worker is unavailable",
             )
         })?;
-        if current.epoch != worker.epoch
-            || current
+        let observed_control = worker
+            .extra
+            .get("remoteControlEpoch")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if observed_control < control_epoch_for_read {
+            return Ok((worker, None, Some(ExchangeOutcome::PreEffectWaiting)));
+        }
+        if observed_control != control_epoch_for_read
+            || worker
                 .extra
-                .get("remoteControlEpoch")
+                .get("remoteEpoch")
                 .and_then(Value::as_i64)
                 .unwrap_or(0)
-                != control_epoch
+                > remote_epoch_for_read
         {
-            return Err(refused(409, "worker_changed", "The remote worker changed"));
+            return Ok((
+                worker,
+                None,
+                Some(ExchangeOutcome::NotApplied(
+                    "The remote worker epoch changed".to_owned(),
+                )),
+            ));
         }
-        if studio_runtime_store::truthy(current.extra.get("moveImportPending"))
-            || studio_runtime_store::truthy(current.extra.get("movedTo"))
-        {
+        let admission = if matches!(kind_for_read.as_str(), "user" | "followup") {
+            Some(
+                crate::message_admission::MessageIngressAdmission::load(
+                    Arc::clone(&store_for_read),
+                    &connection,
+                    worker_id_for_read.as_str(),
+                )
+                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?,
+            )
+        } else {
+            None
+        };
+        Ok::<_, AccessError>((worker, admission, None))
+    })
+    .await
+    .map_err(|_| refused(503, "input_rejected", "The remote input was not admitted"))??;
+    let (worker, admission, early_result) = preflight;
+    if let Some(result) = early_result {
+        return Ok(result);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+        .as_secs_f64();
+    let key = key.to_owned();
+    let worker_id = worker_id.to_owned();
+    let kind = kind.to_owned();
+    let event_text = event_text.to_owned();
+    let delivery = delivery.to_owned();
+    let result = store
+        .transaction_with(move |tx| {
+            let current = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(worker_id.as_str()),
+            )?
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "worker_unavailable",
+                    "The remote worker is unavailable",
+                )
+            })?;
+            if current.epoch != worker.epoch
+                || current
+                    .extra
+                    .get("remoteControlEpoch")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    != control_epoch
+            {
+                return Err(refused(409, "worker_changed", "The remote worker changed"));
+            }
+            if studio_runtime_store::truthy(current.extra.get("moveImportPending"))
+                || studio_runtime_store::truthy(current.extra.get("movedTo"))
+            {
+                crate::event_write::enqueue_recovery_event(
+                    tx,
+                    &current,
+                    key.to_owned(),
+                    &kind,
+                    event_text.to_owned(),
+                    now,
+                )
+                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+                return Ok::<Value, AccessError>(json!({"eventId":key}));
+            }
+            if matches!(kind.as_str(), "user" | "followup") {
+                if !matches!(
+                    delivery.as_str(),
+                    "queue" | "steer" | "after_tool" | "after_turn"
+                ) {
+                    return Err(refused(
+                        400,
+                        "invalid_request",
+                        "Invalid remote input delivery",
+                    ));
+                }
+                let admission = admission.as_ref().ok_or_else(|| {
+                    refused(400, "input_rejected", "The remote input was not admitted")
+                })?;
+                let posted = crate::coordination::post_message_with_admission(
+                    tx,
+                    crate::coordination::PostManagedMessage {
+                        room: &worker_id,
+                        id: &key,
+                        text: &event_text,
+                        delivery: &delivery,
+                        assets: &[],
+                    },
+                    admission,
+                )
+                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+                return Ok(posted.receipt);
+            }
             crate::event_write::enqueue_recovery_event(
                 tx,
                 &current,
                 key.to_owned(),
-                kind,
+                &kind,
                 event_text.to_owned(),
                 now,
             )
             .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-            return Ok::<Value, AccessError>(json!({"eventId":key}));
-        }
-        if matches!(kind, "user" | "followup") {
-            if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
-                return Err(refused(
-                    400,
-                    "invalid_request",
-                    "Invalid remote input delivery",
-                ));
-            }
-            let admission = admission.as_ref().ok_or_else(|| {
-                refused(400, "input_rejected", "The remote input was not admitted")
-            })?;
-            let posted = crate::coordination::post_message_with_admission(
-                tx,
-                crate::coordination::PostManagedMessage {
-                    room: worker_id,
-                    id: key,
-                    text: event_text,
-                    delivery,
-                    assets: &[],
-                },
-                admission,
-            )
-            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-            return Ok(posted.receipt);
-        }
-        crate::event_write::enqueue_recovery_event(
-            tx,
-            &current,
-            key.to_owned(),
-            kind,
-            event_text.to_owned(),
-            now,
-        )
-        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
-        Ok(json!({"eventId":key}))
-    })?;
+            Ok(json!({"eventId":key}))
+        })
+        .await?;
     Ok(ExchangeOutcome::Applied(result))
 }
 
@@ -1155,21 +1321,41 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
         ) || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
-    fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError> {
+    fn execute<'a>(
+        &'a self,
+        principal: &'a str,
+        envelope: &'a Value,
+    ) -> BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
+        Box::pin(self.execute_async(principal, envelope))
+    }
+}
+
+impl RuntimeOrchestrationEffects {
+    async fn execute_async(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
         let action = text(envelope, "action");
         if action == "browser_callback" {
             return self
                 .browser_callback
                 .receive(envelope)
+                .await
                 .map(ExchangeOutcome::Applied);
         }
         if action == "stop" {
-            return self.stop_worker(principal, envelope);
+            return self.stop_worker(principal, envelope).await;
         }
         if action == "folders" {
             let path = envelope["payload"].get("cwd").and_then(Value::as_str);
-            let result = crate::system_reads::directories(path)
-                .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
+            let path = path.map(str::to_owned);
+            let result = tokio::task::spawn_blocking(move || {
+                crate::system_reads::directories(path.as_deref())
+            })
+            .await
+            .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?
+            .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
             return serde_json::to_value(result)
                 .map(ExchangeOutcome::Applied)
                 .map_err(|_| {
@@ -1177,11 +1363,19 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 });
         }
         if matches!(action, "add_location" | "remove_location") {
-            return self.project_location(principal, envelope);
+            return self.project_location(principal, envelope).await;
         }
         if action == "location_info" {
-            let path = text(&envelope["payload"], "cwd");
-            return crate::projects::peer_location_info(path)
+            let path = text(&envelope["payload"], "cwd").to_owned();
+            return tokio::task::spawn_blocking(move || crate::projects::peer_location_info(&path))
+                .await
+                .map_err(|_| {
+                    refused(
+                        400,
+                        "location_unavailable",
+                        "The project folder is unavailable",
+                    )
+                })?
                 .map(ExchangeOutcome::Applied)
                 .map_err(|_| {
                     refused(
@@ -1193,17 +1387,31 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
         }
         if action == "location_matches" {
             let payload = &envelope["payload"];
-            let origin = text(payload, "origin");
-            let cwd = payload.get("cwd").and_then(Value::as_str);
-            return crate::projects::peer_location_matches(&self.store, origin, cwd)
-                .map(ExchangeOutcome::Applied)
-                .map_err(|_| {
-                    refused(
-                        400,
-                        "location_unavailable",
-                        "Project location matches are unavailable",
-                    )
-                });
+            let origin = text(payload, "origin").to_owned();
+            let cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let store = Arc::clone(&self.store);
+            return tokio::task::spawn_blocking(move || {
+                crate::projects::peer_location_matches(&store, &origin, cwd.as_deref())
+            })
+            .await
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "Project location matches are unavailable",
+                )
+            })?
+            .map(ExchangeOutcome::Applied)
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "Project location matches are unavailable",
+                )
+            });
         }
         if action == "input" {
             if envelope["payload"]
@@ -1211,12 +1419,13 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 .and_then(Value::as_bool)
                 == Some(true)
             {
-                return receive_remote_anchor_input(&self.store, principal, envelope);
+                return receive_remote_anchor_input(Arc::clone(&self.store), principal, envelope)
+                    .await;
             }
-            return receive_remote_input(&self.store, principal, envelope);
+            return receive_remote_input(Arc::clone(&self.store), principal, envelope).await;
         }
         if matches!(action, "message" | "move_send") {
-            return self.worker_call(principal, envelope);
+            return self.worker_call(principal, envelope).await;
         }
         if action != "event" {
             return Err(refused(
@@ -1252,148 +1461,166 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
             .as_secs_f64();
-        let result = self.store.transaction_with(|tx| {
-            let raw: Option<String> = tx
-                .query_row(
-                    "SELECT record FROM runtime_server_links WHERE id=?1",
-                    [link_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let raw = raw.ok_or_else(|| {
-                refused(
-                    404,
-                    "link_unavailable",
-                    "The remote-parent link is unavailable",
-                )
-            })?;
-            let link: Value = serde_json::from_str(&raw)
-                .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
-            if link.get("side").and_then(Value::as_str) != Some("home")
-                || link.get("server").and_then(Value::as_str) != Some(principal)
-            {
-                return Err(refused(
-                    403,
-                    "link_owner",
-                    "The remote-parent link belongs to another server",
-                ));
-            }
-            if link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch) {
-                return Ok(ExchangeOutcome::Applied(
-                    json!({"stored":false,"reason":"The parent epoch was superseded"}),
-                ));
-            }
-            let parent = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
-                refused(503, "invalid_record", "The remote-parent link is invalid")
-            })?;
-            // Match Python `_receive`'s event owner lookup: resolve the parent
-            // id from runtime_server_links, then load that durable agent row
-            // before enqueueing recovery work (codex_multi_server_orchestration.py:1090-1098).
-            let typed = studio_runtime_store::AgentRepository::get(
-                tx,
-                &studio_runtime_store::AgentId::from(parent),
-            )?
-            .ok_or_else(|| refused(404, "parent_unavailable", "The parent agent is unavailable"))?;
-            if typed.epoch != parent_epoch
-                || typed.extra.get("autoWake") != Some(&Value::Bool(true))
-                || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
-            {
-                return Ok(ExchangeOutcome::Applied(
-                    json!({"stored":false,"reason":"The parent was stopped"}),
-                ));
-            }
-            if kind == "child_result" {
-                let details: Value = serde_json::from_str(event_text)
-                    .map_err(|_| refused(400, "invalid_request", "Invalid child result event"))?;
-                let child_id = details
-                    .get("agent_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| refused(400, "invalid_request", "Invalid child result event"))?;
-                if !link["workers"].as_array().is_some_and(|workers| {
-                    workers
-                        .iter()
-                        .any(|worker| worker.as_str() == Some(child_id))
-                }) {
-                    return Err(refused(
-                        403,
-                        "child_unlinked",
-                        "The result is outside this remote-parent link",
-                    ));
-                }
-                let mut proxy = studio_runtime_store::AgentRepository::get(
-                    tx,
-                    &studio_runtime_store::AgentId::from(child_id),
-                )?
-                .ok_or_else(|| {
+        let key_for_write = key.to_owned();
+        let link_id_for_write = link_id.to_owned();
+        let principal_for_write = principal.to_owned();
+        let kind_for_write = kind.to_owned();
+        let event_text_for_write = event_text.to_owned();
+        let result = self
+            .store
+            .transaction_with(move |tx| {
+                let raw: Option<String> = tx
+                    .query_row(
+                        "SELECT record FROM runtime_server_links WHERE id=?1",
+                        [link_id_for_write],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let raw = raw.ok_or_else(|| {
                     refused(
                         404,
-                        "worker_unavailable",
-                        "The result worker is unavailable",
+                        "link_unavailable",
+                        "The remote-parent link is unavailable",
                     )
                 })?;
-                proxy.extra.insert(
-                    "lastAnswer".to_owned(),
-                    details
-                        .get("result")
-                        .or_else(|| details.get("reason"))
-                        .cloned()
-                        .unwrap_or_else(|| json!("")),
-                );
-                proxy
-                    .extra
-                    .insert("lastCompletedTurn".to_owned(), json!(key));
-                studio_runtime_store::AgentRepository::put(tx, &proxy)?;
-            }
-            let existing: Option<(String, String, String, f64, i64)> = tx
-                .query_row(
-                    "SELECT agent,kind,text,created,epoch FROM runtime_events WHERE id=?1",
-                    [key],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            if let Some((agent, old_kind, old_text, _, epoch)) = existing {
-                if agent != parent
-                    || old_kind != kind
-                    || old_text != event_text
-                    || epoch != typed.epoch as i64
+                let link: Value = serde_json::from_str(&raw).map_err(|_| {
+                    refused(503, "invalid_record", "The remote-parent link is invalid")
+                })?;
+                if link.get("side").and_then(Value::as_str) != Some("home")
+                    || link.get("server").and_then(Value::as_str)
+                        != Some(principal_for_write.as_str())
                 {
                     return Err(refused(
-                        409,
-                        "request_conflict",
-                        "This event identity has different content",
+                        403,
+                        "link_owner",
+                        "The remote-parent link belongs to another server",
                     ));
                 }
-            } else {
-                crate::event_write::enqueue_recovery_event(
-                    tx,
-                    &typed,
-                    key.to_owned(),
-                    kind,
-                    event_text.to_owned(),
-                    now,
-                )
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "event_unavailable",
-                        "The remote event could not be stored",
-                    )
+                if link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch) {
+                    return Ok(ExchangeOutcome::Applied(
+                        json!({"stored":false,"reason":"The parent epoch was superseded"}),
+                    ));
+                }
+                let parent = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                    refused(503, "invalid_record", "The remote-parent link is invalid")
                 })?;
-            }
-            Ok(ExchangeOutcome::Applied(json!({"eventId":key})))
-        })?;
+                // Match Python `_receive`'s event owner lookup: resolve the parent
+                // id from runtime_server_links, then load that durable agent row
+                // before enqueueing recovery work (codex_multi_server_orchestration.py:1090-1098).
+                let typed = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(parent),
+                )?
+                .ok_or_else(|| {
+                    refused(404, "parent_unavailable", "The parent agent is unavailable")
+                })?;
+                if typed.epoch != parent_epoch
+                    || typed.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
+                {
+                    return Ok(ExchangeOutcome::Applied(
+                        json!({"stored":false,"reason":"The parent was stopped"}),
+                    ));
+                }
+                if kind_for_write == "child_result" {
+                    let details: Value =
+                        serde_json::from_str(&event_text_for_write).map_err(|_| {
+                            refused(400, "invalid_request", "Invalid child result event")
+                        })?;
+                    let child_id =
+                        details
+                            .get("agent_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                refused(400, "invalid_request", "Invalid child result event")
+                            })?;
+                    if !link["workers"].as_array().is_some_and(|workers| {
+                        workers
+                            .iter()
+                            .any(|worker| worker.as_str() == Some(child_id))
+                    }) {
+                        return Err(refused(
+                            403,
+                            "child_unlinked",
+                            "The result is outside this remote-parent link",
+                        ));
+                    }
+                    let mut proxy = studio_runtime_store::AgentRepository::get(
+                        tx,
+                        &studio_runtime_store::AgentId::from(child_id),
+                    )?
+                    .ok_or_else(|| {
+                        refused(
+                            404,
+                            "worker_unavailable",
+                            "The result worker is unavailable",
+                        )
+                    })?;
+                    proxy.extra.insert(
+                        "lastAnswer".to_owned(),
+                        details
+                            .get("result")
+                            .or_else(|| details.get("reason"))
+                            .cloned()
+                            .unwrap_or_else(|| json!("")),
+                    );
+                    proxy
+                        .extra
+                        .insert("lastCompletedTurn".to_owned(), json!(key_for_write));
+                    studio_runtime_store::AgentRepository::put(tx, &proxy)?;
+                }
+                let existing: Option<(String, String, String, f64, i64)> = tx
+                    .query_row(
+                        "SELECT agent,kind,text,created,epoch FROM runtime_events WHERE id=?1",
+                        [&key_for_write],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                if let Some((agent, old_kind, old_text, _, epoch)) = existing {
+                    if agent != parent
+                        || old_kind != kind_for_write
+                        || old_text != event_text_for_write
+                        || epoch != typed.epoch as i64
+                    {
+                        return Err(refused(
+                            409,
+                            "request_conflict",
+                            "This event identity has different content",
+                        ));
+                    }
+                } else {
+                    crate::event_write::enqueue_recovery_event(
+                        tx,
+                        &typed,
+                        key_for_write.clone(),
+                        &kind_for_write,
+                        event_text_for_write,
+                        now,
+                    )
+                    .map_err(|_| {
+                        refused(
+                            503,
+                            "event_unavailable",
+                            "The remote event could not be stored",
+                        )
+                    })?;
+                }
+                Ok(ExchangeOutcome::Applied(json!({"eventId":key_for_write})))
+            })
+            .await?;
         Ok(result)
     }
 }
 
+#[derive(Clone)]
 pub struct Envelope {
     key: String,
     action: String,
@@ -1647,7 +1874,7 @@ impl OrchestrationDriver {
             effects,
         }
     }
-    pub fn exchange(
+    pub async fn exchange(
         &self,
         server: &str,
         action: &str,
@@ -1663,9 +1890,10 @@ impl OrchestrationDriver {
             now,
             std::time::Duration::from_secs(20),
         )
+        .await
     }
 
-    pub fn exchange_with_timeout(
+    pub async fn exchange_with_timeout(
         &self,
         server: &str,
         action: &str,
@@ -1674,30 +1902,43 @@ impl OrchestrationDriver {
         now: i64,
         timeout: std::time::Duration,
     ) -> Result<ExchangeOutcome, AccessError> {
-        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        let store_for_local = Arc::clone(&self.store);
+        let local_server = tokio::task::spawn_blocking(move || store_for_local.local_server_id())
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The local server identity is unavailable",
+                )
+            })??
+            .unwrap_or_default();
         let is_local = !local_server.is_empty() && server == local_server;
         let envelope = Envelope::from_value(
             &json!({"requestId":request_id,"action":action,"payload":payload}),
         )?;
-        let decision=self.store.transaction_with(|tx| {
-            if !is_local { require_paired(tx,server)?; }
-            if retired(tx,&envelope.key,"out",&envelope.fingerprint,Some(server))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
-            let saved=outbox(tx,&envelope.key,now)?;
-            let decision=decide_delivery(saved.as_ref(),&envelope.fingerprint,Some(server),true,&envelope.action,now)?;
+        let envelope_for_claim = envelope.clone();
+        let server_for_claim = server.to_owned();
+        let decision=self.store.transaction_with(move |tx| {
+            if !is_local { require_paired(tx,&server_for_claim)?; }
+            if retired(tx,&envelope_for_claim.key,"out",&envelope_for_claim.fingerprint,Some(&server_for_claim))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
+            let saved=outbox(tx,&envelope_for_claim.key,now)?;
+            let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,&envelope_for_claim.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,0) ON CONFLICT(id) DO UPDATE SET state='running'",params![envelope.key,server,envelope.body,now,envelope.fingerprint])?;
+                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,0) ON CONFLICT(id) DO UPDATE SET state='running'",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint])?;
             }
             Ok::<_,AccessError>(decision)
-        })?;
+        }).await?;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
         // The claim is committed before crossing the transport boundary.
         let exchange = if is_local {
-            self.receive(&local_server, &envelope.value(), now)
+            self.receive(&local_server, &envelope.value(), now).await
         } else {
             self.transport
                 .exchange(server, &envelope.value(), timeout)
+                .await
                 .and_then(|value| ExchangeOutcome::from_value(&value, &envelope.key, now))
         };
         let result = match exchange {
@@ -1712,16 +1953,27 @@ impl OrchestrationDriver {
             Some(server),
             &result,
             now,
-        )?;
+        )
+        .await?;
         Ok(result)
     }
-    pub fn receive(
+    pub async fn receive(
         &self,
         principal: &str,
         value: &Value,
         now: i64,
     ) -> Result<ExchangeOutcome, AccessError> {
-        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        let store_for_local = Arc::clone(&self.store);
+        let local_server = tokio::task::spawn_blocking(move || store_for_local.local_server_id())
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The local server identity is unavailable",
+                )
+            })??
+            .unwrap_or_default();
         let is_local = !local_server.is_empty() && principal == local_server;
         let envelope = Envelope::from_value(value)?;
         if !self.effects.supports(&envelope.action) {
@@ -1732,33 +1984,36 @@ impl OrchestrationDriver {
             ));
         }
         let signature = envelope.incoming_signature(principal)?;
-        let (decision, replaying_claim) = self.store.transaction_with(|tx| {
+        let envelope_for_claim = envelope.clone();
+        let signature_for_claim = signature.clone();
+        let principal_for_claim = principal.to_owned();
+        let (decision, replaying_claim) = self.store.transaction_with(move |tx| {
             if !is_local {
-                require_paired(tx, principal)?;
+                require_paired(tx, &principal_for_claim)?;
             }
-            if retired(tx, &envelope.key, "in", &signature, None)? {
+            if retired(tx, &envelope_for_claim.key, "in", &signature_for_claim, None)? {
                 return Ok((DeliveryDecision::Return(ExchangeOutcome::Unknown), false));
             }
-            let saved = inbox(tx, &envelope.key, now)?;
+            let saved = inbox(tx, &envelope_for_claim.key, now)?;
             let replaying_claim = saved.is_some();
             let decision = decide_delivery(
                 saved.as_ref(),
-                &signature,
+                &signature_for_claim,
                 None,
                 false,
-                &envelope.action,
+                &envelope_for_claim.action,
                 now,
             )?;
             if matches!(decision, DeliveryDecision::Return(ExchangeOutcome::Unknown))
                 && saved.as_ref().is_some_and(|snapshot| {
                     snapshot.state == "running"
-                        && snapshot.signature == signature
+                        && snapshot.signature == signature_for_claim
                         && snapshot.server.is_none()
                 })
-                && let Some(receipt) = durable_anchor_input_receipt(tx, principal, &envelope)?
+                && let Some(receipt) = durable_anchor_input_receipt(tx, &principal_for_claim, &envelope_for_claim)?
             {
                 let result = ExchangeOutcome::Applied(receipt);
-                let stored_result = result.to_value(&envelope.key).to_string();
+                let stored_result = result.to_value(&envelope_for_claim.key).to_string();
                 if stored_result.len() > MAX_RESPONSE_BYTES {
                     return Ok((
                         DeliveryDecision::Return(ExchangeOutcome::Unknown),
@@ -1767,7 +2022,7 @@ impl OrchestrationDriver {
                 }
                 let updated = tx.execute(
                     "UPDATE runtime_server_inbox SET state='complete',result=?1,completed_at=?2 WHERE id=?3 AND signature=?4 AND state='running' AND principal=?5",
-                    params![stored_result, now, envelope.key, signature, principal],
+                    params![stored_result, now, envelope_for_claim.key, signature_for_claim, principal_for_claim],
                 )?;
                 if updated != 1 {
                     return Err(refused(
@@ -1782,21 +2037,21 @@ impl OrchestrationDriver {
                 if saved.is_some() {
                     tx.execute(
                         "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')",
-                        [&envelope.key],
+                        [&envelope_for_claim.key],
                     )?;
                 } else {
                     tx.execute(
                         "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",
-                        params![envelope.key, signature, now, principal, envelope.payload.get("actor").and_then(Value::as_str)],
+                        params![envelope_for_claim.key, signature_for_claim, now, principal_for_claim, envelope_for_claim.payload.get("actor").and_then(Value::as_str)],
                     )?;
                 }
             }
             Ok::<_, AccessError>((decision, replaying_claim))
-        })?;
+        }).await?;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
-        let mut result = match self.effects.execute(principal, &envelope.value()) {
+        let mut result = match self.effects.execute(principal, &envelope.value()).await {
             Ok(result) => result,
             Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
                 ExchangeOutcome::NotApplied(error.to_string())
@@ -1828,7 +2083,8 @@ impl OrchestrationDriver {
                 None,
                 &ExchangeOutcome::Unknown,
                 now,
-            )?;
+            )
+            .await?;
             return Ok(ExchangeOutcome::Unknown);
         }
         self.finish(
@@ -1839,31 +2095,43 @@ impl OrchestrationDriver {
             None,
             &result,
             now,
-        )?;
+        )
+        .await?;
         Ok(result)
     }
 
     /// Deliver a bounded snapshot of due intents. Each exchange claims and
     /// records its result in short transactions around the transport call.
-    pub fn pump_due(&self, now: i64) -> Result<usize, AccessError> {
-        let pending = self.store.read_transaction(|tx| {
-            let sql = format!(
-                "SELECT server,body,state FROM runtime_server_outbox \
+    pub async fn pump_due(&self, now: i64) -> Result<usize, AccessError> {
+        let store_for_read = Arc::clone(&self.store);
+        let pending = tokio::task::spawn_blocking(move || {
+            store_for_read.read_transaction(|tx| {
+                let sql = format!(
+                    "SELECT server,body,state FROM runtime_server_outbox \
                  WHERE next_at<=?1 AND (state='queued' OR (state='running' \
                    AND json_extract(body,'$.action') IN ({}))) \
                  ORDER BY rowid LIMIT ?2",
-                peer_replay_safe_sql_values()
-            );
-            let mut statement = tx.prepare(&sql)?;
-            let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-        })?;
+                    peer_replay_safe_sql_values()
+                );
+                let mut statement = tx.prepare(&sql)?;
+                let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+            })
+        })
+        .await
+        .map_err(|_| {
+            refused(
+                503,
+                "outbox_unavailable",
+                "The delivery queue is unavailable",
+            )
+        })??;
         let mut count = 0;
         for (server, body, state) in pending {
             let value = serde_json::from_str::<Value>(&body).map_err(|_| {
@@ -1880,13 +2148,15 @@ impl OrchestrationDriver {
             if state == "running" && !peer_replay_safe(&envelope.action) {
                 continue;
             }
-            let _ = self.exchange(
-                &server,
-                &envelope.action,
-                &envelope.payload,
-                &envelope.key,
-                now,
-            )?;
+            let _ = self
+                .exchange(
+                    &server,
+                    &envelope.action,
+                    &envelope.payload,
+                    &envelope.key,
+                    now,
+                )
+                .await?;
             count += 1;
         }
         Ok(count)
@@ -1895,13 +2165,21 @@ impl OrchestrationDriver {
     /// Return the next persisted delivery deadline without scanning on a timer.
     /// Unsafe operations stranded in `running` remain unknown and are excluded;
     /// peer operations can replay with their existing durable identity.
-    pub fn next_due_at(&self) -> Result<Option<i64>, AccessError> {
-        self.store
-            .read_transaction(|tx| outbox_next_due_at(tx))
+    pub async fn next_due_at(&self) -> Result<Option<i64>, AccessError> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || store.read_transaction(|tx| outbox_next_due_at(tx)))
+            .await
+            .map_err(|_| {
+                refused(
+                    503,
+                    "outbox_unavailable",
+                    "The delivery queue is unavailable",
+                )
+            })?
             .map_err(Into::into)
     }
     #[allow(clippy::too_many_arguments)]
-    fn finish(
+    async fn finish(
         &self,
         table: &str,
         key: &str,
@@ -1916,47 +2194,67 @@ impl OrchestrationDriver {
             ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting
         ) {
             if peer_replay_safe(action) && table == "outbox" {
-                let attempts = self.store.read_transaction(|tx| {
-                    tx.query_row(
-                        "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
-                        [key],
-                        |row| row.get::<_, i64>(0),
+                let store_for_read = Arc::clone(&self.store);
+                let key_for_read = key.to_owned();
+                let attempts = tokio::task::spawn_blocking(move || {
+                    store_for_read.read_transaction(|tx| {
+                        tx.query_row(
+                            "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
+                            [key_for_read],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()
+                        .map(|value| value.unwrap_or_default().max(0) as u64)
+                        .map_err(Into::into)
+                    })
+                })
+                .await
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "outbox_unavailable",
+                        "The delivery queue is unavailable",
                     )
-                    .optional()
-                    .map(|value| value.unwrap_or_default().max(0) as u64)
-                    .map_err(Into::into)
-                })?;
+                })??;
                 let retry_delay = peer_retry_delay(attempts as i64);
-                self.store.transaction_with(|tx| {
-                    tx.execute("UPDATE runtime_server_outbox SET state='queued',attempts=attempts+1,next_at=?1,error='unknown' WHERE id=?2 AND state='running'",params![now.saturating_add(retry_delay),key])?;
+                let key_for_update = key.to_owned();
+                self.store.transaction_with(move |tx| {
+                    tx.execute("UPDATE runtime_server_outbox SET state='queued',attempts=attempts+1,next_at=?1,error='unknown' WHERE id=?2 AND state='running'",params![now.saturating_add(retry_delay),key_for_update])?;
                     Ok::<_,AccessError>(())
-                })?;
+                }).await?;
             } else if *result == ExchangeOutcome::PreEffectWaiting
                 && action == "input"
                 && table == "inbox"
             {
-                self.store.transaction_with(|tx| {
-                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key])?;
+                let key_for_update = key.to_owned();
+                self.store.transaction_with(move |tx| {
+                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key_for_update])?;
                     Ok::<_, AccessError>(())
-                })?;
+                }).await?;
             // A generic unknown input can follow a committed message/event.
             // Keep its claim running; only the typed pre-effect result above
             // proves that retrying the input is safe.
             } else if peer_replay_safe(action) && action != "input" && table == "inbox" {
-                self.store.transaction_with(|tx| {
-                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key])?;
+                let key_for_update = key.to_owned();
+                self.store.transaction_with(move |tx| {
+                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key_for_update])?;
                     Ok::<_,AccessError>(())
-                })?;
+                }).await?;
             }
             return Ok(());
         }
-        self.store.transaction_with(|tx| {
-            let saved=if table=="outbox"{outbox(tx,key,now)?}else{inbox(tx,key,now)?};
+        let table = table.to_owned();
+        let key = key.to_owned();
+        let signature = signature.to_owned();
+        let server = server.map(str::to_owned);
+        let result = result.clone();
+        self.store.transaction_with(move |tx| {
+            let saved=if table=="outbox"{outbox(tx,&key,now)?}else{inbox(tx,&key,now)?};
             let snapshot=saved.ok_or_else(||refused(409,"receipt_missing","The delivery claim is missing"))?;
-            if snapshot.signature!=signature || snapshot.server.as_deref()!=server || snapshot.state!="running" { return Err(refused(409,"stale_receipt","The delivery receipt does not match its claim")); }
-            tx.execute(&format!("UPDATE runtime_server_{table} SET state='complete',result=?1,completed_at=?2 WHERE id=?3"),params![result.to_value(key).to_string(),now,key])?;
+            if snapshot.signature!=signature || snapshot.server.as_deref()!=server.as_deref() || snapshot.state!="running" { return Err(refused(409,"stale_receipt","The delivery receipt does not match its claim")); }
+            tx.execute(&format!("UPDATE runtime_server_{table} SET state='complete',result=?1,completed_at=?2 WHERE id=?3"),params![result.to_value(&key).to_string(),now,key])?;
             Ok(())
-        })
+        }).await
     }
 }
 fn require_paired(tx: &Transaction<'_>, id: &str) -> Result<(), AccessError> {

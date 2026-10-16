@@ -4,6 +4,7 @@ use crate::analytics_capture::{CaptureError, check_identity, number, text};
 use crate::analytics_history::{HistoryBudgetSink, HistoryError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{AnalyticsRepository, RuntimeStore, truthy};
 const PAGE_SIZE: i64 = 64;
@@ -31,47 +32,63 @@ fn cursor(state: &Value) -> Result<(i64, i64), HistoryError> {
     Ok((value("cursor")?, value("end")?))
 }
 
-pub fn migrate_budget(
+pub async fn migrate_budget(
     store: &RuntimeStore,
-    agent: &Value,
+    agent: Value,
     budget: &dyn HistoryBudgetSink,
     now: f64,
 ) -> Result<bool, HistoryError> {
     let key = format!("budgetUsageMigrationV1:{}", text(&agent["id"]));
-    let db = AnalyticsRepository::new(store.root())
-        .open_read_only()
-        .map_err(|_| HistoryError::Read)?;
-    let previous = metadata(&db, &key)?;
-    let mut state = match &previous {
-        Some(v) => v.clone(),
-        None => {
-            json!({"cursor":0,"end":db.query_row("SELECT COALESCE(MAX(seq),0) FROM analytics_usage",[],|r|r.get::<_,i64>(0)).map_err(studio_runtime_store::StoreError::from)?})
-        }
-    };
-    let (start, end) = cursor(&state)?;
-    if start >= end {
+    let metadata_key = key.clone();
+    let root = store.root().to_owned();
+    let agent_id = text(&agent["id"]).to_owned();
+    let agent = Arc::new(agent);
+    let blocking_agent = Arc::clone(&agent);
+    let (previous, mut state, records, captures, end) =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/analytics_history_budget_repair",
+            move || {
+                let db = AnalyticsRepository::new(&root)
+                    .open_read_only()
+                    .map_err(|_| HistoryError::Read)?;
+                let previous = metadata(&db, &metadata_key)?;
+                let mut state = match &previous {
+                    Some(v) => v.clone(),
+                    None => json!({"cursor":0,"end":db.query_row("SELECT COALESCE(MAX(seq),0) FROM analytics_usage",[],|r|r.get::<_,i64>(0)).map_err(studio_runtime_store::StoreError::from)?}),
+                };
+                let (start, end) = cursor(&state)?;
+                if start >= end {
+                    return Ok::<_, HistoryError>((previous, state, Vec::new(), Vec::new(), end));
+                }
+                let records = db.prepare("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?")
+                    .map_err(studio_runtime_store::StoreError::from)?
+                    .query_map(params![agent_id, start, end, PAGE_SIZE], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))
+                    .map_err(studio_runtime_store::StoreError::from)?
+                    .collect::<Result<Vec<_>,_>>()
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let mut captures = Vec::with_capacity(records.len());
+                for (seq, raw) in &records {
+                    let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
+                    CaptureTable::Usage.validate(&record)?;
+                    let params = json!({"threadId":record["threadId"],"turnId":record["turnId"],"responseId":record["responseId"],"rawTokenUsageRecord":record["rawTokenUsageRecord"],"requestUsage":record["requestUsage"],"tokenUsage":{"total":record["total"],"last":record["last"]},"_analyticsTimestampSource":record["timestampSource"]});
+                    let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
+                    captures.push((Arc::clone(&blocking_agent), params, at));
+                    state["cursor"] = json!(seq);
+                }
+                Ok((previous, state, records, captures, end))
+            },
+        )
+        .await
+        .map_err(|_| HistoryError::Read)??;
+    if records.is_empty() {
         return Ok(false);
     }
-    let records=db.prepare("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?").map_err(studio_runtime_store::StoreError::from)?.query_map(params![agent["id"].as_str(),start,end,PAGE_SIZE],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).map_err(studio_runtime_store::StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(studio_runtime_store::StoreError::from)?;
-    drop(db);
-    let mut captures = Vec::with_capacity(records.len());
-    for (seq, raw) in &records {
-        let record: Value =
-            serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
-        CaptureTable::Usage.validate(&record)?;
-        let params = json!({"threadId":record["threadId"],"turnId":record["turnId"],"responseId":record["responseId"],"rawTokenUsageRecord":record["rawTokenUsageRecord"],"requestUsage":record["requestUsage"],"tokenUsage":{"total":record["total"],"last":record["last"]},"_analyticsTimestampSource":record["timestampSource"]});
-        let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
-        captures.push((agent.clone(), params, at));
-        state["cursor"] = json!(seq);
-    }
-    if !captures.is_empty() {
-        budget.capture_page(&captures, now)?;
-    }
+    budget.capture_page(captures, now).await?;
     if records.len() < PAGE_SIZE as usize {
         state["cursor"] = json!(end)
     }
-    store.analytics_transaction(|tx, canvas| {
-        check_identity(canvas, agent)?;
+    store.analytics_transaction(move |tx, canvas| {
+        check_identity(canvas, &agent)?;
         if metadata(tx, &key)? != previous {
             return Err(HistoryError::StaleCheckpoint);
         }
@@ -80,12 +97,12 @@ pub fn migrate_budget(
             params![key, state.to_string()],
         ).map_err(studio_runtime_store::StoreError::from)?;
         Ok(())
-    })?;
+    }).await?;
     Ok(!records.is_empty())
 }
 /// Repair exactly identified terminal errors; ambiguous old threadless notices
 /// advance the repair cursor but never replace a turn's error evidence.
-pub fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> {
+pub async fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> {
     store.analytics_transaction(|tx, canvas| {
         let key = "terminalErrorRepairV1";
         let mut state = match metadata(tx, key)? {
@@ -138,7 +155,7 @@ pub fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> 
             params![key, state.to_string()]
         ).map_err(studio_runtime_store::StoreError::from)?;
         Ok(())
-    })
+    }).await
 }
 /// The caller supplies the validated turn and exact persisted native notice.
 fn repaired_turn(mut record: Value, notice: &Value) -> Value {

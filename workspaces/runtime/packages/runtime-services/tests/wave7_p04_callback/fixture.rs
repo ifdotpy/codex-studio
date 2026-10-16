@@ -75,15 +75,14 @@ pub fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     };
     (root, store, context)
 }
-pub fn card(store: &RuntimeStore, value: &Value) {
+pub async fn card(store: &RuntimeStore, value: &Value) {
+    let id = value["id"].as_str().unwrap().to_owned();
+    let record = value.to_string();
     store
-        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
-            studio_runtime_store::QuestionsWriteRepository::put_request(
-                tx,
-                value["id"].as_str().unwrap(),
-                &value.to_string(),
-            )
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            studio_runtime_store::QuestionsWriteRepository::put_request(tx, &id, &record)
         })
+        .await
         .unwrap();
 }
 pub fn stored(store: &RuntimeStore, id: &str) -> Value {
@@ -109,25 +108,27 @@ impl CallbackReplyPort for Port {
         true
     }
 
-    fn deliver(
-        &self,
-        reply: &Reply,
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a Reply,
         deadline: std::time::Duration,
-    ) -> Result<ReplyReceipt, CallbackError> {
-        assert_eq!(deadline, REPLY_DEADLINE);
-        self.calls.lock().unwrap().push(reply.clone());
-        let mut identity = reply.identity.clone();
-        if *self.foreign.lock().unwrap() {
-            identity.attempt = "foreign-attempt".into();
-        }
-        Ok(ReplyReceipt {
-            identity,
-            outcome: self
-                .next
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or(ReplyOutcome::Written),
+    ) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(deadline, REPLY_DEADLINE);
+            self.calls.lock().unwrap().push(reply.clone());
+            let mut identity = reply.identity.clone();
+            if *self.foreign.lock().unwrap() {
+                identity.attempt = "foreign-attempt".into();
+            }
+            Ok(ReplyReceipt {
+                identity,
+                outcome: self
+                    .next
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or(ReplyOutcome::Written),
+            })
         })
     }
 }
@@ -141,20 +142,31 @@ pub fn request(context: &CallbackContext) -> Frame {
         fields: Default::default(),
     })
 }
-pub fn pending(store: &RuntimeStore, context: &CallbackContext) -> (String, Frame) {
+pub async fn pending(store: &Arc<RuntimeStore>, context: &CallbackContext) -> (String, Frame) {
     let frame = request(context);
-    let decision = dispatch(store, context, &frame, 10.0).unwrap();
-    bind_journal(store, &decision, context, &RequestId::Number(42), 1).unwrap();
+    let decision = dispatch(Arc::clone(store), context, &frame, 10.0)
+        .await
+        .unwrap();
+    bind_journal(store, &decision, context, &RequestId::Number(42), 1)
+        .await
+        .unwrap();
     let CallbackDecision::Pending(id) = decision else {
         panic!("pending")
     };
     (id, frame)
 }
-pub fn checkpoint(store: &RuntimeStore, context: &CallbackContext, cursor: u64) -> usize {
-    store.transaction_with::<_,CallbackError>(|tx| {
-        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",rusqlite::params![format!("account-worker:cursor:{}:{}:ack",context.account,context.generation),cursor.to_string()])?;
-        retire_checkpointed(tx,&context.account,context.generation)
-    }).unwrap()
+pub async fn checkpoint(store: &RuntimeStore, context: &CallbackContext, cursor: u64) -> usize {
+    let account = context.account.clone();
+    let generation = context.generation;
+    store.transaction_with::<_, CallbackError>(move |tx| {
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+            rusqlite::params![format!("account-worker:cursor:{account}:{generation}:ack"),cursor.to_string()],
+        )?;
+        retire_checkpointed(tx, &account, generation)
+    })
+    .await
+    .unwrap()
 }
 
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
@@ -169,21 +181,32 @@ pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
         .unwrap();
     serde_json::from_str(&raw).unwrap()
 }
-pub fn put_actor(store: &RuntimeStore, value: &Value) {
+pub async fn put_actor(store: &RuntimeStore, value: &Value) {
+    let id = value["id"].as_str().unwrap().to_owned();
+    let record = value.to_string();
     store
-        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-                rusqlite::params![value["id"].as_str().unwrap(), value.to_string()],
+                rusqlite::params![id, record],
             )?;
             Ok(())
         })
+        .await
         .unwrap();
 }
-pub fn ack(store: &RuntimeStore, context: &CallbackContext, cursor: u64) {
-    store.transaction_with::<_,CallbackError>(|tx| {
-        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",rusqlite::params![format!("account-worker:cursor:{}:{}:ack",context.account,context.generation),cursor.to_string()])?; Ok(())
-    }).unwrap();
+pub async fn ack(store: &RuntimeStore, context: &CallbackContext, cursor: u64) {
+    let account = context.account.clone();
+    let generation = context.generation;
+    store.transaction_with::<_, CallbackError>(move |tx| {
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+            rusqlite::params![format!("account-worker:cursor:{account}:{generation}:ack"),cursor.to_string()],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
 }
 
 pub fn logical_snapshot(store: &RuntimeStore) -> Value {
@@ -298,11 +321,12 @@ pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
 
 /// Import the exact Python-observed before rows for each logical write. The
 /// template contains all corpus identities; each case restores its own baseline.
-pub fn seed_case(store: &RuntimeStore, case: &Value) {
-    put_actor(store, &case["actor"]);
-    card(store, &case["before"]);
+pub async fn seed_case(store: &RuntimeStore, case: &Value) {
+    put_actor(store, &case["actor"]).await;
+    card(store, &case["before"]).await;
+    let case = case.clone();
     store
-        .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             if let Some(writes) = case["writes"].as_object() {
                 for (table, change) in writes {
                     if change.get("increment").is_some() {
@@ -331,11 +355,15 @@ pub fn seed_case(store: &RuntimeStore, case: &Value) {
             }
             Ok(())
         })
+        .await
         .unwrap();
 }
-pub fn retire(store: &RuntimeStore, context: &CallbackContext) -> usize {
+pub async fn retire(store: &RuntimeStore, context: &CallbackContext) -> usize {
+    let account = context.account.clone();
+    let generation = context.generation;
     store
-        .transaction_with(|tx| retire_checkpointed(tx, &context.account, context.generation))
+        .transaction_with(move |tx| retire_checkpointed(tx, &account, generation))
+        .await
         .unwrap()
 }
 

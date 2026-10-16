@@ -17,9 +17,10 @@ use spki::{
     AlgorithmIdentifierRef, ObjectIdentifier, SubjectPublicKeyInfoRef,
     der::{Encode, asn1::BitStringRef},
 };
-use std::{fs, io::Write, path::Path, sync::Mutex};
+use std::{fs, io::Write, path::Path, sync::Arc};
 use studio_runtime_store::{FederationCredentialsRepository as Journal, RuntimeStore, StoreError};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use crate::remote_transport::{
     self, RemoteIdentity, RemoteTransportError, StoredMultiServerIdentity,
@@ -53,25 +54,29 @@ impl Credentials {
     /// Create Python-compatible federation signing keys in the existing identity row.
     /// Key material is generated before the transaction; an insert race keeps the
     /// first committed identity and never replaces it.
-    pub fn ensure_federation_identity(
-        store: &RuntimeStore,
+    pub async fn ensure_federation_identity(
+        store: Arc<RuntimeStore>,
         label: &str,
         lead_name: &str,
         created: f64,
     ) -> Result<RemoteIdentity, CredentialError> {
         validate_federation_label(label)?;
-        let exists = store.read_transaction(|connection| {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(StoreError::from)
-        })?;
+        let store_for_read = Arc::clone(&store);
+        let exists = tokio::task::spawn_blocking(move || {
+            store_for_read.read_transaction(|connection| {
+                connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                        [],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(StoreError::from)
+            })
+        })
+        .await
+        .map_err(|_| CredentialError::Storage)??;
         if exists {
-            return remote_transport::load_federation_identity(store)
-                .map_err(CredentialError::Identity);
+            return load_federation_identity(&store).await;
         }
 
         let generated = generate()?;
@@ -84,54 +89,57 @@ impl Credentials {
             "leadName": lead_name,
             "created": created,
         });
-        store.transaction_with(|tx| -> Result<(), CredentialError> {
-            let exists: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(StoreError::from)?;
-            if !exists {
-                tx.execute(
-                    "INSERT INTO runtime_federation_identity(id,record) VALUES('local',?1)",
-                    [record.to_string()],
-                )
-                .map_err(StoreError::from)?;
-            }
-            Ok(())
-        })?;
-        remote_transport::load_federation_identity(store).map_err(CredentialError::Identity)
+        store
+            .transaction_with(move |tx| -> Result<(), CredentialError> {
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(StoreError::from)?;
+                if !exists {
+                    tx.execute(
+                        "INSERT INTO runtime_federation_identity(id,record) VALUES('local',?1)",
+                        [record.to_string()],
+                    )
+                    .map_err(StoreError::from)?;
+                }
+                Ok(())
+            })
+            .await?;
+        load_federation_identity(&store).await
     }
 
-    pub fn identity(
+    pub async fn identity(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         origin: Option<&str>,
     ) -> Result<Value, CredentialError> {
         supported_platform()?;
-        let mut saved = self.identity.lock().map_err(|_| CredentialError::Storage)?;
-        let identity = self.load(store, &mut saved)?;
+        let mut saved = self.identity.lock().await;
+        let identity = self.load(store, &mut saved).await?;
         Ok(public_identity(identity, origin))
     }
 
-    pub fn rename(
+    pub async fn rename(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         target: &str,
         label: &str,
         request_id: &str,
         actor: &str,
     ) -> Result<(), CredentialError> {
         self.rename_with_notification(store, target, label, request_id, actor, |_| {})
+            .await
     }
 
     /// Complete a durable rename while notifying the owner after each pending
     /// identity file write. The callback runs before later journal completion
     /// can fail, and receives the stable request ID for deduplicated recovery.
-    pub fn rename_with_notification(
+    pub async fn rename_with_notification(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         target: &str,
         label: &str,
         request_id: &str,
@@ -139,89 +147,115 @@ impl Credentials {
         mut after_identity_write: impl FnMut(&str),
     ) -> Result<(), CredentialError> {
         supported_platform()?;
-        if !self.is_local_target(store, target)? {
+        if !self.is_local_target(Arc::clone(&store), target).await? {
             return Err(CredentialError::RemoteRequired);
         }
-        let mut saved = self.identity.lock().map_err(|_| CredentialError::Storage)?;
+        let mut saved = self.identity.lock().await;
         // Check both journal identities before writing either. The target table
         // prevents a local request from reusing an earlier remote command ID.
-        store.transaction_with(|tx| -> Result<(), CredentialError> {
-            if !Journal::reserve_name(tx, request_id, label, actor)? {
-                return Err(CredentialError::Conflict);
-            }
-            Ok(())
-        })?;
+        let request_id = request_id.to_owned();
+        let label = label.to_owned();
+        let actor = actor.to_owned();
+        store
+            .transaction_with(move |tx| -> Result<(), CredentialError> {
+                if !Journal::reserve_name(tx, &request_id, &label, &actor)? {
+                    return Err(CredentialError::Conflict);
+                }
+                Ok(())
+            })
+            .await?;
         // Credential creation and pending recovery follow a committed reservation:
         // a conflicting request must not create a file or apply older journal rows.
-        let identity = self.load_with_notification(store, &mut saved, &mut after_identity_write)?;
-        self.recover_with_notification(store, identity, &mut after_identity_write)
+        let identity = self
+            .load_with_notification(Arc::clone(&store), &mut saved, &mut after_identity_write)
+            .await?;
+        self.recover_with_notification(Arc::clone(&store), identity, &mut after_identity_write)
+            .await
     }
 
     /// Resolve a target without creating credentials or recovering pending writes.
-    pub fn is_local_target(
+    pub async fn is_local_target(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         target: &str,
     ) -> Result<bool, CredentialError> {
         supported_platform()?;
         if target == "local" {
             return Ok(true);
         }
-        let saved = self.identity.lock().map_err(|_| CredentialError::Storage)?;
+        let saved = self.identity.lock().await;
         if let Some(identity) = saved.as_ref() {
             return Ok(target == identity.server_id);
         }
-        match fs::symlink_metadata(store.root().join("multi-server/identity.json")) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(_) => Err(CredentialError::Storage),
-            Ok(_) => {
-                Ok(target == remote_transport::read_multi_server_identity(store.root())?.server_id)
+        drop(saved);
+        let root = store.root().to_path_buf();
+        let target = target.to_owned();
+        tokio::task::spawn_blocking(move || {
+            match fs::symlink_metadata(root.join("multi-server/identity.json")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(_) => Err(CredentialError::Storage),
+                Ok(_) => {
+                    Ok(target == remote_transport::read_multi_server_identity(&root)?.server_id)
+                }
             }
-        }
+        })
+        .await
+        .map_err(|_| CredentialError::Storage)?
     }
 
-    fn load<'a>(
+    async fn load<'a>(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         saved: &'a mut Option<StoredMultiServerIdentity>,
     ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
-        self.load_with_notification(store, saved, &mut |_| {})
+        self.load_with_notification(store, saved, &mut |_| {}).await
     }
 
-    fn load_with_notification<'a>(
+    async fn load_with_notification<'a>(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         saved: &'a mut Option<StoredMultiServerIdentity>,
         after_identity_write: &mut impl FnMut(&str),
     ) -> Result<&'a mut StoredMultiServerIdentity, CredentialError> {
         if saved.is_none() {
-            let path = store.root().join("multi-server/identity.json");
-            match fs::symlink_metadata(&path) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    private_directory(store.root())?;
-                    let identity = generate()?;
-                    write_identity(store.root(), &identity, true)?;
+            let root = store.root().to_path_buf();
+            let mut identity = tokio::task::spawn_blocking(move || {
+                let path = root.join("multi-server/identity.json");
+                match fs::symlink_metadata(&path) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        private_directory(&root)?;
+                        let identity = generate()?;
+                        write_identity(&root, &identity, true)?;
+                    }
+                    Err(_) => return Err(CredentialError::Storage),
                 }
-                Err(_) => return Err(CredentialError::Storage),
-            }
-            let mut identity = remote_transport::read_multi_server_identity(store.root())?;
-            self.recover_with_notification(store, &mut identity, after_identity_write)?;
+                remote_transport::read_multi_server_identity(&root).map_err(CredentialError::from)
+            })
+            .await
+            .map_err(|_| CredentialError::Storage)??;
+            self.recover_with_notification(Arc::clone(&store), &mut identity, after_identity_write)
+                .await?;
             store.set_local_server_id(Some(identity.server_id.clone()))?;
             *saved = Some(identity);
         }
         saved.as_mut().ok_or(CredentialError::Storage)
     }
 
-    fn recover_with_notification(
+    async fn recover_with_notification(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         identity: &mut StoredMultiServerIdentity,
         after_identity_write: &mut impl FnMut(&str),
     ) -> Result<(), CredentialError> {
         // File access stays outside store transactions; the writer rechecks
         // the journal before marking each recovery complete.
-        let pending = store.read_transaction_with_error(Journal::pending_names)?;
+        let store_for_read = Arc::clone(&store);
+        let pending = tokio::task::spawn_blocking(move || {
+            store_for_read.read_transaction_with_error(Journal::pending_names)
+        })
+        .await
+        .map_err(|_| CredentialError::Storage)??;
         if pending.is_empty() {
             return Ok(());
         }
@@ -232,7 +266,11 @@ impl Credentials {
         let mut updated = identity.clone();
         for (id, label, actor) in pending {
             updated.label = label;
-            write_identity(store.root(), &updated, false)?;
+            let root = store.root().to_path_buf();
+            let updated_for_write = updated.clone();
+            tokio::task::spawn_blocking(move || write_identity(&root, &updated_for_write, false))
+                .await
+                .map_err(|_| CredentialError::Storage)??;
             after_identity_write(&id);
             updates.push((id, actor, updated.label.clone()));
         }
@@ -240,24 +278,38 @@ impl Credentials {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| CredentialError::Storage)?
             .as_secs_f64();
-        store.transaction_with(|tx| -> Result<(), CredentialError> {
-            let current = Journal::pending_names(tx)?;
-            for (id, actor, label) in &updates {
-                if !current
-                    .iter()
-                    .any(|(current_id, current_label, current_actor)| {
-                        current_id == id && current_label == label && current_actor == actor
-                    })
-                {
-                    return Err(CredentialError::InvalidJournal);
+        let updates_for_commit = updates.clone();
+        let server_id_for_commit = updated.server_id.clone();
+        store
+            .transaction_with(move |tx| -> Result<(), CredentialError> {
+                let current = Journal::pending_names(tx)?;
+                for (id, actor, label) in &updates_for_commit {
+                    if !current
+                        .iter()
+                        .any(|(current_id, current_label, current_actor)| {
+                            current_id == id && current_label == label && current_actor == actor
+                        })
+                    {
+                        return Err(CredentialError::InvalidJournal);
+                    }
+                    Journal::complete_name(tx, id, &server_id_for_commit, actor, now)?;
                 }
-                Journal::complete_name(tx, id, &updated.server_id, actor, now)?;
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })
+            .await?;
         *identity = updated;
         Ok(())
     }
+}
+
+async fn load_federation_identity(
+    store: &Arc<RuntimeStore>,
+) -> Result<RemoteIdentity, CredentialError> {
+    let store_for_read = Arc::clone(store);
+    tokio::task::spawn_blocking(move || remote_transport::load_federation_identity(&store_for_read))
+        .await
+        .map_err(|_| CredentialError::Storage)?
+        .map_err(CredentialError::Identity)
 }
 
 fn public_identity(identity: &StoredMultiServerIdentity, origin: Option<&str>) -> Value {
@@ -391,11 +443,11 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    #[test]
-    fn first_use_conflict_preserves_the_credential_directory_and_journal() {
+    #[tokio::test]
+    async fn first_use_conflict_preserves_the_credential_directory_and_journal() {
         for directory_exists in [false, true] {
             for foreign_target in [false, true] {
-                let (root, store) = remote_transport::tests::runtime_store_fixture();
+                let (root, store) = remote_transport::tests::runtime_store_fixture().await;
                 store
                     .transaction(|tx| {
                         assert!(Journal::reserve_name(tx, "reserved", "Original", "local")?);
@@ -407,6 +459,7 @@ mod tests {
                         }
                         Ok(())
                     })
+                    .await
                     .expect("existing journal reservation");
                 let directory = root.join("multi-server");
                 if directory_exists {
@@ -419,7 +472,9 @@ mod tests {
                     "Changed"
                 };
                 assert!(matches!(
-                    credentials.rename(&store, "local", label, "reserved", "local"),
+                    credentials
+                        .rename(Arc::clone(&store), "local", label, "reserved", "local")
+                        .await,
                     Err(CredentialError::Conflict)
                 ));
                 assert_eq!(directory.exists(), directory_exists);
@@ -439,6 +494,7 @@ mod tests {
                         );
                         Ok(())
                     })
+                    .await
                     .expect("reservation remains unapplied");
                 drop(store);
                 fs::remove_dir_all(root).expect("remove disposable state");
@@ -447,21 +503,22 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn rename_notifies_after_identity_file_write_with_stable_request_id() {
-        let (root, store) = remote_transport::tests::runtime_store_fixture();
+    #[tokio::test]
+    async fn rename_notifies_after_identity_file_write_with_stable_request_id() {
+        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
         let credentials = Credentials::default();
         let mut notified = Vec::new();
 
         credentials
             .rename_with_notification(
-                &store,
+                Arc::clone(&store),
                 "local",
                 "Renamed server",
                 "rename-notify",
                 "local",
                 |request_id| notified.push(request_id.to_owned()),
             )
+            .await
             .expect("rename completes");
 
         assert_eq!(notified, vec!["rename-notify"]);

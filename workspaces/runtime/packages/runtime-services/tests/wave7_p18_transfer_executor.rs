@@ -16,7 +16,7 @@ use studio_runtime_services::{
     account_transfer::{Ticket, TransferError},
     account_transfer_driver::{
         self as driver, DispatchOutcome, PreparedTransfer, ProviderReceipt, TransferDispatch,
-        TransferExecutor, TransferMethod, TransferPreparation, TransferTransport,
+        TransferExecutor, TransferFuture, TransferMethod, TransferPreparation, TransferTransport,
     },
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
@@ -91,36 +91,39 @@ struct Executor<'a> {
     calls: AtomicUsize,
 }
 impl TransferTransport for Executor<'_> {
-    fn send(
-        &self,
-        ticket: &Ticket,
-        scope: &ConnectionScope,
-        method: &str,
-        params: &Value,
-    ) -> TransferDispatch {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.store
-            .transaction(|_| Ok(()))
-            .expect("transport is outside transaction");
-        let stored = operation(self.store);
-        assert_eq!(stored["members"]["lead"]["phase"], "submitted");
-        assert_eq!(
-            stored["members"]["lead"]["providerIntent"]["operation"],
-            ticket.request
-        );
-        assert_eq!(stored["members"]["lead"]["nativeMethod"], method);
-        assert_eq!(stored["members"]["lead"]["nativeParams"], params.clone());
-        let lost_response = matches!(self.behavior, Behavior::LostResponse);
-        let certainty = if lost_response {
-            RequestCertainty::Unknown
-        } else {
-            RequestCertainty::Written
-        };
-        TransferDispatch {
-            receipt: exact_receipt(ticket, scope, certainty.as_str()),
-            result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
-            certainty,
-        }
+    fn send<'a>(
+        &'a self,
+        ticket: &'a Ticket,
+        scope: &'a ConnectionScope,
+        method: &'a str,
+        params: &'a Value,
+    ) -> TransferFuture<'a, TransferDispatch> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.store
+                .transaction(|_| Ok(()))
+                .await
+                .expect("transport is outside transaction");
+            let stored = operation(self.store);
+            assert_eq!(stored["members"]["lead"]["phase"], "submitted");
+            assert_eq!(
+                stored["members"]["lead"]["providerIntent"]["operation"],
+                ticket.request
+            );
+            assert_eq!(stored["members"]["lead"]["nativeMethod"], method);
+            assert_eq!(stored["members"]["lead"]["nativeParams"], params.clone());
+            let lost_response = matches!(self.behavior, Behavior::LostResponse);
+            let certainty = if lost_response {
+                RequestCertainty::Unknown
+            } else {
+                RequestCertainty::Written
+            };
+            TransferDispatch {
+                receipt: exact_receipt(ticket, scope, certainty.as_str()),
+                result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
+                certainty,
+            }
+        })
     }
 }
 impl TransferExecutor for Executor<'_> {
@@ -133,51 +136,58 @@ impl TransferExecutor for Executor<'_> {
             Ok(())
         }
     }
-    fn prepare(&self, input: &TransferPreparation) -> Result<PreparedTransfer, TransferError> {
-        self.store
-            .transaction(|_| Ok(()))
-            .expect("history is outside transaction");
-        assert_eq!(input.operation()["members"]["lead"]["phase"], "reading");
-        assert_eq!(input.agent()["threadId"], "source-thread");
-        assert_eq!(operation(self.store)["members"]["lead"]["phase"], "reading");
-        if matches!(self.behavior, Behavior::PreparationFailed) {
-            return Err(TransferError::Refused("Fixture history unavailable"));
-        }
-        if matches!(self.behavior, Behavior::BusyDuringPreparation) {
-            self.store.transaction(|tx| {
-                tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.inFlight',json('true')) WHERE id='lead'", [])?;
-                Ok(())
-            }).expect("concurrent turn");
-        }
-        let mut ticket = ticket();
-        if matches!(self.behavior, Behavior::ForeignTicket) {
-            ticket.agent = "other".into();
-        }
-        Ok(PreparedTransfer {
-            ticket,
-            scope: ConnectionScope {
-                account: "target".into(),
-                connection: "retained-connection".into(),
-                generation: 1,
-            },
-            method: TransferMethod::Fork,
-            params: json!({"threadId":"source-thread"}),
+    fn prepare<'a>(
+        &'a self,
+        input: &'a TransferPreparation,
+    ) -> TransferFuture<'a, Result<PreparedTransfer, TransferError>> {
+        Box::pin(async move {
+            self.store
+                .transaction(|_| Ok(()))
+                .await
+                .expect("history is outside transaction");
+            assert_eq!(input.operation()["members"]["lead"]["phase"], "reading");
+            assert_eq!(input.agent()["threadId"], "source-thread");
+            assert_eq!(operation(self.store)["members"]["lead"]["phase"], "reading");
+            if matches!(self.behavior, Behavior::PreparationFailed) {
+                return Err(TransferError::Refused("Fixture history unavailable"));
+            }
+            if matches!(self.behavior, Behavior::BusyDuringPreparation) {
+                self.store.transaction(|tx| {
+                    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.inFlight',json('true')) WHERE id='lead'", [])?;
+                    Ok(())
+                }).await.expect("concurrent turn");
+            }
+            let mut ticket = ticket();
+            if matches!(self.behavior, Behavior::ForeignTicket) {
+                ticket.agent = "other".into();
+            }
+            Ok(PreparedTransfer {
+                ticket,
+                scope: ConnectionScope {
+                    account: "target".into(),
+                    connection: "retained-connection".into(),
+                    generation: 1,
+                },
+                method: TransferMethod::Fork,
+                params: json!({"threadId":"source-thread"}),
+            })
         })
     }
 }
 
-#[test]
-fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
+#[tokio::test]
+async fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
     for behavior in [Behavior::Success, Behavior::LostResponse] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("open");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("open");
         let executor = Executor {
             store: &store,
             behavior,
             calls: AtomicUsize::new(0),
         };
-        let outcome =
-            driver::execute_member(&store, &executor, OPERATION, "lead", 10.0).expect("execute");
+        let outcome = driver::execute_member(&store, &executor, OPERATION, "lead", 10.0)
+            .await
+            .expect("execute");
         assert_eq!(
             outcome,
             if matches!(behavior, Behavior::Success) {
@@ -186,17 +196,27 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
                 DispatchOutcome::Unknown
             }
         );
-        assert!(driver::execute_member(&store, &executor, OPERATION, "lead", 11.0).is_err());
+        assert!(
+            driver::execute_member(&store, &executor, OPERATION, "lead", 11.0)
+                .await
+                .is_err()
+        );
         assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
         drop(store);
-        let store = RuntimeStore::open(Some(root.path())).expect("restart");
-        driver::recover(&store, 12.0).expect("recover");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart");
+        driver::recover(&store, 12.0).await.expect("recover");
         let executor = Executor {
             store: &store,
             behavior,
             calls: AtomicUsize::new(0),
         };
-        assert!(driver::execute_member(&store, &executor, OPERATION, "lead", 13.0).is_err());
+        assert!(
+            driver::execute_member(&store, &executor, OPERATION, "lead", 13.0)
+                .await
+                .is_err()
+        );
         assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
         let scope = ConnectionScope {
             account: "target".into(),
@@ -216,6 +236,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
             },
             14.0,
         )
+        .await
         .expect("late exact receipt");
         let saved = operation(&store);
         driver::provider_receipt(
@@ -230,6 +251,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
             },
             15.0,
         )
+        .await
         .expect("same receipt");
         assert_eq!(operation(&store), saved);
         for field in ["operation", "connection", "request"] {
@@ -252,6 +274,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
                     },
                     16.0,
                 )
+                .await
                 .is_err()
             );
             assert_eq!(operation(&store), saved);
@@ -259,8 +282,8 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
     }
 }
 
-#[test]
-fn preparation_failures_do_not_send_or_strand_reading_members() {
+#[tokio::test]
+async fn preparation_failures_do_not_send_or_strand_reading_members() {
     for behavior in [
         Behavior::Unavailable,
         Behavior::PreparationFailed,
@@ -268,14 +291,18 @@ fn preparation_failures_do_not_send_or_strand_reading_members() {
         Behavior::ForeignTicket,
     ] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("open");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("open");
         let before = operation(&store);
         let executor = Executor {
             store: &store,
             behavior,
             calls: AtomicUsize::new(0),
         };
-        assert!(driver::execute_member(&store, &executor, OPERATION, "lead", 10.0).is_err());
+        assert!(
+            driver::execute_member(&store, &executor, OPERATION, "lead", 10.0)
+                .await
+                .is_err()
+        );
         assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
         if matches!(behavior, Behavior::Unavailable) {
             assert_eq!(operation(&store), before);
@@ -285,25 +312,30 @@ fn preparation_failures_do_not_send_or_strand_reading_members() {
     }
 }
 
-#[test]
-fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
+#[tokio::test]
+async fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
     for phase in ["reading", "submitted", "ready"] {
         for timing in ["BEFORE", "AFTER"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).expect("open");
-            store.transaction(|tx| {
+            let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+            let phase = phase.to_owned();
+            let failpoint_phase = phase.clone();
+            let timing = timing.to_owned();
+            store.transaction(move |tx| {
                 for (index, event) in ["INSERT", "UPDATE"].iter().enumerate() {
-                    tx.execute_batch(&format!("CREATE TEMP TRIGGER p18_failure_{index} {timing} {event} ON runtime_account_transfers WHEN json_extract(NEW.record,'$.members.lead.phase')='{phase}' BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
+                    tx.execute_batch(&format!("CREATE TEMP TRIGGER p18_failure_{index} {timing} {event} ON runtime_account_transfers WHEN json_extract(NEW.record,'$.members.lead.phase')='{failpoint_phase}' BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
                 }
                 Ok(())
-            }).expect("install failpoint");
+            }).await.expect("install failpoint");
             let executor = Executor {
                 store: &store,
                 behavior: Behavior::Success,
                 calls: AtomicUsize::new(0),
             };
             assert!(
-                driver::execute_member(&store, &executor, OPERATION, "lead", 10.0).is_err(),
+                driver::execute_member(&store, &executor, OPERATION, "lead", 10.0)
+                    .await
+                    .is_err(),
                 "{timing}/{phase}"
             );
             assert_eq!(
@@ -311,8 +343,10 @@ fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
                 usize::from(phase == "ready")
             );
             drop(store);
-            let store = RuntimeStore::open(Some(root.path())).expect("restart");
-            driver::recover(&store, 11.0).expect("recover");
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart");
+            driver::recover(&store, 11.0).await.expect("recover");
             let expected = match phase {
                 "reading" => "waiting",
                 "submitted" => "blocked",
@@ -330,7 +364,9 @@ fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
                     calls: AtomicUsize::new(0),
                 };
                 assert!(
-                    driver::execute_member(&store, &executor, OPERATION, "lead", 12.0).is_err()
+                    driver::execute_member(&store, &executor, OPERATION, "lead", 12.0)
+                        .await
+                        .is_err()
                 );
                 assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
             }

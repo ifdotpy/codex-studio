@@ -1,6 +1,8 @@
 //! Discovery consumes injected status/probe observations. It never invokes
 //! Tailscale, probes a host, or restores a revoked credential.
+use futures_util::future::BoxFuture;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -19,14 +21,15 @@ const MAX_DISCOVERED: i64 = 256;
 /// persisted server identity and public Serve origin; tests inject a fake
 /// adapter and never consult the machine's Tailscale installation.
 pub trait ServerDiscoveryPort: Send + Sync {
-    fn discover(
-        &self,
-        store: &RuntimeStore,
-        identity: &Value,
-        public_origin: &str,
-    ) -> Result<Value, AccessError>;
+    fn discover<'a>(
+        &'a self,
+        store: Arc<RuntimeStore>,
+        identity: &'a Value,
+        public_origin: &'a str,
+    ) -> BoxFuture<'a, Result<Value, AccessError>>;
 }
 
+#[derive(Clone)]
 pub struct DiscoverySnapshot {
     owner: String,
     local_id: String,
@@ -192,23 +195,26 @@ pub fn decide_probe(
 
 /// Apply one bounded observation. Auto pairing is returned as a proposal for
 /// the host driver, never performed by an unsigned discovery observation.
-pub fn record_probe(
+pub async fn record_probe(
     store: &RuntimeStore,
     snapshot: &DiscoverySnapshot,
     origin: &str,
     peer: &Value,
     now: i64,
 ) -> Result<DiscoveryDecision, AccessError> {
-    store.transaction_with(|tx| {
-        let id=text(peer,"serverId");
+    let snapshot = snapshot.clone();
+    let origin = origin.to_owned();
+    let peer = peer.clone();
+    store.transaction_with(move |tx| {
+        let id=text(&peer,"serverId");
         let previous=read_record(tx,"runtime_access_discovered",id)?;
         let client=read_record(tx,"runtime_access_clients",id)?;
         let enabled:bool=tx.query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1",[],|r|r.get(0))?;
-        let decision=decide_probe(snapshot,origin,peer,previous.as_deref(),client.as_deref(),enabled,now)?;
+        let decision=decide_probe(&snapshot,&origin,&peer,previous.as_deref(),client.as_deref(),enabled,now)?;
         if let Some(record)=&decision.record {
             tx.execute("INSERT INTO runtime_access_discovered(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,record.to_string()])?;
             tx.execute("DELETE FROM runtime_access_discovered WHERE id IN (SELECT id FROM runtime_access_discovered ORDER BY json_extract(record,'$.lastSeen') DESC,id LIMIT -1 OFFSET ?1)",[MAX_DISCOVERED])?;
         }
         Ok(decision)
-    })
+    }).await
 }

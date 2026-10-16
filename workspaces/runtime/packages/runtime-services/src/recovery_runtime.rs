@@ -3,7 +3,9 @@
 //! transaction rechecks stored scope and the worker's cached observation; publication
 //! is committed with the rows. No recovery port can submit native input.
 use crate::{
-    recovery::{RecoveryError, RecoveryOutcome, recover_connection, recover_turn},
+    recovery::{
+        RecoveryEffectResult, RecoveryError, RecoveryOutcome, recover_connection, recover_turn,
+    },
     recovery_absence::RecoveryObservation,
     recovery_history::{
         ConnectionScope, HistoryError, HistoryMethod, HistoryReceipt, RecoveryReader,
@@ -16,6 +18,7 @@ use crate::{
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use studio_runtime_store::RuntimeStore;
@@ -24,34 +27,38 @@ use studio_runtime_store::RuntimeStore;
 /// sole retained session. Both calls must use a timer for this absolute deadline
 /// and cancellation, including queue admission. A barrier completes only after
 /// preceding notifications and their store commits. Neither call opens a session.
-pub trait RetainedHistory {
-    fn request(
-        &mut self,
+pub trait RetainedHistory: Send {
+    fn request<'a>(
+        &'a mut self,
         scope: &ConnectionScope,
         method: HistoryMethod,
         params: Value,
         deadline: Instant,
-    ) -> Result<HistoryReceipt, HistoryError>;
-    fn barrier(&mut self, scope: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError>;
+    ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>>;
+    fn barrier<'a>(
+        &'a mut self,
+        scope: &ConnectionScope,
+        deadline: Instant,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>>;
 }
 
 /// Worker-owned cached observation. Must not wait, read files, or query a provider;
 /// it is also called under the writer transaction. A stopped/replaced connection
 /// returns None. The worker serializes stop/generation changes with commits.
-pub type ObservationSource<'a> = dyn Fn(&ConnectionScope) -> Option<RecoveryObservation> + 'a;
+pub type ObservationSource = dyn Fn(&ConnectionScope) -> Option<RecoveryObservation> + Send + Sync;
 
 pub struct RetainedRecoveryReader<'a> {
     scope: ConnectionScope,
     thread: String,
     port: &'a mut dyn RetainedHistory,
-    observation: &'a ObservationSource<'a>,
+    observation: &'a ObservationSource,
 }
 impl<'a> RetainedRecoveryReader<'a> {
     pub fn new(
         scope: ConnectionScope,
         thread: String,
         port: &'a mut dyn RetainedHistory,
-        observation: &'a ObservationSource<'a>,
+        observation: &'a ObservationSource,
     ) -> Result<Self, HistoryError> {
         if scope.account.is_empty() || scope.connection.is_empty() || scope.generation == 0 {
             return Err(HistoryError::Identity);
@@ -85,31 +92,41 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
     ) -> Result<RecoveryObservation, HistoryError> {
         self.current(scope)
     }
-    fn read(
-        &mut self,
+    fn read<'b>(
+        &'b mut self,
         scope: &ConnectionScope,
         method: HistoryMethod,
         params: Value,
         deadline: Instant,
-    ) -> Result<HistoryReceipt, HistoryError> {
-        self.ready(scope, deadline)?;
-        if self.thread.is_empty()
-            || params["threadId"] != self.thread
-            || (method == HistoryMethod::Thread && params["includeTurns"] != false)
-        {
-            return Err(HistoryError::Identity);
-        }
-        let receipt = self.port.request(scope, method, params, deadline)?;
-        self.ready(scope, deadline)?;
-        Ok(receipt)
+    ) -> futures_util::future::BoxFuture<'b, Result<HistoryReceipt, HistoryError>> {
+        let scope = scope.clone();
+        Box::pin(async move {
+            self.ready(&scope, deadline)?;
+            if self.thread.is_empty()
+                || params["threadId"] != self.thread
+                || (method == HistoryMethod::Thread && params["includeTurns"] != false)
+            {
+                return Err(HistoryError::Identity);
+            }
+            let receipt = self.port.request(&scope, method, params, deadline).await?;
+            self.ready(&scope, deadline)?;
+            Ok(receipt)
+        })
     }
-    fn barrier(&mut self, scope: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError> {
-        self.ready(scope, deadline)?;
-        self.port.barrier(scope, deadline)?;
-        self.ready(scope, deadline)?;
-        // The retained-session barrier is the authoritative proof that earlier
-        // notifications have committed; the cached observation may predate it.
-        Ok(())
+    fn barrier<'b>(
+        &'b mut self,
+        scope: &ConnectionScope,
+        deadline: Instant,
+    ) -> futures_util::future::BoxFuture<'b, Result<(), HistoryError>> {
+        let scope = scope.clone();
+        Box::pin(async move {
+            self.ready(&scope, deadline)?;
+            self.port.barrier(&scope, deadline).await?;
+            self.ready(&scope, deadline)?;
+            // The retained-session barrier is the authoritative proof that earlier
+            // notifications have committed; the cached observation may predate it.
+            Ok(())
+        })
     }
 }
 
@@ -254,25 +271,24 @@ pub fn load_recovery_jobs(
 }
 
 /// The startup caller and periodic account caller use the same entry. The owner
-/// runs it on its blocking boundary, never while holding the SQLite transaction.
+/// drives history reads asynchronously, before opening any SQLite transaction.
 /// Recovery is not an ACK: the owner publishes/wakes only after this returns.
-pub struct RecoveryRuntime<'a> {
-    pub store: &'a RuntimeStore,
-    pub observation: &'a ObservationSource<'a>,
-    pub completion: &'a mut dyn CompletionWriter,
-    pub task_completion: &'a mut dyn TaskCompletionWriter,
+pub struct RecoveryRuntime {
+    pub store: Arc<RuntimeStore>,
+    pub observation: Arc<ObservationSource>,
+    pub completion: Arc<Mutex<Box<dyn CompletionWriter>>>,
+    pub task_completion: Arc<dyn TaskCompletionWriter>,
 }
-impl RecoveryRuntime<'_> {
-    pub fn reconcile(
+impl RecoveryRuntime {
+    pub async fn reconcile(
         &mut self,
         job: &RecoveryJob,
         scope: ConnectionScope,
         reader: &mut dyn RecoveryReader,
-    ) -> Result<RecoveryOutcome, RecoveryError> {
+    ) -> Result<RecoveryEffectResult, RecoveryError> {
         let Some(observation) = (self.observation)(&scope).filter(|o| o.valid(&scope)) else {
-            return Ok(RecoveryOutcome::Superseded);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
         };
-        let current = |s: &ConnectionScope| (self.observation)(s).is_some_and(|o| o.valid(s));
         match job {
             RecoveryJob::Task(snapshot) => {
                 let changed = recover_task(
@@ -280,33 +296,41 @@ impl RecoveryRuntime<'_> {
                     scope,
                     reader,
                     &mut TaskRecoveryStore {
-                        store: self.store,
-                        observation_current: self.observation,
-                        completion: self.task_completion,
+                        store: Arc::clone(&self.store),
+                        observation_current: Arc::clone(&self.observation),
+                        completion: Arc::clone(&self.task_completion),
                     },
-                )?;
-                Ok(if changed {
+                )
+                .await?;
+                Ok(RecoveryEffectResult::plain(if changed {
                     RecoveryOutcome::Applied(serde_json::json!({"status":"checked"}))
                 } else {
                     RecoveryOutcome::Unconfirmed
-                })
+                }))
             }
             _ => {
                 let mut effects = RecoveryStore {
-                    store: self.store,
-                    connection_current: &current,
-                    completion: self.completion,
+                    store: Arc::clone(&self.store),
+                    connection_current: {
+                        let observation = Arc::clone(&self.observation);
+                        Arc::new(move |scope: &ConnectionScope| {
+                            observation(scope).is_some_and(|value| value.valid(scope))
+                        })
+                    },
+                    completion: Arc::clone(&self.completion),
                     at: observation.at,
-                    observation_current: self.observation,
+                    observation_current: Arc::clone(&self.observation),
                 };
                 match job {
                     RecoveryJob::Turn(snapshot) => {
-                        recover_turn(snapshot, scope, reader, &mut effects)
+                        recover_turn(snapshot, scope, reader, &mut effects).await
                     }
                     RecoveryJob::Connection {
                         snapshot,
                         automatic,
-                    } => recover_connection(snapshot, scope, reader, &mut effects, *automatic),
+                    } => {
+                        recover_connection(snapshot, scope, reader, &mut effects, *automatic).await
+                    }
                     RecoveryJob::Task(_) => unreachable!("task handled above"),
                 }
             }
@@ -364,13 +388,13 @@ impl RecoveryScan {
         &mut self,
         job: &RecoveryJob,
         now: Instant,
-        outcome: &Result<RecoveryOutcome, RecoveryError>,
+        outcome: &Result<RecoveryEffectResult, RecoveryError>,
     ) -> Result<(), RecoveryError> {
         let key = job.key();
         if self.active.as_ref() != Some(&key) {
             return Err(RecoveryError::CommitFailed);
         }
-        let restored = matches!(outcome, Ok(RecoveryOutcome::Applied(v)) if matches!(v["status"].as_str(), Some("adopted"|"reconciled"|"input_restored")));
+        let restored = matches!(outcome, Ok(result) if matches!(&result.outcome, RecoveryOutcome::Applied(v) if matches!(v["status"].as_str(), Some("adopted"|"reconciled"|"input_restored"))));
         let failures = if restored {
             0
         } else {

@@ -214,20 +214,14 @@ pub(crate) async fn save_plan(
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_items",
-        move || -> Result<Value, ApiError> {
-            let result = store
-                .transaction_with_error(|connection| event_write::save_plan(connection, input))
-                .map_err(write_error)?;
-            if result.event_inserted {
-                wake.notify_one();
-            }
-            Ok(result.record)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let result = store
+        .transaction_with_error(|connection| event_write::save_plan(connection, input))
+        .await
+        .map_err(write_error)?;
+    if result.event_inserted {
+        wake.notify_one();
+    }
+    let result = result.record;
     Ok(Json(result))
 }
 
@@ -254,20 +248,14 @@ pub(crate) async fn annotation(
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_items",
-        move || -> Result<Value, ApiError> {
-            let result = store
-                .transaction_with_error(|connection| event_write::annotate(connection, input))
-                .map_err(write_error)?;
-            if result.event_inserted {
-                wake.notify_one();
-            }
-            Ok(result.record)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let result = store
+        .transaction_with_error(|connection| event_write::annotate(connection, input))
+        .await
+        .map_err(write_error)?;
+    if result.event_inserted {
+        wake.notify_one();
+    }
+    let result = result.record;
     Ok(Json(result))
 }
 pub(crate) async fn organization(
@@ -275,17 +263,12 @@ pub(crate) async fn organization(
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_items",
-        move || {
-            store.transaction_with_error(|tx| {
-                studio_runtime_services::organization_effects::apply(tx, &body)
-            })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(write_error)?;
+    let result = store
+        .transaction_with_error(move |tx| {
+            studio_runtime_services::organization_effects::apply(tx, &body)
+        })
+        .await
+        .map_err(write_error)?;
     Ok(Json(result))
 }
 

@@ -1594,18 +1594,18 @@ fn stored_preference_fields(
     Ok(fields)
 }
 
-pub fn push_preferences(
+pub async fn push_preferences(
     store: &RuntimeStore,
     scope: PreferenceScope,
-    incoming: &Map<String, Value>,
-    validate_field: impl Fn(&Value) -> bool + Send + Sync,
+    incoming: Map<String, Value>,
+    validate_field: impl Fn(&Value) -> bool + Send + Sync + 'static,
 ) -> Result<Map<String, Value>, SyncPolicyError> {
     let scope_name = match scope {
         PreferenceScope::User => "user",
         PreferenceScope::Server => "server",
     };
     store
-        .transaction(|transaction| {
+        .transaction(move |transaction| {
             let current_payload =
                 SyncDocumentsRepository::preference_payload(transaction, scope_name)?;
             let current = stored_preference_fields(current_payload, scope_name, &validate_field)
@@ -1620,7 +1620,7 @@ pub fn push_preferences(
                 .map_or(0, |duration| {
                     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
                 });
-            let merged = merge_preferences(&current, incoming, now_ms)
+            let merged = merge_preferences(&current, &incoming, now_ms)
                 .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             let payload = canonical_json(&json!({
                 "collection": "uiPreferences",
@@ -1630,6 +1630,7 @@ pub fn push_preferences(
             SyncDocumentsRepository::put_preferences(transaction, scope_name, &payload)?;
             Ok(merged)
         })
+        .await
         .map_err(|error| match error {
             StoreError::InvalidSyncObject { scope, id } => {
                 SyncPolicyError::InvalidStoredObject { scope, id }
@@ -1991,15 +1992,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn entity_projection_skips_unused_task_snapshot_and_keeps_task_window_behavior() {
+    #[tokio::test]
+    async fn entity_projection_skips_unused_task_snapshot_and_keeps_task_window_behavior() {
         let root = tempfile::tempdir().expect("isolated state directory");
-        let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open isolated runtime store");
         let agent = json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 let agent = studio_runtime_store::AgentRecord::from_value(agent.clone())?;
                 studio_runtime_store::AgentRepository::put(transaction, &agent)?;
                 transaction.execute(
@@ -2012,18 +2015,21 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed task-window fixture");
 
         TRACED_SQL.with_borrow_mut(Vec::clear);
+        let state_dir = root.path().to_string_lossy().into_owned();
+        let snapshot_for_first_maintenance = snapshot.clone();
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
                     transaction,
-                    root.path().to_string_lossy().as_ref(),
+                    &state_dir,
                     None,
-                    &snapshot,
+                    &snapshot_for_first_maintenance,
                     &rooms,
                     |_, _, _, _| true,
                 )?;
@@ -2036,6 +2042,7 @@ mod tests {
                 assert_eq!(payload["value"]["status"], "running");
                 Ok(())
             })
+            .await
             .expect("maintain canonical task projection");
 
         TRACED_SQL.with_borrow(|statements| {
@@ -2049,8 +2056,10 @@ mod tests {
             );
         });
 
+        let state_dir = root.path().to_string_lossy().into_owned();
+        let snapshot_for_second_maintenance = snapshot.clone();
         store
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 transaction.execute(
                     "UPDATE runtime_tasks SET record=?1 WHERE id='task'",
                     [json!({"id":"task","agent":"agent","status":"completed","created":2}).to_string()],
@@ -2058,9 +2067,9 @@ mod tests {
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
                     transaction,
-                    root.path().to_string_lossy().as_ref(),
+                    &state_dir,
                     None,
-                    &snapshot,
+                    &snapshot_for_second_maintenance,
                     &rooms,
                     |_, _, _, _| true,
                 )?;
@@ -2082,9 +2091,9 @@ mod tests {
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
                     transaction,
-                    root.path().to_string_lossy().as_ref(),
+                    &state_dir,
                     None,
-                    &snapshot,
+                    &snapshot_for_second_maintenance,
                     &rooms,
                     |_, _, _, _| true,
                 )?;
@@ -2096,6 +2105,7 @@ mod tests {
                 assert!(deleted);
                 Ok(())
             })
+            .await
             .expect("task-window eligibility transition remains canonical");
     }
 
@@ -2421,16 +2431,24 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn maintained_project_projection_matches_python_vault_corpus_and_surfaces_bad_records() {
+    #[tokio::test]
+    async fn maintained_project_projection_matches_python_vault_corpus_and_surfaces_bad_records() {
         let cases: Vec<Value> =
             serde_json::from_str(include_str!("../tests/vault/project-view-cases.json"))
                 .expect("project vault corpus");
         for case in cases {
             let root = tempfile::tempdir().expect("isolated state directory");
-            let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
-            let project_id = case["projectId"].as_str().expect("fixture project id");
-            let folder = store.root().join("linux-vm/layr-projects").join(project_id);
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("open isolated runtime store");
+            let project_id = case["projectId"]
+                .as_str()
+                .expect("fixture project id")
+                .to_owned();
+            let folder = store
+                .root()
+                .join("linux-vm/layr-projects")
+                .join(&project_id);
             fs::create_dir_all(&folder).unwrap();
             for (name, value) in case["records"].as_object().unwrap() {
                 fs::write(folder.join(name), serde_json::to_vec(value).unwrap()).unwrap();
@@ -2450,7 +2468,11 @@ mod tests {
                 &[(project["id"].as_str().unwrap().to_owned(), project.clone())],
             );
 
-            let result = store.transaction(|transaction| {
+            let state_dir = store.root().to_string_lossy().into_owned();
+            let expected = case["expected"].clone();
+            let expected_error = case.get("expectedError").is_some();
+            let transaction_project_id = project_id.clone();
+            let result = store.transaction(move |transaction| {
                 ProjectsRepository::put_project(transaction, &project)?;
                 let mut prior = prior;
                 prior["layrReadiness"] = json!({"state":"ready"});
@@ -2464,7 +2486,6 @@ mod tests {
                     false,
                 )?;
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
-                let state_dir = store.root().to_string_lossy();
                 maintain_entity_projections_with_server_id(
                     transaction,
                     &state_dir,
@@ -2475,14 +2496,14 @@ mod tests {
                 )?;
                 let payload: String = transaction.query_row(
                     "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
-                    [project["id"].as_str().unwrap()],
+                    [transaction_project_id.as_str()],
                     |row| row.get(0),
                 )?;
                 let payload: Value = serde_json::from_str(&payload)?;
-                assert_eq!(payload["value"]["vault"], case["expected"]);
+                assert_eq!(payload["value"]["vault"], expected);
                 Ok(())
-            });
-            if case.get("expectedError").is_some() {
+            }).await;
+            if expected_error {
                 assert!(matches!(
                     result,
                     Err(StoreError::InvalidStoredRecord {

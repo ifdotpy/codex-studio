@@ -4,8 +4,10 @@ use crate::federation_messaging::{
     self as core, FederationMessageError as Error, PROTOCOL, Result,
 };
 use crate::remote_transport::{self as transport, RemoteIdentity};
+use futures_util::future::BoxFuture;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use studio_runtime_store::federation_messaging::{
@@ -15,12 +17,12 @@ use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, StoreError};
 const PASS_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// A single absolute deadline and cancellation signal shared by every exchange.
-pub struct PassBudget<'a> {
+pub struct PassBudget {
     deadline: Instant,
-    cancelled: &'a AtomicBool,
+    cancelled: Arc<AtomicBool>,
 }
-impl<'a> PassBudget<'a> {
-    pub fn new(deadline: Instant, cancelled: &'a AtomicBool) -> Self {
+impl PassBudget {
+    pub fn new(deadline: Instant, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             deadline,
             cancelled,
@@ -41,21 +43,22 @@ impl<'a> PassBudget<'a> {
 }
 
 /// Implementations must honor this pass budget, including its cancellation signal.
-pub struct FederationExchange<'a> {
-    pub store: &'a RuntimeStore,
-    pub server_id: &'a str,
-    pub public_key: &'a str,
-    pub url: &'a str,
-    pub headers: &'a [(String, String)],
-    pub body: &'a [u8],
-    pub budget: &'a PassBudget<'a>,
+pub struct FederationExchange {
+    pub store: Arc<RuntimeStore>,
+    pub server_id: String,
+    pub public_key: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub deadline: Instant,
+    pub cancelled: Arc<AtomicBool>,
 }
 
-pub trait FederationTransport {
-    fn exchange(
-        &mut self,
-        request: FederationExchange<'_>,
-    ) -> transport::RemoteTransportResult<FederationTransportResponse>;
+pub trait FederationTransport: Send + Sync {
+    fn exchange<'a>(
+        &'a self,
+        request: FederationExchange,
+    ) -> BoxFuture<'a, transport::RemoteTransportResult<FederationTransportResponse>>;
 }
 
 pub struct FederationTransportResponse {
@@ -65,40 +68,69 @@ pub struct FederationTransportResponse {
 
 pub struct HttpsFederationTransport;
 impl FederationTransport for HttpsFederationTransport {
-    fn exchange(
-        &mut self,
-        request: FederationExchange<'_>,
-    ) -> transport::RemoteTransportResult<FederationTransportResponse> {
-        let headers = request
-            .headers
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect::<Vec<_>>();
-        let response = transport::exchange_paired_request(
-            request.store,
-            transport::PairedRequest {
-                server_id: request.server_id,
-                public_key: request.public_key,
-                method: "POST",
-                url: request.url,
-                headers: &headers,
-                body: request.body,
-                timeout: request.budget.remaining()?,
-                response_limit: transport::MAX_REQUEST_BYTES,
-            },
-        )?;
-        request.budget.remaining()?;
-        if response.status != 200 {
-            return Err(transport::RemoteTransportError::InvalidResponse);
-        }
-        let link_advert = response
-            .headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
-            .map(|(_, value)| value.clone());
-        Ok(FederationTransportResponse {
-            body: response.body,
-            link_advert,
+    fn exchange<'a>(
+        &'a self,
+        request: FederationExchange,
+    ) -> BoxFuture<'a, transport::RemoteTransportResult<FederationTransportResponse>> {
+        Box::pin(async move {
+            let FederationExchange {
+                store,
+                server_id,
+                public_key,
+                url,
+                headers,
+                body,
+                deadline,
+                cancelled,
+            } = request;
+            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                return Err(transport::RemoteTransportError::ExchangeUnknown);
+            }
+            let response = tokio::task::spawn_blocking(move || {
+                let timeout = deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|remaining| !remaining.is_zero())
+                    .filter(|_| !cancelled.load(Ordering::Acquire))
+                    .ok_or(transport::RemoteTransportError::ExchangeUnknown)?;
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(transport::RemoteTransportError::ExchangeUnknown);
+                }
+                let headers = headers
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str()))
+                    .collect::<Vec<_>>();
+                let response = transport::exchange_paired_request(
+                    &store,
+                    transport::PairedRequest {
+                        server_id: &server_id,
+                        public_key: &public_key,
+                        method: "POST",
+                        url: &url,
+                        headers: &headers,
+                        body: &body,
+                        timeout,
+                        response_limit: transport::MAX_REQUEST_BYTES,
+                    },
+                )?;
+                if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    return Err(transport::RemoteTransportError::ExchangeUnknown);
+                }
+                if response.status != 200 {
+                    return Err(transport::RemoteTransportError::InvalidResponse);
+                }
+                let link_advert = response
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+                    .map(|(_, value)| value.clone());
+                Ok(FederationTransportResponse {
+                    body: response.body,
+                    link_advert,
+                })
+            })
+            .await
+            .map_err(|_| transport::RemoteTransportError::ExchangeUnknown)??;
+            Ok(response)
         })
     }
 }
@@ -144,27 +176,36 @@ pub fn delivery_deadlines_by_peer(
 
 /// Complete a durable outgoing invitation pairing. The peer row already holds
 /// the invitation ID/token before any network call, so retries keep its identity.
-pub fn pair_peer(
-    store: &RuntimeStore,
+pub async fn pair_peer(
+    store: Arc<RuntimeStore>,
     peer_id: &str,
     now: f64,
-    transport: &mut impl FederationTransport,
-    cancelled: &AtomicBool,
+    transport: &impl FederationTransport,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<Value> {
-    let identity = transport::load_federation_identity(store)?;
-    let record = store.read_transaction(|connection| {
-        let raw: Option<String> = connection
-            .query_row(
-                "SELECT record FROM runtime_federation_peers WHERE id=?1",
-                [peer_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        raw.map(|raw| serde_json::from_str::<Value>(&raw))
-            .transpose()
-            .map_err(|_| StoreError::SchemaMismatch("invalid federation peer record".to_owned()))?
-            .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
-    })?;
+    let store_for_read = Arc::clone(&store);
+    let peer_id_for_read = peer_id.to_owned();
+    let (identity, record) = tokio::task::spawn_blocking(move || {
+        let identity = transport::load_federation_identity(&store_for_read)?;
+        let record = store_for_read.read_transaction(|connection| {
+            let raw: Option<String> = connection
+                .query_row(
+                    "SELECT record FROM runtime_federation_peers WHERE id=?1",
+                    [&peer_id_for_read],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            raw.map(|raw| serde_json::from_str::<Value>(&raw))
+                .transpose()
+                .map_err(|_| {
+                    StoreError::SchemaMismatch("invalid federation peer record".to_owned())
+                })?
+                .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
+        })?;
+        Ok::<_, Error>((identity, record))
+    })
+    .await
+    .map_err(|_| Error::Unavailable("federation/peer-read-worker"))??;
     if record["status"] == "revoked"
         || record["localApproved"] != true
         || record["remoteApproved"] == true
@@ -199,7 +240,7 @@ pub fn pair_peer(
     let deadline = Instant::now() + PASS_TIMEOUT;
     let budget = PassBudget::new(deadline, cancelled);
     let response = request(
-        store,
+        Arc::clone(&store),
         transport,
         Request {
             peer: &peer,
@@ -209,7 +250,8 @@ pub fn pair_peer(
             now: now as i64,
             budget: &budget,
         },
-    )?;
+    )
+    .await?;
     let whois_status = response["whoisStatus"]
         .as_str()
         .filter(|status| matches!(*status, "verified" | "missing" | "unavailable"))
@@ -217,8 +259,14 @@ pub fn pair_peer(
     if response["accepted"] != true || response["stateId"] != peer_id {
         return Err(Error::Invalid("pair.response"));
     }
-    store.transaction_with(|tx| {
-        let latest = Repo::record(tx, Table::Peer, peer_id, peer_id)?
+    let peer_id = peer_id.to_owned();
+    let invite_id = invite_id.to_owned();
+    let invite_token = invite_token.to_owned();
+    let record = record.clone();
+    let response = response.clone();
+    let whois_status = whois_status.to_owned();
+    store.transaction_with(move |tx| {
+        let latest = Repo::record(tx, Table::Peer, &peer_id, &peer_id)?
             .ok_or(Error::Conflict("pairing intent disappeared"))?;
         if latest["inviteId"] != invite_id
             || latest["inviteToken"] != invite_token
@@ -248,9 +296,9 @@ pub fn pair_peer(
             "pending"
         });
         updated["updated"] = json!(now);
-        Repo::put(tx, Table::Peer, peer_id, peer_id, &updated)?;
+        Repo::put(tx, Table::Peer, &peer_id, &peer_id, &updated)?;
         Ok::<_, Error>(updated)
-    })
+    }).await
 }
 struct Request<'a> {
     peer: &'a core::Peer,
@@ -258,12 +306,12 @@ struct Request<'a> {
     path: &'a str,
     body: Value,
     now: i64,
-    budget: &'a PassBudget<'a>,
+    budget: &'a PassBudget,
 }
 
-fn request(
-    store: &RuntimeStore,
-    transport: &mut impl FederationTransport,
+async fn request(
+    store: Arc<RuntimeStore>,
+    transport: &impl FederationTransport,
     request: Request<'_>,
 ) -> Result<Value> {
     let Request {
@@ -286,15 +334,18 @@ fn request(
         now,
     )?;
     budget.remaining()?;
-    let response = transport.exchange(FederationExchange {
-        store,
-        server_id: &peer.state_id,
-        public_key: &peer.public_key,
-        url: &url,
-        headers: &headers,
-        body: &body,
-        budget,
-    })?;
+    let response = transport
+        .exchange(FederationExchange {
+            store: Arc::clone(&store),
+            server_id: peer.state_id.clone(),
+            public_key: peer.public_key.clone(),
+            url,
+            headers,
+            body,
+            deadline: budget.deadline(),
+            cancelled: Arc::clone(&budget.cancelled),
+        })
+        .await?;
     budget.remaining()?;
     if response.body.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("response.size"));
@@ -305,18 +356,18 @@ fn request(
         Some(&peer.state_id),
         now,
     )?;
-    transport::learn_paired_request_link(store, &peer.state_id, response.link_advert.as_deref());
+    transport::learn_paired_request_link(&store, &peer.state_id, response.link_advert.as_deref());
     Ok(verified)
 }
 
 /// One bounded pass for an approved peer; the runtime timer owns scheduling/cancellation
 /// between calls. Failed delivery keeps the same immutable message for safe replay.
-pub fn pump_peer(
-    store: &RuntimeStore,
+pub async fn pump_peer(
+    store: Arc<RuntimeStore>,
     peer_id: &str,
     now: f64,
-    transport: &mut impl FederationTransport,
-    cancelled: &AtomicBool,
+    transport: &impl FederationTransport,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<usize> {
     pump_peer_until(
         store,
@@ -325,25 +376,38 @@ pub fn pump_peer(
         transport,
         PassBudget::new(Instant::now() + PASS_TIMEOUT, cancelled),
     )
+    .await
 }
 
-pub(crate) fn pump_peer_until(
-    store: &RuntimeStore,
+pub(crate) async fn pump_peer_until(
+    store: Arc<RuntimeStore>,
     peer_id: &str,
     now: f64,
-    transport: &mut impl FederationTransport,
-    budget: PassBudget<'_>,
+    transport: &impl FederationTransport,
+    budget: PassBudget,
 ) -> Result<usize> {
     if budget.remaining().is_err() {
         return Ok(0);
     }
-    let identity = transport::load_federation_identity(store)?;
-    let (peer, queued) = store.transaction_with(|tx| {
-        let state = snapshot(tx, peer_id, "", "", now)?;
-        state.authorize(false)?;
-        effects::check_identity(tx, &identity)?;
-        Ok::<_, Error>((state.peer, Repo::batch(tx, Table::Outbox, peer_id, now)?))
-    })?;
+    let store_for_read = Arc::clone(&store);
+    let identity =
+        tokio::task::spawn_blocking(move || transport::load_federation_identity(&store_for_read))
+            .await
+            .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
+    let identity = Arc::new(identity);
+    let peer_id_owned = peer_id.to_owned();
+    let identity_for_claim = Arc::clone(&identity);
+    let (peer, queued) = store
+        .transaction_with(move |tx| {
+            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            state.authorize(false)?;
+            effects::check_identity(tx, identity_for_claim.as_ref())?;
+            Ok::<_, Error>((
+                state.peer,
+                Repo::batch(tx, Table::Outbox, &peer_id_owned, now)?,
+            ))
+        })
+        .await?;
     let mut delivered = 0;
     for (id, item) in queued {
         if budget.remaining().is_err() {
@@ -353,25 +417,36 @@ pub(crate) fn pump_peer_until(
         // revocation may race with the network; its receipt cannot revive local state.
         let envelope = effects::outbound(&item, &identity, now as i64)?;
         let hash = core::envelope_hash(&envelope)?;
-        store.transaction_with(|tx| {
-            let state = snapshot(tx, peer_id, "", "", now)?;
-            state.authorize(false)?;
-            if state.peer.public_key != peer.public_key {
-                return Err(Error::Conflict("peer key changed"));
-            }
-            let mut latest = Repo::record(tx, Table::Outbox, &id, peer_id)?
-                .ok_or(Error::Conflict("outbox removed"))?;
-            if latest["status"] != "queued"
-                || core::envelope_hash(&effects::outbound(&latest, &identity, now as i64)?)? != hash
-            {
-                return Err(Error::Conflict("outbox changed"));
-            }
-            latest["hash"] = json!(hash);
-            Repo::put(tx, Table::Outbox, &id, peer_id, &latest)?;
-            Ok(())
-        })?;
+        let peer_id_owned = peer_id.to_owned();
+        let identity_for_check = Arc::clone(&identity);
+        let peer_for_check = peer.clone();
+        let id_for_check = id.clone();
+        let hash_for_check = hash.clone();
+        store
+            .transaction_with(move |tx| {
+                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                state.authorize(false)?;
+                if state.peer.public_key != peer_for_check.public_key {
+                    return Err(Error::Conflict("peer key changed"));
+                }
+                let mut latest = Repo::record(tx, Table::Outbox, &id_for_check, &peer_id_owned)?
+                    .ok_or(Error::Conflict("outbox removed"))?;
+                if latest["status"] != "queued"
+                    || core::envelope_hash(&effects::outbound(
+                        &latest,
+                        identity_for_check.as_ref(),
+                        now as i64,
+                    )?)? != hash_for_check
+                {
+                    return Err(Error::Conflict("outbox changed"));
+                }
+                latest["hash"] = json!(hash_for_check);
+                Repo::put(tx, Table::Outbox, &id_for_check, &peer_id_owned, &latest)?;
+                Ok(())
+            })
+            .await?;
         let result = request(
-            store,
+            Arc::clone(&store),
             transport,
             Request {
                 peer: &peer,
@@ -382,6 +457,7 @@ pub(crate) fn pump_peer_until(
                 budget: &budget,
             },
         )
+        .await
         .and_then(|value| {
             core::validate(
                 "studio_api__federation__models__MessageReceipt",
@@ -396,60 +472,83 @@ pub(crate) fn pump_peer_until(
         let result = match result {
             Ok(value) => value,
             Err(error) => {
-                store.transaction_with(|tx| {
-                    if let Some(mut latest) = Repo::record(tx, Table::Outbox, &id, peer_id)?
-                        && latest["status"] == "queued"
-                    {
-                        let attempts = latest["attempts"]
-                            .as_u64()
-                            .ok_or(Error::Invalid("outbox.attempts"))?
-                            .saturating_add(1)
-                            .min(16);
-                        latest["attempts"] = json!(attempts);
-                        latest["nextAt"] = json!(now + (1_u64 << attempts.min(8)).min(300) as f64);
-                        latest["error"] =
-                            json!("Federation transport did not return a verified receipt");
-                        Repo::put(tx, Table::Outbox, &id, peer_id, &latest)?;
-                    }
-                    Ok::<_, Error>(())
-                })?;
+                let peer_id_owned = peer_id.to_owned();
+                let id_owned = id.clone();
+                store
+                    .transaction_with(move |tx| {
+                        if let Some(mut latest) =
+                            Repo::record(tx, Table::Outbox, &id_owned, &peer_id_owned)?
+                            && latest["status"] == "queued"
+                        {
+                            let attempts = latest["attempts"]
+                                .as_u64()
+                                .ok_or(Error::Invalid("outbox.attempts"))?
+                                .saturating_add(1)
+                                .min(16);
+                            latest["attempts"] = json!(attempts);
+                            latest["nextAt"] =
+                                json!(now + (1_u64 << attempts.min(8)).min(300) as f64);
+                            latest["error"] =
+                                json!("Federation transport did not return a verified receipt");
+                            Repo::put(tx, Table::Outbox, &id_owned, &peer_id_owned, &latest)?;
+                        }
+                        Ok::<_, Error>(())
+                    })
+                    .await?;
                 return Err(error);
             }
         };
-        store.transaction_with(|tx| {
-            let state = snapshot(tx, peer_id, "", "", now)?;
-            state.authorize(false)?;
-            if state.peer.public_key != peer.public_key {
-                return Err(Error::Conflict("peer key changed"));
-            }
-            if effects::acknowledge_outbox(tx, peer_id, &json!({"id":id,"hash":hash}), now, true)? {
-                let mut latest = Repo::record(tx, Table::Outbox, &id, peer_id)?
-                    .ok_or(Error::Conflict("outbox removed"))?;
-                latest["receipt"] = result.clone();
-                Repo::put(tx, Table::Outbox, &id, peer_id, &latest)?;
-            }
-            Ok::<_, Error>(())
-        })?;
+        let peer_id_owned = peer_id.to_owned();
+        let peer_for_ack = peer.clone();
+        let id_for_ack = id.clone();
+        let hash_for_ack = hash.clone();
+        let result_for_ack = result.clone();
+        store
+            .transaction_with(move |tx| {
+                let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+                state.authorize(false)?;
+                if state.peer.public_key != peer_for_ack.public_key {
+                    return Err(Error::Conflict("peer key changed"));
+                }
+                if effects::acknowledge_outbox(
+                    tx,
+                    &peer_id_owned,
+                    &json!({"id":id_for_ack,"hash":hash_for_ack}),
+                    now,
+                    true,
+                )? {
+                    let mut latest = Repo::record(tx, Table::Outbox, &id_for_ack, &peer_id_owned)?
+                        .ok_or(Error::Conflict("outbox removed"))?;
+                    latest["receipt"] = result_for_ack.clone();
+                    Repo::put(tx, Table::Outbox, &id_for_ack, &peer_id_owned, &latest)?;
+                }
+                Ok::<_, Error>(())
+            })
+            .await?;
         delivered += 1;
     }
     if budget.remaining().is_err() {
         return Ok(delivered);
     }
-    let acks = store.transaction_with(|tx| {
-        let state = snapshot(tx, peer_id, "", "", now)?;
-        state.authorize(false)?;
-        if state.peer.public_key != peer.public_key {
-            return Err(Error::Conflict("peer key changed"));
-        }
-        Ok::<_, Error>(
-            Repo::batch(tx, Table::Inbox, peer_id, now)?
-                .into_iter()
-                .map(|(id, item)| json!({"id":id,"hash":item["hash"]}))
-                .collect::<Vec<_>>(),
-        )
-    })?;
+    let peer_id_owned = peer_id.to_owned();
+    let peer_for_acks = peer.clone();
+    let acks = store
+        .transaction_with(move |tx| {
+            let state = snapshot(tx, &peer_id_owned, "", "", now)?;
+            state.authorize(false)?;
+            if state.peer.public_key != peer_for_acks.public_key {
+                return Err(Error::Conflict("peer key changed"));
+            }
+            Ok::<_, Error>(
+                Repo::batch(tx, Table::Inbox, &peer_id_owned, now)?
+                    .into_iter()
+                    .map(|(id, item)| json!({"id":id,"hash":item["hash"]}))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await?;
     let response = request(
-        store,
+        Arc::clone(&store),
         transport,
         Request {
             peer: &peer,
@@ -459,30 +558,42 @@ pub(crate) fn pump_peer_until(
             now: now as i64,
             budget: &budget,
         },
-    )?;
-    effects::reconcile(store, peer_id, &peer.public_key, &response, now)?;
+    )
+    .await?;
+    effects::reconcile(&store, peer_id, &peer.public_key, &response, now).await?;
     Ok(delivered)
 }
 
 /// Local message producer used by the message dispatcher and user-room action.
-pub fn send_message(
-    store: &RuntimeStore,
+pub async fn send_message(
+    store: Arc<RuntimeStore>,
     sender: &str,
     room_id: &str,
     text: &str,
     key: &str,
     now: f64,
 ) -> Result<Value> {
-    let identity = transport::load_federation_identity(store)?;
-    store.transaction_with(|tx| {
-        effects::check_identity(tx, &identity)?;
-        send_message_in_transaction(tx, sender, room_id, text, key, now)
-    })
+    let store_for_read = Arc::clone(&store);
+    let identity =
+        tokio::task::spawn_blocking(move || transport::load_federation_identity(&store_for_read))
+            .await
+            .map_err(|_| Error::Unavailable("federation/identity-read-worker"))??;
+    let identity = Arc::new(identity);
+    let sender = sender.to_owned();
+    let room_id = room_id.to_owned();
+    let text = text.to_owned();
+    let key = key.to_owned();
+    store
+        .transaction_with(move |tx| {
+            effects::check_identity(tx, identity.as_ref())?;
+            send_message_in_transaction(tx, &sender, &room_id, &text, &key, now)
+        })
+        .await
 }
 
 /// The Python `/api/messages` path sends a user message as the local lead.
-pub fn user_message(
-    store: &RuntimeStore,
+pub async fn user_message(
+    store: Arc<RuntimeStore>,
     room_id: &str,
     text: &str,
     key: &str,
@@ -492,26 +603,32 @@ pub fn user_message(
     if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
         return Err(Error::Invalid("message"));
     }
-    let sender = store.read_transaction(|connection| {
-        let room = Repo::record(connection, Table::Room, room_id, "")?.ok_or(
-            StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
-        )?;
-        let sender = room
-            .get("localParticipants")
-            .and_then(Value::as_array)
-            .and_then(|participants| {
-                participants.iter().find_map(|person| {
-                    (person.get("role").and_then(Value::as_str) == Some("lead"))
-                        .then(|| person.get("id").and_then(Value::as_str))
-                        .flatten()
+    let store_for_read = Arc::clone(&store);
+    let room_id_for_read = room_id.to_owned();
+    let sender = tokio::task::spawn_blocking(move || {
+        store_for_read.read_transaction(|connection| {
+            let room = Repo::record(connection, Table::Room, &room_id_for_read, "")?.ok_or(
+                StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
+            )?;
+            let sender = room
+                .get("localParticipants")
+                .and_then(Value::as_array)
+                .and_then(|participants| {
+                    participants.iter().find_map(|person| {
+                        (person.get("role").and_then(Value::as_str) == Some("lead"))
+                            .then(|| person.get("id").and_then(Value::as_str))
+                            .flatten()
+                    })
                 })
-            })
-            .ok_or(StoreError::SchemaMismatch(
-                "the local lead is not a room participant".to_owned(),
-            ))?;
-        Ok::<_, StoreError>(sender.to_owned())
-    })?;
-    send_message(store, &sender, room_id, text, key, now)
+                .ok_or(StoreError::SchemaMismatch(
+                    "the local lead is not a room participant".to_owned(),
+                ))?;
+            Ok::<_, StoreError>(sender.to_owned())
+        })
+    })
+    .await
+    .map_err(|_| Error::Unavailable("federation/room-read-worker"))??;
+    send_message(store, &sender, room_id, text, key, now).await
 }
 
 /// Queue a federation room message in the caller's owning transaction. This is
@@ -658,10 +775,12 @@ mod tests {
     use serde_json::json;
     use studio_runtime_store::RuntimeStore;
 
-    #[test]
-    fn next_delivery_deadline_ignores_unapproved_peers_and_nonqueued_rows() {
+    #[tokio::test]
+    async fn next_delivery_deadline_ignores_unapproved_peers_and_nonqueued_rows() {
         let directory = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
         store
             .transaction(|tx| {
                 for (peer_id, status) in [("approved", "approved"), ("pending", "pending")] {
@@ -682,6 +801,7 @@ mod tests {
                 }
                 Ok(())
             })
+            .await
             .expect("fixture rows commit");
         assert_eq!(
             delivery_deadlines_by_peer(&store).expect("deadline query"),

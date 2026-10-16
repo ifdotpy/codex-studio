@@ -6,7 +6,10 @@ use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -76,6 +79,22 @@ pub fn accepted_revision_is_on_local_main(repository: &str, revision: &str) -> b
     run_git(&["merge-base", "--is-ancestor", &submitted, &main]).is_some()
 }
 
+async fn read_in_blocking<T, F>(store: Arc<RuntimeStore>, read: F) -> Result<T, WorkWriteError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Connection) -> Result<T, WorkWriteError> + Send + 'static,
+{
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/work_write",
+        move || {
+            let connection = store.read()?;
+            read(&connection)
+        },
+    )
+    .await
+    .map_err(|_| WorkWriteError::PreparationWorker)?
+}
+
 /// Identify repositories whose accepted-result main check needs remote transport.
 pub fn repository_has_origin(repository: &str) -> bool {
     use std::ffi::OsStr;
@@ -104,22 +123,31 @@ pub fn repository_has_origin(repository: &str) -> bool {
 /// deterministic in tests. Pending/unknown receipts are reconciled against the
 /// target before any retry; a known retryable response may be retried with the
 /// same intent identity and target.
-pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, WorkWriteError> {
-    reviewer_archive_tick(store, now)?;
-    let due = {
-        let connection = store.read()?;
-        accepted_archive_due_records(&connection, now)?
-    };
+pub async fn accepted_archive_tick(
+    store: Arc<RuntimeStore>,
+    now: f64,
+) -> Result<usize, WorkWriteError> {
+    reviewer_archive_tick(Arc::clone(&store), now).await?;
+    let due = read_in_blocking(Arc::clone(&store), move |connection| {
+        accepted_archive_due_records(connection, now)
+    })
+    .await?;
     let mut handled = 0;
     for (task_id, encoded_intent) in due {
         let intent: Value = serde_json::from_str(&encoded_intent)
             .map_err(studio_runtime_store::StoreError::from)?;
-        let connection = store.read()?;
-        let Some(encoded_work) = WorkItemsRepository::work_record(&connection, &task_id)? else {
+        let task_id_for_read = task_id.clone();
+        let Some(encoded_work) = read_in_blocking(Arc::clone(&store), move |connection| {
+            Ok(WorkItemsRepository::work_record(
+                connection,
+                &task_id_for_read,
+            )?)
+        })
+        .await?
+        else {
             continue;
         };
         let work = encoded_work;
-        drop(connection);
         if work["status"] != "accepted" {
             continue;
         }
@@ -130,27 +158,33 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
             continue;
         }
         let receipt_id = format!("work-archive:{intent_id}");
-        let mut dispatch_actor_epoch = 0_i64;
-        let mut prior_status = String::new();
-        let should_dispatch =
-            store.transaction_with_error(|tx| -> Result<bool, WorkWriteError> {
-                let current = WorkItemsRepository::work_record(tx, &task_id)?
+        let intent_id_for_claim = intent_id.clone();
+        let receipt_id_for_claim = receipt_id.clone();
+        let task_id_for_claim = task_id.clone();
+        let intent_for_claim = intent.clone();
+        let owner_for_claim = owner_id.clone();
+        let root_for_claim = root_id.clone();
+        let (should_dispatch, dispatch_actor_epoch, prior_status) =
+            store.transaction_with_error(move |tx| -> Result<(bool, i64, String), WorkWriteError> {
+                let mut dispatch_actor_epoch = 0_i64;
+                let mut prior_status = String::new();
+                let current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
                     .ok_or(Error::InvalidRequest("Unknown work item"))?;
                 if current["status"] != "accepted"
-                    || current["owner"] != owner_id
-                    || current["rootId"] != root_id
+                    || current["owner"] != owner_for_claim
+                    || current["rootId"] != root_for_claim
                     || !matches!(
-                        intent["status"].as_str(),
+                        intent_for_claim["status"].as_str(),
                         Some("pending" | "retryable" | "unknown")
                     )
-                    || intent["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                    || intent_for_claim["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
                 {
-                    return Ok(false);
+                    return Ok((false, 0, String::new()));
                 }
                 let receipt = tx
                     .query_row(
                         "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                        [&receipt_id],
+                        [&receipt_id_for_claim],
                         |row| row.get::<_, String>(0),
                     )
                     .optional()
@@ -163,17 +197,17 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
                         Some("pending" | "retryable" | "unknown")
                     ) || receipt["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
                     {
-                        return Ok(false);
+                        return Ok((false, 0, String::new()));
                     }
                     prior_status = receipt["status"].as_str().unwrap_or_default().to_owned();
                     dispatch_actor_epoch = receipt["actorEpoch"].as_i64().unwrap_or_default();
                     receipt
                 } else {
-                    json!({"status":"pending","taskId":task_id,"intentId":intent_id,
-                        "actor":root_id,"target":owner_id,"attempts":0,"created":now})
+                    json!({"status":"pending","taskId":task_id_for_claim,"intentId":intent_id_for_claim,
+                        "actor":root_for_claim,"target":owner_for_claim,"attempts":0,"created":now})
                 };
                 let actor_epoch = if dispatch_actor_epoch == 0 {
-                    AgentRepository::get(tx, &AgentId::from(root_id.as_str()))?
+                    AgentRepository::get(tx, &AgentId::from(root_for_claim.as_str()))?
                         .map(|actor| actor.epoch)
                         .unwrap_or_default()
                 } else {
@@ -186,44 +220,52 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
                  ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-                    rusqlite::params![receipt_id, "accepted-archive-v1", receipt.to_string()],
+                    rusqlite::params![receipt_id_for_claim, "accepted-archive-v1", receipt.to_string()],
                 )
                 .map_err(studio_runtime_store::StoreError::from)?;
-                Ok(true)
-            })?;
+                Ok((true, dispatch_actor_epoch, prior_status))
+            }).await?;
         if !should_dispatch {
             continue;
         }
 
-        let preflight = {
-            let connection = store.read()?;
+        let task_for_preflight = task_id.clone();
+        let work_for_preflight = work.clone();
+        let intent_for_preflight = intent.clone();
+        let owner_for_preflight = owner_id.clone();
+        let root_for_preflight = root_id.clone();
+        let preflight = read_in_blocking(Arc::clone(&store), move |connection| {
             accepted_archive_preflight(
-                &connection,
-                &task_id,
-                &work,
-                &intent,
-                &owner_id,
-                &root_id,
+                connection,
+                &task_for_preflight,
+                &work_for_preflight,
+                &intent_for_preflight,
+                &owner_for_preflight,
+                &root_for_preflight,
                 dispatch_actor_epoch,
-            )?
-        };
+            )
+        })
+        .await?;
         let outcome = match preflight {
             Some(value) => Ok(value),
             None if prior_status == "unknown" => Ok(json!({
                 "status":"kept",
                 "reason":"The accepted archive outcome is unconfirmed",
             })),
-            None => crate::agent_management_store::execute(
-                store,
-                &crate::agent_management::Action::Archive {
-                    actor: root_id.clone(),
-                    epoch: dispatch_actor_epoch,
-                    target: owner_id.clone(),
-                    reason: "Accepted task result is on main".to_owned(),
-                    unassign_work: false,
-                },
-                now,
-            ),
+            None => {
+                crate::agent_management_store::execute(
+                    Arc::clone(&store),
+                    &crate::agent_management::Action::Archive {
+                        actor: root_id.clone(),
+                        epoch: dispatch_actor_epoch,
+                        target: owner_id.clone(),
+                        reason: "Accepted task result is on main".to_owned(),
+                        unassign_work: false,
+                    },
+                    now,
+                )
+                .await
+            }
         };
         let (receipt_status, archive, retryable) = match outcome {
             Ok(value) => {
@@ -245,17 +287,23 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
                 false,
             ),
         };
-        store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
-            let Some(mut current) = WorkItemsRepository::work_record(tx, &task_id)? else {
+        let task_id_for_settlement = task_id.clone();
+        let intent_for_settlement = intent.clone();
+        let intent_id_for_settlement = intent_id.clone();
+        let owner_for_settlement = owner_id.clone();
+        let root_for_settlement = root_id.clone();
+        let receipt_for_settlement = receipt_id.clone();
+        store.transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
+            let Some(mut current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)? else {
                 return Ok(());
             };
             if current["status"] != "accepted"
-                || current["owner"] != owner_id
-                || current["rootId"] != root_id
+                || current["owner"] != owner_for_settlement
+                || current["rootId"] != root_for_settlement
             {
                 return Ok(());
             }
-            let attempts = intent["attempts"].as_u64().unwrap_or_default();
+            let attempts = intent_for_settlement["attempts"].as_u64().unwrap_or_default();
             let next_attempt = attempts + 1;
             let delay = if retryable {
                 ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
@@ -270,8 +318,8 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
             if retryable {
                 let mut row_intent = current.get("archiveIntent").cloned().unwrap_or_else(|| {
                     json!({
-                        "id":intent_id,"status":"pending","owner":owner_id,"attempts":0,
-                        "created":intent.get("created").and_then(Value::as_f64).unwrap_or(now),
+                        "id":intent_id_for_settlement,"status":"pending","owner":owner_for_settlement,"attempts":0,
+                        "created":intent_for_settlement.get("created").and_then(Value::as_f64).unwrap_or(now),
                     })
                 });
                 row_intent["status"] = json!("pending");
@@ -296,8 +344,8 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
                 row_intent["outcome"] = archive.clone();
                 current["archiveIntent"] = row_intent;
             }
-            WorkItemsRepository::update_work(tx, &task_id, &current)?;
-            let mut final_intent = intent.clone();
+            WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
+            let mut final_intent = intent_for_settlement.clone();
             final_intent["status"] = json!(if retryable { "pending" } else { receipt_status });
             final_intent["attempts"] = json!(next_attempt);
             final_intent["nextAttemptAt"] = json!(now + delay as f64);
@@ -309,11 +357,11 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
             }
             tx.execute(
                 "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                rusqlite::params![final_intent.to_string(), receipt_id],
+                rusqlite::params![final_intent.to_string(), receipt_for_settlement],
             )
             .map_err(studio_runtime_store::StoreError::from)?;
             Ok(())
-        })?;
+        }).await?;
         handled += 1;
     }
     Ok(handled)
@@ -322,44 +370,47 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
 /// Schedule and retry archiving completed reviewers after their child result
 /// has been delivered. The event ID stays in the agent record as the durable
 /// identity for every retry; scheduling commits before the archive operation.
-fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWriteError> {
-    store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
-        let candidates = ReviewerArchiveRepository::candidates(tx)?;
-        for (child_id, encoded) in candidates {
-            let mut record: Value =
-                serde_json::from_str(&encoded).map_err(studio_runtime_store::StoreError::from)?;
-            if event_write::truthy(record.get("agentArchive"))
-                || event_write::truthy(record.get("reviewArchiveError"))
-                || record
-                    .get("reviewArchiveScheduled")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-            {
-                continue;
-            }
-            let Some(parent_id) = record.get("parentId").and_then(Value::as_str) else {
-                continue;
-            };
-            let event_id = ReviewerArchiveRepository::child_result_id(tx, parent_id, &child_id)?;
-            let Some(event_id) = event_id else {
-                continue;
-            };
-            record["reviewArchiveScheduled"] = json!(event_id);
-            let child = AgentRecord::from_value(record).map_err(|_| {
-                studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_agents",
-                    id: child_id.to_owned(),
+async fn reviewer_archive_tick(store: Arc<RuntimeStore>, now: f64) -> Result<(), WorkWriteError> {
+    store
+        .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
+            let candidates = ReviewerArchiveRepository::candidates(tx)?;
+            for (child_id, encoded) in candidates {
+                let mut record: Value = serde_json::from_str(&encoded)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                if event_write::truthy(record.get("agentArchive"))
+                    || event_write::truthy(record.get("reviewArchiveError"))
+                    || record
+                        .get("reviewArchiveScheduled")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                {
+                    continue;
                 }
-            })?;
-            AgentRepository::put(tx, &child)?;
-        }
-        Ok(())
-    })?;
+                let Some(parent_id) = record.get("parentId").and_then(Value::as_str) else {
+                    continue;
+                };
+                let event_id =
+                    ReviewerArchiveRepository::child_result_id(tx, parent_id, &child_id)?;
+                let Some(event_id) = event_id else {
+                    continue;
+                };
+                record["reviewArchiveScheduled"] = json!(event_id);
+                let child = AgentRecord::from_value(record).map_err(|_| {
+                    studio_runtime_store::StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: child_id.to_owned(),
+                    }
+                })?;
+                AgentRepository::put(tx, &child)?;
+            }
+            Ok(())
+        })
+        .await?;
 
-    let due = {
-        let connection = store.read()?;
-        ReviewerArchiveRepository::due_retries(&connection, now)?
-    };
+    let due = read_in_blocking(Arc::clone(&store), move |connection| {
+        Ok(ReviewerArchiveRepository::due_retries(connection, now)?)
+    })
+    .await?;
 
     for (child_id, encoded) in due {
         let record: Value =
@@ -379,19 +430,21 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
         {
             continue;
         }
-        let event_matches = {
-            let connection = store.read()?;
+        let event_id_for_read = event_id.to_owned();
+        let parent_id_for_read = parent_id.to_owned();
+        let child_id_for_read = child_id.clone();
+        let event_matches = read_in_blocking(Arc::clone(&store), move |connection| {
             let event: Option<(String, String)> = connection
                 .query_row(
                     "SELECT agent,text FROM runtime_events \
                      WHERE id=?1 AND kind='child_result' AND status='delivered'",
-                    [event_id],
+                    [event_id_for_read],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(studio_runtime_store::StoreError::from)?;
-            event.is_some_and(|(event_parent, text)| {
-                event_parent == parent_id
+            Ok(event.is_some_and(|(event_parent, text)| {
+                event_parent == parent_id_for_read
                     && serde_json::from_str::<Value>(&text)
                         .ok()
                         .and_then(|payload| {
@@ -401,9 +454,10 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
                                 .map(str::to_owned)
                         })
                         .as_deref()
-                        == Some(child_id.as_str())
-            })
-        };
+                        == Some(child_id_for_read.as_str())
+            }))
+        })
+        .await?;
         if !event_matches {
             continue;
         }
@@ -415,7 +469,7 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
                 .unwrap_or_default()
         };
         let outcome = crate::agent_management_store::execute(
-            store,
+            Arc::clone(&store),
             &crate::agent_management::Action::Archive {
                 actor: root_id.to_owned(),
                 epoch: actor_epoch,
@@ -424,7 +478,8 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
                 unassign_work: false,
             },
             now,
-        );
+        )
+        .await;
         let (error, retryable) = match outcome {
             Ok(value) if value["status"] == "archived" => continue,
             Ok(value) => {
@@ -446,43 +501,50 @@ fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWrite
             Err(error) => (Some(error.to_string()), false),
         };
         let Some(error) = error else { continue };
-        store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
-            let Some(mut child) = AgentRepository::get(tx, &AgentId::from(child_id.as_str()))?
-            else {
-                return Ok(());
-            };
-            let mut record = child.value();
-            if record.get("reviewArchiveScheduled").and_then(Value::as_str) != Some(event_id) {
-                return Ok(());
-            }
-            record["reviewArchiveError"] = json!(error.chars().take(180).collect::<String>());
-            if retryable {
-                let attempts = record
-                    .get("reviewArchiveAttempts")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default()
-                    .saturating_add(1);
-                let exponent = attempts
-                    .saturating_sub(1)
-                    .min(u64::from(REVIEW_ARCHIVE_MAX_BACKOFF_EXPONENT));
-                let delay = (REVIEW_ARCHIVE_BASE_DELAY_SECONDS * 2_f64.powi(exponent as i32))
-                    .min(REVIEW_ARCHIVE_MAX_DELAY_SECONDS);
-                record["reviewArchiveAttempts"] = json!(attempts);
-                record["reviewArchiveNextAt"] = json!(now + delay);
-            } else {
-                record
-                    .as_object_mut()
-                    .map(|value| value.remove("reviewArchiveScheduled"));
-            }
-            child = AgentRecord::from_value(record).map_err(|_| {
-                studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_agents",
-                    id: child_id.clone(),
+        let child_for_settlement = child_id.clone();
+        let event_for_settlement = event_id.to_owned();
+        store
+            .transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
+                let Some(mut child) =
+                    AgentRepository::get(tx, &AgentId::from(child_for_settlement.as_str()))?
+                else {
+                    return Ok(());
+                };
+                let mut record = child.value();
+                if record.get("reviewArchiveScheduled").and_then(Value::as_str)
+                    != Some(event_for_settlement.as_str())
+                {
+                    return Ok(());
                 }
-            })?;
-            AgentRepository::put(tx, &child)?;
-            Ok(())
-        })?;
+                record["reviewArchiveError"] = json!(error.chars().take(180).collect::<String>());
+                if retryable {
+                    let attempts = record
+                        .get("reviewArchiveAttempts")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default()
+                        .saturating_add(1);
+                    let exponent = attempts
+                        .saturating_sub(1)
+                        .min(u64::from(REVIEW_ARCHIVE_MAX_BACKOFF_EXPONENT));
+                    let delay = (REVIEW_ARCHIVE_BASE_DELAY_SECONDS * 2_f64.powi(exponent as i32))
+                        .min(REVIEW_ARCHIVE_MAX_DELAY_SECONDS);
+                    record["reviewArchiveAttempts"] = json!(attempts);
+                    record["reviewArchiveNextAt"] = json!(now + delay);
+                } else {
+                    record
+                        .as_object_mut()
+                        .map(|value| value.remove("reviewArchiveScheduled"));
+                }
+                child = AgentRecord::from_value(record).map_err(|_| {
+                    studio_runtime_store::StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: child_for_settlement.clone(),
+                    }
+                })?;
+                AgentRepository::put(tx, &child)?;
+                Ok(())
+            })
+            .await?;
     }
     Ok(())
 }
@@ -515,13 +577,14 @@ pub fn next_archive_retry_at(
 
 /// Persist uncertainty before the synchronous accept route attempts an archive
 /// effect. A later tick reconciles the target before replaying the same tuple.
-pub fn begin_accepted_archive_attempt(
+pub async fn begin_accepted_archive_attempt(
     store: &RuntimeStore,
     task_id: &str,
     now: f64,
 ) -> Result<(), WorkWriteError> {
-    store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
-        let work = WorkItemsRepository::work_record(tx, task_id)?
+    let task_id = task_id.to_owned();
+    store.transaction_with_error(move |tx| -> Result<(), WorkWriteError> {
+        let work = WorkItemsRepository::work_record(tx, &task_id)?
             .ok_or(Error::InvalidRequest("Unknown work item"))?;
         if work["status"] != "accepted" {
             return Err(Error::InvalidRequest("Work item is not accepted").into());
@@ -553,7 +616,7 @@ pub fn begin_accepted_archive_attempt(
         )
         .map_err(studio_runtime_store::StoreError::from)?;
         Ok(())
-    })?;
+    }).await?;
     Ok(())
 }
 
@@ -827,21 +890,25 @@ pub enum VmSubmissionPreparation {
 
 /// Persist an exact layr evidence request before contacting the guest. A pending
 /// or unknown request is never sent again; completed evidence can be replayed.
-pub fn prepare_vm_submission(
+pub async fn prepare_vm_submission(
     store: &RuntimeStore,
     agent_id: &str,
     request_id: Option<&str>,
     signature: &str,
     input: &SubmitWork,
 ) -> Result<VmSubmissionPreparation, WorkWriteError> {
-    store.transaction_with_error(|tx| {
-        let agent = event_write::checked_agent(tx, agent_id)?;
+    let agent_id = agent_id.to_owned();
+    let request_id = request_id.map(str::to_owned);
+    let signature = signature.to_owned();
+    let input = input.clone();
+    store.transaction_with_error(move |tx| {
+        let agent = event_write::checked_agent(tx, &agent_id)?;
         if event_write::read_receipt(
             tx,
-            request_id,
-            signature,
+            request_id.as_deref(),
+            &signature,
             "runtime_work",
-            request_id.unwrap_or(agent_id),
+            request_id.as_deref().unwrap_or(&agent_id),
             |value| {
                 value
                     .get("id")
@@ -915,37 +982,43 @@ pub fn prepare_vm_submission(
             revision,
             request_id: rpc_id,
         }))
-    })
+    }).await
 }
 
 /// Record the guest's terminal response before the normal work submission write.
 /// A lost response is persisted as unknown and can never trigger an automatic resend.
-pub fn finish_vm_submission(
+pub async fn finish_vm_submission(
     store: &RuntimeStore,
     task_id: &str,
     request_id: &str,
     outcome: Result<Value, bool>,
 ) -> Result<Option<Value>, WorkWriteError> {
-    store.transaction_with_error(|tx| {
-        WorkItemsRepository::work_record(tx, task_id)?
-            .ok_or(Error::InvalidRequest("Unknown work item"))?;
-        let mut intent = read_vm_intent(tx, "submission", task_id)?
-            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
-            .ok_or(Error::Conflict("The layr evidence intent changed"))?;
-        match outcome {
-            Ok(evidence) => {
-                intent["status"] = json!("completed");
-                intent["evidence"] = evidence.clone();
-                write_vm_intent(tx, "submission", task_id, &intent)?;
-                Ok(Some(evidence))
+    let task_id = task_id.to_owned();
+    let request_id = request_id.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            WorkItemsRepository::work_record(tx, &task_id)?
+                .ok_or(Error::InvalidRequest("Unknown work item"))?;
+            let mut intent = read_vm_intent(tx, "submission", &task_id)?
+                .filter(|value| {
+                    value.get("requestId").and_then(Value::as_str) == Some(request_id.as_str())
+                })
+                .ok_or(Error::Conflict("The layr evidence intent changed"))?;
+            match outcome {
+                Ok(evidence) => {
+                    intent["status"] = json!("completed");
+                    intent["evidence"] = evidence.clone();
+                    write_vm_intent(tx, "submission", &task_id, &intent)?;
+                    Ok(Some(evidence))
+                }
+                Err(uncertain) => {
+                    intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+                    write_vm_intent(tx, "submission", &task_id, &intent)?;
+                    Ok(None)
+                }
             }
-            Err(uncertain) => {
-                intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
-                write_vm_intent(tx, "submission", task_id, &intent)?;
-                Ok(None)
-            }
-        }
-    })
+        })
+        .await
 }
 
 pub struct ClaimWork {
@@ -977,7 +1050,7 @@ pub enum VmAcceptPreparation {
 
 /// Persist a merge intent before calling the VM guest. Pending or unknown
 /// identities are never resent; a completed exact merge can be replayed.
-pub fn prepare_vm_accept(
+pub async fn prepare_vm_accept(
     store: &RuntimeStore,
     agent_id: &str,
     task_id: &str,
@@ -986,155 +1059,170 @@ pub fn prepare_vm_accept(
     signature: &str,
     reason: &str,
 ) -> Result<VmAcceptPreparation, WorkWriteError> {
-    store.transaction_with_error(|tx| {
-        let lead = event_write::checked_agent(tx, agent_id)?;
-        if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-            return Ok(VmAcceptPreparation::NotVm);
-        }
-        if lead.extra.get("isLead") != Some(&Value::Bool(true)) || lead.root_id.0 != agent_id {
-            return Err(
-                Error::InvalidRequest("Only the active lead can accept a layr result").into(),
-            );
-        }
-        let work = load_work(tx, &lead.root_id.0, task_id, version)?;
-        if work["status"] != "review" {
-            return Ok(VmAcceptPreparation::NotVm);
-        }
-        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
-        let owner = event_write::checked_agent(tx, &owner_id)?;
-        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
-            return Ok(VmAcceptPreparation::NotVm);
-        }
-        // Validate the acceptance and all dependent recipients before the guest
-        // merge. Python's WorkMixin refuses unsupported remote recipients while
-        // applying accept; the VM merge must not happen before that refusal.
-        let statuses = dependency_statuses(tx, &work)?;
-        let now = event_write::unix_time()?;
-        decide_accept(
-            WorkSnapshot {
-                record: &work,
-                dependency_statuses: &statuses,
-            },
-            reason,
-            agent_id,
-            now,
-        )?;
-        for row in WorkItemsRepository::dependent_work(tx, &lead.root_id.0, task_id)? {
-            let dependent = WorkItemsRepository::work_record(tx, &row.id)?
-                .ok_or_else(|| invalid("runtime_work", &row.id))?;
-            let mut dependent_statuses = dependency_statuses(tx, &dependent)?;
-            dependent_statuses.insert(task_id.to_owned(), "accepted".to_owned());
-            if blocked_by(&dependent, &dependent_statuses).is_empty()
-                && let Some(dependent_owner) = dependent["owner"].as_str()
-            {
-                let recipient = AgentRepository::get(tx, &AgentId::from(dependent_owner))?
-                    .ok_or_else(|| invalid("runtime_agents", dependent_owner))?;
-                event_write::refuse_remote(&recipient)?;
+    let agent_id = agent_id.to_owned();
+    let task_id = task_id.to_owned();
+    let request_id = request_id.map(str::to_owned);
+    let signature = signature.to_owned();
+    let reason = reason.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            let lead = event_write::checked_agent(tx, &agent_id)?;
+            if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                return Ok(VmAcceptPreparation::NotVm);
             }
-        }
-        if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
-            // Reserve the canonical HTTP identity so every work mutation sees
-            // this in-flight VM action before any other request can reuse it.
-            let reservation_id = request_id;
-            if let Some(receipt) = EventWriteRepository::receipt(tx, reservation_id)? {
-                if receipt.signature != signature {
-                    return Err(Error::Conflict("This request id has different content").into());
-                }
-                let reservation: Value = serde_json::from_str(&receipt.result)
-                    .map_err(|_| invalid("runtime_operation_receipts", reservation_id))?;
-                if reservation["vmAcceptReservation"] != true
-                    || reservation["taskId"] != task_id
-                    || reservation["agentId"] != agent_id
+            if lead.extra.get("isLead") != Some(&Value::Bool(true)) || lead.root_id.0 != agent_id {
+                return Err(
+                    Error::InvalidRequest("Only the active lead can accept a layr result").into(),
+                );
+            }
+            let work = load_work(tx, &lead.root_id.0, &task_id, version)?;
+            if work["status"] != "review" {
+                return Ok(VmAcceptPreparation::NotVm);
+            }
+            let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+            let owner = event_write::checked_agent(tx, &owner_id)?;
+            if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+                return Ok(VmAcceptPreparation::NotVm);
+            }
+            // Validate the acceptance and all dependent recipients before the guest
+            // merge. Python's WorkMixin refuses unsupported remote recipients while
+            // applying accept; the VM merge must not happen before that refusal.
+            let statuses = dependency_statuses(tx, &work)?;
+            let now = event_write::unix_time()?;
+            decide_accept(
+                WorkSnapshot {
+                    record: &work,
+                    dependency_statuses: &statuses,
+                },
+                &reason,
+                &agent_id,
+                now,
+            )?;
+            for row in WorkItemsRepository::dependent_work(tx, &lead.root_id.0, &task_id)? {
+                let dependent = WorkItemsRepository::work_record(tx, &row.id)?
+                    .ok_or_else(|| invalid("runtime_work", &row.id))?;
+                let mut dependent_statuses = dependency_statuses(tx, &dependent)?;
+                dependent_statuses.insert(task_id.clone(), "accepted".to_owned());
+                if blocked_by(&dependent, &dependent_statuses).is_empty()
+                    && let Some(dependent_owner) = dependent["owner"].as_str()
                 {
-                    return Err(Error::Conflict("This request id has different content").into());
+                    let recipient = AgentRepository::get(tx, &AgentId::from(dependent_owner))?
+                        .ok_or_else(|| invalid("runtime_agents", dependent_owner))?;
+                    event_write::refuse_remote(&recipient)?;
                 }
-            } else {
-                EventWriteRepository::put_receipt(
-                    tx,
-                    reservation_id,
-                    signature,
-                    &json!({
-                        "vmAcceptReservation":true,
-                        "taskId":task_id,
-                        "agentId":agent_id,
-                        "status":"reserved"
-                    })
-                    .to_string(),
-                )?;
             }
-        }
-        if lead.extra.get("layrProjectId") != owner.extra.get("layrProjectId") {
-            return Err(Error::InvalidRequest("The result belongs to another layr project").into());
-        }
-        let result = work["results"]
-            .as_array()
-            .and_then(|items| items.last())
-            .ok_or_else(|| invalid("runtime_work", task_id))?;
-        let result_id = result["id"]
-            .as_str()
-            .ok_or_else(|| invalid("runtime_work", task_id))?
-            .to_owned();
-        let revision = result["revision"]
-            .as_str()
-            .ok_or_else(|| invalid("runtime_work", task_id))?
-            .to_owned();
-        let rpc_id = format!("layr-accept:{result_id}");
-        if let Some(intent) = read_vm_intent(tx, "merge", task_id)? {
-            if matches!(
-                intent.get("status").and_then(Value::as_str),
-                Some("pending" | "unknown")
-            ) {
-                return Err(Error::Conflict(
-                    "The prior layr merge outcome is unknown; inspect it before retrying",
-                )
-                .into());
+            if let Some(request_id) = request_id.as_deref().filter(|id| !id.is_empty()) {
+                // Reserve the canonical HTTP identity so every work mutation sees
+                // this in-flight VM action before any other request can reuse it.
+                let reservation_id = request_id;
+                if let Some(receipt) = EventWriteRepository::receipt(tx, reservation_id)? {
+                    if receipt.signature != signature {
+                        return Err(Error::Conflict("This request id has different content").into());
+                    }
+                    let reservation: Value = serde_json::from_str(&receipt.result)
+                        .map_err(|_| invalid("runtime_operation_receipts", reservation_id))?;
+                    if reservation["vmAcceptReservation"] != true
+                        || reservation["taskId"] != task_id
+                        || reservation["agentId"] != agent_id
+                    {
+                        return Err(Error::Conflict("This request id has different content").into());
+                    }
+                } else {
+                    EventWriteRepository::put_receipt(
+                        tx,
+                        reservation_id,
+                        &signature,
+                        &json!({
+                            "vmAcceptReservation":true,
+                            "taskId":task_id,
+                            "agentId":agent_id,
+                            "status":"reserved"
+                        })
+                        .to_string(),
+                    )?;
+                }
             }
-            if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str())
-                && intent.get("status").and_then(Value::as_str) == Some("completed")
-            {
-                return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
+            if lead.extra.get("layrProjectId") != owner.extra.get("layrProjectId") {
+                return Err(
+                    Error::InvalidRequest("The result belongs to another layr project").into(),
+                );
             }
-        }
-        let intent = json!({
-            "status":"pending",
-            "requestId":rpc_id,
-            "taskId":task_id,
-            "resultId":result_id,
-            "revision":revision,
-            "owner":owner_id,
-            "created":event_write::unix_time()?,
-        });
-        write_vm_intent(tx, "merge", task_id, &intent)?;
-        Ok(VmAcceptPreparation::Call(VmMergeCall {
-            lead_id: lead.id.0,
-            owner_id,
-            result_id,
-            revision,
-            request_id: rpc_id,
-        }))
-    })
+            let result = work["results"]
+                .as_array()
+                .and_then(|items| items.last())
+                .ok_or_else(|| invalid("runtime_work", &task_id))?;
+            let result_id = result["id"]
+                .as_str()
+                .ok_or_else(|| invalid("runtime_work", &task_id))?
+                .to_owned();
+            let revision = result["revision"]
+                .as_str()
+                .ok_or_else(|| invalid("runtime_work", &task_id))?
+                .to_owned();
+            let rpc_id = format!("layr-accept:{result_id}");
+            if let Some(intent) = read_vm_intent(tx, "merge", &task_id)? {
+                if matches!(
+                    intent.get("status").and_then(Value::as_str),
+                    Some("pending" | "unknown")
+                ) {
+                    return Err(Error::Conflict(
+                        "The prior layr merge outcome is unknown; inspect it before retrying",
+                    )
+                    .into());
+                }
+                if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str())
+                    && intent.get("status").and_then(Value::as_str) == Some("completed")
+                {
+                    return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
+                }
+            }
+            let intent = json!({
+                "status":"pending",
+                "requestId":rpc_id,
+                "taskId":task_id.as_str(),
+                "resultId":result_id.as_str(),
+                "revision":revision.as_str(),
+                "owner":owner_id.as_str(),
+                "created":event_write::unix_time()?,
+            });
+            write_vm_intent(tx, "merge", &task_id, &intent)?;
+            Ok(VmAcceptPreparation::Call(VmMergeCall {
+                lead_id: lead.id.0,
+                owner_id,
+                result_id,
+                revision,
+                request_id: rpc_id,
+            }))
+        })
+        .await
 }
 
-pub fn finish_vm_accept(
+pub async fn finish_vm_accept(
     store: &RuntimeStore,
     task_id: &str,
     request_id: &str,
     uncertain: Option<bool>,
 ) -> Result<(), WorkWriteError> {
-    store.transaction_with_error(|tx| {
-        WorkItemsRepository::work_record(tx, task_id)?
-            .ok_or(Error::InvalidRequest("Unknown work item"))?;
-        let mut intent = read_vm_intent(tx, "merge", task_id)?
-            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
-            .ok_or(Error::Conflict("The layr merge intent changed"))?;
-        if let Some(uncertain) = uncertain {
-            intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
-        } else {
-            intent["status"] = json!("completed");
-        }
-        write_vm_intent(tx, "merge", task_id, &intent)?;
-        Ok(())
-    })
+    let task_id = task_id.to_owned();
+    let request_id = request_id.to_owned();
+    store
+        .transaction_with_error(move |tx| {
+            WorkItemsRepository::work_record(tx, &task_id)?
+                .ok_or(Error::InvalidRequest("Unknown work item"))?;
+            let mut intent = read_vm_intent(tx, "merge", &task_id)?
+                .filter(|value| {
+                    value.get("requestId").and_then(Value::as_str) == Some(request_id.as_str())
+                })
+                .ok_or(Error::Conflict("The layr merge intent changed"))?;
+            if let Some(uncertain) = uncertain {
+                intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+            } else {
+                intent["status"] = json!("completed");
+            }
+            write_vm_intent(tx, "merge", &task_id, &intent)?;
+            Ok(())
+        })
+        .await
 }
 
 /// Verify the exact accepted result has a durable successful guest merge.
@@ -1191,6 +1279,8 @@ pub enum WorkWriteError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error("Not implemented: requires {0}")]
     NotImplemented(&'static str),
+    #[error("work-write preparation blocking task failed")]
+    PreparationWorker,
 }
 
 /// Read and validate an idempotency receipt before an external VM side effect.
@@ -1381,6 +1471,8 @@ pub fn write_as_agent(
             WorkWriteError::Event(error) => error,
             WorkWriteError::Store(error) => Error::Store(error),
             WorkWriteError::NotImplemented(_) => Error::InvalidRequest("Invalid request"),
+            // This synchronous transaction helper cannot create the blocking-worker variant.
+            WorkWriteError::PreparationWorker => Error::InvalidRequest("Invalid request"),
         })?;
     Ok(WorkActorResult {
         record: result.record,
@@ -3038,10 +3130,14 @@ mod actor_tests {
         );
     }
 
-    #[test]
-    fn archive_scheduler_uses_earliest_persisted_retry_deadline() {
+    #[tokio::test]
+    async fn archive_scheduler_uses_earliest_persisted_retry_deadline() {
         let directory = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
         assert_eq!(
             next_archive_retry_at(&store, 100.0, false).expect("empty deadline query"),
             None
@@ -3056,6 +3152,7 @@ mod actor_tests {
                 }
                 Ok(())
             })
+            .await
             .expect("archive receipts commit");
         assert_eq!(
             next_archive_retry_at(&store, 100.0, false).expect("deadline query"),
@@ -3067,10 +3164,12 @@ mod actor_tests {
         );
     }
 
-    #[test]
-    fn empty_archive_maintenance_does_not_commit_or_self_wake() {
+    #[tokio::test]
+    async fn empty_archive_maintenance_does_not_commit_or_self_wake() {
         let directory = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
         let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         {
             let commits = std::sync::Arc::clone(&commits);
@@ -3079,20 +3178,28 @@ mod actor_tests {
             });
         }
         assert_eq!(
-            accepted_archive_tick(&store, 100.0).expect("maintenance pass"),
+            accepted_archive_tick(Arc::clone(&store), 100.0)
+                .await
+                .expect("maintenance pass"),
             0
         );
         assert_eq!(
-            accepted_archive_tick(&store, 100.0).expect("second maintenance pass"),
+            accepted_archive_tick(Arc::clone(&store), 100.0)
+                .await
+                .expect("second maintenance pass"),
             0
         );
         assert_eq!(commits.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
-    #[test]
-    fn accepted_archive_tick_persists_terminal_kept_outcome_for_remote_worker() {
+    #[tokio::test]
+    async fn accepted_archive_tick_persists_terminal_kept_outcome_for_remote_worker() {
         let root = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
         store
             .transaction(|tx| {
                 for agent in [
@@ -3127,10 +3234,13 @@ mod actor_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("archive intent state commits");
 
         assert_eq!(
-            accepted_archive_tick(&store, 100.0).expect("tick succeeds"),
+            accepted_archive_tick(Arc::clone(&store), 100.0)
+                .await
+                .expect("tick succeeds"),
             1
         );
 
@@ -3161,9 +3271,13 @@ mod actor_tests {
         assert_eq!(work["archiveIntent"]["status"], "terminal");
     }
 
-    fn reviewer_archive_store(role: &str) -> (RuntimeStore, tempfile::TempDir) {
+    async fn reviewer_archive_store(role: &str) -> (Arc<RuntimeStore>, tempfile::TempDir) {
         let root = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
         store
             .transaction(|tx| {
                 for agent in [
@@ -3186,6 +3300,7 @@ mod actor_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("reviewer fixture commits");
         (store, root)
     }
@@ -3198,11 +3313,13 @@ mod actor_tests {
             .value()
     }
 
-    #[test]
-    fn reviewer_archive_delivered_child_result_schedules_and_archives() {
-        let (store, _root) = reviewer_archive_store("reviewer");
+    #[tokio::test]
+    async fn reviewer_archive_delivered_child_result_schedules_and_archives() {
+        let (store, _root) = reviewer_archive_store("reviewer").await;
 
-        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 10.0)
+            .await
+            .expect("maintenance tick succeeds");
 
         let reviewer = reviewer_record(&store);
         assert_eq!(reviewer["reviewArchiveScheduled"], "child:result-1");
@@ -3213,9 +3330,9 @@ mod actor_tests {
         assert_eq!(reviewer["agentArchive"]["by"], "lead");
     }
 
-    #[test]
-    fn reviewer_archive_uses_earliest_matching_parent_event_id() {
-        let (store, _root) = reviewer_archive_store("reviewer");
+    #[tokio::test]
+    async fn reviewer_archive_uses_earliest_matching_parent_event_id() {
+        let (store, _root) = reviewer_archive_store("reviewer").await;
         store
             .transaction(|tx| {
                 for (id, parent) in [
@@ -3235,9 +3352,12 @@ mod actor_tests {
                 }
                 Ok(())
             })
+            .await
             .expect("review events insert");
 
-        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 10.0)
+            .await
+            .expect("maintenance tick succeeds");
 
         let reviewer = reviewer_record(&store);
         assert_eq!(reviewer["reviewArchiveScheduled"], "child:a-result");
@@ -3247,14 +3367,14 @@ mod actor_tests {
         );
     }
 
-    #[test]
-    fn reviewer_archive_skips_existing_archive_markers_before_event_lookup() {
+    #[tokio::test]
+    async fn reviewer_archive_skips_existing_archive_markers_before_event_lookup() {
         for marker in [
             json!({"reviewArchiveError":"previous terminal error"}),
             json!({"reviewArchiveScheduled":"child:existing-result"}),
             json!({"agentArchive":{"at":1.0,"epoch":2,"reason":"already archived"}}),
         ] {
-            let (store, _root) = reviewer_archive_store("reviewer");
+            let (store, _root) = reviewer_archive_store("reviewer").await;
             store
                 .transaction(|tx| {
                     let mut child =
@@ -3267,9 +3387,12 @@ mod actor_tests {
                     AgentRepository::put(tx, &child)?;
                     Ok(())
                 })
+                .await
                 .expect("marker inserts");
 
-            accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+            accepted_archive_tick(Arc::clone(&store), 10.0)
+                .await
+                .expect("maintenance tick succeeds");
 
             let reviewer = reviewer_record(&store);
             for (key, value) in marker.as_object().expect("marker object") {
@@ -3282,9 +3405,9 @@ mod actor_tests {
         }
     }
 
-    #[test]
-    fn reviewer_archive_failure_records_error_and_retries_with_event_identity() {
-        let (store, _root) = reviewer_archive_store("reviewer");
+    #[tokio::test]
+    async fn reviewer_archive_failure_records_error_and_retries_with_event_identity() {
+        let (store, _root) = reviewer_archive_store("reviewer").await;
         store
             .transaction(|tx| {
                 tx.execute(
@@ -3298,9 +3421,12 @@ mod actor_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("archive blocker inserts");
 
-        accepted_archive_tick(&store, 10.0).expect("first tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 10.0)
+            .await
+            .expect("first tick succeeds");
         let first = reviewer_record(&store);
         assert_eq!(first["reviewArchiveScheduled"], "child:result-1");
         assert_eq!(first["reviewArchiveAttempts"], 1);
@@ -3312,7 +3438,9 @@ mod actor_tests {
         );
         assert!(first.get("agentArchive").is_none());
 
-        accepted_archive_tick(&store, 11.0).expect("second tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 11.0)
+            .await
+            .expect("second tick succeeds");
         let second = reviewer_record(&store);
         assert_eq!(second["reviewArchiveScheduled"], "child:result-1");
         assert_eq!(second["reviewArchiveAttempts"], 2);
@@ -3323,10 +3451,15 @@ mod actor_tests {
                 tx.execute("DELETE FROM runtime_work WHERE id='open-work'", [])?;
                 Ok(())
             })
+            .await
             .expect("archive blocker clears");
-        accepted_archive_tick(&store, 12.999).expect("early retry tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 12.999)
+            .await
+            .expect("early retry tick succeeds");
         assert!(reviewer_record(&store).get("agentArchive").is_none());
-        accepted_archive_tick(&store, 13.0).expect("due retry tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 13.0)
+            .await
+            .expect("due retry tick succeeds");
         let archived = reviewer_record(&store);
         assert_eq!(archived["reviewArchiveScheduled"], "child:result-1");
         assert_eq!(
@@ -3335,11 +3468,13 @@ mod actor_tests {
         );
     }
 
-    #[test]
-    fn reviewer_archive_non_reviewer_child_result_is_not_archived() {
-        let (store, _root) = reviewer_archive_store("worker");
+    #[tokio::test]
+    async fn reviewer_archive_non_reviewer_child_result_is_not_archived() {
+        let (store, _root) = reviewer_archive_store("worker").await;
 
-        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+        accepted_archive_tick(Arc::clone(&store), 10.0)
+            .await
+            .expect("maintenance tick succeeds");
 
         let worker = reviewer_record(&store);
         assert!(worker.get("reviewArchiveScheduled").is_none());

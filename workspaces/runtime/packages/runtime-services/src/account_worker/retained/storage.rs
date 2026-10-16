@@ -310,57 +310,65 @@ fn thread_started_for_actor(
     )?;
     Ok(exists != 0)
 }
-pub(super) fn replay(
+pub(super) async fn replay(
     s: &RuntimeStore,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
-    s.transaction_with(|tx| {
-        if !authorize(tx, call)? {
-            return Ok(Err(PortError::Identity));
-        }
-        let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
-            return Ok(Ok(Replay::Miss));
-        };
-        let prior_call: Call =
-            serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-        if !same_replay_identity(&prior_call, call) {
-            return Ok(Err(PortError::Identity));
-        }
-        let request = store::decode(&prior["request"])?;
-        let saved = store::receipt(tx, &call.key(), "result")?;
-        let result = if let Some(saved) = saved {
-            // The result receipt is committed before its journal event advances
-            // the checkpoint. Only expose it after that event is known committed
-            // in the generation that recorded the result. Looking up the prior
-            // generation is important: reconnecting must not hide a settled
-            // result merely because the new generation has a different cursor.
-            let checkpoint = crate::account_worker::store::checkpoint(
-                tx,
-                &prior_call.scope.account,
-                prior_call.scope.generation,
-            )?;
-            if saved["cursor"]
-                .as_u64()
-                .is_some_and(|cursor| cursor <= checkpoint)
-            {
-                serde_json::from_value(saved["result"].clone())
-                    .map_err(|_| WorkerError::Capacity)?
-            } else {
-                RequestResult::Unknown
-            }
+    let call = call.clone();
+    s.transaction_with(move |tx| replay_in_transaction(tx, &call))
+        .await
+}
+
+/// Resolve a replay from the same transaction that fences submission. Kept
+/// synchronous and pure with respect to SQLite so actor callbacks never await.
+pub(super) fn replay_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+) -> Result<Result<Replay, PortError>, WorkerError> {
+    if !authorize(tx, call)? {
+        return Ok(Err(PortError::Identity));
+    }
+    let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
+        return Ok(Ok(Replay::Miss));
+    };
+    let prior_call: Call =
+        serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+    if !same_replay_identity(&prior_call, call) {
+        return Ok(Err(PortError::Identity));
+    }
+    let request = store::decode(&prior["request"])?;
+    let saved = store::receipt(tx, &call.key(), "result")?;
+    let result = if let Some(saved) = saved {
+        // The result receipt is committed before its journal event advances
+        // the checkpoint. Only expose it after that event is known committed
+        // in the generation that recorded the result. Looking up the prior
+        // generation is important: reconnecting must not hide a settled
+        // result merely because the new generation has a different cursor.
+        let checkpoint = crate::account_worker::store::checkpoint(
+            tx,
+            &prior_call.scope.account,
+            prior_call.scope.generation,
+        )?;
+        if saved["cursor"]
+            .as_u64()
+            .is_some_and(|cursor| cursor <= checkpoint)
+        {
+            serde_json::from_value(saved["result"].clone()).map_err(|_| WorkerError::Capacity)?
         } else {
             RequestResult::Unknown
-        };
-        if result == RequestResult::NotSent {
-            return Ok(Ok(Replay::Retry(request.ticket)));
         }
-        // A committed operation may be inspected after the provider reconnects.
-        // Return its original ticket and scope; this path only reads receipts and
-        // never queues another provider write.
-        let mut receipt = prior_call.receipt(request.ticket, result);
-        receipt.replayed = true;
-        Ok(Ok(Replay::Return(receipt)))
-    })
+    } else {
+        RequestResult::Unknown
+    };
+    if result == RequestResult::NotSent {
+        return Ok(Ok(Replay::Retry(request.ticket)));
+    }
+    // A committed operation may be inspected after the provider reconnects.
+    // Return its original ticket and scope; this path only reads receipts and
+    // never queues another provider write.
+    let mut receipt = prior_call.receipt(request.ticket, result);
+    receipt.replayed = true;
+    Ok(Ok(Replay::Return(receipt)))
 }
 
 pub(super) enum Replay {
@@ -379,14 +387,17 @@ fn same_replay_identity(prior: &Call, current: &Call) -> bool {
     prior == *current
 }
 
-pub(super) fn submitted(
+pub(super) async fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
     retry_ticket: Option<&studio_runtime_providers::RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
-    scheduler::lifecycle_transaction_with(s, |tx| {
-        if !authorize(tx, call)? {
+    let call = call.clone();
+    let request = request.clone();
+    let retry_ticket = retry_ticket.cloned();
+    scheduler::lifecycle_transaction_with(s, move |tx| {
+        if !authorize(tx, &call)? {
             return Ok(Err(PortError::Identity));
         }
         if let Some(expected_ticket) = retry_ticket {
@@ -395,7 +406,7 @@ pub(super) fn submitted(
             };
             let prior_call: Call =
                 serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-            if !same_replay_identity(&prior_call, call) {
+            if !same_replay_identity(&prior_call, &call) {
                 return Ok(Err(PortError::Identity));
             }
             let prior_request = store::decode(&prior["request"])?;
@@ -407,8 +418,8 @@ pub(super) fn submitted(
                         .as_u64()
                         .is_some_and(|cursor| cursor <= checkpoint)
             });
-            if prior_request.ticket != *expected_ticket
-                || request.ticket != *expected_ticket
+            if prior_request.ticket != expected_ticket
+                || request.ticket != expected_ticket
                 || !proven_not_sent
             {
                 return Ok(Err(PortError::Identity));
@@ -418,7 +429,7 @@ pub(super) fn submitted(
                 tx,
                 &call.key(),
                 "submitted",
-                json!({"call":call,"request":store::record(request)}),
+                json!({"call":call,"request":store::record(&request)}),
             )?;
         } else {
             // The replay read and this admission are separate transactions. Two
@@ -441,7 +452,7 @@ pub(super) fn submitted(
                 {
                     return Err(WorkerError::Capacity);
                 }
-                return Ok(Err(if same_replay_identity(&prior_call, call) {
+                return Ok(Err(if same_replay_identity(&prior_call, &call) {
                     PortError::Unknown
                 } else {
                     PortError::Identity
@@ -451,20 +462,22 @@ pub(super) fn submitted(
                 tx,
                 &call.key(),
                 "submitted",
-                json!({"call":call,"request":store::record(request)}),
+                json!({"call":call,"request":store::record(&request)}),
             )?;
         }
         Ok(Ok(()))
     })
+    .await
 }
-pub(in crate::account_worker) fn recover(
+pub(in crate::account_worker) async fn recover(
     s: &RuntimeStore,
     account: &str,
     generation: u64,
 ) -> Result<Vec<(PendingRequest, RecoveredRequest)>, WorkerError> {
-    s.transaction_with(|tx| {
+    let account = account.to_owned();
+    s.transaction_with(move |tx| {
         let prefix = format!("account-worker:retained:{account}:");
-        let checkpoint = store::checkpoint(tx, account, generation)?;
+        let checkpoint = store::checkpoint(tx, &account, generation)?;
         let mut statement = tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.call.scope.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':result' AND json_extract(done.result,'$.result') != 'Unknown' AND json_extract(done.result,'$.cursor') <=?4) ORDER BY r.id LIMIT 33")?;
         let rows = statement.query_map(rusqlite::params![prefix, format!("{prefix}~"), i64::try_from(generation).map_err(|_|WorkerError::Capacity)?, i64::try_from(checkpoint).map_err(|_|WorkerError::Capacity)?], |row|row.get::<_,String>(0))?;
         let mut result = Vec::new();
@@ -488,7 +501,7 @@ pub(in crate::account_worker) fn recover(
             if result.len() > MAX_PENDING_RESPONSES { return Err(WorkerError::Capacity); }
         }
         Ok(result)
-    })
+    }).await
 }
 
 #[cfg(test)]
@@ -553,8 +566,9 @@ mod replay_identity_tests {
         assert!(!same_replay_identity(&call(), &changed));
     }
 
-    #[test]
-    fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent() {
+    #[tokio::test]
+    async fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent()
+     {
         let state = tempfile::tempdir().expect("retained receipt test state directory");
         let store =
             RuntimeStore::open(Some(state.path())).expect("open retained receipt test store");
@@ -596,23 +610,27 @@ mod replay_identity_tests {
         // transaction commits the submitted intent.
         assert!(matches!(
             replay(&store, &first)
+                .await
                 .expect("read first replay state")
                 .expect("first replay should miss"),
             Replay::Miss
         ));
         assert!(matches!(
             replay(&store, &conflicting)
+                .await
                 .expect("read conflicting replay state")
                 .expect("conflicting replay should miss before admission"),
             Replay::Miss
         ));
         assert_eq!(
             submitted(&store, &first, &recovered(&first), None)
+                .await
                 .expect("persist first submitted intent"),
             Ok(())
         );
         assert_eq!(
             submitted(&store, &conflicting, &recovered(&conflicting), None)
+                .await
                 .expect("inspect conflicting submitted intent"),
             Err(PortError::Identity)
         );
@@ -621,12 +639,15 @@ mod replay_identity_tests {
         // cannot replace it or advance into a provider submission.
         assert!(matches!(
             replay(&store, &first)
+                .await
                 .expect("read first durable intent")
                 .expect("first durable intent should be replayable"),
             Replay::Return(_)
         ));
         assert!(matches!(
-            replay(&store, &conflicting).expect("read changed identity outcome"),
+            replay(&store, &conflicting)
+                .await
+                .expect("read changed identity outcome"),
             Err(PortError::Identity)
         ));
 
@@ -637,28 +658,33 @@ mod replay_identity_tests {
         let exact_retry = exact.clone();
         assert!(matches!(
             replay(&store, &exact)
+                .await
                 .expect("read exact operation replay state")
                 .expect("first exact operation replay should miss"),
             Replay::Miss
         ));
         assert!(matches!(
             replay(&store, &exact_retry)
+                .await
                 .expect("read exact retry replay state")
                 .expect("concurrent exact retry should miss before admission"),
             Replay::Miss
         ));
         assert_eq!(
             submitted(&store, &exact, &recovered(&exact), None)
+                .await
                 .expect("persist exact submitted intent"),
             Ok(())
         );
         assert_eq!(
             submitted(&store, &exact_retry, &recovered(&exact_retry), None)
+                .await
                 .expect("inspect exact concurrent submitted intent"),
             Err(PortError::Unknown)
         );
         assert!(matches!(
             replay(&store, &exact_retry)
+                .await
                 .expect("read durable exact retry outcome")
                 .expect("durable exact retry should replay"),
             Replay::Return(SessionReceipt {

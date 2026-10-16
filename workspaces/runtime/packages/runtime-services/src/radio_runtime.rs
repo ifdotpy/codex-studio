@@ -16,6 +16,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, ProjectsRepository, QueueEvent, QueueEventId,
     QueueEventRepository, RuntimeStore, SyncDocumentsRepository, system_reads as records,
@@ -47,35 +48,58 @@ pub(crate) fn publish_room(
 
 /// HTTP path after the runtime-server registry wires the retained scheduler and
 /// post-commit interrupt transport.
-pub fn manage_http(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsError> {
-    manage_command(store, body, true)
+pub async fn manage_http(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
+    manage_command(store, body, true).await
 }
 
 /// Local open/send/pass/stop; direct creation is injected separately by P02.
-pub fn manage(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsError> {
-    manage_command(store, body, true)
+pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
+    manage_command(store, body, true).await
 }
-fn manage_command(store: &RuntimeStore, body: &Value, live: bool) -> Result<Value, ProjectsError> {
-    let action = body["radio_action"].as_str().unwrap_or_default();
+async fn manage_command(
+    store: Arc<RuntimeStore>,
+    body: &Value,
+    live: bool,
+) -> Result<Value, ProjectsError> {
+    let action = body["radio_action"].as_str().unwrap_or_default().to_owned();
     if action == "create" {
         return Err(ProjectsError::Requires("host-project/radio-create"));
     }
-    if !matches!(action, "open" | "send" | "pass" | "stop") {
+    if !matches!(action.as_str(), "open" | "send" | "pass" | "stop") {
         return Err(ProjectsError::Invalid("Unknown shared chat action"));
     }
     let key = request_key(body)?;
     let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
-    if let Some(result) = store.transaction_with(|db| replay(db, &key, &signature, "radio"))? {
+    let replay_key = key.clone();
+    let replay_signature = signature.clone();
+    if let Some(result) = store
+        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "radio"))
+        .await?
+    {
         return Ok(result);
     }
-    let path = project_key(body.get("path"), false)?;
-    let team = Uuid::parse_str(body["team_id"].as_str().unwrap_or_default())
-        .map_err(|_| ProjectsError::Invalid("peer team ID is invalid"))?
-        .to_string();
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|db| {
-        if let Some(prior) = replay(db,&key,&signature,"radio")? { return Ok(prior); }
+    let store_for_preparation = Arc::clone(&store);
+    let body_for_preparation = body.clone();
+    let (path, team, prepared) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/radio_runtime",
+        move || {
+            let path = project_key(body_for_preparation.get("path"), false)?;
+            let team =
+                Uuid::parse_str(body_for_preparation["team_id"].as_str().unwrap_or_default())
+                    .map_err(|_| ProjectsError::Invalid("peer team ID is invalid"))?
+                    .to_string();
+            let prepared = PreparedHost::load(&store_for_preparation)?;
+            prepared.recheck_paths()?;
+            Ok::<_, ProjectsError>((path, team, prepared))
+        },
+    )
+    .await
+    .map_err(|_| ProjectsError::PreparationWorker)??;
+    let body = body.clone();
+    let key_for_write = key.clone();
+    let signature_for_write = signature.clone();
+    store.transaction_with(move |db| {
+        if let Some(prior) = replay(db,&key_for_write,&signature_for_write,"radio")? { return Ok(prior); }
         prepared.recheck(db)?;
         let id = format!("radio:{team}");
         let now = crate::projects::now_seconds();
@@ -89,11 +113,11 @@ fn manage_command(store: &RuntimeStore, body: &Value, live: bool) -> Result<Valu
         };
         if !live && action=="stop" && room.radio.active.is_some() {return Err(ProjectsError::Requires("workspace-state/peer-radio"));}
         if room.value["projectPath"] != path { return Err(ProjectsError::Invalid("The shared chat belongs to another project")); }
-        if let Some(denial) = validate(db,&room,&prepared,matches!(action,"send"|"pass"))? && action != "stop" { return Err(ProjectsError::Invalid(denial)); }
+        if let Some(denial) = validate(db,&room,&prepared,matches!(action.as_str(),"send"|"pass"))? && action != "stop" { return Err(ProjectsError::Invalid(denial)); }
         if action != "open" {
             if body["expected_revision"].as_u64() != Some(room.radio.revision) { return Err(ProjectsError::Invalid("The shared chat changed. Reload before sending")); }
             room.radio.revision = room.radio.revision.checked_add(1).ok_or_else(||invalid(room.id()))?;
-            if matches!(action,"send"|"pass") {
+            if matches!(action.as_str(),"send"|"pass") {
                 let members = room.members();
                 let target = body["target"].as_str().unwrap_or("both");
                 if target != "both" && !members.iter().any(|id|id==target) { return Err(ProjectsError::Invalid("Select a participant in this shared chat")); }
@@ -117,7 +141,7 @@ fn manage_command(store: &RuntimeStore, body: &Value, live: bool) -> Result<Valu
         let result = json!({"room":room.value});
         save_operation_receipt(db,&key,&signature,&result)?;
         Ok(result)
-    })
+    }).await
 }
 fn request_key(body: &Value) -> Result<String, ProjectsError> {
     Ok(format!("radio:{}", bounded_text(&body["request_id"], 255)?))
@@ -161,9 +185,9 @@ pub trait InterruptTransport {
 /// Claim, hand off after commit, then settle by exact request receipt. If the
 /// process stops after claim or the transport outcome is lost, the state remains
 /// Unknown and later ticks do not resend it.
-pub fn handoff_interrupt(
+pub async fn handoff_interrupt(
     store: &RuntimeStore,
-    prepared: &PreparedHost,
+    prepared: std::sync::Arc<PreparedHost>,
     interrupt: &Interrupt,
     transport: &mut dyn InterruptTransport,
     now: f64,
@@ -173,13 +197,30 @@ pub fn handoff_interrupt(
         .strip_prefix("radio-interrupt:")
         .ok_or(ProjectsError::Invalid(
             "interrupt request identity is invalid",
-        ))?;
-    let claimed = store.transaction_with(|tx| claim_interrupt(tx, prepared, event_id, now))?;
+        ))?
+        .to_owned();
+    let prepared_for_claim = std::sync::Arc::clone(&prepared);
+    let event_for_claim = event_id.clone();
+    let claimed = store
+        .transaction_with(move |tx| claim_interrupt(tx, &prepared_for_claim, &event_for_claim, now))
+        .await?;
     if !claimed {
         return Ok(false);
     }
     let receipt = transport.dispatch(interrupt)?;
-    store.transaction_with(|tx| settle_interrupt(tx, prepared, event_id, &receipt, now))
+    let prepared_for_settlement = std::sync::Arc::clone(&prepared);
+    let event_for_settlement = event_id;
+    store
+        .transaction_with(move |tx| {
+            settle_interrupt(
+                tx,
+                &prepared_for_settlement,
+                &event_for_settlement,
+                &receipt,
+                now,
+            )
+        })
+        .await
 }
 
 /// P02 owns draft creation, provider defaults and account-identity revalidation.
@@ -199,51 +240,69 @@ pub trait RadioCreation {
     ) -> Result<(), ProjectsError>;
 }
 
-pub fn create_with(
-    store: &RuntimeStore,
+pub async fn create_with(
+    store: Arc<RuntimeStore>,
     body: &Value,
-    creation: &mut dyn RadioCreation,
+    mut creation: Box<dyn RadioCreation + Send>,
 ) -> Result<Value, ProjectsError> {
     let key = request_key(body)?;
     let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
-    if let Some(result) = store.transaction_with(|db| replay(db, &key, &signature, "radio"))? {
+    let replay_key = key.clone();
+    let replay_signature = signature.clone();
+    if let Some(result) = store
+        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "radio"))
+        .await?
+    {
         return Ok(result);
     }
-    let path = project_key(body.get("path"), true)?;
-    let name = bounded_text(&body["name"], 80)?;
-    let request = bounded_text(&body["request_id"], 255)?;
-    let namespace = Uuid::new_v5(
-        &Uuid::NAMESPACE_URL,
-        format!("codex-studio:radio:{request}").as_bytes(),
-    );
-    let room_id = format!("radio:{namespace}");
-    let ids = [
-        Uuid::new_v5(&namespace, b"0").to_string(),
-        Uuid::new_v5(&namespace, b"1").to_string(),
-    ];
-    let ids = ids.map(AgentId::from);
-    let project_path = std::path::Path::new(&path);
-    let mut drafts = creation.prepare(body, project_path, ids.clone())?;
-    for (draft, id) in drafts.iter_mut().zip(&ids) {
-        if draft.id != *id
-            || draft.root_id != *id
-            || draft.extra.get("cwd").and_then(Value::as_str) != Some(path.as_str())
-            || draft.extra.get("isLead").and_then(Value::as_bool) != Some(true)
-        {
-            return Err(ProjectsError::Invalid(
-                "prepared shared participant identity changed",
-            ));
-        }
-        draft
-            .extra
-            .insert("sharedRoomId".to_owned(), json!(room_id));
-        draft.extra.insert("needsTitle".to_owned(), json!(false));
-        records::validate("runtime_agents", id.as_ref(), draft.value())?;
-    }
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|db| {
-        if let Some(result)=replay(db,&key,&signature,"radio")? {return Ok(result);}
+    let body_for_preparation = body.clone();
+    let (path, name, namespace, room_id, ids, drafts, mut creation) =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/radio_runtime",
+            move || {
+                let path = project_key(body_for_preparation.get("path"), true)?;
+                let name = bounded_text(&body_for_preparation["name"], 80)?;
+                let request = bounded_text(&body_for_preparation["request_id"], 255)?;
+                let namespace = Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    format!("codex-studio:radio:{request}").as_bytes(),
+                );
+                let room_id = format!("radio:{namespace}");
+                let ids = [
+                    Uuid::new_v5(&namespace, b"0").to_string(),
+                    Uuid::new_v5(&namespace, b"1").to_string(),
+                ]
+                .map(AgentId::from);
+                let project_path = std::path::Path::new(&path);
+                let mut drafts =
+                    creation.prepare(&body_for_preparation, project_path, ids.clone())?;
+                for (draft, id) in drafts.iter_mut().zip(&ids) {
+                    if draft.id != *id
+                        || draft.root_id != *id
+                        || draft.extra.get("cwd").and_then(Value::as_str) != Some(path.as_str())
+                        || draft.extra.get("isLead").and_then(Value::as_bool) != Some(true)
+                    {
+                        return Err(ProjectsError::Invalid(
+                            "prepared shared participant identity changed",
+                        ));
+                    }
+                    draft
+                        .extra
+                        .insert("sharedRoomId".to_owned(), json!(room_id));
+                    draft.extra.insert("needsTitle".to_owned(), json!(false));
+                    records::validate("runtime_agents", id.as_ref(), draft.value())?;
+                }
+                Ok::<_, ProjectsError>((path, name, namespace, room_id, ids, drafts, creation))
+            },
+        )
+        .await
+        .map_err(|_| ProjectsError::PreparationWorker)??;
+    let (prepared, _) =
+        crate::projects::prepare_path(Arc::clone(&store), Some(json!(path.clone())), true).await?;
+    let replay_key = key.clone();
+    let replay_signature = signature.clone();
+    store.transaction_with(move |db| {
+        if let Some(result)=replay(db,&replay_key,&replay_signature,"radio")? {return Ok(result);}
         prepared.recheck(db)?;
         creation.recheck(db,&drafts)?;
         if records::get(db,"runtime_rooms",&room_id)?.is_some() || ids.iter().map(|id|prepared_agent_exists(db,id.as_ref())).collect::<Result<Vec<_>,_>>()?.into_iter().any(|exists|exists) {return Err(ProjectsError::Invalid("shared identity already exists without its receipt"));}
@@ -261,7 +320,7 @@ pub fn create_with(
         let mut room=Room::checked(json!({"id":room_id,"kind":"private","members":ids,"projectPath":path,"customName":name,"created":now,"userHidden":false,"radio":{"direct":true,"teamId":namespace.to_string(),"revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{}}}))?;
         save(db,&mut room,&prepared,now)?;
         let result=json!({"room":room.value});save_operation_receipt(db,&key,&signature,&result)?;Ok(result)
-    })
+    }).await
 }
 fn prepared_agent_exists(db: &Connection, id: &str) -> Result<bool, ProjectsError> {
     Ok(records::get(db, "runtime_agents", id)?.is_some())

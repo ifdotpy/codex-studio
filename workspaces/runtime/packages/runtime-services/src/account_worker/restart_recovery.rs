@@ -2,7 +2,7 @@
 use super::{AccountCommand, StoreBridge};
 use crate::{
     account_worker::retained::{RequestActor, consumers::HistoryPort},
-    recovery::{RecoveryAction, RecoveryError, RecoveryOutcome},
+    recovery::{RecoveryAction, RecoveryEffectResult, RecoveryError, RecoveryOutcome},
     recovery_absence::RecoveryObservation,
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
@@ -14,6 +14,7 @@ use crate::{
     task_recovery_store::TaskCompletionWriter,
 };
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SchedulerRepository};
 
 const MAX_STARTUP_SCAN_PAGES: usize = 32;
@@ -35,19 +36,14 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
     tokio::spawn(async move {
         let store = first_pass.bridge.store.clone();
         let request_scope = first_pass.scope.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_worker/restart_recovery",
-            move || {
-                reconcile_first_pass(
-                    &store,
-                    &first_pass.account,
-                    request_scope,
-                    first_pass.session,
-                )
-            },
+        if let Ok(result) = reconcile_first_pass(
+            store,
+            &first_pass.account,
+            request_scope,
+            first_pass.session,
         )
-        .await;
-        if let Ok(Ok(result)) = result {
+        .await
+        {
             if let Some(streams) = result.streams
                 && first_pass
                     .commands
@@ -75,8 +71,8 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
     })
 }
 
-fn reconcile_first_pass(
-    store: &RuntimeStore,
+async fn reconcile_first_pass(
+    store: Arc<RuntimeStore>,
     account: &str,
     scope: ConnectionScope,
     session: super::retained::RetainedSessionPort,
@@ -85,7 +81,7 @@ fn reconcile_first_pass(
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
     for _ in 0..MAX_STARTUP_SCAN_PAGES {
-        let jobs = load_recovery_jobs(store, account, &mut cursor)?;
+        let jobs = load_recovery_jobs(&store, account, &mut cursor)?;
         if jobs.is_empty() {
             break;
         }
@@ -123,38 +119,41 @@ fn reconcile_first_pass(
             };
             let observed_scope = scope.clone();
             let observed_value = observation.clone();
-            let observe = move |current: &ConnectionScope| {
-                (current == &observed_scope).then(|| observed_value.clone())
-            };
-            let source: &crate::recovery_runtime::ObservationSource<'_> = &observe;
+            let source: Arc<crate::recovery_runtime::ObservationSource> =
+                Arc::new(move |current: &ConnectionScope| {
+                    (current == &observed_scope).then(|| observed_value.clone())
+                });
             let mut history = HistoryPort::new(
                 session.clone(),
                 RequestActor {
                     agent: agent.clone(),
                     epoch,
                 },
-                tokio::runtime::Handle::current(),
                 snapshot.connection_recovery_id(),
             );
             let mut reader =
-                RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source)?;
-            let mut completion = RestartInputCompletion::default();
-            let mut task_completion = NoTaskCompletion;
+                RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source.as_ref())?;
+            let completion: Arc<Mutex<Box<dyn CompletionWriter>>> =
+                Arc::new(Mutex::new(Box::new(RestartInputCompletion::default())));
+            let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
             let mut runtime = RecoveryRuntime {
-                store,
-                observation: source,
-                completion: &mut completion,
-                task_completion: &mut task_completion,
+                store: Arc::clone(&store),
+                observation: Arc::clone(&source),
+                completion,
+                task_completion,
             };
             let mut scan = crate::recovery_runtime::RecoveryScan::default();
             let selected = scan
                 .take([job.clone()], std::time::Instant::now(), observation.at)
                 .ok_or(RecoveryError::EffectsUnavailable)?;
-            let outcome = runtime.reconcile(&selected, scope.clone(), &mut reader);
+            let outcome = runtime
+                .reconcile(&selected, scope.clone(), &mut reader)
+                .await;
             scan.finish(&selected, std::time::Instant::now(), &outcome)?;
-            if matches!(outcome?, RecoveryOutcome::Applied(_)) {
+            let outcome = outcome?;
+            if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
                 recovered.push((agent, epoch));
-                if let Some(streams) = completion.stream_update.take() {
+                if let Some(streams) = outcome.stream_update {
                     recovered_streams = Some(streams);
                 }
             }
@@ -167,9 +166,7 @@ fn reconcile_first_pass(
 }
 
 #[derive(Default)]
-pub(super) struct RestartInputCompletion {
-    stream_update: Option<crate::notification_dispatch::NotificationStreamBuffer>,
-}
+pub(super) struct RestartInputCompletion {}
 impl CompletionWriter for RestartInputCompletion {
     fn start_held(
         &mut self,
@@ -187,7 +184,8 @@ impl CompletionWriter for RestartInputCompletion {
         expected: &RecoverySnapshot,
         scope: &ConnectionScope,
         action: &RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError> {
+    ) -> Result<RecoveryEffectResult, RecoveryError> {
+        let mut stream_update = None;
         let RecoveryAction::AcceptStart { turn } = action else {
             return Err(RecoveryError::EffectsUnavailable);
         };
@@ -200,7 +198,7 @@ impl CompletionWriter for RestartInputCompletion {
         let attempt_id = attempt["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
         let turn_id = turn["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
         if record["accountKey"].as_str().unwrap_or("default") != scope.account {
-            return Ok(RecoveryOutcome::Superseded);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
         }
         let accepted = SchedulerRepository::settle_restart_started(
             tx,
@@ -211,7 +209,7 @@ impl CompletionWriter for RestartInputCompletion {
             turn_id,
         )?;
         if !accepted {
-            return Ok(RecoveryOutcome::Superseded);
+            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
         }
         let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
             return Err(RecoveryError::CommitFailed);
@@ -333,26 +331,30 @@ impl CompletionWriter for RestartInputCompletion {
                 .map_err(|_| RecoveryError::CommitFailed)?;
             super::store::persist_streams(tx, &scope.account, &streams)
                 .map_err(|_| RecoveryError::CommitFailed)?;
-            self.stream_update = Some(streams);
+            stream_update = Some(streams);
         }
-        Ok(RecoveryOutcome::Applied(
-            json!({"status":"accepted","turnId":turn_id}),
-        ))
+        Ok(RecoveryEffectResult {
+            outcome: RecoveryOutcome::Applied(json!({"status":"accepted","turnId":turn_id})),
+            stream_update,
+        })
     }
 }
 
 struct NoTaskCompletion;
 impl TaskCompletionWriter for NoTaskCompletion {
-    fn resolve_receipt(&mut self, _: &Value) -> Result<Value, RecoveryError> {
-        Err(RecoveryError::EffectsUnavailable)
+    fn resolve_receipt<'a>(
+        &'a self,
+        _: Arc<Value>,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, RecoveryError>> {
+        Box::pin(async { Err(RecoveryError::EffectsUnavailable) })
     }
-    fn complete(
-        &mut self,
-        _: &TaskRecoverySnapshot,
-        _: &ConnectionScope,
+    fn complete<'a>(
+        &'a self,
+        _: &'a TaskRecoverySnapshot,
+        _: &'a ConnectionScope,
         _: Value,
-    ) -> Result<bool, RecoveryError> {
-        Err(RecoveryError::EffectsUnavailable)
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, RecoveryError>> {
+        Box::pin(async { Err(RecoveryError::EffectsUnavailable) })
     }
 }
 

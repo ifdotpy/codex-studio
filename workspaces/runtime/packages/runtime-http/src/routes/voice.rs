@@ -6,6 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::post as axum_post;
 use serde_json::Value;
+use std::sync::Arc;
 use studio_runtime_services::voice::{self, VoiceError};
 
 use super::extractors::ApiJson;
@@ -90,12 +91,15 @@ async fn audio(
         body.audio,
         body.mime,
     );
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/voice",
-        move || voice::save_audio(&store, &agent, &session, &chunk, &encoded, &mime),
+    let result = voice::save_audio(
+        Arc::clone(&store),
+        &agent,
+        &session,
+        &chunk,
+        &encoded,
+        &mime,
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(voice_audio_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordResponse,
@@ -128,27 +132,21 @@ async fn record(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| ApiError::internal())?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/voice",
-        move || {
-            voice::record(
-                &store,
-                voice::VoiceRecordInput {
-                    agent_id: agent,
-                    session_id: session,
-                    event_id: event,
-                    kind: kind.to_owned(),
-                    text,
-                    item_id: item,
-                    previous_item_id: previous,
-                    payload,
-                    internal: false,
-                },
-            )
+    let result = voice::record(
+        &store,
+        voice::VoiceRecordInput {
+            agent_id: agent,
+            session_id: session,
+            event_id: event,
+            kind: kind.to_owned(),
+            text,
+            item_id: item,
+            previous_item_id: previous,
+            payload,
+            internal: false,
         },
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordResponse,
@@ -198,13 +196,9 @@ async fn approval_speech(
 ) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, request_id) = (body.agent, body.request_id);
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/voice",
-        move || voice::approval_speech(&store, &agent, &request_id),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(voice_error)?;
+    let result = voice::approval_speech(store, &agent, &request_id)
+        .await
+        .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordResponse,
     >(result)?))
@@ -330,13 +324,9 @@ async fn submit(
         body.record_ids,
         body.edited_text.flatten(),
     );
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/voice",
-        move || voice::submit(&store, &agent, &message, &record_ids, edited.as_deref()),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(voice_error)?;
+    let result = voice::submit(store, &agent, &message, &record_ids, edited.as_deref())
+        .await
+        .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceDeliveryResponse,
     >(result)?))
@@ -478,6 +468,7 @@ fn voice_error(error: VoiceError) -> ApiError {
             StatusCode::CONFLICT,
             "another runtime owns the state directory",
         ),
+        VoiceError::PreparationWorker => ApiError::internal(),
         VoiceError::Store(_) | VoiceError::EventWrite(_) | VoiceError::Json(_) => {
             ApiError::internal()
         }
@@ -511,7 +502,9 @@ fn voice_audio_error(error: voice::VoiceAudioError) -> ApiError {
                 "another runtime owns the state directory",
             )
         }
-        voice::VoiceAudioError::Store(_) | voice::VoiceAudioError::Io(_) => ApiError::internal(),
+        voice::VoiceAudioError::PreparationWorker
+        | voice::VoiceAudioError::Store(_)
+        | voice::VoiceAudioError::Io(_) => ApiError::internal(),
     }
 }
 

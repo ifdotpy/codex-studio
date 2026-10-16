@@ -30,7 +30,8 @@ use studio_runtime_store::{CheckpointsRepository, RuntimeStore, StoreError, Work
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
-static REPOSITORY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+static REPOSITORY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -46,22 +47,33 @@ pub enum WorkspaceError {
     CheckpointRefConflict,
     #[error("Workspace serialization lock is poisoned")]
     Lock,
+    #[error("Workspace preparation worker failed")]
+    Worker,
 }
 
 /// Call on a blocking preparation worker. Queued events belong to the caller and are never mutated.
 /// Validate the returned Ready token inside the submission transaction; other admission gates remain.
-pub fn prepare(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceDecision, WorkspaceError> {
-    prepare_with_timeout(store, agent_id, GIT_TIMEOUT)
+pub async fn prepare(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
+) -> Result<WorkspaceDecision, WorkspaceError> {
+    prepare_with_timeout(store, agent_id, GIT_TIMEOUT).await
 }
 
-pub fn prepare_with_timeout(
-    store: &RuntimeStore,
-    agent_id: &str,
+pub async fn prepare_with_timeout(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
     timeout: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    match prepare_attempt(store, agent_id, timeout) {
+    match prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout).await {
         Err(WorkspaceError::Git | WorkspaceError::Deadline) => {
-            let current = actor(&snapshot(store, agent_id)?)?;
+            let read_store = Arc::clone(&store);
+            let current = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/workspace_ready_git",
+                move || actor(&snapshot(&read_store, &agent_id)?),
+            )
+            .await
+            .map_err(|_| WorkspaceError::Worker)??;
             Ok(recovery(
                 current.workspace_reservation_id,
                 current.cwd,
@@ -72,12 +84,20 @@ pub fn prepare_with_timeout(
     }
 }
 
-fn prepare_attempt(
-    store: &RuntimeStore,
-    agent_id: &str,
+async fn prepare_attempt(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
     timeout: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    let initial = snapshot(store, agent_id)?;
+    let read_store = Arc::clone(&store);
+    let initial_agent_id = agent_id.clone();
+    let git_deadline = Instant::now() + timeout;
+    let initial = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || snapshot(&read_store, &initial_agent_id),
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)??;
     let actor = actor(&initial)?;
     // VM paths are guest paths, so they cannot enter Git canonicalization. The
     // native-action owner binds the line; this token admits only the persisted
@@ -131,8 +151,14 @@ fn prepare_attempt(
                     },
                 );
             }
-            let mounted = crate::image_workspace::ensure_mounted(agent_id)
-                .map_err(|_| WorkspaceError::Git)?;
+            let read_agent_id = agent_id.clone();
+            let mounted = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/workspace_ready_git",
+                move || crate::image_workspace::ensure_mounted(&read_agent_id),
+            )
+            .await
+            .map_err(|_| WorkspaceError::Worker)?
+            .map_err(|_| WorkspaceError::Git)?;
             let path = mounted
                 .get("path")
                 .and_then(Value::as_str)
@@ -149,30 +175,55 @@ fn prepare_attempt(
     if actor.deleted_at.is_some() || !actor.auto_wake {
         return Ok(WorkspaceDecision::Defer { reservation: None });
     }
-    let git = Git {
-        deadline: Instant::now() + timeout,
-    };
-    let mut context = observe(store, initial, &git)?;
-    let decision = context.decide();
-    let WorkspaceDecision::Provision(plan) = decision else {
-        return Ok(decision);
+    let observe_store = Arc::clone(&store);
+    let context = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || {
+            observe(
+                &observe_store,
+                initial,
+                &Git {
+                    deadline: git_deadline,
+                },
+            )
+        },
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)??;
+    let WorkspaceDecision::Provision(plan) = context.decide() else {
+        return Ok(context.decide());
     };
     let lock = repository_lock(&plan.identity.common_dir)?;
     let _guard = match lock.try_lock() {
         Ok(guard) => guard,
-        Err(std::sync::TryLockError::WouldBlock) => {
+        Err(_) => {
             return Ok(WorkspaceDecision::Defer {
                 reservation: Some(plan.identity.id),
             });
         }
-        Err(std::sync::TryLockError::Poisoned(_)) => return Err(WorkspaceError::Lock),
     };
     // Another worker may have completed while this caller waited for the common repository.
-    context = observe(store, snapshot(store, agent_id)?, &git)?;
+    let observe_store = Arc::clone(&store);
+    let observe_agent_id = agent_id.clone();
+    let context = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || {
+            let snapshot = snapshot(&observe_store, &observe_agent_id)?;
+            observe(
+                &observe_store,
+                snapshot,
+                &Git {
+                    deadline: git_deadline,
+                },
+            )
+        },
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)??;
     let WorkspaceDecision::Provision(plan) = context.decide() else {
         return Ok(context.decide());
     };
-    provision(store, &context, plan, &git)
+    provision(store, context, plan, git_deadline).await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -180,61 +231,73 @@ pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
     WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
 }
 
-fn provision(
-    store: &RuntimeStore,
-    context: &Context,
+async fn provision(
+    store: Arc<RuntimeStore>,
+    context: Context,
     plan: crate::workspace_ready::WorktreePlan,
-    git: &Git,
+    deadline: Instant,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    if !store.transaction(|tx| {
-        WorkspaceReadyRepository::reserve(tx, &context.snapshot, &plan.identity, now())
-    })? {
+    let reserve_snapshot = context.snapshot.clone();
+    let reserve_identity = plan.identity.clone();
+    if !store
+        .transaction(move |tx| {
+            WorkspaceReadyRepository::reserve(tx, &reserve_snapshot, &reserve_identity, now())
+        })
+        .await?
+    {
         return Ok(WorkspaceDecision::Defer {
             reservation: Some(plan.identity.id),
         });
     }
     let identity = &plan.identity;
-    let effect = (|| {
-        if plan.effect == ProvisionEffect::Create {
-            git.create(identity)?;
+    let effect_plan = identity.clone();
+    let effect_kind = plan.effect;
+    let effect_context = context;
+    let effect = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || {
+            let git = Git { deadline };
+            if effect_kind == ProvisionEffect::Create {
+                git.create(&effect_plan)?;
+            }
+            let observed = git.worktree(&effect_plan)?;
+            let decision = decide_workspace(
+                &effect_context.actor,
+                &effect_context.snapshot.agent.record,
+                effect_context.cwd.as_ref(),
+                &[],
+                Some(&effect_plan),
+                true,
+                &observed,
+            );
+            if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
+                || !confined(&effect_plan)
+            {
+                return Err(WorkspaceError::Git);
+            }
+            Ok::<_, WorkspaceError>(git.checkpoint(&effect_plan).map_err(|error| error.to_string()))
+        },
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)?;
+    let checkpoint = match effect {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            let failed_identity = identity.clone();
+            let failure = error.to_string();
+            store
+                .transaction(move |tx| {
+                    WorkspaceReadyRepository::uncertain(tx, &failed_identity, &failure, now())
+                })
+                .await?;
+            return Ok(recovery(
+                Some(identity.id.clone()),
+                identity.destination.clone(),
+                "Provisioning did not establish a complete worktree",
+            ));
         }
-        let observed = git.worktree(identity)?;
-        let record = &context.snapshot.agent.record;
-        let decision = decide_workspace(
-            &context.actor,
-            record,
-            context.cwd.as_ref(),
-            &[],
-            Some(identity),
-            true,
-            &observed,
-        );
-        if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
-            || !confined(identity)
-        {
-            return Err(WorkspaceError::Git);
-        }
-        Ok(())
-    })();
-    if let Err(error) = effect {
-        store.transaction(|tx| {
-            WorkspaceReadyRepository::uncertain(tx, identity, &error.to_string(), now())
-        })?;
-        return Ok(recovery(
-            Some(identity.id.clone()),
-            identity.destination.clone(),
-            "Provisioning did not establish a complete worktree",
-        ));
-    }
-    let checkpoint = git.checkpoint(identity);
-    let checkpoint_error = checkpoint
-        .as_ref()
-        .err()
-        .map(|error| format!("Checkpoint skipped: {error}"));
-    let outcome = checkpoint
-        .as_ref()
-        .map_err(|_| checkpoint_error.as_deref().unwrap_or("Checkpoint skipped"));
-    publish_verified(store, identity, outcome, git)
+    };
+    publish_verified(store, identity.clone(), checkpoint, deadline).await
 }
 
 fn confined(identity: &ProvisionIdentity) -> bool {
@@ -246,31 +309,41 @@ fn confined(identity: &ProvisionIdentity) -> bool {
 
 /// Observe Git after checkpoint commands, outside the writer transaction. Only bounded
 /// state comparisons and publication run while holding the store's writer.
-fn publish_verified(
-    store: &RuntimeStore,
-    identity: &ProvisionIdentity,
-    checkpoint: Result<&Value, &str>,
-    git: &Git,
+async fn publish_verified(
+    store: Arc<RuntimeStore>,
+    identity: ProvisionIdentity,
+    checkpoint: Result<Value, String>,
+    deadline: Instant,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    let observed = git.worktree(identity).ok();
-    let confined = confined(identity);
-    let token = store.transaction(|tx| {
-        let current = CheckpointsRepository::workspace_snapshot(tx, &identity.agent)?;
+    let read_identity = identity.clone();
+    let (observed, confined) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/workspace_ready_git",
+        move || {
+            let git = Git { deadline };
+            (git.worktree(&read_identity).ok(), confined(&read_identity))
+        },
+    )
+    .await
+    .map_err(|_| WorkspaceError::Worker)?;
+    let transaction_identity = identity.clone();
+    let token = store.transaction(move |tx| {
+        let current = CheckpointsRepository::workspace_snapshot(tx, &transaction_identity.agent)?;
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
             let Some(observed) = &observed else { return false };
             let decision = decide_workspace(&actor, &current.agent.record,
-                Some(&actor.cwd), &reservations(current), Some(identity), true, observed);
+                Some(&actor.cwd), &reservations(current), Some(&transaction_identity), true, observed);
             confined && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
         if !valid {
-            WorkspaceReadyRepository::uncertain(tx, identity, "Workspace evidence changed before publication", now())?;
+            WorkspaceReadyRepository::uncertain(tx, &transaction_identity, "Workspace evidence changed before publication", now())?;
             return Ok(None);
         }
-        if !WorkspaceReadyRepository::publish(tx, identity, checkpoint, now())? { return Ok(None); }
-        let record = CheckpointsRepository::agent(tx, &identity.agent)?.expect("published actor");
-        Ok(Some(ReadyToken::new(&record.record, identity.cwd.clone())))
-    })?;
+        let checkpoint = checkpoint.as_ref().map_err(String::as_str);
+        if !WorkspaceReadyRepository::publish(tx, &transaction_identity, checkpoint, now())? { return Ok(None); }
+        let record = CheckpointsRepository::agent(tx, &transaction_identity.agent)?.expect("published actor");
+        Ok(Some(ReadyToken::new(&record.record, transaction_identity.cwd.clone())))
+    }).await?;
     match token {
         Some(token) => Ok(WorkspaceDecision::Ready { token }),
         None => Ok(recovery(
@@ -435,7 +508,7 @@ fn observe(
     Ok(context)
 }
 
-fn repository_lock(path: &Path) -> Result<Arc<Mutex<()>>, WorkspaceError> {
+fn repository_lock(path: &Path) -> Result<Arc<tokio::sync::Mutex<()>>, WorkspaceError> {
     let mut locks = REPOSITORY_LOCKS
         .get_or_init(Mutex::default)
         .lock()
@@ -444,7 +517,7 @@ fn repository_lock(path: &Path) -> Result<Arc<Mutex<()>>, WorkspaceError> {
     let lock = locks
         .get(path)
         .and_then(Weak::upgrade)
-        .unwrap_or_else(|| Arc::new(Mutex::new(())));
+        .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
     locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
     Ok(lock)
 }

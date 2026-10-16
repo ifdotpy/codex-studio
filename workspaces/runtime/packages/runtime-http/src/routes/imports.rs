@@ -38,22 +38,16 @@ async fn import_list(
         .to_owned();
     let cursor = query.nonempty_str("cursor").map(str::to_owned);
     let port = state.account_session.clone().ok_or_else(unavailable)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/imports",
-        move || {
-            let scope = port.current_scope(&account).ok_or_else(unavailable)?;
-            provider_request(
-                port.as_ref(),
-                &account,
-                &scope,
-                format!("import-list:{}", operation_nonce()),
-                "thread/list",
-                json!({"limit":50,"cursor":cursor}),
-            )
-        },
+    let scope = port.current_scope(&account).ok_or_else(unavailable)?;
+    let result = provider_request(
+        port.as_ref(),
+        &account,
+        &scope,
+        format!("import-list:{}", operation_nonce()),
+        "thread/list",
+        json!({"limit":50,"cursor":cursor}),
     )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    .await?;
     Ok(Json(super::generated_json::<
         crate::generated::ImportListResponse,
     >(result)?))
@@ -100,32 +94,25 @@ async fn import_thread(
     }
     let port = state.account_session.clone().ok_or_else(unavailable)?;
     let operation_id = body.id.clone().flatten().unwrap_or_else(operation_nonce);
-    let (thread, turns) = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/imports", {
-        let account = account.clone();
-        let thread_id = thread_id.clone();
-        move || {
-            let scope = port.current_scope(&account).ok_or_else(unavailable)?;
-            let thread = provider_request(
-                port.as_ref(),
-                &account,
-                &scope,
-                format!("import:{operation_id}:read"),
-                "thread/read",
-                json!({"threadId":thread_id,"includeTurns":false}),
-            )?;
-            let turns = provider_request(
-                port.as_ref(),
-                &account,
-                &scope,
-                format!("import:{operation_id}:turns"),
-                "thread/turns/list",
-                json!({"threadId":thread_id,"limit":20,"sortDirection":"desc","itemsView":"full"}),
-            )?;
-            Ok::<_, ApiError>((thread, turns))
-        }
-    })
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let scope = port.current_scope(&account).ok_or_else(unavailable)?;
+    let thread = provider_request(
+        port.as_ref(),
+        &account,
+        &scope,
+        format!("import:{operation_id}:read"),
+        "thread/read",
+        json!({"threadId":thread_id,"includeTurns":false}),
+    )
+    .await?;
+    let turns = provider_request(
+        port.as_ref(),
+        &account,
+        &scope,
+        format!("import:{operation_id}:turns"),
+        "thread/turns/list",
+        json!({"threadId":thread_id,"limit":20,"sortDirection":"desc","itemsView":"full"}),
+    )
+    .await?;
     let thread = thread
         .get("thread")
         .cloned()
@@ -210,7 +197,7 @@ async fn import_thread(
     Ok(Json(created))
 }
 
-fn provider_request(
+async fn provider_request(
     port: &dyn AccountSessionPort,
     account: &str,
     scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
@@ -230,6 +217,7 @@ fn provider_request(
     };
     let receipt = port
         .provider_request(request)
+        .await
         .map_err(|error| match error {
             AccountSessionError::Requires(name) => ApiError::dependency(name),
             AccountSessionError::Unknown => ApiError::new(

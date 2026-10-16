@@ -98,7 +98,7 @@ fn copy_template(corpus: &RadioCorpus, root: &Path) {
         fs::write(root.join(name), contents).expect("copy template database");
     }
 }
-fn seed(store: &RuntimeStore, snapshot: &Value) {
+async fn seed(store: &RuntimeStore, snapshot: &Value) {
     let identity = store.root().join("multi-server");
     fs::create_dir_all(&identity).expect("identity directory");
     fs::write(
@@ -153,6 +153,7 @@ fn seed(store: &RuntimeStore, snapshot: &Value) {
             }
             Ok(())
         })
+        .await
         .expect("Python records seed");
 }
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
@@ -266,22 +267,24 @@ fn normalize(value: &mut Value) {
         _ => {}
     }
 }
-fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
-    let prepared = PreparedHost::load(store)?;
-    match case["mode"].as_str().expect("mode") {
-        "convert" => studio_runtime_services::peer_conversion::convert(store, &case["body"]),
+async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value, ProjectsError> {
+    let prepared = PreparedHost::load(&store)?;
+    let case = case.clone();
+    let mode = case["mode"].as_str().expect("mode").to_owned();
+    match mode.as_str() {
+        "convert" => studio_runtime_services::peer_conversion::convert(&store, &case["body"]).await,
         "project" => studio_runtime_services::projects::write(
-            store,
-            &case["body"],
-            "default",
-            &[json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
-        ),
+            std::sync::Arc::clone(&store),
+            case["body"].clone(),
+            "default".to_owned(),
+            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+        ).await,
         "peer" => studio_runtime_services::projects::peer_team_write(
-            store,
-            &case["body"],
-            "default",
-            &[json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
-        ),
+            std::sync::Arc::clone(&store),
+            case["body"].clone(),
+            "default".to_owned(),
+            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+        ).await,
         "create" => {
             // The shared Python fixture names one filesystem path. Keep its
             // create/remove lifetime atomic across parallel corpus consumers.
@@ -290,22 +293,22 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
             fs::create_dir_all(path).expect("project directory");
             let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
             let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
-            let result = radio_runtime::create_with(store, &case["body"], &mut Creation(drafts));
+            let result = radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await;
             fs::remove_dir(path).expect("remove fixture project directory");
             result
         },
-        "project-binding" => store.transaction_with(|db| {
+        "project-binding" => store.transaction_with(move |db| {
             let path=case["body"]["path"].as_str().expect("project path");
             let binding=prepared.chat_binding(db,path,Some(path),Some("local-test"))?;
             Ok(json!({"binding":binding,"settings":prepared.settings_key(db,path,binding.as_ref())?}))
-        }),
-        "tick" => store.transaction_with(|db| {
+        }).await,
+        "tick" => store.transaction_with(move |db| {
             let effects = radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0)?;
             Ok(json!(
                 effects.into_iter().map(|e| e.turn_id).collect::<Vec<_>>()
             ))
-        }),
-        "answer" => store.transaction_with(|db| {
+        }).await,
+        "answer" => store.transaction_with(move |db| {
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
@@ -315,8 +318,8 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
                 1000.0,
             )
             .map(|v| json!(v))
-        }),
-        "bind" => store.transaction_with(|db| {
+        }).await,
+        "bind" => store.transaction_with(move |db| {
             radio_runtime::bind_reserved(
                 db,
                 &prepared,
@@ -325,19 +328,19 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
                 1000.0,
             )?;
             Ok(Value::Null)
-        }),
-        _ => radio_runtime::manage(store, &case["body"]),
+        }).await,
+        _ => radio_runtime::manage(std::sync::Arc::clone(&store), &case["body"]).await,
     }
 }
-#[test]
-fn python_written_radio_corpus_and_restart_replay() {
+#[tokio::test]
+async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus();
     for original_case in &corpus.cases {
         let root = tempfile::tempdir().expect("case");
         copy_template(corpus, root.path());
-        let store = RuntimeStore::open(Some(root.path())).expect("open");
-        seed(&store, &original_case["before"]);
-        let result = run(&store, original_case);
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+        seed(&store, &original_case["before"]).await;
+        let result = run(std::sync::Arc::clone(&store), original_case).await;
         assert_eq!(
             result.is_err(),
             original_case["error"] == true,
@@ -358,12 +361,18 @@ fn python_written_radio_corpus_and_restart_replay() {
         normalize(&mut expected);
         assert_eq!(actual, expected, "{} result", original_case["name"]);
         drop(store);
-        let restarted = RuntimeStore::open(Some(root.path())).expect("restart");
+        let restarted = std::sync::Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart"),
+        );
         if !["tick", "bind", "project-binding"]
             .contains(&original_case["mode"].as_str().expect("mode"))
         {
             let before = state(&restarted, &original_case["before"]);
-            run(&restarted, original_case).expect("replay");
+            run(std::sync::Arc::clone(&restarted), original_case)
+                .await
+                .expect("replay");
             assert_eq!(
                 state(&restarted, &original_case["before"]),
                 before,
@@ -393,7 +402,9 @@ fn python_written_radio_corpus_and_restart_replay() {
             }
             let all_before = database_rows(&restarted);
             assert!(
-                run(&restarted, &changed).is_err(),
+                run(std::sync::Arc::clone(&restarted), &changed)
+                    .await
+                    .is_err(),
                 "changed identity must fail: {}",
                 original_case["name"]
             );
@@ -406,8 +417,8 @@ fn python_written_radio_corpus_and_restart_replay() {
     }
 }
 
-#[test]
-fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
+#[tokio::test]
+async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
     let corpus = corpus();
     for (name, tables) in [
         (
@@ -466,13 +477,16 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
             for boundary in ["BEFORE", "AFTER"] {
                 let root = tempfile::tempdir().expect("case");
                 copy_template(corpus, root.path());
-                let store = RuntimeStore::open(Some(root.path())).expect("open");
-                seed(&store, &original_case["before"]);
+                let store =
+                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+                seed(&store, &original_case["before"]).await;
                 let before = state(&store, &original_case["before"]);
                 let all_before = database_rows(&store);
-                store.transaction(|db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).expect("failpoint");
+                store.transaction(|db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).await.expect("failpoint");
                 assert!(
-                    run(&store, original_case).is_err(),
+                    run(std::sync::Arc::clone(&store), original_case)
+                        .await
+                        .is_err(),
                     "{name} {boundary} {table} reached"
                 );
                 assert_eq!(
@@ -482,7 +496,11 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
                 );
                 assert_eq!(database_rows(&store), all_before, "all tables rollback");
                 drop(store);
-                let store = RuntimeStore::open(Some(root.path())).expect("restart");
+                let store = std::sync::Arc::new(
+                    RuntimeStore::open(Some(root.path()))
+                        .await
+                        .expect("restart"),
+                );
                 assert_eq!(
                     state(&store, &original_case["before"]),
                     before,
@@ -495,12 +513,21 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
                         )?;
                         Ok(())
                     })
+                    .await
                     .expect("remove failpoint");
-                run(&store, original_case).expect("retry after rollback");
+                run(std::sync::Arc::clone(&store), original_case)
+                    .await
+                    .expect("retry after rollback");
                 let committed = state(&store, &original_case["before"]);
                 drop(store);
-                let store = RuntimeStore::open(Some(root.path())).expect("restart after commit");
-                run(&store, original_case).expect("retry after lost response");
+                let store = std::sync::Arc::new(
+                    RuntimeStore::open(Some(root.path()))
+                        .await
+                        .expect("restart after commit"),
+                );
+                run(std::sync::Arc::clone(&store), original_case)
+                    .await
+                    .expect("retry after lost response");
                 assert_eq!(
                     state(&store, &original_case["before"]),
                     committed,
@@ -541,8 +568,8 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
         .collect()
 }
 
-#[test]
-fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing() {
+#[tokio::test]
+async fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing() {
     let corpus = corpus();
     let case = corpus
         .cases
@@ -551,26 +578,32 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
         .expect("answer");
     let root = tempfile::tempdir().expect("state");
     copy_template(corpus, root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
-    seed(&store, &case["before"]);
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("floor"));
     let prepared = PreparedHost::load(&store).expect("prepare");
     store.transaction_with(|db|->Result<(),ProjectsError> {
         assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",None,1000.0)?);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
-    }).expect("P04 caller commits both writes");
+    }).await.expect("P04 caller commits both writes");
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart"),
+    );
     assert!(!radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("released"));
     let prepared = PreparedHost::load(&store).expect("prepare");
     store
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .await
         .expect("next input");
     let committed = database_rows(&store);
     let prepared = PreparedHost::load(&store).expect("prepare");
     store
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .await
         .expect("retry tick");
     assert_eq!(database_rows(&store), committed, "one continuation only");
     store
@@ -581,9 +614,12 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
             )?;
             Ok(())
         })
+        .await
         .expect("malformed Python-shaped input");
     let before = database_rows(&store);
-    let error = run(&store, case).expect_err("malformed room refused");
+    let error = run(std::sync::Arc::clone(&store), case)
+        .await
+        .expect_err("malformed room refused");
     assert!(
         matches!(
             error,
@@ -598,8 +634,8 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
     );
 }
 
-#[test]
-fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
+#[tokio::test]
+async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     let corpus = corpus();
     let case = corpus
         .cases
@@ -608,11 +644,12 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .expect("interrupt");
     let root = tempfile::tempdir().expect("state");
     copy_template(corpus, root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
-    seed(&store, &case["before"]);
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, &case["before"]).await;
     let prepared = PreparedHost::load(&store).expect("prepare");
     let first = store
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .await
         .expect("persist pending intent");
     assert_eq!(first.len(), 1);
     let event = first[0]
@@ -622,25 +659,36 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .to_owned();
     drop(store);
 
-    let store = RuntimeStore::open(Some(root.path())).expect("restart with pending");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart with pending"),
+    );
     let prepared = PreparedHost::load(&store).expect("prepare");
     let recovered = store
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1001.0))
+        .await
         .expect("recover intent");
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].request_id, format!("radio-interrupt:{event}"));
     let mut transport = TransportDouble::accepted();
     assert!(
         radio_runtime::handoff_interrupt(&store, &prepared, &recovered[0], &mut transport, 1002.0)
+            .await
             .expect("handoff")
     );
     assert_eq!(transport.calls, vec![format!("radio-interrupt:{event}")]);
     drop(store);
 
-    let store = RuntimeStore::open(Some(root.path())).expect("restart after claim");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart after claim"),
+    );
     let prepared = PreparedHost::load(&store).expect("prepare");
     let held = store
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
+        .await
         .expect("hold unknown handoff");
     assert!(held.is_empty(), "claimed Unknown interrupt is never resent");
 
@@ -648,11 +696,16 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     // dispatch: recovery observes Unknown and the transport receives nothing.
     let crash_root = tempfile::tempdir().expect("crash state");
     copy_template(corpus, crash_root.path());
-    let crash_store = RuntimeStore::open(Some(crash_root.path())).expect("open crash state");
-    seed(&crash_store, &case["before"]);
+    let crash_store = std::sync::Arc::new(
+        RuntimeStore::open(Some(crash_root.path()))
+            .await
+            .expect("open crash state"),
+    );
+    seed(&crash_store, &case["before"]).await;
     let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
     let pending = crash_store
         .transaction_with(|db| radio_runtime::tick(db, &crash_prepared, &mut Ingress, 2000.0))
+        .await
         .expect("pending");
     let crash_event = pending[0]
         .request_id
@@ -667,11 +720,15 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
                 &crash_event,
                 2001.0
             ))
+            .await
             .expect("claim before simulated crash")
     );
     drop(crash_store);
-    let crash_store =
-        RuntimeStore::open(Some(crash_root.path())).expect("restart after claim crash");
+    let crash_store = std::sync::Arc::new(
+        RuntimeStore::open(Some(crash_root.path()))
+            .await
+            .expect("restart after claim crash"),
+    );
     let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
     let mut transport = TransportDouble::accepted();
     assert!(
@@ -682,6 +739,7 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
             &mut transport,
             2002.0
         )
+        .await
         .expect("held")
     );
     assert!(transport.calls.is_empty());
@@ -709,8 +767,8 @@ impl InterruptTransport for TransportDouble {
     }
 }
 
-#[test]
-fn prepared_host_fences_source_rows_changed_before_the_writer() {
+#[tokio::test]
+async fn prepared_host_fences_source_rows_changed_before_the_writer() {
     let corpus = corpus();
     let case = corpus
         .cases
@@ -719,8 +777,8 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
         .expect("open fixture");
     let root = tempfile::tempdir().expect("state");
     copy_template(corpus, root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
-    seed(&store, &case["before"]);
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, &case["before"]).await;
     let prepared = PreparedHost::load(&store).expect("prepare");
     store
         .transaction(|db| {
@@ -729,10 +787,10 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("intervening row update");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)),
+        store.transaction_with(|db| prepared.recheck(db)).await,
         Err(ProjectsError::Conflict(_))
     ));
     store
@@ -742,7 +800,7 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("same-dispatch identity");
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
     store
@@ -752,10 +810,11 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("same dispatch advances from idle to running");
     store
         .transaction_with(|db| prepared.recheck(db))
+        .await
         .expect("same dispatch status change preserves prepared paths");
     let prepared = PreparedHost::load(&store).expect("fresh prepare for startup progression");
     store
@@ -765,7 +824,7 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("same dispatch enters starting");
     store
         .transaction(|db| {
@@ -774,10 +833,11 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("same dispatch progresses to running");
     store
         .transaction_with(|db| prepared.recheck(db))
+        .await
         .expect("same start attempt progressing to running is permitted");
     for terminal_status in ["interrupted", "archived"] {
         let prepared = PreparedHost::load(&store).expect("fresh prepare");
@@ -789,9 +849,10 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 )?;
                 Ok(())
             })
+            .await
             .expect("terminal status during preparation");
         assert!(matches!(
-            store.transaction_with(|db| prepared.recheck(db)),
+            store.transaction_with(|db| prepared.recheck(db)).await,
             Err(ProjectsError::Conflict(_))
         ));
     }
@@ -804,9 +865,10 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
             )?;
             Ok(())
         })
+        .await
         .expect("agent deleted during preparation");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)),
+        store.transaction_with(|db| prepared.recheck(db)).await,
         Err(ProjectsError::Conflict(_))
     ));
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
@@ -817,10 +879,10 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("agent stop during preparation");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)),
+        store.transaction_with(|db| prepared.recheck(db)).await,
         Err(ProjectsError::Conflict(_))
     ));
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
@@ -832,9 +894,10 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
             )?;
             Ok(())
         })
+        .await
         .expect("project row update");
     assert!(matches!(
-        store.transaction_with(|db| prepared.recheck(db)),
+        store.transaction_with(|db| prepared.recheck(db)).await,
         Err(ProjectsError::Conflict(_))
     ));
 }

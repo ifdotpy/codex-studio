@@ -4,6 +4,8 @@
 //! complete capture inside the write transaction. The account worker supplies a
 //! cached connection identity and the shared delivered-manifest writer.
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
@@ -47,6 +49,8 @@ pub enum RepairError {
     HistoryFile(#[source] Box<crate::context_repair_files::HistoryFileError>),
     #[error("Context repair account session unavailable")]
     AccountSession,
+    #[error("Context repair preparation worker failed")]
+    Worker,
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -759,7 +763,7 @@ pub fn decide(snapshot: &RecoverySnapshot, history: &NativeHistory) -> Vec<Input
 
 /// Required shared port: no provider call or filesystem work is allowed here.
 /// The implementation promotes turn_prepare's manifest write intents in this transaction.
-pub trait DeliveredManifestWriter {
+pub trait DeliveredManifestWriter: Send + Sync {
     fn remember(
         &self,
         transaction: &Transaction<'_>,
@@ -777,22 +781,29 @@ impl DeliveredManifestWriter for ManifestWriterUnavailable {
 
 /// Reads are bounded by the account worker's existing request deadline. Identity
 /// returns its cached identity only, and is checked again inside the transaction.
-pub trait HistoryReader {
+pub type HistoryReadFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<NativeHistory, RepairError>> + Send + 'a>>;
+
+pub trait HistoryReader: Send {
     fn identity(&self) -> ConnectionIdentity;
-    fn read(&mut self, snapshot: &RecoverySnapshot) -> Result<NativeHistory, RepairError>;
+    fn read<'a>(&'a mut self, snapshot: &'a RecoverySnapshot) -> HistoryReadFuture<'a>;
 }
 
-pub fn recover(
+pub async fn recover(
     store: &RuntimeStore,
     agent: &str,
     reader: &mut impl HistoryReader,
-    manifests: &impl DeliveredManifestWriter,
+    manifests: impl DeliveredManifestWriter + 'static,
     now: f64,
 ) -> Result<Vec<InputDecision>, RepairError> {
     if !now.is_finite() {
         return Err(RepairError::Invalid("now"));
     }
-    let snapshot = store.transaction_with(|tx| capture(tx, agent, reader.identity()))?;
+    let agent = agent.to_owned();
+    let connection = reader.identity();
+    let snapshot = store
+        .transaction_with(move |tx| capture(tx, &agent, connection))
+        .await?;
     if !snapshot.eligible() {
         return Ok(snapshot
             .event_ids()
@@ -804,13 +815,16 @@ pub fn recover(
             .collect());
     }
     if snapshot.restart_wait() && snapshot.event_ids().is_empty() {
+        let connection = reader.identity();
         return store
-            .transaction_with(|tx| apply(tx, &snapshot, &[], reader.identity(), manifests, now));
+            .transaction_with(move |tx| apply(tx, &snapshot, &[], connection, &manifests, now))
+            .await;
     }
-    let history = reader.read(&snapshot)?;
-    store.transaction_with(|tx| {
-        reconcile(tx, &snapshot, &history, reader.identity(), manifests, now)
-    })
+    let history = reader.read(&snapshot).await?;
+    let connection = reader.identity();
+    store
+        .transaction_with(move |tx| reconcile(tx, &snapshot, &history, connection, &manifests, now))
+        .await
 }
 
 pub fn capture(
@@ -1005,9 +1019,13 @@ fn require_schema(tx: &Transaction<'_>, tables: &[&str]) -> Result<(), RepairErr
 }
 
 /// Partial explicit repair operation: real no-op paths return their saved receipt.
-pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError> {
-    store.transaction_with(|db| {
-        let mut agent = ContextRepairRepository::agent(db, id)?.ok_or(RepairError::MissingAgent)?;
+pub async fn repair_idle(
+    store: std::sync::Arc<RuntimeStore>,
+    id: &str,
+) -> Result<Value, RepairError> {
+    let id = id.to_owned();
+    store.transaction_with(move |db| {
+        let mut agent = ContextRepairRepository::agent(db, &id)?.ok_or(RepairError::MissingAgent)?;
         assert_available(&agent)?;
         if agent["environment"] == "linux"
             && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
@@ -1018,7 +1036,7 @@ pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError>
                 ContextRepairRepository::put_agent(db, &agent)?;
             }
             return Ok(json!({
-                "id": id,
+                "id": &id,
                 "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)
             }));
         }
@@ -1027,90 +1045,122 @@ pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError>
             || agent["threadId"] == ""
         {
             return Ok(
-                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+                json!({"id": &id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
             );
         }
         let epoch = agent["epoch"]
             .as_i64()
             .ok_or(RepairError::Invalid("agent.epoch"))?;
-        if !uncertain_input_receipts(db, id, epoch)?.is_empty() {
+        if !uncertain_input_receipts(db, &id, epoch)?.is_empty() {
             return Err(RepairError::ReceiptHold);
         }
         require_schema(db, &["runtime_event_meta"])?;
         if !ContextRepairRepository::has_candidates(
             db,
-            id,
+            &id,
             epoch,
         )? {
             return Ok(
-                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+                json!({"id": &id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
             );
         }
         Err(RepairError::RewriteUnavailable)
-    })
+    }).await
 }
 
 /// Reconcile and safely fork an idle Codex history after durable event writes.
 /// Provider IO and history copying happen outside the store transaction; the
 /// exact fork intent is committed before the only mutating provider request.
-pub fn repair_idle_with_broker(
-    store: &RuntimeStore,
+pub async fn repair_idle_with_broker(
+    store: std::sync::Arc<RuntimeStore>,
     id: &str,
     provider_home: &Path,
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let previous_operation = store
-        .read()
-        .ok()
-        .and_then(|db| ContextRepairRepository::agent(&db, id).ok().flatten())
-        .and_then(|agent| {
-            agent
-                .pointer("/contextRepair/id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-    let result = repair_idle_with_broker_inner(store, id, provider_home, broker, deadline);
+    let read_store = std::sync::Arc::clone(&store);
+    let read_id = id.to_owned();
+    let previous_operation = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/context_repair",
+        move || {
+            Ok::<_, RepairError>(
+                read_store
+                    .read()
+                    .ok()
+                    .and_then(|db| ContextRepairRepository::agent(&db, &read_id).ok().flatten())
+                    .and_then(|agent| {
+                        agent
+                            .pointer("/contextRepair/id")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    }),
+            )
+        },
+    )
+    .await
+    .map_err(|_| RepairError::Worker)??;
+    let result = repair_idle_with_broker_inner(
+        std::sync::Arc::clone(&store),
+        id,
+        provider_home,
+        broker,
+        deadline,
+    )
+    .await;
     if let Err(error) = &result {
         // A failed read/copy before fork submission can be retried under a new
         // operation. Any submitted operation stays held as Unknown.
-        let _settlement_result = store.transaction_with(|tx| {
-            let Some(mut current) = ContextRepairRepository::agent(tx, id)? else {
-                return Ok::<(), RepairError>(());
-            };
-            let current_operation = current.pointer("/contextRepair/id").and_then(Value::as_str);
-            if current_operation.is_some()
-                && current_operation != previous_operation.as_deref()
-                && matches!(
-                    current["contextRepair"]["phase"].as_str(),
-                    Some("preparing" | "submitted")
-                )
-            {
-                current["contextRepair"]["phase"] =
-                    json!(if current["contextRepair"]["phase"] == "submitted" {
-                        "unknown"
-                    } else {
-                        "failed"
-                    });
-                current["contextRepair"]["error"] = json!(error.to_string());
-                ContextRepairRepository::put_agent(tx, &current)?;
-            }
-            Ok(())
-        });
+        let settlement_id = id.to_owned();
+        let previous_operation = previous_operation.clone();
+        let error_message = error.to_string();
+        let _settlement_result = store
+            .transaction_with(move |tx| {
+                let Some(mut current) = ContextRepairRepository::agent(tx, &settlement_id)? else {
+                    return Ok::<(), RepairError>(());
+                };
+                let current_operation =
+                    current.pointer("/contextRepair/id").and_then(Value::as_str);
+                if current_operation.is_some()
+                    && current_operation != previous_operation.as_deref()
+                    && matches!(
+                        current["contextRepair"]["phase"].as_str(),
+                        Some("preparing" | "submitted")
+                    )
+                {
+                    current["contextRepair"]["phase"] =
+                        json!(if current["contextRepair"]["phase"] == "submitted" {
+                            "unknown"
+                        } else {
+                            "failed"
+                        });
+                    current["contextRepair"]["error"] = json!(error_message);
+                    ContextRepairRepository::put_agent(tx, &current)?;
+                }
+                Ok(())
+            })
+            .await;
     }
     result
 }
 
-fn repair_idle_with_broker_inner(
-    store: &RuntimeStore,
+async fn repair_idle_with_broker_inner(
+    store: std::sync::Arc<RuntimeStore>,
     id: &str,
     provider_home: &Path,
     broker: &dyn AccountSessionPort,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    let initial_db = store.read()?;
-    let initial =
-        ContextRepairRepository::agent(&initial_db, id)?.ok_or(RepairError::MissingAgent)?;
+    let stage_store = std::sync::Arc::clone(&store);
+    let stage_id = id.to_owned();
+    let initial = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/context_repair",
+        move || {
+            let initial_db = stage_store.read()?;
+            ContextRepairRepository::agent(&initial_db, &stage_id)?.ok_or(RepairError::MissingAgent)
+        },
+    )
+    .await
+    .map_err(|_| RepairError::Worker)??;
     let initial_account = string_default(&initial, "accountKey", "default")?.to_owned();
     let scope_before = if initial["provider"] != "claude"
         && initial["threadId"]
@@ -1123,33 +1173,46 @@ fn repair_idle_with_broker_inner(
     } else {
         None
     };
-    let tool_receipt_snapshot = if initial["provider"] != "claude"
-        && initial["threadId"]
-            .as_str()
-            .is_some_and(|thread| !thread.is_empty())
-        && !(initial["environment"] == "linux"
-            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
-    {
-        crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
-            &initial_db,
-            store.state_dir(),
-            id,
-            &initial_account,
-            initial["threadId"]
-                .as_str()
-                .ok_or(RepairError::Invalid("agent.threadId"))?,
-            initial["accountHistory"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        )
-        .map_err(|_| RepairError::ReceiptHold)?
-    } else {
-        crate::provider_callbacks::ContextToolReceiptSnapshot::empty()
-    };
-    drop(initial_db);
-    let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(|tx| {
-        let mut agent = ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
+    let receipt_store = std::sync::Arc::clone(&store);
+    let receipt_id = id.to_owned();
+    let receipt_agent = initial.clone();
+    let receipt_account = initial_account.clone();
+    let tool_receipt_snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/context_repair",
+        move || {
+            if receipt_agent["provider"] != "claude"
+                && receipt_agent["threadId"]
+                    .as_str()
+                    .is_some_and(|thread| !thread.is_empty())
+                && !(receipt_agent["environment"] == "linux"
+                    && studio_runtime_store::truthy(receipt_agent.get("imageWorkspaceReady")))
+            {
+                let initial_db = receipt_store.read()?;
+                crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
+                    &initial_db,
+                    receipt_store.state_dir(),
+                    &receipt_id,
+                    &receipt_account,
+                    receipt_agent["threadId"]
+                        .as_str()
+                        .ok_or(RepairError::Invalid("agent.threadId"))?,
+                    receipt_agent["accountHistory"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )
+                .map_err(|_| RepairError::ReceiptHold)
+            } else {
+                Ok(crate::provider_callbacks::ContextToolReceiptSnapshot::empty())
+            }
+        },
+    )
+    .await
+    .map_err(|_| RepairError::Worker)??;
+    let transaction_agent_id = id.to_owned();
+    let transaction_source_id = transaction_agent_id.clone();
+    let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(move |tx| {
+        let mut agent = ContextRepairRepository::agent(tx, &transaction_agent_id)?.ok_or(RepairError::MissingAgent)?;
         if agent["epoch"] != initial["epoch"] || agent["threadId"] != initial["threadId"]
             || string_default(&agent, "accountKey", "default")? != initial_account
             || agent.get("accountHistory") != initial.get("accountHistory")
@@ -1174,11 +1237,11 @@ fn repair_idle_with_broker_inner(
         ensure_local_idle(tx, &agent)?;
         let tool_receipts = crate::provider_callbacks::revalidate_unresolved_context_tool_receipts(
             tx,
-            id,
+            &transaction_agent_id,
             &tool_receipt_snapshot,
         )
         .map_err(|_| RepairError::ReceiptHold)?;
-        let historical_inputs = uncertain_input_receipts(tx, id, agent["epoch"].as_i64().ok_or(RepairError::Invalid("agent.epoch"))?)?;
+        let historical_inputs = uncertain_input_receipts(tx, &transaction_agent_id, agent["epoch"].as_i64().ok_or(RepairError::Invalid("agent.epoch"))?)?;
         let events = verified_repair_events(tx, &agent)?;
         if events.is_empty() && historical_inputs.is_empty() && tool_receipts.is_empty() {
             return Ok((agent, events, tool_receipts, historical_inputs, None, String::new()));
@@ -1192,12 +1255,12 @@ fn repair_idle_with_broker_inner(
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)
             .map_err(|_| RepairError::Invalid("clock"))?.as_nanos();
         let operation_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID,
-            format!("context-repair:{id}:{epoch}:{}:{stamp}", agent["threadId"].as_str().unwrap_or_default()).as_bytes()).to_string();
+            format!("context-repair:{transaction_agent_id}:{epoch}:{}:{stamp}", agent["threadId"].as_str().unwrap_or_default()).as_bytes()).to_string();
         archive_previous_repair(&mut agent)?;
         let repair = json!({
             "id":operation_id,
-            "agent":id,
-            "source":{"id":id,"epoch":epoch,"accountKey":account,"threadId":agent["threadId"]},
+            "agent":&transaction_agent_id,
+            "source":{"id":transaction_source_id,"epoch":epoch,"accountKey":account,"threadId":agent["threadId"]},
             "phase":"preparing",
             "created":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| RepairError::Invalid("clock"))?.as_secs_f64(),
             "checkedEventIds":events.iter().filter_map(|e| e["id"].as_str()).collect::<Vec<_>>(),
@@ -1209,7 +1272,7 @@ fn repair_idle_with_broker_inner(
         agent["contextRepair"] = repair;
         ContextRepairRepository::put_agent(tx, &agent)?;
         Ok((agent, events, tool_receipts, historical_inputs, Some(scope), operation_id))
-    })?;
+    }).await?;
     let Some(scope) = scope else {
         return Ok(
             json!({"id":id,"repair":agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
@@ -1229,6 +1292,7 @@ fn repair_idle_with_broker_inner(
     };
     broker
         .callback_barrier(&account, &scope, deadline)
+        .await
         .map_err(|_| RepairError::AccountSession)?;
     let read = broker_read(
         broker,
@@ -1241,7 +1305,8 @@ fn repair_idle_with_broker_inner(
             params: json!({"threadId":thread,"includeTurns":false}),
             deadline,
         },
-    )?;
+    )
+    .await?;
     let native = read.get("thread").unwrap_or(&read);
     if native["id"] != thread {
         return Err(RepairError::ReceiptHold);
@@ -1261,7 +1326,8 @@ fn repair_idle_with_broker_inner(
         &thread,
         status,
         deadline,
-    )?;
+    )
+    .await?;
     let turns = broker_read(
         broker,
         BrokerRead {
@@ -1273,7 +1339,7 @@ fn repair_idle_with_broker_inner(
             params: json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
             deadline,
         },
-    )?;
+    ).await?;
     let turn = turns["data"].as_array().and_then(|v| v.first());
     let inherited_empty = turn.is_none();
     if inherited_empty {
@@ -1309,7 +1375,8 @@ fn repair_idle_with_broker_inner(
             &thread,
             terminal_id,
             deadline,
-        )?;
+        )
+        .await?;
     }
     verify_tool_receipts(
         broker,
@@ -1319,7 +1386,8 @@ fn repair_idle_with_broker_inner(
         &thread,
         &tool_receipts,
         deadline,
-    )?;
+    )
+    .await?;
     let checked = broker_read(
         broker,
         BrokerRead {
@@ -1331,7 +1399,8 @@ fn repair_idle_with_broker_inner(
             params: json!({"threadId":thread,"includeTurns":false}),
             deadline,
         },
-    )?;
+    )
+    .await?;
     let checked_thread = checked.get("thread").unwrap_or(&checked);
     let checked_status = checked_thread["status"]["type"].as_str();
     if checked_thread["id"] != thread
@@ -1355,7 +1424,7 @@ fn repair_idle_with_broker_inner(
             params: json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
             deadline,
         },
-    )?;
+    ).await?;
     let current_turn = latest["data"].as_array().and_then(|v| v.first());
     if match (turn, current_turn) {
         (Some(before), Some(after)) => {
@@ -1402,28 +1471,37 @@ fn repair_idle_with_broker_inner(
         "completedAt":terminal_completed,
         "inheritedEmpty":inherited_empty,
     });
-    store.transaction_with(|tx| {
-        let mut current =
-            ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-        if current["contextRepair"]["id"] != operation_id
-            || current["threadId"] != thread
-            || current["epoch"] != agent["epoch"]
-        {
-            return Err(RepairError::ReceiptHold);
-        }
-        current["contextRepair"]["nativeTerminalReceipt"] = terminal_proof.clone();
-        if !historical_inputs.is_empty() {
-            current["contextRepair"]["historicalInputProof"] = json!({
-                "events":historical_inputs,
-                "terminalTurnId":terminal_id,
-                "terminalCompletedAt":terminal_completed,
-                "source":current["contextRepair"]["source"],
-                "deliveryOutcome":"unknown"
-            });
-        }
-        ContextRepairRepository::put_agent(tx, &current)?;
-        Ok::<(), RepairError>(())
-    })?;
+    let transaction_agent_id = id.to_owned();
+    let transaction_operation_id = operation_id.clone();
+    let transaction_thread = thread.clone();
+    let transaction_epoch = epoch;
+    let transaction_terminal_proof = terminal_proof;
+    let transaction_historical_inputs = historical_inputs;
+    let transaction_terminal_id = terminal_id.clone();
+    store
+        .transaction_with(move |tx| {
+            let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                .ok_or(RepairError::MissingAgent)?;
+            if current["contextRepair"]["id"] != transaction_operation_id
+                || current["threadId"] != transaction_thread
+                || current["epoch"].as_i64() != Some(transaction_epoch)
+            {
+                return Err(RepairError::ReceiptHold);
+            }
+            current["contextRepair"]["nativeTerminalReceipt"] = transaction_terminal_proof;
+            if !transaction_historical_inputs.is_empty() {
+                current["contextRepair"]["historicalInputProof"] = json!({
+                    "events":transaction_historical_inputs,
+                    "terminalTurnId":transaction_terminal_id,
+                    "terminalCompletedAt":terminal_completed,
+                    "source":current["contextRepair"]["source"],
+                    "deliveryOutcome":"unknown"
+                });
+            }
+            ContextRepairRepository::put_agent(tx, &current)?;
+            Ok::<(), RepairError>(())
+        })
+        .await?;
     let located = crate::context_repair_files::locate_provider_history(
         crate::context_repair_files::HistoryProvider::Codex,
         provider_home,
@@ -1441,7 +1519,7 @@ fn repair_idle_with_broker_inner(
         completed_at: turn.and_then(|turn| turn["completedAt"].as_f64()),
         inherited_empty,
     };
-    let rewrite = crate::context_repair_files::rewrite_provider_history(
+    let mut rewrite = crate::context_repair_files::rewrite_provider_history(
         provider_home,
         &located,
         events.clone(),
@@ -1453,39 +1531,54 @@ fn repair_idle_with_broker_inner(
         if rewrite.copy_path.is_some() {
             crate::context_repair_files::cleanup_rewrite_copy(provider_home, &rewrite)?;
         }
-        return store.transaction_with(|tx| {
-            let mut current =
-                ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-            if current["contextRepair"]["id"] != operation_id || current["threadId"] != thread {
-                return Err(RepairError::ReceiptHold);
-            }
-            current["contextRepair"]["phase"] = json!("unchanged");
-            current["contextRepair"]["snapshot"] = repair_receipt(&rewrite);
-            ContextRepairRepository::put_agent(tx, &current)?;
-            Ok(json!({"id":id,"repair":current["contextRepair"]}))
-        });
+        let transaction_agent_id = id.to_owned();
+        let transaction_operation_id = operation_id.clone();
+        let transaction_thread = thread.clone();
+        let transaction_repair = repair_receipt(&rewrite);
+        return store
+            .transaction_with(move |tx| {
+                let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                    .ok_or(RepairError::MissingAgent)?;
+                if current["contextRepair"]["id"] != transaction_operation_id
+                    || current["threadId"] != transaction_thread
+                {
+                    return Err(RepairError::ReceiptHold);
+                }
+                current["contextRepair"]["phase"] = json!("unchanged");
+                current["contextRepair"]["snapshot"] = transaction_repair;
+                ContextRepairRepository::put_agent(tx, &current)?;
+                Ok(json!({"id":transaction_agent_id,"repair":current["contextRepair"]}))
+            })
+            .await;
     }
     let copy_path = rewrite.copy_path.as_ref().ok_or(RepairError::ReceiptHold)?;
     let fork_params = json!({"threadId":rewrite.import_thread_id,"path":copy_path,"excludeTurns":true,"deferGoalContinuation":true});
-    let prepared = store.transaction_with(|tx| {
-        let mut current =
-            ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-        if current["contextRepair"]["id"] != operation_id
-            || current["threadId"] != thread
-            || current["epoch"] != agent["epoch"]
-        {
-            return Err(RepairError::ReceiptHold);
-        }
-        ensure_local_idle(tx, &current)?;
-        current["contextRepair"]["phase"] = json!("submitted");
-        current["contextRepair"]["rpcMethod"] = json!("thread/fork");
-        current["contextRepair"]["forkOperation"] =
-            json!(format!("context-repair:{operation_id}:fork"));
-        current["contextRepair"]["snapshot"] = repair_receipt(&rewrite);
-        current["contextRepair"]["forkParams"] = fork_params.clone();
-        ContextRepairRepository::put_agent(tx, &current)?;
-        Ok(())
-    });
+    let fork_params_for_transaction = fork_params.clone();
+    let transaction_agent_id = id.to_owned();
+    let transaction_operation_id = operation_id.clone();
+    let transaction_thread = thread.clone();
+    let transaction_repair = repair_receipt(&rewrite);
+    let prepared = store
+        .transaction_with(move |tx| {
+            let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                .ok_or(RepairError::MissingAgent)?;
+            if current["contextRepair"]["id"] != transaction_operation_id
+                || current["threadId"] != transaction_thread
+                || current["epoch"].as_i64() != Some(epoch)
+            {
+                return Err(RepairError::ReceiptHold);
+            }
+            ensure_local_idle(tx, &current)?;
+            current["contextRepair"]["phase"] = json!("submitted");
+            current["contextRepair"]["rpcMethod"] = json!("thread/fork");
+            current["contextRepair"]["forkOperation"] =
+                json!(format!("context-repair:{transaction_operation_id}:fork"));
+            current["contextRepair"]["snapshot"] = transaction_repair;
+            current["contextRepair"]["forkParams"] = fork_params_for_transaction;
+            ContextRepairRepository::put_agent(tx, &current)?;
+            Ok(())
+        })
+        .await;
     if let Err(error) = prepared {
         crate::context_repair_files::cleanup_rewrite_copy(provider_home, &rewrite)?;
         return Err(error);
@@ -1508,6 +1601,7 @@ fn repair_idle_with_broker_inner(
     };
     let result =
         crate::thread_fork_runtime::dispatch_reserved_via_broker(&request, broker, deadline)
+            .await
             .map_err(|error| match error {
                 crate::native_actions::NativeError::Unknown => RepairError::ProviderUnknown,
                 crate::native_actions::NativeError::Unavailable(_)
@@ -1533,46 +1627,64 @@ fn repair_idle_with_broker_inner(
                 .filter(|s| !s.is_empty() && *s != thread)
                 .ok_or(RepairError::ProviderUnknown)?
                 .to_owned();
-            store.transaction_with(|tx| {
-                let mut current =
-                    ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-                if current["contextRepair"]["id"] != operation_id
-                    || current["threadId"] != thread
-                    || current["epoch"] != agent["epoch"]
-                {
-                    return Err(RepairError::ReceiptHold);
-                }
-                current["contextRepair"]["phase"] = json!("completed");
-                current["contextRepair"]["newThreadId"] = json!(new_thread);
-                current["contextRepair"]["repairedEventIds"] = json!(rewrite.event_ids);
-                current["contextRepair"]["sourceSha256"] = json!(rewrite.source_sha256);
-                current["threadId"] = json!(new_thread);
-                register_source_terminal_receipt(tx, &current["contextRepair"], &new_thread)?;
-                ContextRepairRepository::put_agent(tx, &current)?;
-                Ok(json!({"id":id,"repair":current["contextRepair"]}))
-            })
+            let transaction_agent_id = id.to_owned();
+            let transaction_operation_id = operation_id.clone();
+            let transaction_thread = thread.clone();
+            let repaired_event_ids = std::mem::take(&mut rewrite.event_ids);
+            let source_sha256 = rewrite.source_sha256.clone();
+            store
+                .transaction_with(move |tx| {
+                    let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                        .ok_or(RepairError::MissingAgent)?;
+                    if current["contextRepair"]["id"] != transaction_operation_id
+                        || current["threadId"] != transaction_thread
+                        || current["epoch"].as_i64() != Some(epoch)
+                    {
+                        return Err(RepairError::ReceiptHold);
+                    }
+                    current["contextRepair"]["phase"] = json!("completed");
+                    current["contextRepair"]["newThreadId"] = json!(new_thread);
+                    current["contextRepair"]["repairedEventIds"] = json!(repaired_event_ids);
+                    current["contextRepair"]["sourceSha256"] = json!(source_sha256);
+                    current["threadId"] = json!(new_thread);
+                    register_source_terminal_receipt(tx, &current["contextRepair"], &new_thread)?;
+                    ContextRepairRepository::put_agent(tx, &current)?;
+                    Ok(json!({"id":transaction_agent_id,"repair":current["contextRepair"]}))
+                })
+                .await
         }
-        Err(RepairError::ProviderUnknown) => store.transaction_with(|tx| {
-            let mut current =
-                ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-            if current["contextRepair"]["id"] == operation_id {
-                current["contextRepair"]["phase"] = json!("unknown");
-                ContextRepairRepository::put_agent(tx, &current)?;
-            }
-            Ok(json!({"id":id,"repair":current["contextRepair"]}))
-        }),
+        Err(RepairError::ProviderUnknown) => {
+            let transaction_agent_id = id.to_owned();
+            let transaction_operation_id = operation_id.clone();
+            store
+                .transaction_with(move |tx| {
+                    let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                        .ok_or(RepairError::MissingAgent)?;
+                    if current["contextRepair"]["id"] == transaction_operation_id {
+                        current["contextRepair"]["phase"] = json!("unknown");
+                        ContextRepairRepository::put_agent(tx, &current)?;
+                    }
+                    Ok(json!({"id":transaction_agent_id,"repair":current["contextRepair"]}))
+                })
+                .await
+        }
         Err(error) => {
             crate::context_repair_files::cleanup_rewrite_copy(provider_home, &rewrite)?;
-            store.transaction_with(|tx| {
-                let mut current =
-                    ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
-                if current["contextRepair"]["id"] == operation_id {
-                    current["contextRepair"]["phase"] = json!("failed");
-                    current["contextRepair"]["error"] = json!(error.to_string());
-                    ContextRepairRepository::put_agent(tx, &current)?;
-                }
-                Ok::<(), RepairError>(())
-            })?;
+            let transaction_agent_id = id.to_owned();
+            let transaction_operation_id = operation_id.clone();
+            let error_message = error.to_string();
+            store
+                .transaction_with(move |tx| {
+                    let mut current = ContextRepairRepository::agent(tx, &transaction_agent_id)?
+                        .ok_or(RepairError::MissingAgent)?;
+                    if current["contextRepair"]["id"] == transaction_operation_id {
+                        current["contextRepair"]["phase"] = json!("failed");
+                        current["contextRepair"]["error"] = json!(error_message);
+                        ContextRepairRepository::put_agent(tx, &current)?;
+                    }
+                    Ok::<(), RepairError>(())
+                })
+                .await?;
             Err(error)
         }
     }
@@ -1613,7 +1725,7 @@ struct BrokerRead<'a> {
     deadline: Instant,
 }
 
-fn broker_read(
+async fn broker_read(
     broker: &dyn AccountSessionPort,
     request: BrokerRead<'_>,
 ) -> Result<Value, RepairError> {
@@ -1626,8 +1738,9 @@ fn broker_read(
         request.params,
         request.deadline,
     )
+    .await
 }
-fn broker_call(
+async fn broker_call(
     broker: &dyn AccountSessionPort,
     scope: &ConnectionScope,
     actor: &crate::account_worker::retained::RequestActor,
@@ -1636,16 +1749,19 @@ fn broker_call(
     params: Value,
     deadline: Instant,
 ) -> Result<Value, RepairError> {
-    match broker.provider_request(ProviderRequest {
-        account: scope.account.clone(),
-        operation: operation.to_owned(),
-        actor: Some(actor.clone()),
-        expected_scope: Some(scope.clone()),
-        deleted_actor_session: None,
-        method,
-        params,
-        deadline,
-    }) {
+    match broker
+        .provider_request(ProviderRequest {
+            account: scope.account.clone(),
+            operation: operation.to_owned(),
+            actor: Some(actor.clone()),
+            expected_scope: Some(scope.clone()),
+            deleted_actor_session: None,
+            method,
+            params,
+            deadline,
+        })
+        .await
+    {
         Ok(receipt) if receipt.scope != *scope || receipt.operation != operation => {
             Err(RepairError::ProviderUnknown)
         }
@@ -1661,7 +1777,7 @@ fn broker_call(
         Err(_) => Err(RepairError::AccountSession),
     }
 }
-fn assert_native_queues_empty(
+async fn assert_native_queues_empty(
     broker: &dyn AccountSessionPort,
     scope: &ConnectionScope,
     actor: &crate::account_worker::retained::RequestActor,
@@ -1695,7 +1811,8 @@ fn assert_native_queues_empty(
                 params: json!({"threadId":thread}),
                 deadline,
             },
-        )?;
+        )
+        .await?;
         if result["data"]
             .as_array()
             .is_some_and(|rows| !rows.is_empty())
@@ -1706,7 +1823,7 @@ fn assert_native_queues_empty(
     }
     Ok(())
 }
-fn verify_native_items(
+async fn verify_native_items(
     broker: &dyn AccountSessionPort,
     scope: &ConnectionScope,
     actor: &crate::account_worker::retained::RequestActor,
@@ -1738,7 +1855,8 @@ fn verify_native_items(
                 params,
                 deadline,
             },
-        )?;
+        )
+        .await?;
         let data = page["data"].as_array().ok_or(RepairError::ReceiptHold)?;
         for entry in data {
             if entry
@@ -1825,7 +1943,7 @@ mod repair_history_tests {
     }
 }
 
-fn verify_tool_receipts(
+async fn verify_tool_receipts(
     broker: &dyn AccountSessionPort,
     scope: &ConnectionScope,
     actor: &crate::account_worker::retained::RequestActor,
@@ -1843,7 +1961,8 @@ fn verify_tool_receipts(
             .as_str()
             .filter(|value| !value.is_empty())
             .ok_or(RepairError::ReceiptHold)?;
-        let items = verify_native_items(broker, scope, actor, operation, thread, turn, deadline)?;
+        let items =
+            verify_native_items(broker, scope, actor, operation, thread, turn, deadline).await?;
         let matches = items
             .iter()
             .filter(|item| item["id"] == call && item["type"] == "dynamicToolCall")

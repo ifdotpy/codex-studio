@@ -59,80 +59,84 @@ impl VoiceRequestPort for AccountSessionVoicePort {
         let store = Arc::clone(&self.store);
         let session = Arc::clone(&self.session);
         let agent_id = agent_id.to_owned();
+        let agent_id_for_check = agent_id.clone();
         let session_id = session_id.to_owned();
         let account_key = account_key.to_owned();
+        let account_key_for_check = account_key.clone();
         let thread_id = thread_id.to_owned();
+        let thread_id_for_check = thread_id.clone();
         Box::pin(async move {
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/voice/account_session",
                 move || {
                     let connection = store.read().map_err(|_| VoiceWriteCertainty::NotSent)?;
-                    let agent = super::checked_agent(&connection, &agent_id)
+                    let agent = super::checked_agent(&connection, &agent_id_for_check)
                         .map_err(|_| VoiceWriteCertainty::NotSent)?;
                     if agent.epoch != epoch
                         || agent.extra.get("threadId").and_then(Value::as_str)
-                            != Some(thread_id.as_str())
+                            != Some(thread_id_for_check.as_str())
                         || agent
                             .extra
                             .get("accountKey")
                             .and_then(Value::as_str)
                             .unwrap_or("default")
-                            != account_key
+                            != account_key_for_check
                     {
                         return Err(VoiceWriteCertainty::NotSent);
                     }
-                    drop(connection);
-
-                    let operation = format!("voice:prepare:{session_id}");
-                    let receipt = session
-                        .provider_request(ProviderRequest {
-                            account: account_key.clone(),
-                            operation: operation.clone(),
-                            actor: None,
-                            expected_scope: None,
-                            deleted_actor_session: None,
-                            method: super::runtime::Method::AccountRead,
-                            params: json!({"refreshToken": false}),
-                            deadline: Instant::now() + ACCOUNT_READ_TIMEOUT,
-                        })
-                        .map_err(account_error)?;
-                    let scope = match validate_receipt(
-                        &receipt,
-                        &operation,
-                        super::runtime::Method::AccountRead,
-                        None,
-                    ) {
-                        Ok(scope) if scope.account == account_key => scope,
-                        Ok(_) => return Err(VoiceWriteCertainty::Unknown),
-                        Err(certainty) => return Err(certainty),
-                    };
-                    match receipt.result {
-                        Some(ProviderResponse::Reply(value))
-                            if receipt.certainty == RequestCertainty::Written
-                                && value.pointer("/account/type").and_then(Value::as_str)
-                                    == Some("chatgpt") =>
-                        {
-                            Ok(VoiceConnectionScope {
-                                agent_id,
-                                epoch,
-                                account_key,
-                                thread_id,
-                                connection_id: scope.connection,
-                                generation: scope.generation,
-                            })
-                        }
-                        Some(ProviderResponse::Rejected(_)) => Err(VoiceWriteCertainty::Rejected),
-                        Some(ProviderResponse::Reply(_))
-                            if receipt.certainty == RequestCertainty::Written =>
-                        {
-                            Err(VoiceWriteCertainty::Rejected)
-                        }
-                        _ => Err(VoiceWriteCertainty::Unknown),
-                    }
+                    Ok(())
                 },
             )
             .await
-            .unwrap_or(Err(VoiceWriteCertainty::Unknown))
+            .unwrap_or(Err(VoiceWriteCertainty::Unknown))?;
+
+            let operation = format!("voice:prepare:{session_id}");
+            let receipt = session
+                .provider_request(ProviderRequest {
+                    account: account_key.clone(),
+                    operation: operation.clone(),
+                    actor: None,
+                    expected_scope: None,
+                    deleted_actor_session: None,
+                    method: super::runtime::Method::AccountRead,
+                    params: json!({"refreshToken": false}),
+                    deadline: Instant::now() + ACCOUNT_READ_TIMEOUT,
+                })
+                .await
+                .map_err(account_error)?;
+            let scope = match validate_receipt(
+                &receipt,
+                &operation,
+                super::runtime::Method::AccountRead,
+                None,
+            ) {
+                Ok(scope) if scope.account == account_key => scope,
+                Ok(_) => return Err(VoiceWriteCertainty::Unknown),
+                Err(certainty) => return Err(certainty),
+            };
+            match receipt.result {
+                Some(ProviderResponse::Reply(value))
+                    if receipt.certainty == RequestCertainty::Written
+                        && value.pointer("/account/type").and_then(Value::as_str)
+                            == Some("chatgpt") =>
+                {
+                    Ok(VoiceConnectionScope {
+                        agent_id,
+                        epoch,
+                        account_key,
+                        thread_id,
+                        connection_id: scope.connection,
+                        generation: scope.generation,
+                    })
+                }
+                Some(ProviderResponse::Rejected(_)) => Err(VoiceWriteCertainty::Rejected),
+                Some(ProviderResponse::Reply(_))
+                    if receipt.certainty == RequestCertainty::Written =>
+                {
+                    Err(VoiceWriteCertainty::Rejected)
+                }
+                _ => Err(VoiceWriteCertainty::Unknown),
+            }
         })
     }
 
@@ -146,57 +150,48 @@ impl VoiceRequestPort for AccountSessionVoicePort {
     ) -> VoiceFuture<'a, VoiceRequestReceipt> {
         let session = Arc::clone(&self.session);
         Box::pin(async move {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/voice/account_session",
-                move || {
-                    let expected_scope = ConnectionScope {
-                        account: scope.account_key.clone(),
-                        connection: scope.connection_id.clone(),
-                        generation: scope.generation,
+            let expected_scope = ConnectionScope {
+                account: scope.account_key.clone(),
+                connection: scope.connection_id.clone(),
+                generation: scope.generation,
+            };
+            let deleted_actor_session = (method == super::runtime::Method::ThreadRealtimeStop)
+                .then(|| operation_id.strip_prefix("voice:delete-stop:"))
+                .flatten()
+                .filter(|session_id| !session_id.is_empty())
+                .map(str::to_owned);
+            let receipt = match session
+                .provider_request(ProviderRequest {
+                    account: scope.account_key,
+                    operation: operation_id.clone(),
+                    actor: Some(RequestActor {
+                        agent: scope.agent_id,
+                        epoch: scope.epoch,
+                    }),
+                    expected_scope: Some(expected_scope.clone()),
+                    deleted_actor_session,
+                    method,
+                    params,
+                    deadline,
+                })
+                .await
+            {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    return VoiceRequestReceipt {
+                        certainty: account_error(error),
                     };
-                    let deleted_actor_session = (method
-                        == super::runtime::Method::ThreadRealtimeStop)
-                        .then(|| operation_id.strip_prefix("voice:delete-stop:"))
-                        .flatten()
-                        .filter(|session_id| !session_id.is_empty())
-                        .map(str::to_owned);
-                    let receipt = match session.provider_request(ProviderRequest {
-                        account: scope.account_key,
-                        operation: operation_id.clone(),
-                        actor: Some(RequestActor {
-                            agent: scope.agent_id,
-                            epoch: scope.epoch,
-                        }),
-                        expected_scope: Some(expected_scope.clone()),
-                        deleted_actor_session,
-                        method,
-                        params,
-                        deadline,
-                    }) {
-                        Ok(receipt) => receipt,
-                        Err(error) => {
-                            return VoiceRequestReceipt {
-                                certainty: account_error(error),
-                            };
-                        }
-                    };
-                    let certainty =
-                        validate_receipt(&receipt, &operation_id, method, Some(&expected_scope))
-                            .err()
-                            .unwrap_or(match receipt.result {
-                                Some(ProviderResponse::Reply(_)) => VoiceWriteCertainty::Written,
-                                Some(ProviderResponse::Rejected(_)) => {
-                                    VoiceWriteCertainty::Rejected
-                                }
-                                None => VoiceWriteCertainty::Unknown,
-                            });
-                    VoiceRequestReceipt { certainty }
-                },
-            )
-            .await
-            .unwrap_or(VoiceRequestReceipt {
-                certainty: VoiceWriteCertainty::Unknown,
-            })
+                }
+            };
+            let certainty =
+                validate_receipt(&receipt, &operation_id, method, Some(&expected_scope))
+                    .err()
+                    .unwrap_or(match receipt.result {
+                        Some(ProviderResponse::Reply(_)) => VoiceWriteCertainty::Written,
+                        Some(ProviderResponse::Rejected(_)) => VoiceWriteCertainty::Rejected,
+                        None => VoiceWriteCertainty::Unknown,
+                    });
+            VoiceRequestReceipt { certainty }
         })
     }
 
@@ -211,78 +206,88 @@ impl VoiceRequestPort for AccountSessionVoicePort {
         let session = Arc::clone(&self.session);
         let callbacks = Arc::clone(&self.callbacks);
         Box::pin(async move {
-            studio_runtime_process::blocking_pool::spawn_blocking(
+            if deadline <= Instant::now() {
+                return VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                };
+            }
+            let Some(request_id) = operation_id.strip_prefix("voice:approve:") else {
+                return VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                };
+            };
+            if request_id.is_empty() {
+                return VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                };
+            }
+            let check_store = Arc::clone(&store);
+            let check_session = Arc::clone(&session);
+            let check_scope = scope.clone();
+            let check_rpc_id = reply.rpc_id.clone();
+            let preflight_request_id = request_id.to_owned();
+            let preflight = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/voice/account_session",
                 move || {
-                    if deadline <= Instant::now() {
-                        return VoiceRequestReceipt {
-                            certainty: VoiceWriteCertainty::NotSent,
-                        };
-                    }
-                    let Some(request_id) = operation_id.strip_prefix("voice:approve:") else {
-                        return VoiceRequestReceipt {
-                            certainty: VoiceWriteCertainty::NotSent,
-                        };
-                    };
-                    if request_id.is_empty()
-                        || !callback_request_matches(&store, request_id, &scope, &reply.rpc_id)
-                    {
-                        return VoiceRequestReceipt {
-                            certainty: VoiceWriteCertainty::NotSent,
-                        };
+                    if !callback_request_matches(
+                        &check_store,
+                        &preflight_request_id,
+                        &check_scope,
+                        &check_rpc_id,
+                    ) {
+                        return Err(VoiceWriteCertainty::NotSent);
                     }
                     let expected_session = ConnectionScope {
-                        account: scope.account_key.clone(),
-                        connection: scope.connection_id.clone(),
-                        generation: scope.generation,
+                        account: check_scope.account_key.clone(),
+                        connection: check_scope.connection_id.clone(),
+                        generation: check_scope.generation,
                     };
-                    if session.current_scope(&scope.account_key).as_ref() != Some(&expected_session)
+                    if check_session
+                        .current_scope(&check_scope.account_key)
+                        .as_ref()
+                        != Some(&expected_session)
                     {
-                        return VoiceRequestReceipt {
-                            certainty: VoiceWriteCertainty::NotSent,
-                        };
+                        return Err(VoiceWriteCertainty::NotSent);
                     }
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0.0, |duration| duration.as_secs_f64());
                     let context = match crate::provider_callbacks::pending_native_delete_context(
-                        &store, request_id,
+                        &check_store,
+                        &preflight_request_id,
                     ) {
                         Ok(Some(context))
-                            if context.agent == scope.agent_id
-                                && context.epoch == scope.epoch as u64
-                                && context.account == scope.account_key
-                                && context.connection == scope.connection_id
-                                && context.generation == scope.generation
-                                && context.thread == scope.thread_id =>
+                            if context.agent == check_scope.agent_id
+                                && context.epoch == check_scope.epoch as u64
+                                && context.account == check_scope.account_key
+                                && context.connection == check_scope.connection_id
+                                && context.generation == check_scope.generation
+                                && context.thread == check_scope.thread_id =>
                         {
                             context
                         }
-                        _ => {
-                            return VoiceRequestReceipt {
-                                certainty: VoiceWriteCertainty::NotSent,
-                            };
-                        }
+                        _ => return Err(VoiceWriteCertainty::NotSent),
                     };
-                    let certainty = match callbacks.answer_on_live_session(
-                        request_id,
-                        &reply.result,
-                        now,
-                        &context,
-                    ) {
-                        Ok(_) => VoiceWriteCertainty::Written,
-                        Err(CallbackError::Unknown | CallbackError::Store(_)) => {
-                            VoiceWriteCertainty::Unknown
-                        }
-                        Err(_) => VoiceWriteCertainty::NotSent,
-                    };
-                    VoiceRequestReceipt { certainty }
+                    Ok((now, context))
                 },
             )
             .await
-            .unwrap_or(VoiceRequestReceipt {
-                certainty: VoiceWriteCertainty::Unknown,
-            })
+            .unwrap_or(Err(VoiceWriteCertainty::Unknown));
+            let (now, context) = match preflight {
+                Ok(value) => value,
+                Err(certainty) => return VoiceRequestReceipt { certainty },
+            };
+            let certainty = match callbacks
+                .answer_on_live_session(&request_id, &reply.result, now, &context)
+                .await
+            {
+                Ok(_) => VoiceWriteCertainty::Written,
+                Err(CallbackError::Unknown | CallbackError::Store(_)) => {
+                    VoiceWriteCertainty::Unknown
+                }
+                Err(_) => VoiceWriteCertainty::NotSent,
+            };
+            VoiceRequestReceipt { certainty }
         })
     }
 }

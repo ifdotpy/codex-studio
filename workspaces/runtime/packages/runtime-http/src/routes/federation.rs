@@ -106,26 +106,20 @@ async fn signed_post(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/federation",
-        move || {
-            federation_effects::handle(
-                &store,
-                federation_effects::SignedRequest {
-                    action,
-                    peer_id: &peer_id,
-                    timestamp,
-                    nonce: &nonce,
-                    signature: &signature,
-                    raw: &raw,
-                },
-                origin,
-                now,
-            )
+    let result = federation_effects::handle(
+        store,
+        federation_effects::SignedRequest {
+            action,
+            peer_id: &peer_id,
+            timestamp,
+            nonce: &nonce,
+            signature: &signature,
+            raw: &raw,
         },
+        origin,
+        now,
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(map_signed_error)?;
     Ok(Json(result))
 }
@@ -204,23 +198,17 @@ async fn manage(
         "create_invite" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let whoami = state.tailscale_whoami.clone();
-            let invite_origin = origin.clone();
-            let result = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/federation-whoami",
-                move || {
-                    let observed = invite_origin
-                        .as_ref()
-                        .and_then(|_| whoami.and_then(|probe| probe()));
-                    federation::manage_with_origin_and_whoami(
-                        &store,
-                        &body,
-                        invite_origin.as_deref(),
-                        observed.as_ref(),
-                    )
-                },
+            let observed = match (origin.as_ref(), whoami) {
+                (Some(_), Some(probe)) => probe().await,
+                _ => None,
+            };
+            let result = federation::manage_with_origin_and_whoami(
+                store,
+                &body,
+                origin.as_deref(),
+                observed.as_ref(),
             )
             .await
-            .map_err(|_| ApiError::internal())?
             .map_err(map_service_error)?;
             Ok(Json(result))
         }
@@ -243,13 +231,9 @@ async fn manage(
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let queue_signal = matches!(action.as_str(), "create_room" | "approve_room");
             let wake = state.event_wake.clone();
-            let result = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/federation",
-                move || federation::manage_with_origin(&store, &body, origin.as_deref()),
-            )
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_service_error)?;
+            let result = federation::manage_with_origin(store, &body, origin.as_deref())
+                .await
+                .map_err(map_service_error)?;
             if queue_signal {
                 wake.notify_one();
             }

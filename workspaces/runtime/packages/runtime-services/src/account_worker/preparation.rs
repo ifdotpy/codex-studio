@@ -81,29 +81,29 @@ impl PreparedSafetyRetry {
     }
 }
 
-pub fn prepare_native_action(
-    store: &RuntimeStore,
+pub async fn prepare_native_action(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
     generation: u64,
 ) -> Result<PreparedNativeAction, WorkerError> {
-    pipeline::prepare_native_action(store, resources, agent_id, attempt_id, generation)
+    pipeline::prepare_native_action(store, resources, agent_id, attempt_id, generation).await
 }
 
-pub fn prepare_native_thread(
-    store: &RuntimeStore,
+pub async fn prepare_native_thread(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
     generation: u64,
 ) -> Result<PreparedNativeThread, WorkerError> {
-    pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation)
+    pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation).await
 }
 
 /// Prepare a destination thread for the exact active account transfer owner.
-pub fn prepare_account_transfer_native_thread(
-    store: &RuntimeStore,
+pub async fn prepare_account_transfer_native_thread(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     transfer_id: &str,
@@ -118,40 +118,43 @@ pub fn prepare_account_transfer_native_thread(
         attempt_id,
         generation,
     )
+    .await
 }
 
 /// Prepare permission settings for an already-admitted monitor command. This
 /// deliberately skips native-action startAttempt admission; monitor owners
 /// authorize the running monitor and pass its observed agent epoch.
-pub fn prepare_monitor_command(
-    store: &RuntimeStore,
+pub async fn prepare_monitor_command(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     epoch: u64,
 ) -> Result<PreparedMonitorCommand, WorkerError> {
-    pipeline::prepare_monitor_command(store, resources, agent_id, epoch)
+    pipeline::prepare_monitor_command(store, resources, agent_id, epoch).await
 }
 
-pub fn prepare_safety_retry(
-    store: &RuntimeStore,
+pub async fn prepare_safety_retry(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     request: &SafetyRetryPreparation,
 ) -> Result<PreparedSafetyRetry, WorkerError> {
-    pipeline::prepare_safety_retry(store, resources, request)
+    pipeline::prepare_safety_retry(store, resources, request).await
 }
 
-pub fn prepare_turn(
-    store: &RuntimeStore,
+pub async fn prepare_turn(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     generation: u64,
 ) -> Result<PreparedTurn, WorkerError> {
-    pipeline::prepare(store, resources, intent, Method::TurnStart, generation).map(PreparedTurn)
+    pipeline::prepare(store, resources, intent, Method::TurnStart, generation)
+        .await
+        .map(PreparedTurn)
 }
 /// Prepare with an identity supplied by the account-session owner. This keeps
 /// transport receipts tied to the same connection the caller will submit on.
-pub fn prepare_turn_with_connection_id(
-    store: &RuntimeStore,
+pub async fn prepare_turn_with_connection_id(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     generation: u64,
@@ -165,6 +168,7 @@ pub fn prepare_turn_with_connection_id(
         generation,
         connection_id,
     )
+    .await
     .map(PreparedTurn)
 }
 impl PreparedTurn {
@@ -174,13 +178,13 @@ impl PreparedTurn {
     }
     /// Enter the production submission owner, including durable transport receipt
     /// persistence and refusal settlement. No provider write occurs here.
-    pub fn commit(
-        &self,
+    pub async fn commit(
+        self,
         store: &RuntimeStore,
         request_id: &str,
         generation: u64,
     ) -> Result<bool, WorkerError> {
-        let prepared = &self.0;
+        let prepared = self.0;
         let operation = format!(
             "account:{}:{}:{}",
             prepared.intent.account_key,
@@ -209,16 +213,17 @@ impl PreparedTurn {
         };
         store::submitted(
             store,
-            &pending,
+            pending,
             &prepared.intent.account_key,
-            &request,
+            request,
             store::SubmissionEvidence {
                 turn: None,
-                submission: prepared.submission.as_ref(),
-                guard: Some(&prepared.guard),
-                connection_id: &prepared.connection_id,
+                submission: prepared.submission,
+                guard: Some(prepared.guard),
+                connection_id: prepared.connection_id,
             },
         )
+        .await
     }
 }
 

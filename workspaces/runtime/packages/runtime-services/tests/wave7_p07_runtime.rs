@@ -1,12 +1,18 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     fs,
+    future::Future,
     path::Path,
+    pin::Pin,
     process::Command,
-    sync::OnceLock,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use studio_runtime_services::{
@@ -84,9 +90,10 @@ fn corpus() -> &'static Value {
         serde_json::from_slice(&output.stdout).expect("oracle output")
     })
 }
-fn seed(store: &RuntimeStore, agent: &Value) {
+async fn seed(store: &RuntimeStore, agent: &Value) {
+    let agent = agent.clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_events", [])?;
             tx.execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
@@ -94,6 +101,7 @@ fn seed(store: &RuntimeStore, agent: &Value) {
             )?;
             Ok(())
         })
+        .await
         .expect("seed agent");
 }
 fn agent(store: &RuntimeStore) -> Value {
@@ -158,31 +166,31 @@ fn mock_message(
     agent["lastAnswer"] = item["text"].clone();
     Ok(None)
 }
-fn apply(
+async fn apply(
     store: &RuntimeStore,
     before: &Value,
     action: RecoveryAction,
     fail: bool,
 ) -> Result<RecoveryOutcome, RecoveryError> {
-    let mut delivery = RootDelivery { fail };
-    let mut completion = LifecycleCompletionWriter {
+    let completion = LifecycleCompletionWriter {
         at: 1000.,
-        delivery: &mut delivery,
-        write_message: &mut mock_message,
-        stream_update: None,
+        delivery: Box::new(RootDelivery { fail }),
+        write_message: Box::new(mock_message),
     };
     RecoveryStore {
-        store,
-        connection_current: &|s| *s == scope(),
-        completion: &mut completion,
+        store: Arc::new(store.clone()),
+        connection_current: Arc::new(|s| *s == scope()),
+        completion: Arc::new(Mutex::new(Box::new(completion))),
         at: 1000.,
-        observation_current: &|_| Some(observation()),
+        observation_current: Arc::new(|_| Some(observation())),
     }
     .apply(
         &RecoverySnapshot::from_record(before.clone()).expect("valid snapshot"),
         &scope(),
         action,
     )
+    .await
+    .map(|result| result.outcome)
 }
 fn terminal(case: &Value) -> RecoveryAction {
     RecoveryAction::Terminal {
@@ -202,7 +210,7 @@ fn records(store: &RuntimeStore, table: &str) -> Vec<Value> {
         .map(|r| serde_json::from_str(&r.expect("row")).expect("json"))
         .collect()
 }
-fn python_terminal_notification_count_decodes_without_changing_attempt_events() {
+async fn python_terminal_notification_count_decodes_without_changing_attempt_events() {
     let record = corpus()["notification_counter"].clone();
     let snapshot = RecoverySnapshot::from_record(record.clone()).expect("Python terminal record");
     assert_eq!(snapshot.record(), &record);
@@ -217,14 +225,16 @@ fn python_terminal_notification_count_decodes_without_changing_attempt_events() 
     invalid["startAttempt"]["events"] = json!(8);
     assert!(RecoverySnapshot::from_record(invalid).is_err());
 }
-fn connection_completion_matches_python_full_records_and_results() {
+async fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);
     for case in cases {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
-        seed(&store, &case["before"]);
-        let result = apply(&store, &case["before"], terminal(case), false).expect("complete");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        seed(&store, &case["before"]).await;
+        let result = apply(&store, &case["before"], terminal(case), false)
+            .await
+            .expect("complete");
         assert_eq!(
             result,
             RecoveryOutcome::Applied(case["result"].clone()),
@@ -257,38 +267,47 @@ fn connection_completion_matches_python_full_records_and_results() {
         assert_eq!(json!(completed), case["completed"]);
         drop(read);
         assert_eq!(
-            apply(&store, &case["before"], terminal(case), false).expect("replay"),
+            apply(&store, &case["before"], terminal(case), false)
+                .await
+                .expect("replay"),
             RecoveryOutcome::Superseded
         );
     }
 }
-fn unresolved_operations_match_python_including_legacy_scope() {
+async fn unresolved_operations_match_python_including_legacy_scope() {
     let cases = corpus()["unresolved"].as_array().expect("cases");
     assert_eq!(cases.len(), 36);
     for case in cases {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
-        let before = &corpus()["connection"][0]["before"];
-        seed(&store, before);
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let before = corpus()["connection"][0]["before"].clone();
+        seed(&store, &before).await;
+        let table = case["table"].as_str().expect("table").to_owned();
+        let record = case["record"].to_string();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     &format!(
                         "INSERT INTO runtime_{}(id,record) VALUES('operation',?1)",
-                        case["table"].as_str().expect("table")
+                        table
                     ),
-                    [case["record"].to_string()],
+                    [record],
                 )?;
                 Ok(())
             })
+            .await
             .expect("operation");
+        let before_for_tx = before.clone();
         let actual = store
-            .transaction_with::<_, RecoveryError>(|tx| unresolved_turn_receipts(tx, before, "turn"))
+            .transaction_with::<_, RecoveryError>(move |tx| {
+                unresolved_turn_receipts(tx, &before_for_tx, "turn")
+            })
+            .await
             .expect("decision");
         assert_eq!(json!(actual), case["expected"], "{case}");
     }
 }
-fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
+async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     let case = &corpus()["connection"][0];
     for (table, op) in [
         ("runtime_completed_turns", "INSERT"),
@@ -298,16 +317,27 @@ fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     ] {
         for timing in ["BEFORE", "AFTER"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).expect("store");
-            seed(&store, &case["before"]);
+            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+            seed(&store, &case["before"]).await;
             let before = agent(&store);
-            store.transaction(|tx| {tx.execute_batch(&format!("CREATE TRIGGER p07_fail {timing} {op} ON {table} BEGIN SELECT RAISE(ABORT,'p07 injected crash'); END;"))?;Ok(())}).expect("failpoint");
+            let sql = format!(
+                "CREATE TRIGGER p07_fail {timing} {op} ON {table} BEGIN SELECT RAISE(ABORT,'p07 injected crash'); END;"
+            );
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch(&sql)?;
+                    Ok(())
+                })
+                .await
+                .expect("failpoint");
             assert!(
-                apply(&store, &before, terminal(case), false).is_err(),
+                apply(&store, &before, terminal(case), false).await.is_err(),
                 "{timing} {table}"
             );
             drop(store);
-            let store = RuntimeStore::open(Some(root.path())).expect("restart");
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart");
             assert_eq!(agent(&store), before);
             assert!(records(&store, "runtime_items").is_empty());
             assert_eq!(
@@ -324,31 +354,40 @@ fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
                     tx.execute_batch("DROP TRIGGER p07_fail")?;
                     Ok(())
                 })
+                .await
                 .expect("remove fault");
-            apply(&store, &before, terminal(case), false).expect("recover");
+            apply(&store, &before, terminal(case), false)
+                .await
+                .expect("recover");
             assert_eq!(agent(&store), case["after"]);
         }
     }
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
-    seed(&store, &case["before"]);
-    assert!(apply(&store, &case["before"], terminal(case), true).is_err());
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    seed(&store, &case["before"]).await;
+    assert!(
+        apply(&store, &case["before"], terminal(case), true)
+            .await
+            .is_err()
+    );
     assert_eq!(agent(&store), case["before"]);
 }
-fn stop_or_notification_before_response_supersedes_completion() {
+async fn stop_or_notification_before_response_supersedes_completion() {
     for change in ["epoch", "turnId", "inFlight", "error"] {
         let case = &corpus()["connection"][0];
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let mut newer = case["before"].clone();
         newer[change] = match change {
             "epoch" => json!(1),
             "inFlight" => json!(true),
             _ => json!("changed"),
         };
-        seed(&store, &newer);
+        seed(&store, &newer).await;
         assert_eq!(
-            apply(&store, &case["before"], terminal(case), false).expect("stale"),
+            apply(&store, &case["before"], terminal(case), false)
+                .await
+                .expect("stale"),
             RecoveryOutcome::Superseded
         );
         assert_eq!(agent(&store), newer);
@@ -357,41 +396,52 @@ fn stop_or_notification_before_response_supersedes_completion() {
 }
 struct Port<'a> {
     calls: Vec<(HistoryMethod, Instant)>,
-    stop: Option<&'a Cell<bool>>,
+    stop: Option<&'a AtomicBool>,
     reply_scope: ConnectionScope,
-    drained: Option<&'a Cell<bool>>,
+    drained: Option<&'a AtomicBool>,
 }
 impl RetainedHistory for Port<'_> {
-    fn request(
-        &mut self,
+    fn request<'a>(
+        &'a mut self,
         _: &ConnectionScope,
         method: HistoryMethod,
         _: Value,
         deadline: Instant,
-    ) -> Result<HistoryReceipt, HistoryError> {
-        self.calls.push((method, deadline));
-        if let Some(stop) = self.stop {
-            stop.set(true);
-        }
-        Ok(HistoryReceipt {
-            scope: self.reply_scope.clone(),
-            body: json!({"data":[]}),
+    ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+        Box::pin(async move {
+            self.calls.push((method, deadline));
+            if let Some(stop) = self.stop {
+                stop.store(true, Ordering::SeqCst);
+            }
+            Ok(HistoryReceipt {
+                scope: self.reply_scope.clone(),
+                body: json!({"data":[]}),
+            })
         })
     }
-    fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-        match self.drained {
-            Some(drained) => {
-                drained.set(true);
-                Ok(())
+    fn barrier<'a>(
+        &'a mut self,
+        _: &ConnectionScope,
+        _: Instant,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>> {
+        Box::pin(async move {
+            match self.drained {
+                Some(drained) => {
+                    drained.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+                None => Err(HistoryError::Unavailable),
             }
-            None => Err(HistoryError::Unavailable),
-        }
+        })
     }
 }
-fn retained_reads_enforce_deadline_thread_generation_and_stop() {
+async fn retained_reads_enforce_deadline_thread_generation_and_stop() {
     for scenario in ["ok", "expired", "thread", "generation", "stopped"] {
-        let stopped = Cell::new(false);
-        let observe = |_: &ConnectionScope| (!stopped.get()).then(observation);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_for_observation = Arc::clone(&stopped);
+        let observe = Arc::new(move |_: &ConnectionScope| {
+            (!stopped_for_observation.load(Ordering::SeqCst)).then(observation)
+        });
         let mut port = Port {
             calls: vec![],
             stop: (scenario == "stopped").then_some(&stopped),
@@ -408,10 +458,12 @@ fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         };
         let mut reader = RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe)
             .expect("reader");
-        let result = HistoryRead::new(&mut reader, scope(), deadline).call(
-            HistoryMethod::Turns,
-            json!({"threadId":if scenario=="thread"{"foreign"}else{"thread"}}),
-        );
+        let result = HistoryRead::new(&mut reader, scope(), deadline)
+            .call(
+                HistoryMethod::Turns,
+                json!({"threadId":if scenario=="thread"{"foreign"}else{"thread"}}),
+            )
+            .await;
         assert_eq!(result.is_ok(), scenario == "ok", "{scenario}");
         drop(reader);
         assert_eq!(
@@ -423,13 +475,14 @@ fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         }
     }
 }
-fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
-    let drained = Cell::new(false);
-    let observe = |_: &ConnectionScope| {
+async fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
+    let drained = Arc::new(AtomicBool::new(false));
+    let drained_for_observation = Arc::clone(&drained);
+    let observe = Arc::new(move |_: &ConnectionScope| {
         let mut o = observation();
-        o.journal_drained = drained.get();
+        o.journal_drained = drained_for_observation.load(Ordering::SeqCst);
         Some(o)
-    };
+    });
     let mut port = Port {
         calls: vec![],
         stop: None,
@@ -440,16 +493,16 @@ fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
     let mut reader =
         RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
     assert_eq!(
-        reader.barrier(&scope(), deadline),
+        reader.barrier(&scope(), deadline).await,
         Err(HistoryError::Unavailable)
     );
     drop(reader);
     port.drained = Some(&drained);
     let mut reader =
         RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
-    reader.barrier(&scope(), deadline).expect("drained");
+    reader.barrier(&scope(), deadline).await.expect("drained");
 }
-fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
+async fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     let job = RecoveryJob::Connection {
         snapshot: RecoverySnapshot::from_record(corpus()["connection"][0]["before"].clone())
             .expect("snapshot"),
@@ -475,7 +528,7 @@ fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     .expect("finish");
     assert_eq!(scan.next_at(now), Some(now + Duration::from_secs(45)));
 }
-fn blob_preview_is_never_mistaken_for_complete_receipt() {
+async fn blob_preview_is_never_mistaken_for_complete_receipt() {
     assert!(matches!(
         resolve_inline_receipt(
             &json!({"_payloadBlobs":{"result":{"sha256":"hash"}},"result":{"success":true}})
@@ -486,12 +539,12 @@ fn blob_preview_is_never_mistaken_for_complete_receipt() {
     ));
 }
 
-fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
+async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
-    seed(&store, &before);
-    store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).expect("unknown input");
+    seed(&store, &before).await;
+    store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).await.expect("unknown input");
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
     let result = apply(
         &store,
@@ -499,6 +552,7 @@ fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
         RecoveryAction::AcceptStart { turn: turn.clone() },
         false,
     )
+    .await
     .expect("accept");
     assert_eq!(
         result,
@@ -518,11 +572,13 @@ fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
         "delivered"
     );
     assert_eq!(
-        apply(&store, &before, RecoveryAction::AcceptStart { turn }, false).expect("replay"),
+        apply(&store, &before, RecoveryAction::AcceptStart { turn }, false)
+            .await
+            .expect("replay"),
         RecoveryOutcome::Superseded
     );
     let accepted = agent(&store);
-    let finished=apply(&store,&accepted,RecoveryAction::Terminal{turn:json!({"id":"turn","status":"completed","items":[{"id":"answer","type":"agentMessage","text":"recovered"}]}),native_state:"idle".into(),mode:CompletionMode::ObservedTurn},false).expect("finish");
+    let finished=apply(&store,&accepted,RecoveryAction::Terminal{turn:json!({"id":"turn","status":"completed","items":[{"id":"answer","type":"agentMessage","text":"recovered"}]}),native_state:"idle".into(),mode:CompletionMode::ObservedTurn},false).await.expect("finish");
     assert!(matches!(finished, RecoveryOutcome::Applied(_)));
     assert_eq!(agent(&store)["inFlight"], false);
     assert_eq!(agent(&store)["lastAnswer"], "recovered");
@@ -537,7 +593,7 @@ fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     );
 }
 
-fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
+async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     for scenario in [
         "complete",
         "stopped",
@@ -546,14 +602,16 @@ fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         "writer-failure",
     ] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
-        seed(&store, &before);
+        seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
+        let task_to_save = task.clone();
         store
-            .transaction(|tx| {
-                TaskRepository::put(tx, &TaskRecord::from_value(task.clone()).expect("task"))
+            .transaction(move |tx| {
+                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))
             })
+            .await
             .expect("save");
         let snapshot =
             TaskRecoverySnapshot::from_records(before.clone(), task.clone(), vec![], vec![])
@@ -567,45 +625,55 @@ fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
                     )?;
                     Ok(())
                 })
+                .await
                 .expect("race");
         }
         if scenario == "changed-epoch" {
             // Revoked epoch is authoritative even for a terminal native item.
             let mut changed = before.clone();
             changed["epoch"] = json!(1);
-            seed(&store, &changed);
+            seed(&store, &changed).await;
         }
-        let calls = Cell::new(0);
-        let observe = |_: &ConnectionScope| (scenario != "stopped").then(observation);
-        let write = |tx: &Transaction<'_>, _: &Value, previous: &Value, item: &Value, at: f64| {
-            calls.set(calls.get() + 1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_writer = Arc::clone(&calls);
+        let stopped = scenario == "stopped";
+        let observe = Arc::new(move |_: &ConnectionScope| (!stopped).then(observation));
+        let scenario_for_writer = scenario.to_owned();
+        let write = move |tx: &Transaction<'_>,
+                          _: &Value,
+                          previous: &Value,
+                          item: &Value,
+                          at: f64| {
+            calls_for_writer.fetch_add(1, Ordering::SeqCst);
             let mut next = previous.clone();
             next["status"] = item["status"].clone();
             next["finished"] = json!(at);
             TaskRepository::put(tx, &TaskRecord::from_value(next).expect("task"))?;
-            if scenario == "writer-failure" {
+            if scenario_for_writer == "writer-failure" {
                 return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
             }
             Ok(())
         };
-        let mut writer = RuntimeTaskCompletionWriter {
-            store: &store,
-            observation_current: &observe,
-            write_task: &write,
-            resolve_payload: &resolve_inline_receipt,
+        let writer = RuntimeTaskCompletionWriter {
+            store: Arc::new(store.clone()),
+            observation_current: observe,
+            write_task: Arc::new(write),
+            resolve_payload: Arc::new(resolve_inline_receipt),
         };
-        let result = writer.complete(
-            &snapshot,
-            &scope(),
-            json!({"id":"item","type":"commandExecution","status":"completed","exitCode":0}),
-        );
+        let result = writer
+            .complete(
+                &snapshot,
+                &scope(),
+                json!({"id":"item","type":"commandExecution","status":"completed","exitCode":0}),
+            )
+            .await;
         if scenario == "writer-failure" {
             assert!(result.is_err());
         } else {
             assert_eq!(result.expect("complete"), scenario == "complete");
         }
         assert_eq!(
-            calls.get(),
+            calls.load(Ordering::SeqCst),
             usize::from(["complete", "writer-failure"].contains(&scenario))
         );
         assert_eq!(
@@ -619,7 +687,7 @@ fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     }
 }
 
-fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race() {
+async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race() {
     struct History<'a> {
         store: &'a RuntimeStore,
         turn: Value,
@@ -627,85 +695,101 @@ fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_ra
         reads: RefCell<Vec<HistoryMethod>>,
     }
     impl RetainedHistory for History<'_> {
-        fn request(
-            &mut self,
+        fn request<'a>(
+            &'a mut self,
             s: &ConnectionScope,
             m: HistoryMethod,
             _: Value,
             _: Instant,
-        ) -> Result<HistoryReceipt, HistoryError> {
-            self.reads.borrow_mut().push(m);
-            let body = match m {
-                HistoryMethod::Thread => json!({"thread":{"id":"thread","status":{"type":"idle"}}}),
-                HistoryMethod::Turns => json!({"data":[self.turn]}),
-                _ => return Err(HistoryError::Unsupported),
-            };
-            Ok(HistoryReceipt {
-                scope: s.clone(),
-                body,
+        ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+            let scope = s.clone();
+            Box::pin(async move {
+                self.reads.borrow_mut().push(m);
+                let body = match m {
+                    HistoryMethod::Thread => {
+                        json!({"thread":{"id":"thread","status":{"type":"idle"}}})
+                    }
+                    HistoryMethod::Turns => json!({"data":[self.turn]}),
+                    _ => return Err(HistoryError::Unsupported),
+                };
+                Ok(HistoryReceipt { scope, body })
             })
         }
-        fn barrier(&mut self, _: &ConnectionScope, _: Instant) -> Result<(), HistoryError> {
-            if self.race {
-                self.store.transaction(|tx|{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',1,'$.autoWake',json('false'))",[])?;Ok(())}).expect("stop before response");
-            }
-            Ok(())
+        fn barrier<'a>(
+            &'a mut self,
+            _: &ConnectionScope,
+            _: Instant,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>> {
+            Box::pin(async move {
+                if self.race {
+                    self.store
+                        .transaction(|tx| {
+                            tx.execute(
+                                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',1,'$.autoWake',json('false'))",
+                                [],
+                            )?;
+                            Ok(())
+                        })
+                        .await
+                        .expect("stop before response");
+                }
+                Ok(())
+            })
         }
     }
     for race in [false, true] {
         let case = &corpus()["connection"][0];
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
-        seed(&store, &case["before"]);
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        seed(&store, &case["before"]).await;
         let mut history = History {
             store: &store,
             turn: case["turn"].clone(),
             race,
             reads: RefCell::new(vec![]),
         };
-        let observe = |_: &ConnectionScope| Some(observation());
+        let observe: Arc<ObservationSource> = Arc::new(|_: &ConnectionScope| Some(observation()));
         let mut reader =
             RetainedRecoveryReader::new(scope(), "thread".into(), &mut history, &observe)
                 .expect("reader");
-        let mut delivery = RootDelivery { fail: false };
-        let mut completion = LifecycleCompletionWriter {
+        let completion = LifecycleCompletionWriter {
             at: 1000.,
-            delivery: &mut delivery,
-            write_message: &mut mock_message,
-            stream_update: None,
+            delivery: Box::new(RootDelivery { fail: false }),
+            write_message: Box::new(mock_message),
         };
         let task_write = |_: &Transaction<'_>, _: &Value, _: &Value, _: &Value, _: f64| {
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         };
-        let mut task_completion = RuntimeTaskCompletionWriter {
-            store: &store,
-            observation_current: &observe,
-            write_task: &task_write,
-            resolve_payload: &resolve_inline_receipt,
+        let task_completion = RuntimeTaskCompletionWriter {
+            store: Arc::new(store.clone()),
+            observation_current: Arc::clone(&observe),
+            write_task: Arc::new(task_write),
+            resolve_payload: Arc::new(resolve_inline_receipt),
         };
         let job = RecoveryJob::Connection {
             snapshot: RecoverySnapshot::from_record(case["before"].clone()).expect("snapshot"),
             automatic: false,
         };
         let outcome = RecoveryRuntime {
-            store: &store,
-            observation: &observe,
-            completion: &mut completion,
-            task_completion: &mut task_completion,
+            store: Arc::new(store.clone()),
+            observation: Arc::clone(&observe),
+            completion: Arc::new(Mutex::new(Box::new(completion))),
+            task_completion: Arc::new(task_completion),
         }
         .reconcile(&job, scope(), &mut reader)
+        .await
         .expect("reconcile");
-        assert_eq!(outcome == RecoveryOutcome::Superseded, race);
+        assert_eq!(outcome.outcome == RecoveryOutcome::Superseded, race);
         assert_eq!(records(&store, "runtime_items").is_empty(), race);
     }
 }
 
-fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
+async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
-    let template = &corpus()["connection"][0]["before"];
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let template = corpus()["connection"][0]["before"].clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_agents", [])?;
             for n in 0..35 {
                 let id = format!("agent-{n:02}");
@@ -722,6 +806,7 @@ fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() 
             }
             Ok(())
         })
+        .await
         .expect("seed page");
     let mut cursor = RecoveryCursor::default();
     let mut observed = Vec::new();
@@ -760,7 +845,7 @@ fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() 
     );
 }
 
-fn diagnostic_updates_do_not_reset_connection_backoff() {
+async fn diagnostic_updates_do_not_reset_connection_backoff() {
     let mut before = corpus()["connection"][0]["before"].clone();
     let job = RecoveryJob::Connection {
         snapshot: RecoverySnapshot::from_record(before.clone()).expect("snapshot"),
@@ -779,7 +864,7 @@ fn diagnostic_updates_do_not_reset_connection_backoff() {
     assert!(scan.take([checked], now, 1001.).is_none());
 }
 
-fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
+async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
     let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
     for (table, operation) in [
@@ -790,13 +875,16 @@ fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
     ] {
         for timing in ["BEFORE", "AFTER"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).expect("store");
-            seed(&store, &before);
-            store.transaction(|tx|{
+            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+            seed(&store, &before).await;
+            let sql = format!(
+                "CREATE TRIGGER p07_accept_fail {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'p07 crash'); END;"
+            );
+            store.transaction(move |tx|{
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
-                tx.execute_batch(&format!("CREATE TRIGGER p07_accept_fail {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'p07 crash'); END;"))?;
+                tx.execute_batch(&sql)?;
                 Ok(())
-            }).expect("fault");
+            }).await.expect("fault");
             assert!(
                 apply(
                     &store,
@@ -804,11 +892,14 @@ fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
                     RecoveryAction::AcceptStart { turn: turn.clone() },
                     false
                 )
+                .await
                 .is_err(),
                 "{timing} {table}"
             );
             drop(store);
-            let store = RuntimeStore::open(Some(root.path())).expect("restart");
+            let store = RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("restart");
             assert_eq!(agent(&store), before);
             assert_eq!(
                 store
@@ -827,6 +918,7 @@ fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
                     tx.execute_batch("DROP TRIGGER p07_accept_fail")?;
                     Ok(())
                 })
+                .await
                 .expect("remove fault");
             apply(
                 &store,
@@ -834,26 +926,29 @@ fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
                 RecoveryAction::AcceptStart { turn: turn.clone() },
                 false,
             )
+            .await
             .expect("recover");
             assert_eq!(agent(&store)["turnId"], "turn");
         }
     }
 }
 
-fn task_completion_rejects_changed_alias_or_operation_receipt() {
+async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
-        seed(&store, &before);
+        seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
         let receipt = json!({"id":"receipt","agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
-        store.transaction(|tx|{
-            TaskRepository::put(tx,&TaskRecord::from_value(task.clone()).expect("task"))?;
+        let task_to_save = task.clone();
+        let receipt_to_save = receipt.to_string();
+        store.transaction(move |tx|{
+            TaskRepository::put(tx,&TaskRecord::from_value(task_to_save).expect("task"))?;
             tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES('agent','item','receipt')",[])?;
-            tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",[receipt.to_string()])?;
+            tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",[receipt_to_save])?;
             Ok(())
-        }).expect("seed");
+        }).await.expect("seed");
         let snapshot = TaskRecoverySnapshot::from_records(
             before,
             task,
@@ -861,11 +956,12 @@ fn task_completion_rejects_changed_alias_or_operation_receipt() {
             vec![("receipt".into(), receipt)],
         )
         .expect("snapshot");
-        store.transaction(|tx|{
+        let change = change.to_owned();
+        store.transaction(move |tx|{
             if change=="alias" {tx.execute("UPDATE runtime_tool_request_aliases SET request='changed'",[])?;}
             else {tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result.success',json('false'))",[])?;}
             Ok(())
-        }).expect("race");
+        }).await.expect("race");
         let write = |_: &Transaction<'_>,
                      _: &Value,
                      _: &Value,
@@ -875,25 +971,25 @@ fn task_completion_rejects_changed_alias_or_operation_receipt() {
             (),
             studio_runtime_services::notification_dispatch::NotificationDispatchError,
         > { panic!("changed receipt must not reach writer") };
-        let observe = |_: &ConnectionScope| Some(observation());
+        let observe = Arc::new(|_: &ConnectionScope| Some(observation()));
         let mut writer = RuntimeTaskCompletionWriter {
-            store: &store,
-            observation_current: &observe,
-            write_task: &write,
-            resolve_payload: &resolve_inline_receipt,
+            store: Arc::new(store.clone()),
+            observation_current: observe,
+            write_task: Arc::new(write),
+            resolve_payload: Arc::new(resolve_inline_receipt),
         };
-        assert!(!writer.complete(&snapshot,&scope(),json!({"id":"item","type":"dynamicToolCall","status":"completed","success":true})).expect("recheck"));
+        assert!(!writer.complete(&snapshot,&scope(),json!({"id":"item","type":"dynamicToolCall","status":"completed","success":true})).await.expect("recheck"));
         assert_eq!(records(&store, "runtime_tasks")[0]["status"], "running");
     }
 }
 
-fn held_scan_survives_257_full_pages_and_check_eviction() {
+async fn held_scan_survives_257_full_pages_and_check_eviction() {
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
-    let template = &corpus()["connection"][0]["before"];
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let template = corpus()["connection"][0]["before"].clone();
     const ROWS: usize = 257 * MAX_SCAN_JOBS;
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_agents", [])?;
             for n in 0..ROWS {
                 let id = format!("agent-{n:05}");
@@ -907,6 +1003,7 @@ fn held_scan_survives_257_full_pages_and_check_eviction() {
             }
             Ok(())
         })
+        .await
         .expect("held rows");
     let mut cursor = RecoveryCursor::default();
     let mut scan = RecoveryScan::default();
@@ -930,21 +1027,23 @@ fn held_scan_survives_257_full_pages_and_check_eviction() {
     }
 }
 
-fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
+async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
     for bad in ["agent", "task", "receipt"] {
         let root = fixture();
-        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let mut owner = corpus()["connection"][0]["before"].clone();
         owner["events"] = if bad == "agent" { json!(-1) } else { json!(0) };
-        seed(&store, &owner);
+        seed(&store, &owner).await;
         let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
         if bad == "task" {
             task["created"] = json!(-1);
         }
+        let bad_for_tx = bad.to_owned();
+        let task_for_tx = task.to_string();
         store
-            .transaction(|tx| {
-                if bad != "agent" {
-                    tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", rusqlite::params!["agent:item",task.to_string()])?;
+            .transaction(move |tx| {
+                if bad_for_tx != "agent" {
+                    tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", rusqlite::params!["agent:item",task_for_tx])?;
                 }
                 let mut valid = corpus()["connection"][0]["before"].clone();
                 valid["id"] = json!("z-agent");
@@ -952,14 +1051,14 @@ fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES('z-agent',?1)",[valid.to_string()])?;
                 let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
                 tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('z-agent:item',?1)",[valid_task.to_string()])?;
-                if bad == "receipt" {
+                if bad_for_tx == "receipt" {
                     tx.execute(
                         "INSERT INTO runtime_tool_requests(id,record) VALUES('thread:item',?1)",
                         [json!({"id":"thread:item","agent":"agent","callId":8}).to_string()],
                     )?;
                 }
                 Ok(())
-            })
+            }).await
             .expect("corrupt record");
         let mut cursor = RecoveryCursor::default();
         let result = load_recovery_jobs(&store, "default", &mut cursor);
@@ -1020,21 +1119,24 @@ fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
 #[tokio::test(start_paused = true)]
 async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
     struct Blocked {
-        runtime: tokio::runtime::Handle,
         entered: Option<tokio::sync::oneshot::Sender<Instant>>,
     }
     impl RetainedHistory for Blocked {
-        fn request(
-            &mut self,
+        fn request<'a>(
+            &'a mut self,
             _: &ConnectionScope,
             _: HistoryMethod,
             _: Value,
             _: Instant,
-        ) -> Result<HistoryReceipt, HistoryError> {
-            Err(HistoryError::Unsupported)
+        ) -> futures_util::future::BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
+            Box::pin(async { Err(HistoryError::Unsupported) })
         }
-        fn barrier(&mut self, _: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError> {
-            self.runtime.block_on(async {
+        fn barrier<'a>(
+            &'a mut self,
+            _: &ConnectionScope,
+            deadline: Instant,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), HistoryError>> {
+            Box::pin(async move {
                 let timer = tokio::time::sleep_until(deadline.into());
                 tokio::pin!(timer);
                 // Register the deadline before the test advances paused time.
@@ -1050,37 +1152,31 @@ async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
         }
     }
     let (sender, entered) = tokio::sync::oneshot::channel();
-    let runtime = tokio::runtime::Handle::current();
     let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(20);
-    let waiter = tokio::task::spawn_blocking(move || {
-        let mut port = Blocked {
-            runtime,
-            entered: Some(sender),
-        };
-        let observe = |_: &ConnectionScope| Some(observation());
-        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe)
-            .expect("reader")
-            .barrier(&scope(), deadline)
-    });
+    let mut port = Blocked {
+        entered: Some(sender),
+    };
+    let observe: Arc<ObservationSource> = Arc::new(|_: &ConnectionScope| Some(observation()));
+    let mut reader =
+        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
+    let mut waiter = Box::pin(reader.barrier(&scope(), deadline));
+    assert!(futures_util::poll!(&mut waiter).is_pending());
     assert_eq!(entered.await.expect("waiting"), deadline);
     tokio::time::advance(Duration::from_secs(19)).await;
-    assert!(!waiter.is_finished());
+    assert!(futures_util::poll!(&mut waiter).is_pending());
     tokio::time::advance(Duration::from_secs(1)).await;
-    assert_eq!(
-        waiter.await.expect("barrier task"),
-        Err(HistoryError::Deadline)
-    );
+    assert_eq!(waiter.await, Err(HistoryError::Deadline));
 }
 
-fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
+async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     let case = &corpus()["accepted_start"];
     let root = fixture();
-    let store = RuntimeStore::open(Some(root.path())).expect("store");
-    seed(&store, &case["before"]);
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    seed(&store, &case["before"]).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
         Ok(())
-    }).expect("input");
+    }).await.expect("input");
     apply(
         &store,
         &case["before"],
@@ -1089,6 +1185,7 @@ fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
         },
         false,
     )
+    .await
     .expect("accept");
     assert_eq!(agent(&store), case["after"]);
     let rows: Vec<Value> = store.read().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
@@ -1097,7 +1194,7 @@ fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     assert_eq!(json!(records(&store, "runtime_items")), case["items"]);
 }
 
-fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
+async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
     // Include the receipt records and sync publication contents, not just row
     // counts: rollback must restore existing rows as well as remove new ones.
     fn durable_rows(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
@@ -1135,13 +1232,13 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
     for native_status in ["completed", "failed", "interrupted"] {
         for failure in ["none", "first-message", "terminal-delivery"] {
             let root = fixture();
-            let store = RuntimeStore::open(Some(root.path())).expect("store");
+            let store = RuntimeStore::open(Some(root.path())).await.expect("store");
             let before = &corpus()["accepted_start"]["before"];
-            seed(&store, before);
+            seed(&store, before).await;
             store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
             Ok(())
-        }).expect("input");
+        }).await.expect("input");
             let original_rows = durable_rows(&store);
             let messages = json!([
                 {"id":"buffered","type":"agentMessage","text":""},
@@ -1150,54 +1247,53 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
             let turn = json!({"id":"turn","status":native_status,"items":[
                 {"id":"input","type":"userMessage","clientId":"event"},messages[0],messages[1]
             ]});
-            let mut called = Vec::new();
-            let mut message_writer = |_: &Transaction<'_>,
-                                      a: &mut Value,
-                                      account: &str,
-                                      generation: u64,
-                                      t: &Value,
-                                      item: &Value,
-                                      at: f64| {
+            let called = Arc::new(Mutex::new(Vec::new()));
+            let called_by_writer = Arc::clone(&called);
+            let turn_for_writer = turn.clone();
+            let failure_for_writer = failure.to_owned();
+            let message_writer = move |_: &Transaction<'_>,
+                                       a: &mut Value,
+                                       account: &str,
+                                       generation: u64,
+                                       t: &Value,
+                                       item: &Value,
+                                       at: f64| {
                 assert_eq!((account, generation, at), ("default", 1, 1000.));
                 assert_eq!(a["turnId"], "turn");
-                assert_eq!(t, &turn);
-                called.push(item.clone());
+                assert_eq!(t, &turn_for_writer);
+                called_by_writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(item.clone());
                 a["events"] = json!(a["events"].as_u64().expect("counter") + 1);
-                if failure == "first-message" {
+                if failure_for_writer == "first-message" {
                     return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
                 }
-                Ok(Some(
-                studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default(),
-            ))
+                Ok(Some(studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default()))
             };
-            let mut delivery = RootDelivery {
-                fail: failure == "terminal-delivery",
-            };
-            let mut completion = LifecycleCompletionWriter {
+            let completion = Arc::new(Mutex::new(Box::new(LifecycleCompletionWriter {
                 at: 1000.,
-                delivery: &mut delivery,
-                write_message: &mut message_writer,
-                stream_update: None,
-            };
+                delivery: Box::new(RootDelivery {
+                    fail: failure == "terminal-delivery",
+                }),
+                write_message: Box::new(message_writer),
+            })
+                as Box<dyn studio_runtime_services::recovery_store::CompletionWriter>));
             let outcome = RecoveryStore {
-                store: &store,
-                connection_current: &|_| true,
-                completion: &mut completion,
+                store: Arc::new(store.clone()),
+                connection_current: Arc::new(|_| true),
+                completion: Arc::clone(&completion),
                 at: 1000.,
-                observation_current: &|_| Some(observation()),
+                observation_current: Arc::new(|_| Some(observation())),
             }
             .apply(
                 &RecoverySnapshot::from_record(before.clone()).expect("snapshot"),
                 &scope(),
                 RecoveryAction::AcceptStart { turn: turn.clone() },
-            );
+            )
+            .await;
             assert_eq!(outcome.is_err(), failure != "none");
             if failure != "none" {
-                assert_eq!(
-                    completion.stream_update.is_some(),
-                    failure == "terminal-delivery",
-                    "late delivery failure follows successful staged messages"
-                );
                 assert_eq!(
                     durable_rows(&store),
                     original_rows,
@@ -1214,9 +1310,10 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                     "uncertain"
                 );
             } else {
-                assert!(completion.stream_update.is_some());
+                let outcome = outcome.expect("settled");
+                assert!(outcome.stream_update.is_some());
                 assert_eq!(
-                    outcome.expect("settled"),
+                    outcome.outcome,
                     RecoveryOutcome::Applied(
                         json!({"status":"reconciled","turnId":"turn","outcome":native_status})
                     )
@@ -1225,19 +1322,20 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                 assert_eq!(agent(&store)["events"], 3);
                 let committed_rows = durable_rows(&store);
                 let replay = RecoveryStore {
-                    store: &store,
-                    connection_current: &|_| true,
-                    completion: &mut completion,
+                    store: Arc::new(store.clone()),
+                    connection_current: Arc::new(|_| true),
+                    completion: Arc::clone(&completion),
                     at: 1000.,
-                    observation_current: &|_| Some(observation()),
+                    observation_current: Arc::new(|_| Some(observation())),
                 }
                 .apply(
                     &RecoverySnapshot::from_record(before.clone()).expect("snapshot"),
                     &scope(),
                     RecoveryAction::AcceptStart { turn: turn.clone() },
                 )
+                .await
                 .expect("committed replay");
-                assert_eq!(replay, RecoveryOutcome::Superseded);
+                assert_eq!(replay.outcome, RecoveryOutcome::Superseded);
                 assert_eq!(
                     durable_rows(&store),
                     committed_rows,
@@ -1245,7 +1343,12 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                 );
             }
             assert_eq!(
-                json!(called),
+                json!(
+                    called
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone()
+                ),
                 if failure == "first-message" {
                     json!([messages[0]])
                 } else {
@@ -1256,93 +1359,98 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
     }
 }
 
-#[test]
-fn wave7_p07_runtime_corpus() {
-    let cases: &[(&str, fn())] = &[
+#[tokio::test]
+async fn wave7_p07_runtime_corpus() {
+    let cases: &[(&str, Pin<Box<dyn Future<Output = ()>>>)] = &[
         (
             "python_terminal_notification_count_decodes_without_changing_attempt_events",
-            python_terminal_notification_count_decodes_without_changing_attempt_events,
+            Box::pin(python_terminal_notification_count_decodes_without_changing_attempt_events()),
         ),
         (
             "connection_completion_matches_python_full_records_and_results",
-            connection_completion_matches_python_full_records_and_results,
+            Box::pin(connection_completion_matches_python_full_records_and_results()),
         ),
         (
             "unresolved_operations_match_python_including_legacy_scope",
-            unresolved_operations_match_python_including_legacy_scope,
+            Box::pin(unresolved_operations_match_python_including_legacy_scope()),
         ),
         (
             "completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe",
-            completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe,
+            Box::pin(completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe()),
         ),
         (
             "stop_or_notification_before_response_supersedes_completion",
-            stop_or_notification_before_response_supersedes_completion,
+            Box::pin(stop_or_notification_before_response_supersedes_completion()),
         ),
         (
             "retained_reads_enforce_deadline_thread_generation_and_stop",
-            retained_reads_enforce_deadline_thread_generation_and_stop,
+            Box::pin(retained_reads_enforce_deadline_thread_generation_and_stop()),
         ),
         (
             "barrier_requires_committed_journal_and_preserves_absolute_deadline",
-            barrier_requires_committed_journal_and_preserves_absolute_deadline,
+            Box::pin(barrier_requires_committed_journal_and_preserves_absolute_deadline()),
         ),
         (
             "scan_is_bounded_serial_and_uses_backoff_without_sleeping",
-            scan_is_bounded_serial_and_uses_backoff_without_sleeping,
+            Box::pin(scan_is_bounded_serial_and_uses_backoff_without_sleeping()),
         ),
         (
             "blob_preview_is_never_mistaken_for_complete_receipt",
-            blob_preview_is_never_mistaken_for_complete_receipt,
+            Box::pin(blob_preview_is_never_mistaken_for_complete_receipt()),
         ),
         (
             "unknown_start_accepts_exact_client_receipt_without_resending_input",
-            unknown_start_accepts_exact_client_receipt_without_resending_input,
+            Box::pin(unknown_start_accepts_exact_client_receipt_without_resending_input()),
         ),
         (
             "task_writer_checks_receipts_and_scope_in_the_completion_transaction",
-            task_writer_checks_receipts_and_scope_in_the_completion_transaction,
+            Box::pin(task_writer_checks_receipts_and_scope_in_the_completion_transaction()),
         ),
         (
             "runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race",
-            runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race,
+            Box::pin(
+                runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race(),
+            ),
         ),
         (
             "stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope",
-            stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope,
+            Box::pin(stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope()),
         ),
         (
             "diagnostic_updates_do_not_reset_connection_backoff",
-            diagnostic_updates_do_not_reset_connection_backoff,
+            Box::pin(diagnostic_updates_do_not_reset_connection_backoff()),
         ),
         (
             "accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt",
-            accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt,
+            Box::pin(accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt()),
         ),
         (
             "task_completion_rejects_changed_alias_or_operation_receipt",
-            task_completion_rejects_changed_alias_or_operation_receipt,
+            Box::pin(task_completion_rejects_changed_alias_or_operation_receipt()),
         ),
         (
             "held_scan_survives_257_full_pages_and_check_eviction",
-            held_scan_survives_257_full_pages_and_check_eviction,
+            Box::pin(held_scan_survives_257_full_pages_and_check_eviction()),
         ),
         (
             "corrupt_scan_rows_keep_the_sql_table_and_identity",
-            corrupt_scan_rows_keep_the_sql_table_and_identity,
+            Box::pin(corrupt_scan_rows_keep_the_sql_table_and_identity()),
         ),
         (
             "accepted_start_matches_real_python_agent_event_and_transcript_rows",
-            accepted_start_matches_real_python_agent_event_and_transcript_rows,
+            Box::pin(accepted_start_matches_real_python_agent_event_and_transcript_rows()),
         ),
         (
             "accepted_terminal_start_calls_canonical_messages_and_finishes_atomically",
-            accepted_terminal_start_calls_canonical_messages_and_finishes_atomically,
+            Box::pin(accepted_terminal_start_calls_canonical_messages_and_finishes_atomically()),
         ),
     ];
     let mut failures = Vec::new();
     for (name, case) in cases {
-        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
+        if let Err(payload) = std::panic::AssertUnwindSafe(case.as_mut())
+            .catch_unwind()
+            .await
+        {
             let message = payload
                 .downcast_ref::<String>()
                 .map(String::as_str)

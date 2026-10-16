@@ -14,15 +14,17 @@ use studio_runtime_store::{
 
 const LIVE_SCHEMA: &str = include_str!("fixtures/live-state-schema.json");
 
-#[test]
-fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
+#[tokio::test]
+async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     let state = temporary_state();
     create_from_live_schema(&state);
     seed_records(&state.join("canvas.sqlite3"));
     let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let derived_before_open = derived_catalog(&state.join("canvas.sqlite3"));
 
-    let store = RuntimeStore::open(Some(&state)).expect("schema-only live fixture opens");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("schema-only live fixture opens");
     let replaced = replaced_derived_objects(
         &derived_before_open,
         &derived_catalog(&state.join("canvas.sqlite3")),
@@ -61,7 +63,7 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     drop(reader);
 
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from("fixture-agent"))?
                 .expect("seeded agent exists");
             agent.extra.insert("rustWrite".into(), json!(true));
@@ -93,6 +95,7 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
             MessageRepository::put(tx, &message)?;
             Ok(())
         })
+        .await
         .expect("all supported repositories write on the live schema");
     let reader = store.read().expect("reader opens after writes");
     assert_eq!(
@@ -110,7 +113,9 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
 
     assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
     assert_eq!(analytics_before, catalog(&state.join("analytics.sqlite3")));
-    let reopened = RuntimeStore::open(Some(&state)).expect("Python-shaped schema remains openable");
+    let reopened = RuntimeStore::open(Some(&state))
+        .await
+        .expect("Python-shaped schema remains openable");
     let reader = reopened.read().expect("reader opens after Rust writes");
     assert_eq!(
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
@@ -124,8 +129,8 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     cleanup(state);
 }
 
-#[test]
-fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
+#[tokio::test]
+async fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let analytics_path = state.join("analytics.sqlite3");
@@ -134,7 +139,9 @@ fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
         .expect("fixture index drops");
     drop(db);
 
-    let store = RuntimeStore::open(Some(&state)).expect("Rust opens existing analytics schema");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("Rust opens existing analytics schema");
     drop(store);
 
     let db = Connection::open(&analytics_path).expect("analytics fixture reopens");
@@ -153,8 +160,8 @@ fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
     cleanup(state);
 }
 
-#[test]
-fn missing_required_objects_are_typed_and_name_the_object() {
+#[tokio::test]
+async fn missing_required_objects_are_typed_and_name_the_object() {
     for (sql, expected) in [
         ("DROP TABLE runtime_tasks", "runtime_tasks"),
         (
@@ -169,7 +176,7 @@ fn missing_required_objects_are_typed_and_name_the_object() {
             .execute_batch(sql)
             .expect("negative case mutates disposable schema");
         let before = catalog(&state.join("canvas.sqlite3"));
-        let error = match RuntimeStore::open(Some(&state)) {
+        let error = match RuntimeStore::open(Some(&state)).await {
             Ok(_) => panic!("incompatible required schema was accepted"),
             Err(error) => error,
         };
@@ -182,12 +189,14 @@ fn missing_required_objects_are_typed_and_name_the_object() {
     }
 }
 
-#[test]
-fn renamed_sync_table_with_equivalent_structure_opens() {
+#[tokio::test]
+async fn renamed_sync_table_with_equivalent_structure_opens() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
-    let initial_store = RuntimeStore::open(Some(&state)).expect("fixture prepares on open");
+    let initial_store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("fixture prepares on open");
     drop(initial_store);
     let identity = Connection::open(&canvas)
         .expect("fixture DB opens")
@@ -203,7 +212,9 @@ fn renamed_sync_table_with_equivalent_structure_opens() {
         )
         .expect("rename round trip preserves the table structure");
 
-    let store = RuntimeStore::open(Some(&state)).expect("structurally equivalent table opens");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("structurally equivalent table opens");
     assert_eq!(
         store
             .read()
@@ -217,8 +228,8 @@ fn renamed_sync_table_with_equivalent_structure_opens() {
     cleanup(state);
 }
 
-#[test]
-fn missing_automatic_unique_index_is_named_and_left_untouched() {
+#[tokio::test]
+async fn missing_automatic_unique_index_is_named_and_left_untouched() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
@@ -237,7 +248,7 @@ fn missing_automatic_unique_index_is_named_and_left_untouched() {
         .expect("table has matching columns but lacks its unique constraint");
     let before = catalog(&canvas);
 
-    let error = match RuntimeStore::open(Some(&state)) {
+    let error = match RuntimeStore::open(Some(&state)).await {
         Ok(_) => panic!("sync_documents without UNIQUE(scope,id) was accepted"),
         Err(error) => error,
     };
@@ -250,8 +261,8 @@ fn missing_automatic_unique_index_is_named_and_left_untouched() {
     cleanup(state);
 }
 
-#[test]
-fn unicode_altered_table_column_is_named_and_left_untouched() {
+#[tokio::test]
+async fn unicode_altered_table_column_is_named_and_left_untouched() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
@@ -265,7 +276,7 @@ fn unicode_altered_table_column_is_named_and_left_untouched() {
         .expect("SQLite accepts the altered type declaration");
     let before = catalog(&canvas);
 
-    let error = match RuntimeStore::open(Some(&state)) {
+    let error = match RuntimeStore::open(Some(&state)).await {
         Ok(_) => panic!("incompatible sync_identity column is accepted"),
         Err(error) => error,
     };
@@ -277,8 +288,8 @@ fn unicode_altered_table_column_is_named_and_left_untouched() {
     cleanup(state);
 }
 
-#[test]
-fn sync_schema_has_no_unchecked_table_constraints() {
+#[tokio::test]
+async fn sync_schema_has_no_unchecked_table_constraints() {
     let sql = include_str!("../src/sync_schema.sql").to_ascii_uppercase();
     assert!(
         !sql.contains("CHECK") && !sql.contains("REFERENCES"),
@@ -287,7 +298,9 @@ fn sync_schema_has_no_unchecked_table_constraints() {
 
     let state = temporary_state();
     create_from_live_schema(&state);
-    let store = RuntimeStore::open(Some(&state)).expect("scratch-derived sync schema opens");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("scratch-derived sync schema opens");
     let db = store.read().expect("reader opens");
     let mut statement = db
         .prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND (name GLOB 'sync_*' OR name='runtime_transcript_revisions')")
@@ -326,12 +339,14 @@ fn sync_schema_has_no_unchecked_table_constraints() {
     cleanup(state);
 }
 
-#[test]
-fn noncanonical_tombstone_triggers_are_replaced() {
+#[tokio::test]
+async fn noncanonical_tombstone_triggers_are_replaced() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let trigger = "sync_entity_tombstone_count_update";
-    let canonical_store = RuntimeStore::open(Some(&state)).expect("canonical schema opens");
+    let canonical_store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("canonical schema opens");
     drop(canonical_store);
     let canvas = state.join("canvas.sqlite3");
     let canonical = stored_sql(&canvas, trigger);
@@ -341,7 +356,8 @@ fn noncanonical_tombstone_triggers_are_replaced() {
             "whitespace-tombstone"
         } else {
             "unicode-tombstone"
-        };
+        }
+        .to_owned();
         let database = Connection::open(&canvas).expect("fixture DB opens");
         let original = stored_sql(&canvas, trigger);
         let changed = if whitespace_variant {
@@ -364,20 +380,23 @@ fn noncanonical_tombstone_triggers_are_replaced() {
             .expect("SQLite accepts the noncanonical trigger");
         drop(database);
 
-        let store = RuntimeStore::open(Some(&state)).expect("noncanonical trigger is repaired");
+        let store = RuntimeStore::open(Some(&state))
+            .await
+            .expect("noncanonical trigger is repaired");
         assert_eq!(stored_sql(&canvas, trigger), canonical);
+        let insert_id = id.clone();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('transcript:test',?1,1,'h','{}',1)",
-                    [id],
+                    [insert_id.as_str()],
                 )?;
                 tx.execute(
                     "UPDATE sync_entities SET collection='event' WHERE collection='transcript:test' AND id=?1",
-                    [id],
+                    [insert_id.as_str()],
                 )?;
                 Ok(())
-            })
+            }).await
             .expect("repaired trigger handles collection-only update");
         assert_eq!(
             store
@@ -391,11 +410,16 @@ fn noncanonical_tombstone_triggers_are_replaced() {
                 .expect("tombstone count reads"),
             "1"
         );
+        let delete_id = id.clone();
         store
-            .transaction(|tx| {
-                tx.execute("DELETE FROM sync_entities WHERE id=?1", [id])?;
+            .transaction(move |tx| {
+                tx.execute(
+                    "DELETE FROM sync_entities WHERE id=?1",
+                    [delete_id.as_str()],
+                )?;
                 Ok(())
             })
+            .await
             .expect("variant tombstone is removed before the next case");
     }
     cleanup(state);
@@ -551,8 +575,8 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
     rows
 }
 
-#[test]
-fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
+#[tokio::test]
+async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
     let state = temporary_state();
     create_from_live_schema(&state);
     prepare_with_python(&state);
@@ -563,15 +587,16 @@ fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
         .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
         .expect("intermediate trigger fixture creates");
     drop(database);
-    let store =
-        RuntimeStore::open(Some(&state)).expect("Rust upgrades the actual Python-prepared state");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("Rust upgrades the actual Python-prepared state");
     let window = include_str!("../src/sync_schema.sql")
         .lines()
         .find_map(|line| line.strip_prefix("-- event-window-size: "))
         .and_then(|size| size.parse::<usize>().ok())
         .expect("generated SQL identifies codex_entity_contracts.EVENT_WINDOW");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             for index in 0..window + 2 {
                 QueueEventRepository::put(
                     tx,
@@ -610,6 +635,7 @@ fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
             );
             Ok(())
         })
+        .await
         .expect("Rust event writes need only its existing portable projection functions");
     let reader = store.read().expect("committed reader opens");
     let before: i64 = reader
@@ -620,12 +646,14 @@ fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
         )
         .expect("committed event sequence reads");
     drop(reader);
-    let rollback: Result<(), StoreError> = store.transaction(|tx| {
-        tx.execute("DELETE FROM runtime_events WHERE id='portable-0002'", [])?;
-        Err(StoreError::SchemaMismatch(
-            "intentional fixture rollback".into(),
-        ))
-    });
+    let rollback: Result<(), StoreError> = store
+        .transaction(move |tx| {
+            tx.execute("DELETE FROM runtime_events WHERE id='portable-0002'", [])?;
+            Err(StoreError::SchemaMismatch(
+                "intentional fixture rollback".into(),
+            ))
+        })
+        .await;
     assert!(rollback.is_err());
     let reader = store.read().expect("reader opens after rollback");
     let after: i64 = reader
@@ -648,8 +676,8 @@ fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
     cleanup(state);
 }
 
-#[test]
-fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
+#[tokio::test]
+async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
     let python_state = temporary_state();
     let rust_state = temporary_state();
     for state in [&python_state, &rust_state] {
@@ -662,12 +690,14 @@ fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
     let python_seeds = sync_seed_rows(&python_state.join("canvas.sqlite3"));
 
     let python_store = RuntimeStore::open(Some(&python_state))
+        .await
         .expect("Rust structurally accepts the actual Python-prepared tables");
     drop(python_store);
     let python_after_open = derived_catalog(&python_canvas);
     let python_replaced = replaced_derived_objects(&python_before_open, &python_after_open);
 
     let store = RuntimeStore::open(Some(&rust_state))
+        .await
         .expect("Rust opens an empty sync family and bootstraps it");
     assert_eq!(
         derived_catalog(&rust_state.join("canvas.sqlite3")),
@@ -707,7 +737,7 @@ fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
     assert_eq!(sync_seed_rows(&python_canvas), python_seeds);
 
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO sync_documents(scope,id,payload,deleted) VALUES('kept','doc','{}',0)",
                 [],
@@ -717,13 +747,15 @@ fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("sentinel sync rows insert");
     let before_second_raw_catalog = catalog(&rust_state.join("canvas.sqlite3"));
     let before_second_seeds = sync_seed_rows(&rust_state.join("canvas.sqlite3"));
     let before_second_schema_version = schema_version(&rust_state.join("canvas.sqlite3"));
     drop(store);
-    let store = RuntimeStore::open(Some(&rust_state)).expect("second store open succeeds");
+    let store = RuntimeStore::open(Some(&rust_state))
+        .await
+        .expect("second store open succeeds");
     assert_eq!(
         sync_seed_rows(&rust_state.join("canvas.sqlite3")),
         before_second_seeds
@@ -743,8 +775,8 @@ fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
     cleanup(rust_state);
 }
 
-#[test]
-fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
+#[tokio::test]
+async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
@@ -764,7 +796,9 @@ fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
     .expect("fixture loses only lazily created objects");
     drop(db);
 
-    let store = RuntimeStore::open(Some(&state)).expect("partially prepared fixture opens");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("partially prepared fixture opens");
     let legacy_watch: i64 = store
         .read()
         .expect("reader opens")
@@ -785,13 +819,15 @@ fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
         )
         .expect("unrelated trigger count reads");
     assert_eq!(protected_trigger, 1);
-    let blocked_delete = store.transaction(|tx| {
-        tx.execute("DELETE FROM runtime_tasks WHERE id='protected-task'", [])?;
-        Ok(())
-    });
+    let blocked_delete = store
+        .transaction(move |tx| {
+            tx.execute("DELETE FROM runtime_tasks WHERE id='protected-task'", [])?;
+            Ok(())
+        })
+        .await;
     assert!(blocked_delete.is_err(), "unrelated task protection remains");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('bootstrapped-event','fixture-agent','test','{}','queued',1.0,0,NULL,NULL)",
                 [],
@@ -801,7 +837,7 @@ fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("registered sync functions and transcript triggers run on writes");
     let db = store.read().expect("reader opens");
     assert_eq!(
@@ -872,8 +908,8 @@ fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
     cleanup(state);
 }
 
-#[test]
-fn incompatible_sync_table_is_named_and_left_untouched() {
+#[tokio::test]
+async fn incompatible_sync_table_is_named_and_left_untouched() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
@@ -885,7 +921,7 @@ fn incompatible_sync_table_is_named_and_left_untouched() {
     .expect("incompatible table fixture is created");
     drop(db);
     let before = catalog(&canvas);
-    let error = match RuntimeStore::open(Some(&state)) {
+    let error = match RuntimeStore::open(Some(&state)).await {
         Ok(_) => panic!("incompatible same-name table is accepted during open"),
         Err(error) => error,
     };
@@ -897,8 +933,8 @@ fn incompatible_sync_table_is_named_and_left_untouched() {
     cleanup(state);
 }
 
-#[test]
-fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
+#[tokio::test]
+async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
     let state = temporary_state();
     create_from_live_schema(&state);
     let canvas = state.join("canvas.sqlite3");
@@ -913,7 +949,7 @@ fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
     drop(db);
     let before = catalog(&canvas);
     assert!(
-        RuntimeStore::open(Some(&state)).is_err(),
+        RuntimeStore::open(Some(&state)).await.is_err(),
         "identity seed failure should abort open"
     );
     assert_eq!(catalog(&canvas), before);

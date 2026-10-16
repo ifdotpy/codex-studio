@@ -131,7 +131,7 @@ pub fn revalidate_unresolved_context_tool_receipts(
 
 /// Safe to repeat after interruption. A surviving transport still requires its
 /// own generation and write-receipt proof; this never schedules a response.
-pub fn recover_connection(
+pub async fn recover_connection(
     store: &RuntimeStore,
     account: &str,
     connection: &str,
@@ -140,8 +140,10 @@ pub fn recover_connection(
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
-    let cards = cards::expire(store, account, connection)?;
-    store.transaction_with(|tx| {
+    let cards = cards::expire(store, account, connection).await?;
+    let account = account.to_owned();
+    let connection = connection.to_owned();
+    store.transaction_with(move |tx| {
         let mut count = cards;
         for mut record in records::all(tx, "runtime_tool_requests")? {
             if record["accountKey"].as_str().unwrap_or("default") != account
@@ -180,7 +182,7 @@ pub fn recover_connection(
             count += 1;
         }
         Ok(count)
-    })
+    }).await
 }
 
 #[cfg(test)]

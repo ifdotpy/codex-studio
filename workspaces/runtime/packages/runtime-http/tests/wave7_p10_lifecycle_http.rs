@@ -16,7 +16,7 @@ use studio_runtime_http::{HttpState, router};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+        AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
         ProviderResponse, RequestCertainty, SessionReceipt,
     },
     agent_lifecycle_runtime::LifecyclePorts,
@@ -42,7 +42,7 @@ impl AccountSessionPort for InterruptBroker {
     fn provider_request(
         &self,
         request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
+    ) -> AccountSessionFuture<'_, SessionReceipt> {
         assert_eq!(request.method, Method::TurnInterrupt);
         assert_eq!(request.expected_scope.as_ref(), Some(&self.scope));
         let reader = self.store.read().expect("committed store read");
@@ -61,19 +61,21 @@ impl AccountSessionPort for InterruptBroker {
             request.operation
         );
         self.calls.lock().expect("calls lock").push(request.clone());
-        Ok(SessionReceipt {
-            scope: self.scope.clone(),
-            operation: request.operation.clone(),
-            ticket: Some(RequestTicket {
-                generation: self.scope.generation,
-                id: RequestId::String(request.operation),
-                method: request.method,
-            }),
-            certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(json!({"ok":true}))),
-            not_sent_reason: None,
-
-            replayed: false,
+        let scope = self.scope.clone();
+        Box::pin(async move {
+            Ok(SessionReceipt {
+                scope: scope.clone(),
+                operation: request.operation.clone(),
+                ticket: Some(RequestTicket {
+                    generation: scope.generation,
+                    id: RequestId::String(request.operation),
+                    method: request.method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(json!({"ok":true}))),
+                not_sent_reason: None,
+                replayed: false,
+            })
         })
     }
 }
@@ -108,7 +110,7 @@ async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
 async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route() {
     let root = fixtures::tempdir();
     let _ = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "lifecycle-http"));
+    let store = Arc::new(fixtures::store(root.path(), "lifecycle-http").await);
     store
         .transaction(|tx| {
             let agent = AgentRecord::from_value(json!({
@@ -129,6 +131,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
             AgentRepository::put(tx, &agent)?;
             ExecutionHistoryRepository::record(tx, &agent)
         })
+        .await
         .expect("seed active agent");
     let broker = Arc::new(InterruptBroker {
         store: store.clone(),
@@ -205,7 +208,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
 async fn production_delete_route_interrupts_and_settles_active_turn() {
     let root = fixtures::tempdir();
     let _ = fixtures::corpus(root.path());
-    let store = Arc::new(fixtures::store(root.path(), "lifecycle-delete-http"));
+    let store = Arc::new(fixtures::store(root.path(), "lifecycle-delete-http").await);
     store
         .transaction(|tx| {
             let agent = AgentRecord::from_value(json!({
@@ -226,6 +229,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
             AgentRepository::put(tx, &agent)?;
             ExecutionHistoryRepository::record(tx, &agent)
         })
+        .await
         .expect("seed active agent");
     let broker = Arc::new(InterruptBroker {
         store: store.clone(),

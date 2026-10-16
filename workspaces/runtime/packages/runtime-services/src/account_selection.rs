@@ -115,9 +115,11 @@ impl SelectionSnapshot {
         Ok(agent)
     }
 }
-pub fn select(
+pub async fn select(
     store: &RuntimeStore,
-    accounts: &dyn Fn() -> Result<crate::account_policy::AccountsSnapshot, TransferError>,
+    accounts: &(
+         dyn Fn() -> Result<crate::account_policy::AccountsSnapshot, TransferError> + Send + Sync
+     ),
     id: &str,
     target: &str,
     cwd: Option<&str>,
@@ -127,10 +129,18 @@ pub fn select(
             "Select an existing project directory",
         ));
     }
-    let directory = cwd
-        .map(crate::agents_create::project_directory)
-        .transpose()
-        .map_err(|_| TransferError::Refused("Select an existing project directory"))?;
+    let cwd = cwd.map(str::to_owned);
+    let directory = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_selection",
+        move || {
+            cwd.as_deref()
+                .map(crate::agents_create::project_directory)
+                .transpose()
+                .map_err(|_| TransferError::Refused("Select an existing project directory"))
+        },
+    )
+    .await
+    .map_err(|_| TransferError::Refused("Select an existing project directory"))??;
     let checked_directory = match &directory {
         Some(directory) => directory.clone(),
         None => {
@@ -146,82 +156,97 @@ pub fn select(
     };
     // Filesystem work precedes the writer lock; the transaction rechecks that it
     // still acts on this exact directory before using the result.
-    let directory_exists = std::path::Path::new(&checked_directory).is_dir();
+    let directory_path = checked_directory.clone();
+    let directory_exists = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_selection",
+        move || std::path::Path::new(&directory_path).is_dir(),
+    )
+    .await
+    .map_err(|_| TransferError::Refused("Select an existing project directory"))?;
     let now = now();
-    store.transaction_with_error(|tx| {
-        // This port reads the in-memory registry only; no auth refresh or provider I/O.
-        let accounts = accounts()?;
-        let account = accounts
-            .accounts
-            .iter()
-            .chain(&accounts.archived_accounts)
-            .find(|row| row["id"] == target);
-        let raw = AccountTransferRepository::agent(tx, id)?
-            .ok_or(TransferError::Refused("Unknown managed agent"))?;
-        let snapshot = SelectionSnapshot::read(&raw)?;
-        let directory = directory
-            .as_deref()
-            .or_else(|| snapshot.agent["cwd"].as_str())
-            .ok_or(TransferError::Refused(
-                "Select an existing project directory",
-            ))?;
-        let context = crate::sync_entity_context::agent_view_context(tx, &snapshot.agent, None)?;
-        let mut value = snapshot.decide(target, account, directory, context.empty_lead)?;
-        if source_account(&snapshot.agent) != target
-            && let Some(resume_id) = value
-                .pointer("/usageResume/id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            && matches!(
-                value.pointer("/usageResume/status").and_then(Value::as_str),
-                Some("scheduled" | "started")
-            )
-        {
-            let resume = studio_runtime_store::cancel_usage_resume(
-                tx,
-                id,
-                &resume_id,
-                "The chat moved to another account.",
-                now,
-            )
-            .map_err(|error| match error {
-                studio_runtime_store::UsageRepositoryError::Store(error) => {
-                    TransferError::Store(error)
-                }
-                studio_runtime_store::UsageRepositoryError::InvalidStoredObject { .. } => {
-                    TransferError::Stored {
-                        object: "usage resume",
-                        pointer: "/".into(),
-                    }
-                }
-                _ => TransferError::Refused("Could not cancel automatic resume"),
-            })?;
-            value["usageResume"] = resume;
-        }
-        if value != snapshot.agent {
-            if directory != checked_directory {
-                return Err(TransferError::Refused(
-                    "Project directory changed during account selection",
-                ));
-            }
-            if !directory_exists {
-                return Err(TransferError::Refused(
+    // This port reads the in-memory registry only; no auth refresh or provider I/O.
+    let accounts = accounts()?;
+    let account = accounts
+        .accounts
+        .iter()
+        .chain(&accounts.archived_accounts)
+        .find(|row| row["id"] == target)
+        .cloned();
+    let id = id.to_owned();
+    let target = target.to_owned();
+    let directory = directory.clone();
+    let checked_directory = checked_directory.clone();
+    store
+        .transaction_with_error(move |tx| {
+            let raw = AccountTransferRepository::agent(tx, &id)?
+                .ok_or(TransferError::Refused("Unknown managed agent"))?;
+            let snapshot = SelectionSnapshot::read(&raw)?;
+            let directory = directory
+                .as_deref()
+                .or_else(|| snapshot.agent["cwd"].as_str())
+                .ok_or(TransferError::Refused(
                     "Select an existing project directory",
-                ));
+                ))?;
+            let context =
+                crate::sync_entity_context::agent_view_context(tx, &snapshot.agent, None)?;
+            let mut value =
+                snapshot.decide(&target, account.as_ref(), directory, context.empty_lead)?;
+            if source_account(&snapshot.agent) != target
+                && let Some(resume_id) = value
+                    .pointer("/usageResume/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                && matches!(
+                    value.pointer("/usageResume/status").and_then(Value::as_str),
+                    Some("scheduled" | "started")
+                )
+            {
+                let resume = studio_runtime_store::cancel_usage_resume(
+                    tx,
+                    &id,
+                    &resume_id,
+                    "The chat moved to another account.",
+                    now,
+                )
+                .map_err(|error| match error {
+                    studio_runtime_store::UsageRepositoryError::Store(error) => {
+                        TransferError::Store(error)
+                    }
+                    studio_runtime_store::UsageRepositoryError::InvalidStoredObject { .. } => {
+                        TransferError::Stored {
+                            object: "usage resume",
+                            pointer: "/".into(),
+                        }
+                    }
+                    _ => TransferError::Refused("Could not cancel automatic resume"),
+                })?;
+                value["usageResume"] = resume;
             }
-            crate::agents_create::ensure_project(tx, &value)
-                .map_err(|_| TransferError::Refused("Cannot register the selected project"))?;
-            AgentRepository::put(
-                tx,
-                &serde_json::from_value(value.clone()).map_err(StoreError::from)?,
-            )?;
-            return Ok(crate::agents_create::publish_agent(tx, &value)?);
-        }
-        let mut view = value;
-        crate::agents_create::mode_fields(&mut view);
-        crate::sync_views::agent_entity_view(&view, &context)
-            .ok_or(TransferError::Refused("Invalid selection agent"))
-    })
+            if value != snapshot.agent {
+                if directory != checked_directory {
+                    return Err(TransferError::Refused(
+                        "Project directory changed during account selection",
+                    ));
+                }
+                if !directory_exists {
+                    return Err(TransferError::Refused(
+                        "Select an existing project directory",
+                    ));
+                }
+                crate::agents_create::ensure_project(tx, &value)
+                    .map_err(|_| TransferError::Refused("Cannot register the selected project"))?;
+                AgentRepository::put(
+                    tx,
+                    &serde_json::from_value(value.clone()).map_err(StoreError::from)?,
+                )?;
+                return Ok(crate::agents_create::publish_agent(tx, &value)?);
+            }
+            let mut view = value;
+            crate::agents_create::mode_fields(&mut view);
+            crate::sync_views::agent_entity_view(&view, &context)
+                .ok_or(TransferError::Refused("Invalid selection agent"))
+        })
+        .await
 }
 
 fn source_account(agent: &Value) -> &str {

@@ -1,12 +1,15 @@
 //! Local recovery effects. Every precondition is read again while holding the
 //! store writer transaction; no provider or file effect runs under that lock.
 use crate::{
-    recovery::{RecoveryAction, RecoveryEffects, RecoveryError, RecoveryOutcome},
+    recovery::{
+        RecoveryAction, RecoveryEffectResult, RecoveryEffects, RecoveryError, RecoveryOutcome,
+    },
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
     scheduler::lifecycle_transaction_with,
 };
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QueueEventId, QueueEventRepository, RuntimeStore,
     StoreError, Transaction,
@@ -14,7 +17,7 @@ use studio_runtime_store::{
 
 /// Terminal delivery remains the account worker's existing lifecycle writer.
 /// Implementations must use this transaction for every effect and replay receipt.
-pub trait CompletionWriter {
+pub trait CompletionWriter: Send {
     /// Publish the canonical child-stopped event with this exact identity, in
     /// the supplied transaction; a failure rolls the entire hold back.
     fn start_held(
@@ -31,49 +34,60 @@ pub trait CompletionWriter {
         expected: &RecoverySnapshot,
         scope: &ConnectionScope,
         action: &RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError>;
+    ) -> Result<RecoveryEffectResult, RecoveryError>;
 }
-pub struct RecoveryStore<'a> {
-    pub store: &'a RuntimeStore,
-    pub connection_current: &'a dyn Fn(&ConnectionScope) -> bool,
-    pub completion: &'a mut dyn CompletionWriter,
+pub struct RecoveryStore {
+    pub store: Arc<RuntimeStore>,
+    pub connection_current: Arc<dyn Fn(&ConnectionScope) -> bool + Send + Sync>,
+    pub completion: Arc<Mutex<Box<dyn CompletionWriter>>>,
     pub at: f64,
-    pub observation_current:
-        &'a dyn Fn(&ConnectionScope) -> Option<crate::recovery_absence::RecoveryObservation>,
+    pub observation_current: Arc<
+        dyn Fn(&ConnectionScope) -> Option<crate::recovery_absence::RecoveryObservation>
+            + Send
+            + Sync,
+    >,
 }
 impl From<rusqlite::Error> for RecoveryError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Store(StoreError::from(error))
     }
 }
-impl RecoveryEffects for RecoveryStore<'_> {
-    fn apply(
-        &mut self,
-        expected: &RecoverySnapshot,
-        scope: &ConnectionScope,
+impl RecoveryEffects for RecoveryStore {
+    fn apply<'a>(
+        &'a mut self,
+        expected: &'a RecoverySnapshot,
+        scope: &'a ConnectionScope,
         action: RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError> {
+    ) -> futures_util::future::BoxFuture<'a, Result<RecoveryEffectResult, RecoveryError>> {
         if !self.at.is_finite() || self.at < 0.0 {
-            return Err(RecoveryError::CommitFailed);
+            return Box::pin(async { Err(RecoveryError::CommitFailed) });
         }
-        lifecycle_transaction_with(self.store, |tx| {
+        let store = Arc::clone(&self.store);
+        let connection_current = Arc::clone(&self.connection_current);
+        let observation_current = Arc::clone(&self.observation_current);
+        let completion = Arc::clone(&self.completion);
+        let at = self.at;
+        let expected = expected.clone();
+        let scope = scope.clone();
+        Box::pin(async move {
+            lifecycle_transaction_with(&store, move |tx| {
             let a = expected.record();
             let id = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
-            if !(self.connection_current)(scope)
+            if !(connection_current)(&scope)
                 || a.get("accountKey")
                     .and_then(Value::as_str)
                     .unwrap_or("default")
                     != scope.account
             {
-                return Ok(RecoveryOutcome::Superseded);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
             }
             let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(id))? else {
-                return Ok(RecoveryOutcome::Superseded);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
             };
             let current: Value =
                 serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)?;
             if &current != a {
-                return Ok(RecoveryOutcome::Superseded);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
             }
             let mut updated = a.clone();
             let result = match &action {
@@ -85,21 +99,21 @@ impl RecoveryEffects for RecoveryStore<'_> {
                 } => {
                     use crate::recovery_absence::{StartAbsenceDecision, start_absence};
                     if !expected.eligibility().unconfirmed_start {
-                        return Ok(RecoveryOutcome::Superseded);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     }
-                    let Some(current) = (self.observation_current)(scope) else {
-                        return Ok(RecoveryOutcome::Superseded);
+                    let Some(current) = (observation_current)(&scope) else {
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     };
-                    if !current.valid(scope)
-                        || !observation.valid(scope)
+                    if !current.valid(&scope)
+                        || !observation.valid(&scope)
                         || current.supervisor != observation.supervisor
                     {
-                        return Ok(RecoveryOutcome::Superseded);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     }
                     let decision = if *confirmed_not_applied {
                         StartAbsenceDecision::Restore
                     } else {
-                        start_absence(expected, &current, *complete_history, *idle_twice)
+                        start_absence(&expected, &current, *complete_history, *idle_twice)
                     };
                     let attempt = expected.start_attempt();
                     match decision {
@@ -116,14 +130,14 @@ impl RecoveryEffects for RecoveryStore<'_> {
                                     ),
                                 )?
                                 else {
-                                    return Ok(RecoveryOutcome::Unconfirmed);
+                                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                                 };
                                 if row.agent.0 != id
                                     || Some(row.epoch) != a["epoch"].as_i64()
                                     || row.status != "uncertain"
                                     || row.turn_id.is_some()
                                 {
-                                    return Ok(RecoveryOutcome::Unconfirmed);
+                                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                                 }
                                 rows.push(row);
                             }
@@ -178,7 +192,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                                 updated["startAttempt"]["executionOutcome"] = json!("unknown");
                             }
                             updated["startOutcomeHold"] = json!({"stage":"held","at":current.at,"attemptId":attempt["id"],"threadId":a["threadId"],"connectionId":scope.connection,"evidence":"complete_history_absent_idle_twice_journal_drained"});
-                            self.completion.start_held(
+                            completion.lock().map_err(|_| RecoveryError::CommitFailed)?.start_held(
                                 tx,
                                 &updated,
                                 &reason,
@@ -201,7 +215,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     if (*disconnected && !eligibility.disconnected_preparation)
                         || (!disconnected && !eligibility.preparation)
                     {
-                        return Ok(RecoveryOutcome::Superseded);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     }
                     let attempt = if *disconnected {
                         &a["disconnectRecovery"]["startAttempt"]
@@ -218,7 +232,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                             a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?,
                         )?
                     {
-                        return Ok(RecoveryOutcome::Unconfirmed);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                     }
                     let mut rows = Vec::new();
                     for event_id in events {
@@ -226,7 +240,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                         let Some(row) =
                             QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
                         else {
-                            return Ok(RecoveryOutcome::Unconfirmed);
+                            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                         };
                         if row.agent.0 != id
                             || Some(row.epoch) != a["epoch"].as_i64()
@@ -234,7 +248,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                                 || (*disconnected && row.status == "reserved"))
                             || (*disconnected && row.turn_id.is_some())
                         {
-                            return Ok(RecoveryOutcome::Unconfirmed);
+                            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                         }
                         rows.push(row);
                     }
@@ -245,7 +259,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                             QueueEventRepository::put(tx, &row)?;
                         }
                     }
-                    updated["connectionRecovery"] = json!({"source":if *disconnected {"disconnected_preparation"}else{"transport_attach"},"at":self.at,"attemptId":attempt["id"],"eventIds":events,"previousError":a["error"],"outcome":"input_restored"});
+                    updated["connectionRecovery"] = json!({"source":if *disconnected {"disconnected_preparation"}else{"transport_attach"},"at":at,"attemptId":attempt["id"],"eventIds":events,"previousError":a["error"],"outcome":"input_restored"});
                     updated["status"] = json!("queued");
                     updated["error"] = Value::Null;
                     if *disconnected {
@@ -258,7 +272,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                 }
                 RecoveryAction::OrphanIdle { latest } => {
                     if !expected.eligibility().orphan_busy {
-                        return Ok(RecoveryOutcome::Superseded);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     }
                     if let Some(turn) = latest {
                         let turn_id = turn["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
@@ -267,7 +281,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                             [format!("{id}:{turn_id}")],
                             |r| r.get::<_, bool>(0),
                         )? {
-                            return Ok(RecoveryOutcome::Unconfirmed);
+                            return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                         }
                     }
                     if uncertain(
@@ -275,7 +289,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                         id,
                         a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?,
                     )? {
-                        return Ok(RecoveryOutcome::Unconfirmed);
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                     }
                     updated["inFlight"] = json!(false);
                     updated["activity"] = Value::Null;
@@ -288,14 +302,14 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     if let Some(object) = updated.as_object_mut() {
                         object.remove("steerRejectedTurnId");
                     }
-                    updated["turnRecovery"] = json!({"at":self.at,"turnId":null,"latestTurnId":latest.as_ref().map(|t|&t["id"]),"outcome":"idle","source":"native_thread_read"});
+                    updated["turnRecovery"] = json!({"at":at,"turnId":null,"latestTurnId":latest.as_ref().map(|t|&t["id"]),"outcome":"idle","source":"native_thread_read"});
                     json!({"status":"reconciled","turnId":null,"outcome":"idle"})
                 }
                 RecoveryAction::RecordCheck {
                     native_state,
                     turn_status,
                 } => {
-                    updated["connectionCheck"] = json!({"epoch":a["epoch"],"accountKey":a["accountKey"],"threadId":a["threadId"],"turnId":a["turnId"],"at":self.at,"previousError":a["error"],"nativeState":native_state});
+                    updated["connectionCheck"] = json!({"epoch":a["epoch"],"accountKey":a["accountKey"],"threadId":a["threadId"],"turnId":a["turnId"],"at":at,"previousError":a["error"],"nativeState":native_state});
                     if expected.eligibility().queued_restart || expected.eligibility().restart_turn
                     {
                         updated["connectionCheck"]["turnId"] =
@@ -306,7 +320,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     }
                     json!({"status":"unconfirmed","checked":true})
                 }
-                _ => return self.completion.complete(tx, expected, scope, &action),
+                _ => return completion.lock().map_err(|_| RecoveryError::CommitFailed)?.complete(tx, &expected, &scope, &action),
             };
             persist_request_result(a, &mut updated, &result);
             RecoverySnapshot::from_record(updated.clone())
@@ -314,7 +328,8 @@ impl RecoveryEffects for RecoveryStore<'_> {
             let record: AgentRecord =
                 serde_json::from_value(updated).map_err(|_| RecoveryError::CommitFailed)?;
             AgentRepository::put(tx, &record)?;
-            Ok(RecoveryOutcome::Applied(result))
+            Ok(RecoveryEffectResult::plain(RecoveryOutcome::Applied(result)))
+        }).await
         })
     }
 }
@@ -342,7 +357,7 @@ fn uncertain(tx: &Transaction<'_>, id: &str, epoch: i64) -> Result<bool, Recover
 /// Parent events, work release and continuation intents belong to the canonical
 /// completion owner. Every method writes only through the supplied transaction;
 /// external publication/ACK follows commit in the account actor.
-pub trait RecoveryDelivery {
+pub trait RecoveryDelivery: Send {
     fn start_held(
         &mut self,
         tx: &Transaction<'_>,
@@ -361,7 +376,7 @@ pub trait RecoveryDelivery {
 
 /// Reuses scheduler acceptance/terminal receipts. Recovery never manufactures a
 /// provider response ticket or writes a delivered receipt for unrelated input.
-pub type RecoveryMessageWriter<'a> = dyn FnMut(
+pub type RecoveryMessageWriter = dyn FnMut(
         &Transaction<'_>,
         &mut Value,
         &str,
@@ -372,17 +387,17 @@ pub type RecoveryMessageWriter<'a> = dyn FnMut(
     ) -> Result<
         Option<crate::notification_dispatch::NotificationStreamBuffer>,
         crate::notification_dispatch::NotificationDispatchError,
-    > + 'a;
+    > + Send
+    + 'static;
 
-pub struct LifecycleCompletionWriter<'a> {
+pub struct LifecycleCompletionWriter {
     pub at: f64,
-    pub delivery: &'a mut dyn RecoveryDelivery,
+    pub delivery: Box<dyn RecoveryDelivery>,
     /// Canonical item/completed adapter; closure owns a staged stream-buffer copy.
     /// Discard that copy on failure. Publish this update only after apply commits.
-    pub write_message: &'a mut RecoveryMessageWriter<'a>,
-    pub stream_update: Option<crate::notification_dispatch::NotificationStreamBuffer>,
+    pub write_message: Box<RecoveryMessageWriter>,
 }
-impl CompletionWriter for LifecycleCompletionWriter<'_> {
+impl CompletionWriter for LifecycleCompletionWriter {
     fn start_held(
         &mut self,
         tx: &Transaction<'_>,
@@ -398,12 +413,13 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
         expected: &RecoverySnapshot,
         scope: &ConnectionScope,
         action: &RecoveryAction,
-    ) -> Result<RecoveryOutcome, RecoveryError> {
+    ) -> Result<RecoveryEffectResult, RecoveryError> {
         use crate::recovery::CompletionMode;
         use studio_runtime_store::{SchedulerRepository, TurnAttemptIdentity};
         if !self.at.is_finite() || self.at < 0.0 {
             return Err(RecoveryError::CommitFailed);
         }
+        let mut stream_update = None;
         let a = expected.record();
         let id = text(a, "id")?;
         let epoch = a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?;
@@ -416,27 +432,27 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     .get("threadId")
                     .is_some_and(|thread| thread != &a["threadId"])
             {
-                return Ok(RecoveryOutcome::Superseded);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
             }
             let attempt_id = text(attempt, "id")?;
             let Some(events) = attempt["events"].as_array() else {
-                return Ok(RecoveryOutcome::Unconfirmed);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
             };
             let mut rows = Vec::new();
             for event in events {
                 let Some(event_id) = event.as_str() else {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 };
                 let Some(row) = QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
                 else {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 };
                 if row.agent.0 != id
                     || row.epoch != epoch
                     || row.status != "pending"
                     || row.turn_id.is_some()
                 {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 rows.push(event_id);
             }
@@ -450,10 +466,10 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                 |row| row.get(0),
             )?;
             if pending_request {
-                return Ok(RecoveryOutcome::Unconfirmed);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
             }
             if uncertain(tx, id, epoch)? {
-                return Ok(RecoveryOutcome::Unconfirmed);
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
             }
             let mut updated = a.clone();
             let mut wait = updated
@@ -488,12 +504,15 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
             updated["connectionRecovery"] = connection;
             persist_request_result(a, &mut updated, &result);
             put_agent(tx, updated)?;
-            return Ok(RecoveryOutcome::Applied(result));
+            return Ok(RecoveryEffectResult {
+                outcome: RecoveryOutcome::Applied(result),
+                stream_update,
+            });
         }
         match action {
             RecoveryAction::AcceptStart { turn } => {
                 if !expected.eligibility().unconfirmed_start || !valid_turn(turn, a, None) {
-                    return Ok(RecoveryOutcome::Superseded);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                 }
                 let first = attempt["events"].as_array().and_then(|e| e.first());
                 if first.is_none()
@@ -503,7 +522,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                             .any(|i| i["type"] == "userMessage" && i.get("clientId") == first)
                     })
                 {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 let accepted = SchedulerRepository::settle_started(
                     tx,
@@ -535,9 +554,11 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     );
                 }
                 Ok(if accepted {
-                    RecoveryOutcome::Applied(json!({"status":"accepted","turnId":turn["id"]}))
+                    RecoveryEffectResult::plain(RecoveryOutcome::Applied(
+                        json!({"status":"accepted","turnId":turn["id"]}),
+                    ))
                 } else {
-                    RecoveryOutcome::Superseded
+                    RecoveryEffectResult::plain(RecoveryOutcome::Superseded)
                 })
             }
             RecoveryAction::Terminal {
@@ -557,7 +578,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     && (a["inFlight"] != true || crate::event_write::truthy(a.get("deletedAt"))))
                     || (*mode != CompletionMode::ObservedTurn && !expected.eligibility().connection)
                 {
-                    return Ok(RecoveryOutcome::Superseded);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                 }
                 let terminal = matches!(
                     turn["status"].as_str(),
@@ -567,7 +588,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     || !valid_turn(turn, a, Some(&a["turnId"]))
                     || !matches!(native_state.as_str(), "idle" | "notLoaded" | "active")
                 {
-                    return Ok(RecoveryOutcome::Unconfirmed);
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 let normal = *mode == CompletionMode::ObservedTurn
                     || (*mode == CompletionMode::AutomaticConnection
@@ -625,7 +646,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                             ) => RecoveryError::Dependency(name),
                             _ => RecoveryError::CommitFailed,
                         })? {
-                            self.stream_update = Some(update);
+                            stream_update = Some(update);
                         }
                     }
                     put_agent(tx, restored)?;
@@ -706,7 +727,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                 // This hook includes unresolved-operation holds and parent/work
                 // intents. A missing owner fails the whole transaction visibly.
                 self.delivery.terminal(tx, &mut updated, turn, *mode)?;
-                if let Some(streams) = self.stream_update.as_mut() {
+                if let Some(streams) = stream_update.as_mut() {
                     let batch = streams
                         .take_post_commit()
                         .map_err(|_| RecoveryError::CommitFailed)?;
@@ -720,7 +741,10 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                         .map_err(|_| RecoveryError::CommitFailed)?;
                 }
                 put_agent(tx, updated)?;
-                Ok(RecoveryOutcome::Applied(result))
+                Ok(RecoveryEffectResult {
+                    outcome: RecoveryOutcome::Applied(result),
+                    stream_update,
+                })
             }
             _ => Err(RecoveryError::EffectsUnavailable),
         }

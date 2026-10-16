@@ -134,7 +134,7 @@ impl Drop for State {
         }
     }
 }
-fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
+async fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
     let identity = TurnAttemptIdentity {
         agent_id: "agent".into(),
         epoch: 0,
@@ -142,11 +142,14 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
     };
     let transition = case["transition"].as_str().expect("transition");
     match transition {
-        "reconcile" => lifecycle_transaction(store, |tx| SchedulerRepository::reconcile_obsolete_before_submit(tx,"agent",0,"attempt").map(|proceed| json!(!proceed))).map_err(|e|e.to_string()),
-        "claim" => claim_intent(store, "agent", 0, "attempt", 10.0)
+        "reconcile" => lifecycle_transaction(store, |tx| SchedulerRepository::reconcile_obsolete_before_submit(tx,"agent",0,"attempt").map(|proceed| json!(!proceed))).await.map_err(|e|e.to_string()),
+        "claim" => claim_intent(store, "agent", 0, "attempt", 10.0).await
             .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
-        "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string()),
+        "submission_identity" => {
+            let ticket = case["ticket"].as_str().unwrap_or("ticket").to_owned();
+            lifecycle_transaction(store, move |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",&ticket,"default",1,"test-connection","thread").map(|v|json!(v))).await.map_err(|e|e.to_string())
+        },
         "submission" | "reconcile_submission" => {
             use studio_runtime_services::{account_worker::preparation::{prepare_turn_with_connection_id,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
             use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
@@ -155,10 +158,11 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 let event=QueueEventRepository::get(tx,&QueueEventId::from("event"))?.expect("seed input");
                 let metadata=studio_runtime_store::NotificationDispatchRepository::event_metadata(tx,"event")?.unwrap_or_else(||json!({}));
                 Ok((TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:agent["threadId"].as_str().map(str::to_owned),cwd:agent["cwd"].as_str().map(str::to_owned),model:agent["model"].as_str().map(str::to_owned),radio_authorized:false,events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata}]},agent["startAttempt"]["submitted"]==true))
-            }).map_err(|e|e.to_string())?;
+            }).await.map_err(|e|e.to_string())?;
             // Replays test the durable identity boundary without recompiling delivered input.
             if submitted {
-                return lifecycle_transaction(store, |tx| {
+                let ticket = case["ticket"].as_str().unwrap_or("ticket").to_owned();
+                return lifecycle_transaction(store, move |tx| {
                     let agent = AgentRepository::get(tx, &AgentId::from("agent"))?
                         .expect("seed agent");
                     let attempt = &agent.extra["startAttempt"];
@@ -167,7 +171,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                         "agent",
                         0,
                         "attempt",
-                        case["ticket"].as_str().unwrap_or("ticket"),
+                        &ticket,
                         attempt["accountKey"].as_str().unwrap_or("default"),
                         attempt["connectionGeneration"].as_u64().unwrap_or(0),
                         attempt["connectionId"].as_str().unwrap_or(""),
@@ -175,6 +179,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                     )
                     .map(|value| json!(value))
                 })
+                .await
                 .map_err(|e| e.to_string());
             }
             let guidance_root = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -206,7 +211,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             // keeping this empty prevents even a generated live progress path
             // from entering the captured provider input.
             resources.progress_template.clear();
-            let prepared=prepare_turn_with_connection_id(store,&resources,&intent,1,"fixture-connection").map_err(|e|e.to_string())?;
+            let prepared=prepare_turn_with_connection_id(store,&resources,&intent,1,"fixture-connection").await.map_err(|e|e.to_string())?;
             if case["transition"] == "submission" {
                 let actual = prepared.native_request();
                 let expected = &case["nativeRequest"];
@@ -219,7 +224,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 assert_eq!(actual_text, expected_text, "{}: no live or fixture guidance is appended", case["id"]);
                 assert_eq!(actual, *expected,"{}: native method and params",case["id"]);
             }
-            let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).map_err(|e|e.to_string())?;
+            let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).await.map_err(|e|e.to_string())?;
             if submitted {
                 let db=store.read().map_err(|e|e.to_string())?;
                 let receipt=studio_runtime_store::EventWriteRepository::receipt(&db,"account-worker:account:default:attempt:turn/start:submitted").map_err(|e|e.to_string())?.expect("production account-worker submission receipt");
@@ -231,15 +236,17 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }
             Ok(json!(submitted))
         },
-        "accepted" => match lifecycle_transaction(store, |tx| {
+        "accepted" => {
+            let turn_id = case["turnId"].as_str().unwrap_or("turn").to_owned();
+            match lifecycle_transaction(store, move |tx| {
             SchedulerRepository::settle_started(
                 tx,
                 "agent",
                 0,
                 "attempt",
-                case["turnId"].as_str().unwrap_or("turn"),
+                &turn_id,
             )
-        }) {
+        }).await {
             Ok(value) => Ok(json!(value)),
             Err(error) => {
                 if let Some(refusal) = case.get("expectRefusal") {
@@ -262,22 +269,28 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 }
                 Err(error.to_string())
             }
+            }
         },
-        "unknown" | "not_sent" => lifecycle_transaction(store, |tx| {
+        "unknown" | "not_sent" => {
+            let pending = transition == "not_sent";
+            lifecycle_transaction(store, move |tx| {
             SchedulerRepository::settle_start_outcome(
                 tx,
                 &identity,
-                if transition == "unknown" {
-                    "uncertain"
-                } else {
+                if pending {
                     "pending"
+                } else {
+                    "uncertain"
                 },
                 None,
             )
-        })
+        }).await
         .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
-        "rejected" => lifecycle_transaction(store, |tx| {
+        .map_err(|e| e.to_string())
+        },
+        "rejected" => {
+            let message = case["message"].as_str().unwrap_or("rejected").to_owned();
+            lifecycle_transaction(store, move |tx| {
             SchedulerRepository::settle_start_rejected_provider(
                 tx,
                 "agent",
@@ -287,12 +300,13 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                 "default",
                 1,
                 "thread",
-                json!({"message":case["message"].as_str().unwrap_or("rejected")}),
+                json!({"message":message}),
             )
             .map(|value| json!(value))
-        })
+        }).await
         .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
+        .map_err(|e| e.to_string())
+        },
         "completed" | "failed" | "interrupted" => {
             let mut turn = json!({"id":"turn","status":transition});
             if let Some(fields) = case["turn"].as_object() {
@@ -300,12 +314,13 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                     turn[k] = v.clone();
                 }
             }
-            settle_terminal_attempt(store, &identity, &json!({"threadId":"thread","turn":turn}))
+            settle_terminal_attempt(store, &identity, &json!({"threadId":"thread","turn":turn})).await
                 .map(|value| json!(value))
                 .map_err(|e| e.to_string())
         }
         "interrupt_accepted" | "interrupt_rejected" | "interrupt_unknown" => {
-            lifecycle_transaction(store, |tx| {
+            let transition = transition.to_owned();
+            lifecycle_transaction(store, move |tx| {
                 let prepared = SchedulerRepository::prepare_interrupt(
                     tx,
                     "agent",
@@ -326,36 +341,39 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                     },
                 ).map(|value| json!(value))?;
                 Ok(json!({"prepared": prepared, "settled": settled}))
-            })
+            }).await
             .map(|value| json!(value))
             .map_err(|e| e.to_string())
         }
         "stop" | "pause" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::stop_agent(tx, "agent", "Stopped by user").map(|value| json!(value))
-        })
+        }).await
         .map(|value| json!(value))
         .map_err(|e| e.to_string()),
-        "started" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::observe_started(tx, &identity, "turn").map(|value| json!(value))
-        })
+        "started" => {
+            let identity = identity.clone();
+            lifecycle_transaction(store, move |tx| {
+                SchedulerRepository::observe_started(tx, &identity, "turn").map(|value| json!(value))
+            }).await
         .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
-        "restart" => recover_on_startup(store)
+        .map_err(|e| e.to_string())
+        },
+        "restart" => recover_on_startup(store).await
             .map(|value| json!(value))
             .map_err(|e| e.to_string()),
         "disconnect" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::disconnect_account(tx, "default", 1, 20.0, false)
-        })
+        }).await
         .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "reattach" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::reconcile_generation(tx, "default", 1, 20.0)
-        })
+        }).await
         .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "generation_change" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::reconcile_generation(tx, "default", 2, 20.0)
-        })
+        }).await
         .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         _ => panic!("unimplemented Rust transition {transition}"),
@@ -551,8 +569,8 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
     }
 }
 
-#[test]
-fn python_written_turn_lifecycle_corpus() {
+#[tokio::test]
+async fn python_written_turn_lifecycle_corpus() {
     let mut cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_lifecycle/cases.json")).expect("corpus data");
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
@@ -605,7 +623,7 @@ fn python_written_turn_lifecycle_corpus() {
         let expected = oracle.call(
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
-        let store = match RuntimeStore::open(Some(&rust)) {
+        let store = match RuntimeStore::open(Some(&rust)).await {
             Ok(store) => store,
             Err(error) => {
                 let refusal = case
@@ -646,23 +664,29 @@ fn python_written_turn_lifecycle_corpus() {
                 SchedulerRepository::hold_account(tx, "default", Some(8), "second account hold")?;
                 SchedulerRepository::clear_account_hold(tx, "default")
             })
+            .await
             .expect("nested hold restoration");
         }
         let mut prepared_case = case.clone();
         prepared_case["nativeRequest"] = expected["nativeRequest"].clone();
         let case = &prepared_case;
-        let first = apply(&store, case);
+        let first = apply(&store, case).await;
         let mut error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             let normalized = oracle.call(json!({"command":"normalize","value":value}));
             assert_eq!(normalized, case["return"], "{id}: entry-point return value");
         }
         if let Some(text) = case["afterEventText"].as_str() {
+            let text = text.to_owned();
             store
-                .transaction(|tx| {
-                    tx.execute("UPDATE runtime_events SET text=?1 WHERE id='event'", [text])?;
+                .transaction(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET text=?1 WHERE id='event'",
+                        [&text],
+                    )?;
                     Ok(())
                 })
+                .await
                 .expect("Python writer mutation equivalent");
         }
         if let Some(probe) = case["probe"].as_object() {
@@ -672,9 +696,11 @@ fn python_written_turn_lifecycle_corpus() {
             }
             let before = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("probe write counter");
-            let refusal =
-                apply(&store, &changed).expect_err("conflicting evidence must be refused");
+            let refusal = apply(&store, &changed)
+                .await
+                .expect_err("conflicting evidence must be refused");
             assert_eq!(
                 refusal,
                 case["probeRefusal"].as_str().expect("exact conflict error"),
@@ -682,6 +708,7 @@ fn python_written_turn_lifecycle_corpus() {
             );
             let after = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("probe write counter");
             assert_eq!(before, after, "conflicting replay wrote SQLite");
         }
@@ -695,34 +722,40 @@ fn python_written_turn_lifecycle_corpus() {
                 "unknown" => Some("interrupt response unknown"),
                 _ => None,
             };
+            let outcome = outcome.to_owned();
+            let response_error = response_error.map(str::to_owned);
             let before = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("interrupt counter");
-            let replay = lifecycle_transaction(&store, |tx| {
+            let replay = lifecycle_transaction(&store, move |tx| {
                 SchedulerRepository::settle_interrupt_result(
                     tx,
                     "interrupt-ticket",
                     1,
-                    outcome,
-                    response_error,
+                    &outcome,
+                    response_error.as_deref(),
                 )
                 .map(|value| json!(value))
             })
+            .await
             .expect("interrupt settlement replay");
             assert_eq!(
                 json!(replay),
                 first.as_ref().expect("first result")["settled"],
                 "{id}: saved interrupt result"
             );
-            let refusal = lifecycle_transaction(&store, |tx| {
+            let outcome = outcome.clone();
+            let refusal = lifecycle_transaction(&store, move |tx| {
                 SchedulerRepository::settle_interrupt_result(
                     tx,
                     "interrupt-ticket",
                     1,
-                    outcome,
+                    &outcome,
                     Some("CORPUS_PRIVATE_PAYLOAD"),
                 )
             })
+            .await
             .expect_err("changed interrupt result must refuse");
             assert_eq!(
                 refusal.to_string(),
@@ -730,6 +763,7 @@ fn python_written_turn_lifecycle_corpus() {
             );
             let after = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("interrupt counter");
             assert_eq!(
                 before, after,
@@ -739,8 +773,9 @@ fn python_written_turn_lifecycle_corpus() {
         if case["replay"] == true && error.is_none() {
             let before = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("write counter");
-            let replay = apply(&store, case);
+            let replay = apply(&store, case).await;
             assert_eq!(
                 replay, first,
                 "{id}: replay must return the saved first result"
@@ -748,6 +783,7 @@ fn python_written_turn_lifecycle_corpus() {
             error = replay.err();
             let after = store
                 .transaction(|tx| Ok(tx.total_changes()))
+                .await
                 .expect("write counter");
             if after != before {
                 error = Some(format!("replay made {} writes", after - before));

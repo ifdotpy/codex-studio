@@ -5,8 +5,8 @@ async fn change_agent(state: &State, key: &'static str, value: Value) {
     let id = state.agent.clone();
     state
         .bridge
-        .worker_run("preparation-review", move |store| {
-            store.transaction_with(|tx| {
+        .worker_run("preparation-review", move |store| async move {
+            store.transaction_with(move |tx| {
                 let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                 row.extra.insert(key.into(), value);
                 AgentRepository::put(tx, &row)?;
@@ -20,7 +20,7 @@ async fn change_agent(state: &State, key: &'static str, value: Value) {
 pub(super) async fn scenario_completed_repair_and_missing_complaint_deliver() {
     let state = State::new().await;
     change_agent(&state, "contextRepair", json!({"phase":"completed"})).await;
-    state.bridge.run(|store| store.transaction_with(|tx| {
+    state.bridge.run(|store| store.transaction_with(move |tx| {
         tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'",
             [json!({"complaints":[{"complaint_id":"missing","text":"important evidence"}]}).to_string()])?;
         Ok::<_, WorkerError>(())
@@ -60,9 +60,10 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
         let state = State::new().await;
         let id = state.agent.clone();
         let epoch = state.epoch;
-        state.bridge.run(move |store| {
-            store.transaction(|tx| {
-                let owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap().value();
+        state.bridge.run(move |store| async move {
+            let setup_id = id.clone();
+            store.transaction_with(move |tx| {
+                let owner = AgentRepository::get(tx, &AgentId::from(setup_id.as_str()))?.unwrap().value();
                 let mut owner = owner.clone();
                 owner["id"] = json!("asset-owner");
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES('asset-owner',?1)", [owner.to_string()])?;
@@ -70,33 +71,45 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
                     [json!({"id":"asset","agentId":"asset-owner","image":false,"path":"/attachment","name":"evidence.txt","size":4}).to_string()])?;
                 tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES('annotation:input',?1) ON CONFLICT(id) DO UPDATE SET record=excluded.record", [json!({"assets":["asset"]}).to_string()])?;
                 Ok(())
-            })?;
-            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
-            let prepared = preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)?;
-            store.transaction(|tx| {
-                match mutation {
+            })
+            .await?;
+            let intent = store::claim(&store, "default", &id, epoch).await?.unwrap();
+            let prepared = preparation::prepare(
+                Arc::clone(&store),
+                &test_resources()?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await?;
+            let mutation_id = id.clone();
+            let mutation_name = mutation;
+            let prepared_thread_id = intent.thread_id.clone();
+            store.transaction_with(move |tx| {
+                match mutation_name {
                     "owner_deleted" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='asset-owner'", [])?; }
                     "owner_moved" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.rootId','foreign') WHERE id='asset-owner'", [])?; }
                     "asset_path" => { tx.execute("UPDATE runtime_assets SET record=json_set(record,'$.path','/changed') WHERE id='asset'", [])?; }
-                    "plan" => { tx.execute("INSERT INTO runtime_plans(id,record) VALUES(?1,?2)", rusqlite::params![id,json!({"id":id,"rootId":id,"native":{"plan":[{"step":"new plan", "status":"pending"}]}}).to_string()])?; }
-                    "complaint" => { tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('new',?1)", [json!({"id":"new","leadId":id,"recipient":"lead","status":"open","responses":[],"author":id,"text":"new question","created":1,"version":1}).to_string()])?; }
+                    "plan" => { tx.execute("INSERT INTO runtime_plans(id,record) VALUES(?1,?2)", rusqlite::params![mutation_id,json!({"id":mutation_id,"rootId":mutation_id,"native":{"plan":[{"step":"new plan", "status":"pending"}]}}).to_string()])?; }
+                    "complaint" => { tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('new',?1)", [json!({"id":"new","leadId":mutation_id,"recipient":"lead","status":"open","responses":[],"author":mutation_id,"text":"new question","created":1,"version":1}).to_string()])?; }
                     _ => {
-                        let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                        let (key, value) = match mutation {
+                        let mut row = AgentRepository::get(tx, &AgentId::from(mutation_id.as_str()))?.unwrap();
+                        let (key, value) = match mutation_name {
                             "mode_revision" => ("agentModeRevision",json!(999)),
-                            "nativeThreadBlock" => (mutation,json!({"threadId":intent.thread_id,"error":{}})),
-                            "contextRepairWait" => (mutation,json!({"error":"wait"})),
-                            "contextRepair" => (mutation,json!({"phase":"unknown"})),
-                            _ => (mutation,json!("transfer")),
+                            "nativeThreadBlock" => (mutation_name,json!({"threadId":prepared_thread_id,"error":{}})),
+                            "contextRepairWait" => (mutation_name,json!({"error":"wait"})),
+                            "contextRepair" => (mutation_name,json!({"phase":"unknown"})),
+                            _ => (mutation_name,json!("transfer")),
                         };
                         row.extra.insert(key.into(),value);
                         AgentRepository::put(tx,&row)?;
                     }
                 }
                 Ok(())
-            })?;
+            })
+            .await?;
             let pending = Pending {intent:prepared.intent,method:"turn/start".into(),operation:"test".into(),thread:prepared.thread,compiled:prepared.compiled};
-            let error = scheduler::lifecycle_transaction_with(store, |tx| preparation::commit(tx,&pending,&prepared.guard)).unwrap_err();
+            let error = scheduler::lifecycle_transaction_with(&store, move |tx| preparation::commit(tx,&pending,&prepared.guard)).await.unwrap_err();
             assert!(matches!(error, WorkerError::PreparationRefused(_)), "{mutation}: {error}");
             let db = store.read()?;
             let row=AgentRepository::get(&db,&AgentId::from(id.as_str()))?.unwrap().value();
@@ -125,11 +138,21 @@ async fn context_repair_phases_and_complaint_ownership_match_python() {
         let epoch = state.epoch;
         state
             .bridge
-            .run(move |store| {
-                let intent = store::claim(store, "default", &id, epoch)?;
-                let result = intent.as_ref().map(|i| {
-                    preparation::prepare(store, &test_resources().unwrap(), i, Method::TurnStart, 1)
-                });
+            .run(move |store| async move {
+                let intent = store::claim(&store, "default", &id, epoch).await?;
+                let result = match intent {
+                    Some(intent) => Some(
+                        preparation::prepare(
+                            Arc::clone(&store),
+                            &test_resources().unwrap(),
+                            &intent,
+                            Method::TurnStart,
+                            1,
+                        )
+                        .await,
+                    ),
+                    None => None,
+                };
                 assert_eq!(
                     result.is_some_and(|r| r.is_ok()),
                     matches!(phase, "completed" | "unchanged"),
@@ -149,15 +172,17 @@ async fn context_repair_phases_and_complaint_ownership_match_python() {
         let state = State::new().await;
         let id = state.agent.clone();
         let epoch = state.epoch;
-        state.bridge.run(move |store| {
-            store.transaction(|tx| {
-                let body=if payload=="malformed" {"important evidence".into()} else {json!({"complaints":[{"complaint_id":payload,"text":"important evidence"}]}).to_string()};
+        state.bridge.run(move |store| async move {
+            let write_id = id.clone();
+            let write_payload = payload;
+            store.transaction_with(move |tx| {
+                let body=if write_payload=="malformed" {"important evidence".into()} else {json!({"complaints":[{"complaint_id":write_payload,"text":"important evidence"}]}).to_string()};
                 tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'",[body])?;
-                if payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&id},"recipient":"lead","status":"open","responses":[],"author":id,"text":"owned body","created":1,"version":1}).to_string()])?;}
+                if write_payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&write_id},"recipient":"lead","status":"open","responses":[],"author":write_id,"text":"owned body","created":1,"version":1}).to_string()])?;}
                 Ok(())
-            })?;
-            let intent=store::claim(store,"default",&id,epoch)?.unwrap();
-            let prepared=preparation::prepare(store,&test_resources()?,&intent,Method::TurnStart,1)?;
+            }).await?;
+            let intent=store::claim(&store,"default",&id,epoch).await?.unwrap();
+            let prepared=preparation::prepare(Arc::clone(&store),&test_resources()?,&intent,Method::TurnStart,1).await?;
             assert_eq!(prepared.params["input"].to_string().contains("important evidence"),retained,"{payload}/{foreign}");
             Ok(())
         }).await.unwrap();
@@ -170,16 +195,23 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
     let epoch = state.epoch;
     let prepared = state
         .bridge
-        .worker_run("preparation-review", move |store| {
-            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
-            preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+        .worker_run("preparation-review", move |store| async move {
+            let intent = store::claim(&store, "default", &id, epoch).await?.unwrap();
+            preparation::prepare(
+                Arc::clone(&store),
+                &test_resources()?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await
         })
         .await
         .unwrap();
     change_agent(&state, "agentModeRevision", json!(444)).await;
     state
         .bridge
-        .worker_run("preparation-review", move |store| {
+        .worker_run("preparation-review", move |store| async move {
             let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
             let request = RecoveredRequest {
                 ticket: studio_runtime_providers::RequestTicket {
@@ -201,18 +233,21 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                 thread: prepared.thread,
                 compiled: prepared.compiled,
             };
-            assert!(!store::submitted(
-                store,
-                &context,
-                "default",
-                &request,
-                store::SubmissionEvidence {
-                    turn: None,
-                    submission: prepared.submission.as_ref(),
-                    guard: Some(&prepared.guard),
-                    connection_id: "test-connection",
-                },
-            )?);
+            assert!(
+                !store::submitted(
+                    store,
+                    &context,
+                    "default",
+                    &request,
+                    store::SubmissionEvidence {
+                        turn: None,
+                        submission: prepared.submission.as_ref(),
+                        guard: Some(&prepared.guard),
+                        connection_id: "test-connection",
+                    },
+                )
+                .await?
+            );
             Ok(())
         })
         .await
@@ -254,14 +289,25 @@ async fn missing_native_effort_uses_shared_catalog_published_after_construction(
     let epoch = state.epoch;
     state
         .bridge
-        .run(move |store| {
-            store.transaction(|tx| {
-                let mut agent = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                agent.extra.remove("nativeEffort");
-                AgentRepository::put(tx, &agent)
-            })?;
-            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
-            let prepared = preparation::prepare(store, &resources, &intent, Method::TurnStart, 1)?;
+        .run(move |store| async move {
+            let update_id = id.clone();
+            store
+                .transaction_with(move |tx| {
+                    let mut agent =
+                        AgentRepository::get(tx, &AgentId::from(update_id.as_str()))?.unwrap();
+                    agent.extra.remove("nativeEffort");
+                    AgentRepository::put(tx, &agent)
+                })
+                .await?;
+            let intent = store::claim(&store, "default", &id, epoch).await?.unwrap();
+            let prepared = preparation::prepare(
+                Arc::clone(&store),
+                &resources,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await?;
             assert_eq!(prepared.params["effort"], "medium");
             Ok(())
         })
@@ -276,33 +322,47 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
     let epoch = state.epoch;
     let prepared = state
         .bridge
-        .worker_run("preparation-review", move |store| {
-            store.transaction(|tx| {
-                let original = AgentRepository::get(tx, &AgentId::from(id.as_str()))?
-                    .unwrap()
-                    .value();
-                for (key, lead) in [("root", true), ("sibling", false), (id.as_str(), false)] {
-                    let mut record = original.clone();
-                    record["id"] = json!(key);
-                    record["rootId"] = json!("root");
-                    record["isLead"] = json!(lead);
-                    record["parentId"] = if lead { Value::Null } else { json!("root") };
-                    record["role"] = json!(if lead { "orchestrator" } else { "implementer" });
-                    record["worktreeReady"] = json!(true);
-                    let record = serde_json::from_value(record).unwrap();
-                    AgentRepository::put(tx, &record)?;
-                }
-                Ok(())
-            })?;
-            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
-            preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+        .worker_run("preparation-review", move |store| async move {
+            let record_id = id.clone();
+            store
+                .transaction_with(move |tx| {
+                    let original = AgentRepository::get(tx, &AgentId::from(record_id.as_str()))?
+                        .unwrap()
+                        .value();
+                    for (key, lead) in [
+                        ("root", true),
+                        ("sibling", false),
+                        (record_id.as_str(), false),
+                    ] {
+                        let mut record = original.clone();
+                        record["id"] = json!(key);
+                        record["rootId"] = json!("root");
+                        record["isLead"] = json!(lead);
+                        record["parentId"] = if lead { Value::Null } else { json!("root") };
+                        record["role"] = json!(if lead { "orchestrator" } else { "implementer" });
+                        record["worktreeReady"] = json!(true);
+                        let record = serde_json::from_value(record).unwrap();
+                        AgentRepository::put(tx, &record)?;
+                    }
+                    Ok(())
+                })
+                .await?;
+            let intent = store::claim(&store, "default", &id, epoch).await?.unwrap();
+            preparation::prepare(
+                Arc::clone(&store),
+                &test_resources()?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await
         })
         .await
         .unwrap();
     state
         .bridge
         .worker_run("preparation-review", |store| {
-            store.transaction_with(|tx| {
+            store.transaction_with(move |tx| {
                 let mut sibling = AgentRepository::get(tx, &AgentId::from("sibling"))?.unwrap();
                 sibling.status = studio_runtime_store::AgentStatus::Completed;
                 AgentRepository::put(tx, &sibling)?;
@@ -313,7 +373,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
         .unwrap();
     state
         .bridge
-        .worker_run("preparation-review", move |store| {
+        .worker_run("preparation-review", move |store| async move {
             let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
             let request = RecoveredRequest {
                 ticket: studio_runtime_providers::RequestTicket {
@@ -335,18 +395,21 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                 thread: prepared.thread,
                 compiled: prepared.compiled,
             };
-            assert!(store::submitted(
-                store,
-                &context,
-                "default",
-                &request,
-                store::SubmissionEvidence {
-                    turn: None,
-                    submission: prepared.submission.as_ref(),
-                    guard: Some(&prepared.guard),
-                    connection_id: "test-connection",
-                },
-            )?);
+            assert!(
+                store::submitted(
+                    store,
+                    &context,
+                    "default",
+                    &request,
+                    store::SubmissionEvidence {
+                        turn: None,
+                        submission: prepared.submission.as_ref(),
+                        guard: Some(&prepared.guard),
+                        connection_id: "test-connection",
+                    },
+                )
+                .await?
+            );
             Ok(())
         })
         .await
@@ -367,7 +430,7 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
         state
             .bridge
             .run(move |store| {
-                store.transaction_with(|tx| {
+                store.transaction_with(move |tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                     row.extra.remove("nativeEffort");
                     AgentRepository::put(tx, &row)?;
@@ -474,18 +537,29 @@ async fn continuation_gate_refuses_a_preexisting_admission_hold() {
     let epoch = state.epoch;
     state
         .bridge
-        .run(move |store| {
-            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
-            store.transaction(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                row.extra
-                    .insert("accountTransferId".into(), json!("transfer"));
-                AgentRepository::put(tx, &row)
-            })?;
-            let error =
-                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
-                    .err()
-                    .expect("turn admission hold");
+        .run(move |store| async move {
+            let intent = store::claim(&store, "default", &id, epoch).await?.unwrap();
+            let update_agent_id = id.clone();
+            store
+                .transaction_with(move |tx| {
+                    let mut row =
+                        AgentRepository::get(tx, &AgentId::from(update_agent_id.as_str()))?
+                            .unwrap();
+                    row.extra
+                        .insert("accountTransferId".into(), json!("transfer"));
+                    AgentRepository::put(tx, &row)
+                })
+                .await?;
+            let error = preparation::prepare(
+                Arc::clone(&store),
+                &test_resources()?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await
+            .err()
+            .expect("turn admission hold");
             assert_eq!(error.to_string(), "thread-preparation/AccountTransfer");
             Ok(())
         })
@@ -500,21 +574,31 @@ async fn radio_authorized_preparation_uses_the_radio_receipt_gate() {
     let epoch = state.epoch;
     state
         .bridge
-        .run(move |store| {
-            let mut intent = store::claim(store, "default", &agent_id, epoch)?.unwrap();
-            store.transaction(|tx| {
-                tx.execute(
-                    "UPDATE runtime_events SET kind='radio_turn' WHERE id='annotation:input'",
-                    [],
-                )?;
-                Ok(())
-            })?;
+        .run(move |store| async move {
+            let mut intent = store::claim(&store, "default", &agent_id, epoch)
+                .await?
+                .unwrap();
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET kind='radio_turn' WHERE id='annotation:input'",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await?;
             intent.events[0].kind = "radio_turn".into();
             intent.radio_authorized = true;
-            let error =
-                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
-                    .err()
-                    .expect("radio turns require a current active room receipt");
+            let error = preparation::prepare(
+                Arc::clone(&store),
+                &test_resources()?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )
+            .await
+            .err()
+            .expect("radio turns require a current active room receipt");
             assert!(
                 error.to_string().contains("radio/turn-selection-changed"),
                 "radio-specific authorization should reject the missing receipt: {error}"

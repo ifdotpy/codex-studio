@@ -91,7 +91,7 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                 for file in ["canvas.sqlite3", "analytics.sqlite3"] {
                     std::fs::copy(template.join(file), state.join(file)).expect("clone");
                 }
-                let store = Arc::new(RuntimeStore::open(Some(&state)).expect("store"));
+                let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
                 let owner = Arc::new(RetainedOwner {
                     calls: Mutex::new(vec![]),
                     cut,
@@ -124,7 +124,7 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                     after: false,
                     reached: tokio::sync::Notify::new(),
                 });
-                let store = Arc::new(RuntimeStore::open(Some(&state)).expect("restart"));
+                let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("restart"));
                 let controls = Controls::new(
                     Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
                     Arc::new(RetainedClaudeSession::new(recovered.clone())),

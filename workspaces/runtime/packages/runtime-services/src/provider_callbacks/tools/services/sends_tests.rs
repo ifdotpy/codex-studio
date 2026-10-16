@@ -32,7 +32,11 @@ fn template() -> &'static Value {
         .1
 }
 
-fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
+async fn send(
+    sender_index: usize,
+    target: &str,
+    id: &str,
+) -> (tempfile::TempDir, RuntimeStore, Value) {
     let oracle = template();
     let directory = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -81,8 +85,10 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
     )
     .unwrap();
     let args = json!({"agent_id":target,"text":"dispatch input"});
+    let id = id.to_owned();
     let result = store
-        .transaction_with(|tx| ports.send(tx, &actor, &args, id, 20.0))
+        .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, 20.0))
+        .await
         .unwrap();
     (directory, store, result.value)
 }
@@ -130,17 +136,16 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         3,
     )
     .unwrap();
-    let child_id = oracle["agents"][1]["id"].as_str().unwrap();
+    let child_id = oracle["agents"][1]["id"].as_str().unwrap().to_owned();
+    let actor_for_send = actor.clone();
+    let ports_for_send = std::sync::Arc::new(ports);
+    let ports_for_release = std::sync::Arc::clone(&ports_for_send);
+    let args = json!({"agent_id":child_id,"text":"wake after commit"});
     let staged = store
-        .transaction_with(|tx| {
-            ports.send(
-                tx,
-                &actor,
-                &json!({"agent_id":child_id,"text":"wake after commit"}),
-                "wake-after-commit",
-                20.0,
-            )
+        .transaction_with(move |tx| {
+            ports_for_send.send(tx, &actor_for_send, &args, "wake-after-commit", 20.0)
         })
+        .await
         .unwrap();
     let event_count: i64 = store
         .read()
@@ -152,13 +157,13 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         )
         .unwrap();
     assert_eq!(event_count, 1, "durable input commits before release");
-    ports.release(&staged.signals).unwrap();
+    ports_for_release.release(&staged.signals).unwrap();
     futures_util::FutureExt::now_or_never(notified.as_mut())
         .expect("released wake signal is delivered");
 }
 
-#[test]
-fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
+#[tokio::test]
+async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
     let oracle = template();
     let directory = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -207,8 +212,8 @@ fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         .expect("monitor cancellation wakes the dedicated dispatcher");
 }
 
-#[test]
-fn complaint_submit_read_and_respond_share_the_notification_service() {
+#[tokio::test]
+async fn complaint_submit_read_and_respond_share_the_notification_service() {
     let oracle = template();
     let directory = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -221,41 +226,49 @@ fn complaint_submit_read_and_respond_share_the_notification_service() {
     let store = RuntimeStore::open(Some(directory.path())).unwrap();
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0].clone();
+    let worker_for_submit = worker.clone();
     let submitted = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             crate::notification_dispatch::agent_complaint_action(
                 tx,
-                &worker,
+                &worker_for_submit,
                 &json!({"action":"submit","text":"Need help"}),
                 "complaint-call",
                 20.0,
             )
         })
+        .await
         .unwrap();
     assert_eq!(submitted["recipient"], "lead");
-    let complaint_id = submitted["id"].as_str().unwrap();
+    let complaint_id = submitted["id"].as_str().unwrap().to_owned();
+    let lead_for_read = lead.clone();
+    let complaint_id_for_read = complaint_id.clone();
     let read = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             crate::notification_dispatch::agent_complaint_action(
                 tx,
-                &lead,
-                &json!({"action":"read","complaint_id":complaint_id}),
+                &lead_for_read,
+                &json!({"action":"read","complaint_id":complaint_id_for_read}),
                 "read-call",
                 21.0,
             )
         })
+        .await
         .unwrap();
     assert_eq!(read["complaints"][0]["readAt"], 21.0);
+    let lead_for_response = lead.clone();
+    let complaint_id_for_response = complaint_id.clone();
     let responded = store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             crate::notification_dispatch::agent_complaint_action(
                 tx,
-                &lead,
-                &json!({"action":"respond","complaint_id":complaint_id,"text":"Investigating","status":"in_progress"}),
+                &lead_for_response,
+                &json!({"action":"respond","complaint_id":complaint_id_for_response,"text":"Investigating","status":"in_progress"}),
                 "response-call",
                 22.0,
             )
         })
+        .await
         .unwrap();
     assert_eq!(responded["responses"][0]["author"], lead["id"]);
     let reader = store.read().unwrap();
@@ -269,13 +282,13 @@ fn complaint_submit_read_and_respond_share_the_notification_service() {
     assert_eq!(response_event, 1);
 }
 
-#[test]
-fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
+#[tokio::test]
+async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
     let oracle = template();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, child, "send-child");
+    let (_root, store, value) = send(0, child, "send-child").await;
     assert_eq!(value["status"], "queued");
     let reader = store.read().unwrap();
     let event: (String, String, String) = reader
@@ -291,7 +304,7 @@ fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
     );
     drop(reader);
 
-    let (_root, store, value) = send(1, lead, "send-parent");
+    let (_root, store, value) = send(1, lead, "send-parent").await;
     let mut member_ids = [lead, child];
     member_ids.sort_unstable();
     assert_eq!(
@@ -316,7 +329,7 @@ fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
     assert_eq!((event_count, chat_count), (0, 1));
     drop(reader);
 
-    let (_root, store, value) = send(1, "broadcast", "send-broadcast");
+    let (_root, store, value) = send(1, "broadcast", "send-broadcast").await;
     assert!(value["room"].as_str().unwrap().starts_with("broadcast:"));
     let reader = store.read().unwrap();
     let chat_count: i64 = reader

@@ -242,13 +242,7 @@ async fn discover(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     if let Some(port) = state.account_session.clone() {
-        let response = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/account_login",
-            move || port.discover(),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(session_error)?;
+        let response = port.discover().await.map_err(session_error)?;
         state.event_wake.notify_one();
         return serde_json::from_value(response)
             .map(Json)
@@ -294,13 +288,7 @@ async fn codex_login(
         .account_session
         .clone()
         .ok_or_else(|| unavailable(CODEX_LOGIN[0]))?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/account_login",
-        move || port.login(body),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(session_error)?;
+    let result = port.login(body).await.map_err(session_error)?;
     state.event_wake.notify_one();
     super::generated_json::<crate::generated::AccountLoginResponse>(result).map(Json)
 }
@@ -310,13 +298,10 @@ async fn codex_login_cancel(
     ApiJson(body): ApiJson<CancelLoginBody>,
 ) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
     if let Some(port) = state.account_session.clone() {
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/account_login",
-            move || port.cancel_login(&body.login_id),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(session_error)?;
+        let result = port
+            .cancel_login(&body.login_id)
+            .await
+            .map_err(session_error)?;
         state.event_wake.notify_one();
         return serde_json::from_value(result)
             .map(Json)
@@ -382,13 +367,7 @@ async fn claude_profile(
         .account_session
         .clone()
         .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/account_login",
-        move || port.profile(body),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(session_error)?;
+    let result = port.profile(body).await.map_err(session_error)?;
     state.event_wake.notify_one();
     super::generated_json::<crate::generated::AccountsResponse>(result).map(Json)
 }

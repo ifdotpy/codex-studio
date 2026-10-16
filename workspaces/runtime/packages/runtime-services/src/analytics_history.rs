@@ -16,8 +16,11 @@ use read_proof::ReadProof;
 mod discovery;
 pub use discovery::DiscoveryRound;
 use std::fs::{self, File};
+use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
@@ -80,8 +83,12 @@ impl Default for BatchLimits {
 /// transaction. A failure aborts the page before its analytics cursor is
 /// acknowledged. Historical response/turn IDs remain in params; collection
 /// time supplies `now`. Analytics and budget databases commit separately.
-pub trait HistoryBudgetSink {
-    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError>;
+pub trait HistoryBudgetSink: Send + Sync {
+    fn capture_page<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>>;
 }
 
 /// The production page sink. Identity and budget state are re-read through
@@ -97,36 +104,51 @@ impl<'a> StoreHistoryBudgetSink<'a> {
 }
 
 impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
-    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError> {
-        if captures.is_empty() {
-            return Ok(());
-        }
-        self.store.transaction_with::<_, HistoryError>(|tx| {
-            for (agent, params, at) in captures {
-                let mut agent = agent.clone();
-                crate::budget_service::capture(
-                    tx,
-                    &mut agent,
-                    params,
-                    *at,
-                    crate::budget::CaptureSource::History,
-                    now,
-                )?;
+    fn capture_page<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+        Box::pin(async move {
+            if captures.is_empty() {
+                return Ok(());
             }
+            self.store
+                .transaction_with::<_, HistoryError>(move |tx| {
+                    let mut page_agent = captures
+                        .first()
+                        .map(|(agent, _, _)| (**agent).clone())
+                        .ok_or(HistoryError::BudgetUnavailable)?;
+                    for (_, params, at) in captures {
+                        crate::budget_service::capture(
+                            tx,
+                            &mut page_agent,
+                            &params,
+                            at,
+                            crate::budget::CaptureSource::History,
+                            now,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await?;
             Ok(())
-        })?;
-        Ok(())
+        })
     }
 }
 
 pub struct BudgetUnavailable;
 impl HistoryBudgetSink for BudgetUnavailable {
-    fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
-        Err(HistoryError::BudgetUnavailable)
+    fn capture_page<'a>(
+        &'a self,
+        _: Vec<(Arc<Value>, Value, f64)>,
+        _: f64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
+        Box::pin(async { Err(HistoryError::BudgetUnavailable) })
     }
 }
 pub struct HistorySnapshot {
-    agent: Value,
+    agent: Arc<Value>,
     previous: Option<Value>,
     state: Value,
     context: RolloutContext,
@@ -134,6 +156,7 @@ pub struct HistorySnapshot {
 impl HistorySnapshot {
     pub fn from_records(agent: Value, previous: Option<Value>) -> Result<Self, HistoryError> {
         CaptureTable::Agents.validate(&agent)?;
+        let agent = Arc::new(agent);
         let thread = agent["threadId"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -163,11 +186,11 @@ impl HistorySnapshot {
     }
 }
 pub struct HistoryBatch {
-    agent: Value,
+    agent: Arc<Value>,
     previous: Option<Value>,
     state: Value,
     captures: Vec<PreparedCapture>,
-    budget: Vec<(Value, Value, f64)>,
+    budget: Vec<(Arc<Value>, Value, f64)>,
     advanced: bool,
     read_proof: Option<ReadProof>,
 }
@@ -178,40 +201,49 @@ impl HistoryBatch {
     pub fn advanced(&self) -> bool {
         self.advanced
     }
-    pub fn commit(
+    pub async fn commit(
         mut self,
         store: &RuntimeStore,
         budget: &dyn HistoryBudgetSink,
         now: f64,
     ) -> Result<Vec<ResponseRateAssociation>, HistoryError> {
         // Re-read only before entering either writer or invoking budget effects.
-        if let Some(proof) = &mut self.read_proof {
-            proof.validate()?;
+        if let Some(mut proof) = self.read_proof.take() {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/analytics_history_proof",
+                move || proof.validate(),
+            )
+            .await
+            .map_err(|_| HistoryError::Read)??;
         }
         if !self.budget.is_empty() {
-            budget.capture_page(&self.budget, now)?;
+            budget
+                .capture_page(std::mem::take(&mut self.budget), now)
+                .await?;
         }
-        store.analytics_transaction(|tx, canvas| {
-            check_identity(canvas, &self.agent)?;
-            let current = Repo::read(tx, CaptureTable::History, text(&self.state["id"]))?;
-            if current != self.previous {
-                return Err(HistoryError::StaleCheckpoint);
-            }
-            let mut effects = Vec::new();
-            for prepared in self.captures {
-                let decision = decide(CaptureSnapshot::load(tx, prepared)?)?;
-                decision.apply(tx)?;
-                if let Some(effect) = decision.response_rate {
-                    effects.push(effect)
+        store
+            .analytics_transaction(move |tx, canvas| {
+                check_identity(canvas, &self.agent)?;
+                let current = Repo::read(tx, CaptureTable::History, text(&self.state["id"]))?;
+                if current != self.previous {
+                    return Err(HistoryError::StaleCheckpoint);
                 }
-            }
-            let mut state = self.state;
-            if without_updated(current.as_ref()) != without_updated(Some(&state)) {
-                state["updated"] = json!(now);
-                Repo::write(tx, CaptureTable::History, &state)?;
-            }
-            Ok(effects)
-        })
+                let mut effects = Vec::new();
+                for prepared in self.captures {
+                    let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?)?;
+                    decision.apply(tx)?;
+                    if let Some(effect) = decision.response_rate {
+                        effects.push(effect)
+                    }
+                }
+                let mut state = self.state;
+                if without_updated(current.as_ref()) != without_updated(Some(&state)) {
+                    state["updated"] = json!(now);
+                    Repo::write(tx, CaptureTable::History, &state)?;
+                }
+                Ok(effects)
+            })
+            .await
     }
 }
 fn without_updated(v: Option<&Value>) -> Option<Value> {
@@ -224,29 +256,40 @@ fn without_updated(v: Option<&Value>) -> Option<Value> {
     })
 }
 /// Actual collector entry point. This does not start a runtime or a provider.
-pub fn collect_one(
+pub async fn collect_one(
     store: &RuntimeStore,
     agent: Value,
-    profile: &Path,
+    profile: PathBuf,
     limits: BatchLimits,
     now: f64,
-    cancel: &AtomicBool,
+    cancel: Arc<AtomicBool>,
     budget: &dyn HistoryBudgetSink,
 ) -> Result<bool, HistoryError> {
-    let path = if agent["provider"] == "claude" {
-        RolloutPath::Missing
-    } else {
-        discover(profile, text(&agent["threadId"]), cancel)?
-    };
-    collect_path(store, agent, profile, (path, limits), now, cancel, budget)
+    let path_profile = profile.clone();
+    let thread = text(&agent["threadId"]).to_owned();
+    let is_live_only = agent["provider"] == "claude";
+    let path_cancel = Arc::clone(&cancel);
+    let path = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/analytics_history_discovery",
+        move || {
+            if is_live_only {
+                Ok(RolloutPath::Missing)
+            } else {
+                discover(&path_profile, &thread, &path_cancel)
+            }
+        },
+    )
+    .await
+    .map_err(|_| HistoryError::Read)??;
+    collect_path(store, agent, profile, (path, limits), now, cancel, budget).await
 }
-fn collect_path(
+async fn collect_path(
     store: &RuntimeStore,
     agent: Value,
-    profile: &Path,
+    profile: PathBuf,
     selection: (RolloutPath, BatchLimits),
     now: f64,
-    cancel: &AtomicBool,
+    cancel: Arc<AtomicBool>,
     budget: &dyn HistoryBudgetSink,
 ) -> Result<bool, HistoryError> {
     let key = format!(
@@ -255,14 +298,29 @@ fn collect_path(
         agent["accountKey"].as_str().unwrap_or("default"),
         text(&agent["threadId"])
     );
-    crate::analytics_history_repair::repair_terminal_errors(store)?;
+    crate::analytics_history_repair::repair_terminal_errors(store).await?;
     let budget_advanced =
-        crate::analytics_history_repair::migrate_budget(store, &agent, budget, now)?;
-    let previous = read_history_checkpoint(store, &key, &agent)?;
-    let snapshot = HistorySnapshot::from_records(agent, previous)?;
-    let batch = prepare(snapshot, profile, selection.0, selection.1, now, cancel)?;
+        crate::analytics_history_repair::migrate_budget(store, agent.clone(), budget, now).await?;
+    let previous = read_history_checkpoint(store, &key, &agent).await?;
+    let prepare_cancel = Arc::clone(&cancel);
+    let batch = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/analytics_history_prepare",
+        move || {
+            let snapshot = HistorySnapshot::from_records(agent, previous)?;
+            prepare(
+                snapshot,
+                &profile,
+                selection.0,
+                selection.1,
+                now,
+                &prepare_cancel,
+            )
+        },
+    )
+    .await
+    .map_err(|_| HistoryError::Read)??;
     let advanced = batch.advanced();
-    batch.commit(store, budget, now)?;
+    batch.commit(store, budget, now).await?;
     Ok(advanced || budget_advanced)
 }
 
@@ -272,12 +330,33 @@ fn collect_path(
 /// Python reads the keyed row with `json.loads` in
 /// `apps/server/src/codex_analytics_history.py:627-638`; it does not validate
 /// the persisted checkpoint against the AnalyticsHistory schema at read time.
-fn read_history_checkpoint(
+async fn read_history_checkpoint(
     store: &RuntimeStore,
     key: &str,
     agent: &Value,
 ) -> Result<Option<Value>, HistoryError> {
-    let read = AnalyticsRepository::new(store.root())
+    let root = store.root().to_owned();
+    let key_owned = key.to_owned();
+    let agent = agent.clone();
+    let (previous, repair) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/analytics_history_checkpoint",
+        move || read_history_checkpoint_stage(&root, &key_owned, &agent),
+    )
+    .await
+    .map_err(|_| HistoryError::Read)??;
+    if let Some((key, previous_raw, replacement)) = repair {
+        quarantine_history_checkpoint(store, key, previous_raw, replacement.clone()).await?;
+        return Ok(Some(replacement));
+    }
+    Ok(previous)
+}
+
+fn read_history_checkpoint_stage(
+    root: &Path,
+    key: &str,
+    agent: &Value,
+) -> Result<(Option<Value>, Option<(String, String, Value)>), HistoryError> {
+    let read = AnalyticsRepository::new(root)
         .open_read_only()
         .map_err(|_| HistoryError::Read)?;
     let raw = read
@@ -290,13 +369,13 @@ fn read_history_checkpoint(
         .map_err(studio_runtime_store::StoreError::from)?;
     drop(read);
     let Some(raw) = raw else {
-        return Ok(None);
+        return Ok((None, None));
     };
     if let Ok(value) = serde_json::from_str::<Value>(&raw) {
         let valid = CaptureTable::History.validate(&value).is_ok()
             && value.get("id").and_then(Value::as_str) == Some(key);
         if valid {
-            return Ok(Some(value));
+            return Ok((Some(value), None));
         }
         let (diagnostic, invalid_pointers) = if value.get("id").and_then(Value::as_str) != Some(key)
         {
@@ -340,16 +419,14 @@ fn read_history_checkpoint(
         } else {
             initial_history_checkpoint(key, agent, &diagnostic)
         };
-        quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
-        return Ok(Some(replacement));
+        return Ok((None, Some((key.to_owned(), raw, replacement))));
     }
     let diagnostic = format!(
         "analytics_history/{key} at : invalid_json; record length {} bytes",
         raw.len()
     );
     let replacement = initial_history_checkpoint(key, agent, &diagnostic);
-    quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
-    Ok(Some(replacement))
+    Ok((None, Some((key.to_owned(), raw, replacement))))
 }
 
 fn remove_json_pointer(value: &mut Value, pointer: &str) {
@@ -424,31 +501,37 @@ fn initial_history_checkpoint(key: &str, agent: &Value, diagnostic: &str) -> Val
     })
 }
 
-fn quarantine_history_checkpoint(
+async fn quarantine_history_checkpoint(
     store: &RuntimeStore,
-    key: &str,
-    previous_raw: &str,
+    key: String,
+    previous_raw: String,
     replacement: Value,
 ) -> Result<(), HistoryError> {
-    store.analytics_transaction(|tx, _| {
-        let current: Option<String> = tx
-            .query_row(
-                "SELECT record FROM analytics_history WHERE id=?1",
-                [key],
-                |row| row.get(0),
+    store
+        .analytics_transaction(move |tx, _| {
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM analytics_history WHERE id=?1",
+                    [key.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(studio_runtime_store::StoreError::from)?;
+            if current.as_deref() != Some(previous_raw.as_str()) {
+                return Err(HistoryError::StaleCheckpoint);
+            }
+            tx.execute(
+                "UPDATE analytics_history SET agent=?2,record=?3 WHERE id=?1",
+                rusqlite::params![
+                    key.as_str(),
+                    replacement["agent"].as_str(),
+                    replacement.to_string()
+                ],
             )
-            .optional()
             .map_err(studio_runtime_store::StoreError::from)?;
-        if current.as_deref() != Some(previous_raw) {
-            return Err(HistoryError::StaleCheckpoint);
-        }
-        tx.execute(
-            "UPDATE analytics_history SET agent=?2,record=?3 WHERE id=?1",
-            rusqlite::params![key, replacement["agent"].as_str(), replacement.to_string()],
-        )
-        .map_err(studio_runtime_store::StoreError::from)?;
-        Ok(())
-    })?;
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -680,10 +763,11 @@ pub fn prepare(
             .as_bytes(),
         );
         let actions = snapshot.context.actions(&record, &identity_key, fallback)?;
-        let mut agent = snapshot.agent.clone();
+        let mut agent = (*snapshot.agent).clone();
         for key in ["turnId", "model", "effort"] {
             agent[key] = snapshot.context.record()[key].clone();
         }
+        let agent = Arc::new(agent);
         if captures.len().saturating_add(actions.len()) > 4096 {
             return Err(CaptureError::Invalid("/history/batch/actions").into());
         }
@@ -691,10 +775,10 @@ pub fn prepare(
             match action {
                 RolloutAction::Event { method, params, at } => {
                     if method == "thread/tokenUsage/updated" {
-                        budget.push((agent.clone(), params.clone(), at));
+                        budget.push((Arc::clone(&agent), params.clone(), at));
                     }
-                    captures.push(PreparedCapture::event(
-                        &agent,
+                    captures.push(PreparedCapture::event_shared(
+                        Arc::clone(&agent),
                         &method,
                         &params,
                         at,
@@ -702,9 +786,9 @@ pub fn prepare(
                         CaptureSource::Rollout,
                     )?);
                 }
-                RolloutAction::Payload { params, at } => {
-                    captures.push(PreparedCapture::model_payload(&agent, &params, at, now)?)
-                }
+                RolloutAction::Payload { params, at } => captures.push(
+                    PreparedCapture::model_payload_shared(Arc::clone(&agent), &params, at, now)?,
+                ),
                 RolloutAction::WrongThread => {
                     increment(&mut snapshot.state, "wrongThreadRecord", 1)?
                 }
@@ -911,33 +995,42 @@ pub struct HistoryClock {
 #[derive(Default)]
 pub struct HistoryCollector {
     pub schedule: crate::analytics_history_schedule::HistorySchedule,
-    discovery: DiscoveryRound,
+    discovery: Arc<std::sync::Mutex<DiscoveryRound>>,
     visited: std::collections::BTreeSet<String>,
 }
 impl HistoryCollector {
     /// Start a fresh fairness round while retaining watcher-maintained profile
     /// indexes. An idle selection or revisiting an actor closes the prior round.
     pub fn begin_round(&mut self) {
-        self.discovery.begin_round();
+        self.discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_round();
         self.visited.clear();
     }
 
     /// Apply one watcher event to the persistent profile discovery cache.
     pub fn file_changed(&mut self, profile: &Path, path: &Path, removed: bool) {
-        self.discovery.file_changed(profile, path, removed);
+        self.discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .file_changed(profile, path, removed);
     }
 
     /// Force a one-time profile rescan after directory changes or watcher overflow.
     pub fn profile_changed(&mut self, profile: &Path) {
-        self.discovery.invalidate(profile);
+        self.discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate(profile);
     }
-    pub fn step(
+    pub async fn step(
         &mut self,
         store: &RuntimeStore,
         actors: &[Value],
-        profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError>,
+        profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
-        cancel: &AtomicBool,
+        cancel: Arc<AtomicBool>,
         budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
         let Some(agent) = self.schedule.next(actors, clock.monotonic)?.cloned() else {
@@ -948,36 +1041,81 @@ impl HistoryCollector {
             self.begin_round();
         }
         self.visited.insert(text(&agent["id"]).to_owned());
-        let home = profile(agent["accountKey"].as_str().unwrap_or("default"))?;
-        let path = if agent["provider"] == "claude" {
-            RolloutPath::Missing
-        } else {
-            self.discovery
-                .resolve(&home, text(&agent["threadId"]), cancel)?
-        };
-        let advanced = collect_path(
+        let discovery = Arc::clone(&self.discovery);
+        let cancel_discovery = Arc::clone(&cancel);
+        let account_key = agent["accountKey"].as_str().unwrap_or("default").to_owned();
+        let thread = text(&agent["threadId"]).to_owned();
+        let live_only = agent["provider"] == "claude";
+        let (home, path) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/analytics_history_discovery",
+            move || {
+                let home = profile(&account_key)?;
+                let path = if live_only {
+                    RolloutPath::Missing
+                } else {
+                    discovery
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .resolve(&home, &thread, &cancel_discovery)?
+                };
+                Ok::<_, HistoryError>((home, path))
+            },
+        )
+        .await
+        .map_err(|_| HistoryError::Read)??;
+        crate::analytics_history_repair::repair_terminal_errors(store).await?;
+        let budget_advanced = crate::analytics_history_repair::migrate_budget(
             store,
             agent.clone(),
-            &home,
-            (path, BatchLimits::default()),
-            clock.observed_at,
-            cancel,
             budget,
-        )?;
+            clock.observed_at,
+        )
+        .await?;
         let key = format!(
             "{}:{}:{}",
             text(&agent["id"]),
             agent["accountKey"].as_str().unwrap_or("default"),
             text(&agent["threadId"])
         );
-        let db = AnalyticsRepository::new(store.root())
-            .open_read_only()
-            .map_err(|_| HistoryError::Read)?;
-        if let Some(checkpoint) = Repo::read(&db, CaptureTable::History, &key)? {
+        let prepare_agent = agent.clone();
+        let prepare_cancel = Arc::clone(&cancel);
+        let previous = read_history_checkpoint(store, &key, &agent).await?;
+        let batch = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/analytics_history_prepare",
+            move || {
+                let snapshot = HistorySnapshot::from_records(prepare_agent, previous)?;
+                prepare(
+                    snapshot,
+                    &home,
+                    path,
+                    BatchLimits::default(),
+                    clock.observed_at,
+                    &prepare_cancel,
+                )
+            },
+        )
+        .await
+        .map_err(|_| HistoryError::Read)??;
+        let advanced = batch.advanced();
+        batch.commit(store, budget, clock.observed_at).await?;
+        let root = store.root().to_owned();
+        let checkpoint_key = key;
+        let checkpoint = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/analytics_history_checkpoint",
+            move || {
+                let db = AnalyticsRepository::new(&root)
+                    .open_read_only()
+                    .map_err(|_| HistoryError::Read)?;
+                Repo::read(&db, CaptureTable::History, &checkpoint_key).map_err(HistoryError::from)
+            },
+        )
+        .await
+        .map_err(|_| HistoryError::Read)??;
+        if let Some(checkpoint) = checkpoint {
             self.schedule
                 .completed(&agent, &checkpoint, clock.monotonic)?;
         }
-        Ok(advanced)
+        Ok(advanced || budget_advanced)
     }
 }
 
@@ -985,8 +1123,8 @@ impl HistoryCollector {
 mod invalid_record_tests {
     use super::*;
 
-    #[test]
-    fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {
+    #[tokio::test]
+    async fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
         let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
@@ -1030,6 +1168,7 @@ mod invalid_record_tests {
         drop(db);
         let bad_agent = json!({"id":"bad","accountKey":"default","threadId":"bad-thread"});
         let recovered = read_history_checkpoint(&store, invalid_key, &bad_agent)
+            .await
             .expect("quarantine invalid history row")
             .expect("replacement checkpoint");
         let diagnostic = recovered["invalidRecordDiagnostic"]
@@ -1048,13 +1187,14 @@ mod invalid_record_tests {
         assert_eq!(recovered["status"], "invalidRecord");
         let good_agent = json!({"id":"good","accountKey":"default","threadId":"good-thread"});
         let still_valid = read_history_checkpoint(&store, valid_key, &good_agent)
+            .await
             .expect("continue importing valid row")
             .expect("valid checkpoint");
         assert_eq!(still_valid, valid);
     }
 
-    #[test]
-    fn non_object_history_checkpoints_reset_to_initial_values_without_panicking() {
+    #[tokio::test]
+    async fn non_object_history_checkpoints_reset_to_initial_values_without_panicking() {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
         let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
@@ -1069,6 +1209,7 @@ mod invalid_record_tests {
             )
             .expect("seed non-object checkpoint");
             let replacement = read_history_checkpoint(&store, &key, &agent)
+                .await
                 .expect("quarantine non-object checkpoint")
                 .expect("initial checkpoint");
             assert_eq!(replacement["id"], key);

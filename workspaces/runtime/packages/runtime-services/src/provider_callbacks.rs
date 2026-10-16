@@ -107,8 +107,8 @@ pub fn is_callback(frame: &Frame) -> bool {
 
 /// The caller runs this synchronous service on its blocking store bridge, and
 /// submits Answer only after this call commits. Pending never waits for a human.
-pub fn dispatch(
-    store: &RuntimeStore,
+pub async fn dispatch(
+    store: std::sync::Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
     now: f64,
@@ -118,8 +118,9 @@ pub fn dispatch(
         context,
         frame,
         now,
-        &crate::managed_host_tools::UnavailablePorts,
+        std::sync::Arc::new(crate::managed_host_tools::UnavailablePorts),
     )
+    .await
 }
 
 /// Construct the real host bundle from the retained account callback path.
@@ -130,7 +131,7 @@ pub(crate) fn managed_tool_ports(
     context: &CallbackContext,
     frame: &Frame,
     wake: std::sync::Arc<tokio::sync::Notify>,
-) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+) -> Result<impl crate::managed_host_tools::Ports<Prepared = ()> + 'static, CallbackError> {
     managed_tool_ports_with_monitor_wake(
         store,
         context,
@@ -147,7 +148,7 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
     frame: &Frame,
     wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
-) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+) -> Result<impl crate::managed_host_tools::Ports<Prepared = ()> + 'static, CallbackError> {
     managed_tool_ports_with_runtime(
         store,
         context,
@@ -172,7 +173,7 @@ pub(crate) fn managed_tool_ports_with_runtime(
     context: &CallbackContext,
     frame: &Frame,
     config: ManagedToolPortsConfig,
-) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+) -> Result<impl crate::managed_host_tools::Ports<Prepared = ()> + 'static, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     };
@@ -189,7 +190,7 @@ pub(crate) fn managed_tool_ports_with_bundle(
     wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     runtime: Option<&ManagedToolRuntime>,
-) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+) -> Result<impl crate::managed_host_tools::Ports<Prepared = ()> + 'static, CallbackError> {
     let runtime_ports =
         runtime
             .map(ManagedToolRuntime::ports)
@@ -217,12 +218,12 @@ pub(crate) fn managed_tool_ports_with_bundle(
 /// bundle here. The bundle is used inside the callback transaction only to
 /// write durable intents; managed tool dispatch releases wake signals after
 /// the final commit and before returning the decision.
-pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
-    store: &RuntimeStore,
+pub(crate) async fn dispatch_with_managed_tools(
+    store: std::sync::Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &Frame,
     now: f64,
-    ports: &P,
+    ports: std::sync::Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>,
 ) -> Result<CallbackDecision, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Ok(CallbackDecision::Unsupported);
@@ -231,10 +232,11 @@ pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
     if request.method == "item/tool/call" {
-        return tools::dispatch_with_ports(store, context, &request, now, ports);
+        return tools::dispatch_with_ports(store, context, &request, now, ports).await;
     }
-    store.transaction_with(|tx| {
-        let identity = ReplyIdentity::new(context, &request.id);
+    let context = context.clone();
+    store.transaction_with(move |tx| {
+        let identity = ReplyIdentity::new(&context, &request.id);
         if let Some(decision) = storage::saved_decision(tx, &identity, &request)? {
             return Ok(decision);
         }
@@ -242,11 +244,11 @@ pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
             "currentTime/read" => Some(ResponseBody::Result(json!({"currentTimeAt":now.trunc() as u64}))),
             "account/chatgptAuthTokens/refresh" => Some(ResponseBody::Error(json!({"code":-32601,"message":"Not implemented: requires linux-vm-auth/refresh; use the host account authentication flow"}))),
             method if cards::interactive(method) => {
-                let snapshot = storage::snapshot(tx, context)?;
+                let snapshot = storage::snapshot(tx, &context)?;
                 if let Some(body) = cards::immediate(&snapshot, &request)? {
                     Some(body)
                 } else {
-                    return cards::admit(tx, context, &snapshot, &request, now);
+                    return cards::admit(tx, &context, &snapshot, &request, now);
                 }
             }
             _ => None,
@@ -258,6 +260,7 @@ pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
         storage::save_reply(tx, &request, &reply)?;
         Ok(CallbackDecision::Answer(reply))
     })
+    .await
 }
 
 fn tool_result(value: Value, success: bool) -> Value {

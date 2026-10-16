@@ -48,7 +48,11 @@ fn template() -> &'static Template {
         }
     })
 }
-fn fixture() -> (tempfile::TempDir, RuntimeStore, CallbackContext) {
+fn fixture() -> (
+    tempfile::TempDir,
+    std::sync::Arc<RuntimeStore>,
+    CallbackContext,
+) {
     let t = template();
     let directory = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -58,7 +62,7 @@ fn fixture() -> (tempfile::TempDir, RuntimeStore, CallbackContext) {
         )
         .unwrap();
     }
-    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -102,7 +106,7 @@ fn tool_value(reply: &Reply) -> Value {
     serde_json::from_str(body(reply)["contentItems"][0]["text"].as_str().unwrap()).unwrap()
 }
 
-fn provider_callbacks_python_answer_corpus() {
+async fn provider_callbacks_python_answer_corpus() {
     for case in template().value["answers"].as_array().unwrap() {
         let (actual, history) = answer_value(
             case["method"].as_str().unwrap(),
@@ -114,7 +118,7 @@ fn provider_callbacks_python_answer_corpus() {
         assert_eq!(history, case["history"]);
     }
 }
-fn provider_callbacks_durable_tool_replay_and_content_conflict() {
+async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     let (_dir, store, context) = fixture();
     let frame = call(
         &context,
@@ -122,13 +126,21 @@ fn provider_callbacks_durable_tool_replay_and_content_conflict() {
         "orchestration_task",
         json!({"action":"create","title":"One task"}),
     );
-    let first = reply(dispatch(&store, &context, &frame, 10.0).unwrap());
+    let first = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap(),
+    );
     assert_eq!(body(&first)["success"], true);
     assert_eq!(
         body(&first)["contentItems"][1]["text"],
         "[Time awareness] Tool result finalized at 1970-01-01T00:00:10.000Z"
     );
-    let second = reply(dispatch(&store, &context, &frame, 11.0).unwrap());
+    let second = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)
+            .await
+            .unwrap(),
+    );
     assert_eq!(first, second);
     assert_eq!(
         store
@@ -145,32 +157,52 @@ fn provider_callbacks_durable_tool_replay_and_content_conflict() {
         "orchestration_task",
         json!({"action":"create","title":"Changed"}),
     );
-    assert!(dispatch(&store, &context, &conflict, 11.0).is_err());
+    assert!(
+        dispatch(std::sync::Arc::clone(&store), &context, &conflict, 11.0)
+            .await
+            .is_err()
+    );
     let mut next = context.clone();
     next.generation = 8;
     next.connection = "replacement".into();
-    let replay = reply(dispatch(&store, &next, &frame, 12.0).unwrap());
+    let replay = reply(
+        dispatch(std::sync::Arc::clone(&store), &next, &frame, 12.0)
+            .await
+            .unwrap(),
+    );
     assert_eq!(first.body, replay.body);
     assert_ne!(first.identity, replay.identity);
     assert!(!tool_value(&first)["id"].as_str().unwrap().is_empty());
 }
-fn provider_callbacks_human_pending_and_write_outcomes() {
+async fn provider_callbacks_human_pending_and_write_outcomes() {
     let (_dir, store, context) = fixture();
     let frame = request(
         Method::ItemToolRequestUserInput,
         RequestId::Number(1),
         json!({"threadId":context.thread,"turnId":context.turn,"questions":[{"id":"q","question":"Secret?","isSecret":true}]}),
     );
-    let CallbackDecision::Pending(id) = dispatch(&store, &context, &frame, 10.0).unwrap() else {
+    let CallbackDecision::Pending(id) =
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap()
+    else {
         panic!("pending")
     };
     assert_eq!(
-        dispatch(&store, &context, &frame, 11.0).unwrap(),
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)
+            .await
+            .unwrap(),
         CallbackDecision::Pending(id.clone())
     );
     let data = json!({"answers":{"q":{"answers":["do-not-publish"]}}});
-    assert!(answer(&store, &context, &id, AnswerAuthority::Agent, &data, 12.0).is_err());
-    let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0).unwrap();
+    assert!(
+        answer(&store, &context, &id, AnswerAuthority::Agent, &data, 12.0)
+            .await
+            .is_err()
+    );
+    let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0)
+        .await
+        .unwrap();
     let card: String = store
         .read()
         .unwrap()
@@ -182,16 +214,32 @@ fn provider_callbacks_human_pending_and_write_outcomes() {
         .unwrap();
     assert!(!card.contains("do-not-publish"));
     assert!(card.contains("[redacted]"));
-    assert!(delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap());
-    assert!(answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0).is_err());
-    delivery(&store, &prepared.identity, DeliveryOutcome::Written).unwrap();
-    assert!(!delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap());
+    assert!(
+        delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+            .await
+            .unwrap()
+    );
+    assert!(
+        answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0)
+            .await
+            .is_err()
+    );
+    delivery(&store, &prepared.identity, DeliveryOutcome::Written)
+        .await
+        .unwrap();
+    assert!(
+        !delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+            .await
+            .unwrap()
+    );
     assert_eq!(
-        answer(&store, &context, &id, AnswerAuthority::User, &data, 14.0).unwrap(),
+        answer(&store, &context, &id, AnswerAuthority::User, &data, 14.0)
+            .await
+            .unwrap(),
         prepared
     );
 }
-fn provider_callbacks_unknown_never_resends_or_reexecutes() {
+async fn provider_callbacks_unknown_never_resends_or_reexecutes() {
     let (_dir, store, context) = fixture();
     let frame = call(
         &context,
@@ -199,26 +247,34 @@ fn provider_callbacks_unknown_never_resends_or_reexecutes() {
         "orchestration_title",
         json!({"title":"Exactly once"}),
     );
-    let prepared = reply(dispatch(&store, &context, &frame, 10.0).unwrap());
-    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap();
-    delivery(&store, &prepared.identity, DeliveryOutcome::Unknown).unwrap();
+    let prepared = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap(),
+    );
+    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    delivery(&store, &prepared.identity, DeliveryOutcome::Unknown)
+        .await
+        .unwrap();
     assert!(matches!(
-        dispatch(&store, &context, &frame, 11.0),
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0).await,
         Err(CallbackError::Unknown)
     ));
     let mut replacement = context.clone();
     replacement.generation += 1;
     replacement.connection = "replacement".into();
     assert!(matches!(
-        dispatch(&store, &replacement, &frame, 12.0),
+        dispatch(std::sync::Arc::clone(&store), &replacement, &frame, 12.0).await,
         Err(CallbackError::Unknown)
     ));
     assert!(matches!(
-        delivery(&store, &prepared.identity, DeliveryOutcome::Submitted),
+        delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).await,
         Err(CallbackError::Unknown)
     ));
 }
-fn provider_callbacks_stale_and_worker_authority() {
+async fn provider_callbacks_stale_and_worker_authority() {
     let (_dir, store, context) = fixture();
     let mut stale = context.clone();
     stale.epoch += 1;
@@ -228,7 +284,11 @@ fn provider_callbacks_stale_and_worker_authority() {
         "orchestration_task",
         json!({"action":"list"}),
     );
-    assert!(dispatch(&store, &stale, &frame, 10.0).is_err());
+    assert!(
+        dispatch(std::sync::Arc::clone(&store), &stale, &frame, 10.0)
+            .await
+            .is_err()
+    );
     let actor = &template().value["agents"][1];
     let mut worker = context.clone();
     worker.agent = actor["id"].as_str().unwrap().into();
@@ -240,7 +300,12 @@ fn provider_callbacks_stale_and_worker_authority() {
         json!({"threadId":worker.thread,"turnId":worker.turn}),
     );
     assert!(matches!(
-        reply(dispatch(&store, &worker, &question, 10.0).unwrap()).body,
+        reply(
+            dispatch(std::sync::Arc::clone(&store), &worker, &question, 10.0)
+                .await
+                .unwrap()
+        )
+        .body,
         ResponseBody::Error(_)
     ));
     let task = call(
@@ -250,12 +315,16 @@ fn provider_callbacks_stale_and_worker_authority() {
         json!({"action":"create","title":"Forbidden"}),
     );
     assert_eq!(
-        body(&reply(dispatch(&store, &worker, &task, 10.0).unwrap()))["success"],
+        body(&reply(
+            dispatch(std::sync::Arc::clone(&store), &worker, &task, 10.0)
+                .await
+                .unwrap()
+        ))["success"],
         false
     );
 }
 
-fn provider_callbacks_transaction_failpoint_matrix() {
+async fn provider_callbacks_transaction_failpoint_matrix() {
     // Admission and claim failpoints leave no committed running claim, so retry
     // may execute. Execution failpoints happen after claim commit: they roll
     // back effects/result/outbox, and replay must not execute the call again.
@@ -304,7 +373,8 @@ fn provider_callbacks_transaction_failpoint_matrix() {
                 "orchestration_task",
                 json!({"action":"create","title":"Atomic task"}),
             );
-            let dispatch_result = dispatch(&store, &context, &frame, 10.0);
+            let dispatch_result =
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0).await;
             assert!(dispatch_result.is_err(), "{timing} {table} {operation}");
             let work_ids = store
                 .read()
@@ -332,7 +402,11 @@ fn provider_callbacks_transaction_failpoint_matrix() {
                 .unwrap();
             drop(store);
             let store = RuntimeStore::open(Some(dir.path())).unwrap();
-            let result = reply(dispatch(&store, &context, &frame, 11.0).unwrap());
+            let result = reply(
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)
+                    .await
+                    .unwrap(),
+            );
             let failed_before_claim = table == "runtime_tool_requests"
                 && (operation == "INSERT"
                     || predicate == "json_extract(NEW.record,'$.stage')='running'");
@@ -384,7 +458,11 @@ fn provider_callbacks_transaction_failpoint_matrix() {
             drop(store);
             let store = RuntimeStore::open(Some(dir.path())).unwrap();
             assert_eq!(
-                reply(dispatch(&store, &context, &frame, 12.0).unwrap()),
+                reply(
+                    dispatch(std::sync::Arc::clone(&store), &context, &frame, 12.0)
+                        .await
+                        .unwrap()
+                ),
                 result
             );
             assert_eq!(
@@ -404,7 +482,7 @@ fn provider_callbacks_transaction_failpoint_matrix() {
         }
     }
 }
-fn provider_callbacks_restart_after_submission_stays_unknown() {
+async fn provider_callbacks_restart_after_submission_stays_unknown() {
     let (dir, store, context) = fixture();
     let frame = call(
         &context,
@@ -412,12 +490,18 @@ fn provider_callbacks_restart_after_submission_stays_unknown() {
         "orchestration_task",
         json!({"action":"create","title":"Lost response"}),
     );
-    let result = reply(dispatch(&store, &context, &frame, 10.0).unwrap());
-    delivery(&store, &result.identity, DeliveryOutcome::Submitted).unwrap();
+    let result = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap(),
+    );
+    delivery(&store, &result.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
     drop(store);
     let store = RuntimeStore::open(Some(dir.path())).unwrap();
     assert!(matches!(
-        dispatch(&store, &context, &frame, 11.0),
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0).await,
         Err(CallbackError::Unknown)
     ));
     assert_eq!(
@@ -430,14 +514,18 @@ fn provider_callbacks_restart_after_submission_stays_unknown() {
         1
     );
 }
-fn provider_callbacks_not_sent_and_expiry() {
+async fn provider_callbacks_not_sent_and_expiry() {
     let (_dir, store, context) = fixture();
     let frame = request(
         Method::ItemCommandExecutionRequestApproval,
         RequestId::Number(77),
         json!({"threadId":context.thread,"turnId":context.turn,"command":"fixture"}),
     );
-    let CallbackDecision::Pending(id) = dispatch(&store, &context, &frame, 10.0).unwrap() else {
+    let CallbackDecision::Pending(id) =
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap()
+    else {
         panic!("pending")
     };
     let prepared = answer(
@@ -448,9 +536,14 @@ fn provider_callbacks_not_sent_and_expiry() {
         &json!({"decision":"accept"}),
         11.0,
     )
+    .await
     .unwrap();
-    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap();
-    delivery(&store, &prepared.identity, DeliveryOutcome::NotSent).unwrap();
+    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    delivery(&store, &prepared.identity, DeliveryOutcome::NotSent)
+        .await
+        .unwrap();
     let declined = answer(
         &store,
         &context,
@@ -459,12 +552,19 @@ fn provider_callbacks_not_sent_and_expiry() {
         &json!({"decision":"decline"}),
         12.0,
     )
+    .await
     .unwrap();
     assert_eq!(body(&declined), &json!({"decision":"decline"}));
-    expire(&store, &context.account, &context.connection).unwrap();
-    assert!(dispatch(&store, &context, &frame, 13.0).is_err());
+    expire(&store, &context.account, &context.connection)
+        .await
+        .unwrap();
+    assert!(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 13.0)
+            .await
+            .is_err()
+    );
 }
-fn provider_callbacks_malformed_and_foreign_records_are_refused() {
+async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
     let (_dir, store, context) = fixture();
     for field in ["epoch", "accountKey", "threadId", "turnId"] {
         let mut actor = template().value["agents"][0].clone();
@@ -490,7 +590,11 @@ fn provider_callbacks_malformed_and_foreign_records_are_refused() {
         json!({"target":foreign,"text":"No cross-team side effect"}),
     );
     assert_eq!(
-        body(&reply(dispatch(&store, &context, &frame, 10.0).unwrap()))["success"],
+        body(&reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+                .await
+                .unwrap()
+        ))["success"],
         false
     );
     assert_eq!(
@@ -503,7 +607,7 @@ fn provider_callbacks_malformed_and_foreign_records_are_refused() {
         0
     );
 }
-fn provider_callbacks_local_message_once_and_worker_chat() {
+async fn provider_callbacks_local_message_once_and_worker_chat() {
     let (_dir, store, context) = fixture();
     let worker = template().value["agents"][1]["id"].as_str().unwrap();
     let frame = call(
@@ -512,10 +616,18 @@ fn provider_callbacks_local_message_once_and_worker_chat() {
         "orchestration_message",
         json!({"target":worker,"text":"A real stored message"}),
     );
-    let first = reply(dispatch(&store, &context, &frame, 10.0).unwrap());
+    let first = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap(),
+    );
     assert_eq!(body(&first)["success"], true);
     assert_eq!(
-        reply(dispatch(&store, &context, &frame, 11.0).unwrap()),
+        reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)
+                .await
+                .unwrap()
+        ),
         first
     );
     assert_eq!(
@@ -535,14 +647,20 @@ fn provider_callbacks_local_message_once_and_worker_chat() {
         json!({"room_id":room}),
     );
     assert_eq!(
-        body(&reply(dispatch(&store, &context, &read, 12.0).unwrap()))["success"],
+        body(&reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &read, 12.0)
+                .await
+                .unwrap()
+        ))["success"],
         true
     );
 }
 
-fn provider_callbacks_python_reservations_and_restart() {
+async fn provider_callbacks_python_reservations_and_restart() {
     let (_dir, store, context) = fixture();
-    recover_connection(&store, &context.account, &context.connection, 20.0).unwrap();
+    recover_connection(&store, &context.account, &context.connection, 20.0)
+        .await
+        .unwrap();
     for (index, case) in template().value["reservations"]
         .as_array()
         .unwrap()
@@ -579,7 +697,9 @@ fn provider_callbacks_python_reservations_and_restart() {
             params: Some(case["message"]["params"].clone()),
             fields: Default::default(),
         });
-        dispatch(&store, &context, &frame, 21.0).unwrap();
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 21.0)
+            .await
+            .unwrap();
         let raw: String = store
             .read()
             .unwrap()
@@ -622,11 +742,15 @@ fn provider_callbacks_python_reservations_and_restart() {
     }
 }
 
-fn provider_callbacks_utility_invalid_and_deleted() {
+async fn provider_callbacks_utility_invalid_and_deleted() {
     let (_dir, store, context) = fixture();
     let time = request(Method::CurrentTimeRead, RequestId::Number(0), json!({}));
     assert_eq!(
-        body(&reply(dispatch(&store, &context, &time, 10.7).unwrap())),
+        body(&reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &time, 10.7)
+                .await
+                .unwrap()
+        )),
         &json!({"currentTimeAt":10})
     );
     let refresh = Frame::UnknownMethod(studio_runtime_providers::UnknownMethodFrame {
@@ -634,11 +758,20 @@ fn provider_callbacks_utility_invalid_and_deleted() {
         fields: serde_json::from_value(json!({"id":1,"params":{}})).unwrap(),
     });
     assert!(matches!(
-        reply(dispatch(&store, &context, &refresh, 11.0).unwrap()).body,
+        reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &refresh, 11.0)
+                .await
+                .unwrap()
+        )
+        .body,
         ResponseBody::Error(_)
     ));
     let malformed = call(&context, "bad", "orchestration_task", Value::Null);
-    assert!(dispatch(&store, &context, &malformed, 11.0).is_err());
+    assert!(
+        dispatch(std::sync::Arc::clone(&store), &context, &malformed, 11.0)
+            .await
+            .is_err()
+    );
     let mut actor = template().value["agents"][0].clone();
     actor["deletedAt"] = json!(12.0);
     store
@@ -655,12 +788,20 @@ fn provider_callbacks_utility_invalid_and_deleted() {
         RequestId::Number(2),
         json!({"threadId":context.thread,"turnId":context.turn}),
     );
-    let denial = reply(dispatch(&store, &context, &approval, 13.0).unwrap());
+    let denial = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &approval, 13.0)
+            .await
+            .unwrap(),
+    );
     assert_eq!(body(&denial), &json!({"decision":"decline"}));
-    assert!(delivery(&store, &denial.identity, DeliveryOutcome::Submitted).unwrap());
+    assert!(
+        delivery(&store, &denial.identity, DeliveryOutcome::Submitted)
+            .await
+            .unwrap()
+    );
 }
 
-fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
+async fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
     let (_dir, store, context) = fixture();
     let store = std::sync::Arc::new(store);
     let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
@@ -676,7 +817,9 @@ fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
                 (store.clone(), gate.clone(), context.clone(), frame.clone());
             std::thread::spawn(move || {
                 gate.wait();
-                dispatch(&store, &context, &frame, 10.0).unwrap()
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+                    .await
+                    .unwrap()
             })
         })
         .collect::<Vec<_>>();
@@ -697,24 +840,36 @@ fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1", [&context.agent])?; Ok(())
     }).unwrap();
-    assert!(delivery(&store, &replies[0].identity, DeliveryOutcome::Submitted).is_err());
+    assert!(
+        delivery(&store, &replies[0].identity, DeliveryOutcome::Submitted)
+            .await
+            .is_err()
+    );
 }
 
-fn provider_callbacks_answer_commit_failpoint() {
+async fn provider_callbacks_answer_commit_failpoint() {
     let (_dir, store, context) = fixture();
     let frame = request(
         Method::ItemPermissionsRequestApproval,
         RequestId::Number(21),
         json!({"threadId":context.thread,"turnId":context.turn,"permissions":{"network":true}}),
     );
-    let CallbackDecision::Pending(id) = dispatch(&store, &context, &frame, 10.0).unwrap() else {
+    let CallbackDecision::Pending(id) =
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+            .await
+            .unwrap()
+    else {
         panic!("pending")
     };
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute_batch("CREATE TRIGGER answer_fail AFTER UPDATE ON runtime_requests WHEN json_extract(NEW.record,'$.status')='answering' BEGIN SELECT RAISE(ABORT,'answer failpoint'); END")?; Ok(())
     }).unwrap();
     let data = json!({"decision":"accept"});
-    assert!(answer(&store, &context, &id, AnswerAuthority::User, &data, 11.0).is_err());
+    assert!(
+        answer(&store, &context, &id, AnswerAuthority::User, &data, 11.0)
+            .await
+            .is_err()
+    );
     assert_eq!(
         store
             .read()
@@ -731,10 +886,20 @@ fn provider_callbacks_answer_commit_failpoint() {
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
         tx.execute_batch("DROP TRIGGER answer_fail; CREATE TRIGGER submitted_fail AFTER UPDATE ON runtime_operation_receipts WHEN json_extract(NEW.result,'$.delivery')='submitted' BEGIN SELECT RAISE(ABORT,'submission failpoint'); END")?; Ok(())
     }).unwrap();
-    let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0).unwrap();
-    assert!(delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).is_err());
+    let prepared = answer(&store, &context, &id, AnswerAuthority::User, &data, 12.0)
+        .await
+        .unwrap();
+    assert!(
+        delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+            .await
+            .is_err()
+    );
     assert_eq!(
-        reply(dispatch(&store, &context, &frame, 13.0).unwrap()),
+        reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 13.0)
+                .await
+                .unwrap()
+        ),
         prepared
     );
     store
@@ -743,15 +908,19 @@ fn provider_callbacks_answer_commit_failpoint() {
             Ok(())
         })
         .unwrap();
-    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap();
-    recover_connection(&store, &context.account, &context.connection, 14.0).unwrap();
+    delivery(&store, &prepared.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    recover_connection(&store, &context.account, &context.connection, 14.0)
+        .await
+        .unwrap();
     assert!(matches!(
-        dispatch(&store, &context, &frame, 15.0),
+        dispatch(std::sync::Arc::clone(&store), &context, &frame, 15.0).await,
         Err(CallbackError::Unknown)
     ));
 }
 
-fn provider_callbacks_python_durable_answers() {
+async fn provider_callbacks_python_durable_answers() {
     let (_dir, store, context) = fixture();
     for (index, case) in template().value["answers"]
         .as_array()
@@ -772,7 +941,10 @@ fn provider_callbacks_python_durable_answers() {
                 fields: serde_json::from_value(json!({"id":id,"params":case["params"]})).unwrap(),
             })
         };
-        let CallbackDecision::Pending(id) = dispatch(&store, &context, &frame, 10.0).unwrap()
+        let CallbackDecision::Pending(id) =
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 10.0)
+                .await
+                .unwrap()
         else {
             panic!("pending")
         };
@@ -784,6 +956,7 @@ fn provider_callbacks_python_durable_answers() {
             &case["data"],
             20.0,
         )
+        .await
         .unwrap();
         assert_eq!(body(&result), &case["expected"]);
         let raw: String = store
@@ -803,7 +976,7 @@ fn provider_callbacks_python_durable_answers() {
     }
 }
 
-fn provider_callbacks_python_dynamic_read_and_title() {
+async fn provider_callbacks_python_dynamic_read_and_title() {
     let (_dir, store, context) = fixture();
     for case in template().value["dynamic"].as_array().unwrap() {
         let frame = request(
@@ -811,7 +984,11 @@ fn provider_callbacks_python_dynamic_read_and_title() {
             serde_json::from_value(case["message"]["id"].clone()).unwrap(),
             case["message"]["params"].clone(),
         );
-        let result = reply(dispatch(&store, &context, &frame, 20.0).unwrap());
+        let result = reply(
+            dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
+                .await
+                .unwrap(),
+        );
         let expected = &case["expected"];
         assert_eq!(
             review_regressions::canonical_response(body(&result)),
@@ -820,7 +997,7 @@ fn provider_callbacks_python_dynamic_read_and_title() {
     }
 }
 
-fn provider_callbacks_python_visible_id_resolution() {
+async fn provider_callbacks_python_visible_id_resolution() {
     let (_dir, store, context) = fixture();
     for (index, case) in template().value["resolutions"]
         .as_array()
@@ -849,7 +1026,11 @@ fn provider_callbacks_python_visible_id_resolution() {
             };
             let before = count();
             let frame = call(&context, &format!("resolver-{index}-{tool}"), tool, args);
-            let result = reply(dispatch(&store, &context, &frame, 20.0).unwrap());
+            let result = reply(
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
+                    .await
+                    .unwrap(),
+            );
             if let Some(expected) = case.get("result") {
                 assert_eq!(body(&result)["success"], true, "{case}: {result:?}");
                 if tool == "orchestration_message" {
@@ -881,7 +1062,7 @@ fn provider_callbacks_python_visible_id_resolution() {
     }
 }
 
-fn provider_callbacks_existing_python_card_uses_stored_identity() {
+async fn provider_callbacks_existing_python_card_uses_stored_identity() {
     let (_dir, store, context) = fixture();
     let card = &template().value["legacyCard"];
     let result = answer(
@@ -892,14 +1073,19 @@ fn provider_callbacks_existing_python_card_uses_stored_identity() {
         &json!({"decision":"decline"}),
         20.0,
     )
+    .await
     .unwrap();
     assert_eq!(
         result.identity.rpc_id,
         serde_json::from_value(card["rpcId"].clone()).unwrap()
     );
     assert_eq!(body(&result), &json!({"decision":"decline"}));
-    delivery(&store, &result.identity, DeliveryOutcome::Submitted).unwrap();
-    delivery(&store, &result.identity, DeliveryOutcome::Written).unwrap();
+    delivery(&store, &result.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    delivery(&store, &result.identity, DeliveryOutcome::Written)
+        .await
+        .unwrap();
     let status: String = store
         .read()
         .unwrap()
@@ -915,86 +1101,73 @@ fn provider_callbacks_existing_python_card_uses_stored_identity() {
 #[path = "provider_callbacks/review.rs"]
 mod review_regressions;
 
-#[test]
-fn provider_callbacks_corpus() {
-    let cases: &[(&str, fn())] = &[
-        (
-            "python_answer_corpus",
-            provider_callbacks_python_answer_corpus,
-        ),
-        (
-            "durable_tool_replay_and_content_conflict",
-            provider_callbacks_durable_tool_replay_and_content_conflict,
-        ),
-        (
-            "human_pending_and_write_outcomes",
-            provider_callbacks_human_pending_and_write_outcomes,
-        ),
-        (
-            "unknown_never_resends_or_reexecutes",
-            provider_callbacks_unknown_never_resends_or_reexecutes,
-        ),
-        (
-            "stale_and_worker_authority",
-            provider_callbacks_stale_and_worker_authority,
-        ),
-        (
-            "transaction_failpoint_matrix",
-            provider_callbacks_transaction_failpoint_matrix,
-        ),
-        (
-            "restart_after_submission_stays_unknown",
-            provider_callbacks_restart_after_submission_stays_unknown,
-        ),
-        (
-            "not_sent_and_expiry",
-            provider_callbacks_not_sent_and_expiry,
-        ),
-        (
-            "malformed_and_foreign_records_are_refused",
-            provider_callbacks_malformed_and_foreign_records_are_refused,
-        ),
-        (
-            "local_message_once_and_worker_chat",
-            provider_callbacks_local_message_once_and_worker_chat,
-        ),
-        (
-            "python_reservations_and_restart",
-            provider_callbacks_python_reservations_and_restart,
-        ),
-        (
-            "utility_invalid_and_deleted",
-            provider_callbacks_utility_invalid_and_deleted,
-        ),
-        (
-            "concurrent_duplicate_and_stop_before_write",
-            provider_callbacks_concurrent_duplicate_and_stop_before_write,
-        ),
-        (
-            "answer_commit_failpoint",
-            provider_callbacks_answer_commit_failpoint,
-        ),
-        (
-            "python_durable_answers",
-            provider_callbacks_python_durable_answers,
-        ),
-        (
-            "python_dynamic_read_and_title",
-            provider_callbacks_python_dynamic_read_and_title,
-        ),
-        (
-            "python_visible_id_resolution",
-            provider_callbacks_python_visible_id_resolution,
-        ),
-        (
-            "existing_python_card_uses_stored_identity",
-            provider_callbacks_existing_python_card_uses_stored_identity,
-        ),
-        ("review regressions", review_regressions::run_corpus),
+#[tokio::test]
+async fn provider_callbacks_corpus() {
+    type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+    let cases: &[(&str, fn() -> CaseFuture)] = &[
+        ("python_answer_corpus", || {
+            Box::pin(provider_callbacks_python_answer_corpus())
+        }),
+        ("durable_tool_replay_and_content_conflict", || {
+            Box::pin(provider_callbacks_durable_tool_replay_and_content_conflict())
+        }),
+        ("human_pending_and_write_outcomes", || {
+            Box::pin(provider_callbacks_human_pending_and_write_outcomes())
+        }),
+        ("unknown_never_resends_or_reexecutes", || {
+            Box::pin(provider_callbacks_unknown_never_resends_or_reexecutes())
+        }),
+        ("stale_and_worker_authority", || {
+            Box::pin(provider_callbacks_stale_and_worker_authority())
+        }),
+        ("transaction_failpoint_matrix", || {
+            Box::pin(provider_callbacks_transaction_failpoint_matrix())
+        }),
+        ("restart_after_submission_stays_unknown", || {
+            Box::pin(provider_callbacks_restart_after_submission_stays_unknown())
+        }),
+        ("not_sent_and_expiry", || {
+            Box::pin(provider_callbacks_not_sent_and_expiry())
+        }),
+        ("malformed_and_foreign_records_are_refused", || {
+            Box::pin(provider_callbacks_malformed_and_foreign_records_are_refused())
+        }),
+        ("local_message_once_and_worker_chat", || {
+            Box::pin(provider_callbacks_local_message_once_and_worker_chat())
+        }),
+        ("python_reservations_and_restart", || {
+            Box::pin(provider_callbacks_python_reservations_and_restart())
+        }),
+        ("utility_invalid_and_deleted", || {
+            Box::pin(provider_callbacks_utility_invalid_and_deleted())
+        }),
+        ("concurrent_duplicate_and_stop_before_write", || {
+            Box::pin(provider_callbacks_concurrent_duplicate_and_stop_before_write())
+        }),
+        ("answer_commit_failpoint", || {
+            Box::pin(provider_callbacks_answer_commit_failpoint())
+        }),
+        ("python_durable_answers", || {
+            Box::pin(provider_callbacks_python_durable_answers())
+        }),
+        ("python_dynamic_read_and_title", || {
+            Box::pin(provider_callbacks_python_dynamic_read_and_title())
+        }),
+        ("python_visible_id_resolution", || {
+            Box::pin(provider_callbacks_python_visible_id_resolution())
+        }),
+        ("existing_python_card_uses_stored_identity", || {
+            Box::pin(provider_callbacks_existing_python_card_uses_stored_identity())
+        }),
+        ("review regressions", || {
+            Box::pin(review_regressions::run_corpus())
+        }),
     ];
     let mut failures = Vec::new();
     for (name, case) in cases {
-        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
+        if let Err(payload) =
+            futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(case())).await
+        {
             let message = payload
                 .downcast_ref::<String>()
                 .map(String::as_str)

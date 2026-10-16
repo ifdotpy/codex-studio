@@ -70,25 +70,22 @@ fn archive_deadline_read_deferred(
 async fn checkpoint_maintenance(
     store: Arc<studio_runtime_store::RuntimeStore>,
 ) -> (bool, Option<tokio::time::Instant>) {
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/wal-checkpoint-maintenance",
-        move || {
-            store
-                .checkpoint_wal_if_due()
-                .map_err(|error| error.to_string())?;
+    let result = store
+        .checkpoint_wal_if_due()
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
             store
                 .wal_checkpoint_retry_after()
                 .map_err(|error| error.to_string())
-        },
-    )
-    .await;
+        });
     match result {
-        Ok(Ok(Some(delay))) => {
+        Ok(Some(delay)) => {
             let delay = if delay.is_zero() { RETRY_DELAY } else { delay };
             (true, Some(tokio::time::Instant::now() + delay))
         }
-        Ok(Ok(None)) => (true, None),
-        Ok(Err(_)) | Err(_) => (false, Some(tokio::time::Instant::now() + RETRY_DELAY)),
+        Ok(None) => (true, None),
+        Err(_) => (false, Some(tokio::time::Instant::now() + RETRY_DELAY)),
     }
 }
 
@@ -219,18 +216,15 @@ impl AccountSessionBroker {
 
     pub(crate) fn callback_reply_port(
         &self,
-        runtime: tokio::runtime::Handle,
     ) -> Arc<dyn studio_runtime_services::callback_runtime::CallbackReplyPort> {
         Arc::new(BrokerCallbackReplyPort {
             broker: self.clone(),
-            runtime,
         })
     }
 }
 
 struct BrokerCallbackReplyPort {
     broker: AccountSessionBroker,
-    runtime: tokio::runtime::Handle,
 }
 
 impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCallbackReplyPort {
@@ -247,66 +241,68 @@ impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCall
             })
     }
 
-    fn deliver(
-        &self,
-        reply: &studio_runtime_services::provider_callbacks::Reply,
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a studio_runtime_services::provider_callbacks::Reply,
         deadline: Duration,
-    ) -> Result<
-        studio_runtime_services::callback_runtime::ReplyReceipt,
-        studio_runtime_services::provider_callbacks::CallbackError,
-    > {
-        use studio_runtime_services::{
-            callback_runtime::{ReplyOutcome, ReplyReceipt},
-            provider_callbacks::CallbackError,
-            provider_session_task::WriteOutcome,
-            recovery_history::ConnectionScope,
-        };
+    ) -> studio_runtime_services::callback_runtime::CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            use studio_runtime_services::{
+                account_worker::retained::PortError,
+                callback_runtime::{ReplyOutcome, ReplyReceipt},
+                provider_session_task::WriteOutcome,
+                recovery_history::ConnectionScope,
+            };
 
-        let identity = reply.identity.clone();
-        let context = &identity.context;
-        let expected = ConnectionScope {
-            account: context.account.clone(),
-            connection: context.connection.clone(),
-            generation: context.generation,
-        };
-        let session = self
-            .broker
-            .sessions
-            .read()
-            .ok()
-            .and_then(|sessions| sessions.get(&context.account).cloned());
-        let Some(session) =
-            session.filter(|session| session.is_live() && session.scope() == &expected)
-        else {
-            return Ok(ReplyReceipt {
-                identity,
-                outcome: ReplyOutcome::NotSent,
-            });
-        };
-        let operation = identity.operation_id();
-        let frame = reply.frame();
-        let until = std::time::Instant::now() + deadline;
-        let outcome = self
-            .runtime
-            .block_on(session.submit_committed_frame(&expected, operation, frame, until));
-        let outcome = match outcome {
-            Ok(WriteOutcome::Written) => ReplyOutcome::Written,
-            Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
-            Ok(WriteOutcome::Unknown)
-            | Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
-                ReplyOutcome::Unknown
-            }
-            Err(studio_runtime_services::account_worker::retained::PortError::Identity)
-            | Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
-            | Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
-                ReplyOutcome::NotSent
-            }
-            Err(studio_runtime_services::account_worker::retained::PortError::Capacity) => {
-                return Err(CallbackError::Invalid("Callback response queue is full"));
-            }
-            Err(_) => return Err(CallbackError::Unknown),
-        };
-        Ok(ReplyReceipt { identity, outcome })
+            let identity = reply.identity.clone();
+            let context = &identity.context;
+            let expected = ConnectionScope {
+                account: context.account.clone(),
+                connection: context.connection.clone(),
+                generation: context.generation,
+            };
+            let session = self
+                .broker
+                .sessions
+                .read()
+                .ok()
+                .and_then(|sessions| sessions.get(&context.account).cloned());
+            let Some(session) =
+                session.filter(|session| session.is_live() && session.scope() == &expected)
+            else {
+                return Ok(ReplyReceipt {
+                    identity,
+                    outcome: ReplyOutcome::NotSent,
+                });
+            };
+            let operation = identity.operation_id();
+            let frame = reply.frame();
+            let until = std::time::Instant::now() + deadline;
+            let outcome = session
+                .submit_committed_frame(&expected, operation, frame, until)
+                .await;
+            let outcome = match outcome {
+                Ok(WriteOutcome::Written) => ReplyOutcome::Written,
+                Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
+                Ok(WriteOutcome::Unknown) | Err(PortError::Unknown) => ReplyOutcome::Unknown,
+                Err(PortError::Identity | PortError::NotSent | PortError::Deadline) => {
+                    ReplyOutcome::NotSent
+                }
+                Err(PortError::Capacity) => {
+                    return Err(
+                        studio_runtime_services::provider_callbacks::CallbackError::Invalid(
+                            "Callback response queue is full",
+                        ),
+                    );
+                }
+                Err(_) => {
+                    return Err(
+                        studio_runtime_services::provider_callbacks::CallbackError::Unknown,
+                    );
+                }
+            };
+            Ok(ReplyReceipt { identity, outcome })
+        })
     }
 }
 
@@ -1011,19 +1007,15 @@ impl AccountRegistry {
         self.tick_radio().await?;
         self.accepted_archive_batch_full = false;
         if self.accepted_archive_tick_enabled {
-            let archive_store = self.store.clone();
             let archive_now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
-            let handled = tokio::task::spawn_blocking(move || {
-                studio_runtime_services::work_write::accepted_archive_tick(
-                    &archive_store,
-                    archive_now,
-                )
-            })
+            let handled = studio_runtime_services::work_write::accepted_archive_tick(
+                Arc::clone(&self.store),
+                archive_now,
+            )
             .await
-            .map_err(|_| WorkerError::TaskFailed)?
             .map_err(|_| WorkerError::TaskFailed)?;
             self.accepted_archive_batch_full =
                 handled >= studio_runtime_services::work_write::ACCEPTED_ARCHIVE_PAGE_SIZE;
@@ -1129,21 +1121,25 @@ impl AccountRegistry {
             return Ok(());
         }
         let now = (self.radio_clock)();
-        let store = self.store.clone();
-        let effects = studio_runtime_process::blocking_pool::spawn_blocking(
+        let store = Arc::clone(&self.store);
+        let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/account_registry",
             move || {
                 let prepared = PreparedHost::load(&store)?;
                 prepared.recheck_paths()?;
-                store.transaction_with(|tx| {
-                    let mut ingress = RuntimeRadioIngress;
-                    radio_runtime::tick(tx, &prepared, &mut ingress, now)
-                })
+                Ok::<_, WorkerError>(prepared)
             },
         )
         .await
-        .map_err(|_| WorkerError::TaskFailed)?
-        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        .map_err(|_| WorkerError::TaskFailed)??;
+        let effects = self
+            .store
+            .transaction_with(move |tx| {
+                let mut ingress = RuntimeRadioIngress;
+                radio_runtime::tick(tx, &prepared, &mut ingress, now)
+            })
+            .await
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
 
         for effect in effects {
             let account = effect
@@ -1155,25 +1151,22 @@ impl AccountRegistry {
                 continue;
             };
             let sender = worker.radio_interrupt_sender();
-            let store = self.store.clone();
+            let store = Arc::clone(&self.store);
             let now = (self.radio_clock)();
-            studio_runtime_process::blocking_pool::spawn_blocking(
+            let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-server/account_registry",
                 move || {
                     let prepared = PreparedHost::load(&store)?;
-                    let mut transport = RuntimeRadioInterrupt { sender };
-                    radio_runtime::handoff_interrupt(
-                        &store,
-                        &prepared,
-                        &effect,
-                        &mut transport,
-                        now,
-                    )
+                    prepared.recheck_paths()?;
+                    Ok::<_, WorkerError>(prepared)
                 },
             )
             .await
-            .map_err(|_| WorkerError::TaskFailed)?
-            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            .map_err(|_| WorkerError::TaskFailed)??;
+            let mut transport = RuntimeRadioInterrupt { sender };
+            radio_runtime::handoff_interrupt(&self.store, &prepared, &effect, &mut transport, now)
+                .await
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
         }
         Ok(())
     }
@@ -1426,28 +1419,28 @@ async fn classify_pending_agents(
     account: String,
     pending_agents: Vec<(String, i64, Option<String>)>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-server/account_registry",
-        move || {
-            let image_agents = pending_agents
-                .iter()
-                .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
-                .map(|(id, _, _)| id.clone())
-                .collect::<std::collections::BTreeSet<_>>();
-            hold_image_workspace_agents(&store, &image_agents)?;
-            let agents = pending_agents
-                .into_iter()
-                .filter_map(|(id, epoch, mode)| {
-                    (mode.as_deref() != Some("image")).then_some((id, epoch))
-                })
-                .collect::<Vec<_>>();
-            let image_recovery =
-                agents.is_empty() && has_image_workspace_recovery(&store, &account)?;
-            Ok::<_, WorkerError>((image_agents, agents, image_recovery))
-        },
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)?
+    let image_agents = pending_agents
+        .iter()
+        .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
+        .map(|(id, _, _)| id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    hold_image_workspace_agents(&store, &image_agents).await?;
+    let agents = pending_agents
+        .into_iter()
+        .filter_map(|(id, epoch, mode)| (mode.as_deref() != Some("image")).then_some((id, epoch)))
+        .collect::<Vec<_>>();
+    let image_recovery = if agents.is_empty() {
+        let store = Arc::clone(&store);
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || has_image_workspace_recovery(&store, &account),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
+    } else {
+        Ok(false)
+    }?;
+    Ok((image_agents, agents, image_recovery))
 }
 
 pub(crate) fn target_page(
@@ -1542,59 +1535,62 @@ fn event_time() -> f64 {
 }
 
 /// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
-fn hold_image_workspace_agents(
+async fn hold_image_workspace_agents(
     store: &RuntimeStore,
     agents: &std::collections::BTreeSet<String>,
 ) -> Result<(), WorkerError> {
     if agents.is_empty() {
         return Ok(());
     }
-    store.transaction_with(|tx| {
-        for id in agents {
-            let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                continue;
-            };
-            if agent
-                .extra
-                .get("workspaceMode")
-                .and_then(|mode| mode.as_str())
-                != Some("image")
-            {
-                continue;
-            }
-            if agent.status == AgentStatus::Paused
-                && agent.extra.get("error").and_then(|value| value.as_str())
-                    == Some(IMAGE_EXECUTION_DEPENDENCY)
-                && agent
+    let agents = agents.clone();
+    store
+        .transaction_with(move |tx| {
+            for id in agents {
+                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+                    continue;
+                };
+                if agent
                     .extra
-                    .get("nativeFailureHold")
-                    .and_then(|value| value.as_bool())
-                    == Some(true)
-            {
-                continue;
+                    .get("workspaceMode")
+                    .and_then(|mode| mode.as_str())
+                    != Some("image")
+                {
+                    continue;
+                }
+                if agent.status == AgentStatus::Paused
+                    && agent.extra.get("error").and_then(|value| value.as_str())
+                        == Some(IMAGE_EXECUTION_DEPENDENCY)
+                    && agent
+                        .extra
+                        .get("nativeFailureHold")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                {
+                    continue;
+                }
+                agent.status = AgentStatus::Paused;
+                agent
+                    .extra
+                    .insert("autoWake".into(), serde_json::json!(false));
+                agent
+                    .extra
+                    .insert("inFlight".into(), serde_json::json!(false));
+                agent
+                    .extra
+                    .insert("nativeFailureHold".into(), serde_json::json!(true));
+                agent.extra.insert(
+                    "error".into(),
+                    serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
+                );
+                agent.extra.insert(
+                    "startOutcomeHold".into(),
+                    serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
+                );
+                AgentRepository::put(tx, &agent)?;
             }
-            agent.status = AgentStatus::Paused;
-            agent
-                .extra
-                .insert("autoWake".into(), serde_json::json!(false));
-            agent
-                .extra
-                .insert("inFlight".into(), serde_json::json!(false));
-            agent
-                .extra
-                .insert("nativeFailureHold".into(), serde_json::json!(true));
-            agent.extra.insert(
-                "error".into(),
-                serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
-            );
-            agent.extra.insert(
-                "startOutcomeHold".into(),
-                serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
-            );
-            AgentRepository::put(tx, &agent)?;
-        }
-        Ok::<_, WorkerError>(())
-    })
+            Ok::<_, WorkerError>(())
+        })
+        .await
 }
 
 fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<bool, WorkerError> {
@@ -1630,14 +1626,17 @@ mod bounded_reconcile_tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
         sync::mpsc,
-        thread,
     };
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, StoreError};
 
     #[tokio::test(flavor = "current_thread")]
     async fn image_classification_waits_off_executor_while_writer_is_held() {
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
         let id = AgentId::from("image-agent");
         store
             .transaction(|transaction| {
@@ -1658,21 +1657,23 @@ mod bounded_reconcile_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("image agent stored");
 
-        let (held_tx, held_rx) = mpsc::channel();
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let writer_store = Arc::clone(&store);
-        let writer = thread::spawn(move || {
+        let writer = tokio::spawn(async move {
             writer_store
                 .transaction_with(|_| {
                     held_tx.send(()).expect("announce held writer");
                     release_rx.recv().expect("release held writer");
                     Ok::<_, StoreError>(())
                 })
+                .await
                 .expect("held writer transaction");
         });
-        held_rx.recv().expect("writer reaches barrier");
+        held_rx.await.expect("writer reaches barrier");
 
         let classification = tokio::spawn(classify_pending_agents(
             Arc::clone(&store),
@@ -1687,7 +1688,7 @@ mod bounded_reconcile_tests {
         );
 
         release_tx.send(()).expect("release writer barrier");
-        writer.join().expect("writer thread");
+        writer.await.expect("writer task");
         let (image_agents, agents, recovery) = classification
             .await
             .expect("classification task")
@@ -1697,10 +1698,12 @@ mod bounded_reconcile_tests {
         assert!(!recovery);
     }
 
-    #[test]
-    fn account_wake_page_returns_workspace_mode_with_pending_agents() {
+    #[tokio::test]
+    async fn account_wake_page_returns_workspace_mode_with_pending_agents() {
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store");
         let id = AgentId::from("image-agent");
         store
             .transaction(|transaction| {
@@ -1725,6 +1728,7 @@ mod bounded_reconcile_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("pending image agent stored");
 
         let page = target_page(&store, "", &BTreeMap::new()).expect("pending target page");

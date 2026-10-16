@@ -87,11 +87,12 @@ Tokio aligns with Axum and common async process support, at the cost of async
 boundaries and blocking-pool rules around SQLite. A synchronous core with only
 an async HTTP edge can more closely match today's thread-based code and make
 domain functions easier to read; Axum still needs a Tokio executor. **Recommend
-Tokio as the HTTP edge only initially; keep domain/store/process interfaces
-synchronous and use explicit blocking workers until measurements or SSE/load
-needs justify more async.** Owner choice: Tokio multi-thread runtime with
-rusqlite on blocking threads, or synchronous thread model plus a small async
-edge? Each can be simpler if applied consistently; avoid async-through-every-layer.
+Tokio at the HTTP edge, with async propagation limited to operations that
+require it.** The approved Canvas writer cutover is one such operation:
+`RuntimeStore` exposes async writes while each actor callback keeps SQL work
+synchronous. See the [SQLite actor migration preflight](rust-sqlite-actor.md).
+This does not require converting unrelated process or domain interfaces to
+async.
 
 ### HTTP server
 
@@ -299,6 +300,13 @@ bundled mode by platform. Reject SQLx because its async query layer adds a
 runtime abstraction without increasing SQLite's single-writer capacity or
 improving the existing synchronous transaction model.
 
+The separately approved Rust store migration adds `tokio-rusqlite` as a
+connection owner while retaining `rusqlite` for synchronous SQL closures. Its
+call graph, admission, cancellation, and rollback requirements are specified
+in the [SQLite actor migration preflight](rust-sqlite-actor.md). It preserves
+one FULL-synchronous commit per transaction and leaves the analytics database
+under its separate writer owner.
+
 ### JSON serialization
 
 | Candidate                                         | Version | Released   | License           |       MSRV | Status |
@@ -504,10 +512,10 @@ migration/recovery plan before rollout.
    the committed artifact as ongoing authority.** The cost is manual OpenAPI
    edits and regeneration of both language outputs; the measured type-first
    alternative does not currently reproduce the hash.
-2. **Execution model:** one Tokio multi-thread runtime with rusqlite on blocking
-   workers, or synchronous thread-based internals with an async HTTP edge?
-   **Recommend async edge plus synchronous domain/store ports** for the smallest
-   mental model; promote more operations to async only where required.
+2. **Execution model:** the Canvas writer uses the approved Tokio actor
+   boundary with synchronous SQL callbacks; unrelated domain and process
+   interfaces remain synchronous unless they need async propagation. See the
+   [SQLite actor migration preflight](rust-sqlite-actor.md).
 3. **SQLite distribution:** approve pinned bundled SQLite for reproducible
    artifacts, conditional on capturing supported Python engine versions and
    proving fallback fixtures; otherwise require per-target system linkage?

@@ -14,7 +14,8 @@ use studio_runtime_services::{
     account_session_runtime::{ConnectionScope, RequestCertainty},
     account_transfer::{Action, Ticket},
     account_transfer_driver::{
-        self as driver, DispatchOutcome, ProviderReceipt, TransferDispatch, TransferTransport,
+        self as driver, DispatchOutcome, ProviderReceipt, TransferDispatch, TransferFuture,
+        TransferTransport,
     },
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
@@ -70,38 +71,43 @@ struct Native<'a> {
     result: Option<Value>,
 }
 impl TransferTransport for Native<'_> {
-    fn send(
-        &self,
-        ticket: &Ticket,
-        scope: &ConnectionScope,
-        method: &str,
-        _params: &Value,
-    ) -> TransferDispatch {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        // Acquiring the writer here would deadlock if native work ran in a transaction.
-        self.store
-            .transaction(|_| Ok(()))
-            .expect("no transaction held during effect");
-        TransferDispatch {
-            receipt: json!({
-                "operation": ticket.request,
-                "scope": scope,
-                "certainty": if self.result.is_some() {"written"} else {"unknown"},
-                "ticket": {"generation": scope.generation, "id": "request-1", "method": method}
-            }),
-            result: self.result.clone(),
-            certainty: if self.result.is_some() {
-                RequestCertainty::Written
-            } else {
-                RequestCertainty::Unknown
-            },
-        }
+    fn send<'a>(
+        &'a self,
+        ticket: &'a Ticket,
+        scope: &'a ConnectionScope,
+        method: &'a str,
+        _params: &'a Value,
+    ) -> TransferFuture<'a, TransferDispatch> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // Acquiring the writer here would deadlock if native work ran in a transaction.
+            self.store
+                .transaction(|_| Ok(()))
+                .await
+                .expect("no transaction held during effect");
+            TransferDispatch {
+                receipt: json!({
+                    "operation": ticket.request,
+                    "scope": scope,
+                    "certainty": if self.result.is_some() {"written"} else {"unknown"},
+                    "ticket": {"generation": scope.generation, "id": "request-1", "method": method}
+                }),
+                result: self.result.clone(),
+                certainty: if self.result.is_some() {
+                    RequestCertainty::Written
+                } else {
+                    RequestCertainty::Unknown
+                },
+            }
+        })
     }
 }
-fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
+async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
     let root = state();
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
-    driver::begin_read(&store, OP, "lead", 10.0).expect("prepare");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    driver::begin_read(&store, OP, "lead", 10.0)
+        .await
+        .expect("prepare");
     let native = Native {
         store: &store,
         calls: AtomicUsize::new(0),
@@ -121,6 +127,7 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             json!({"threadId":"source-thread"}),
             11.0
         )
+        .await
         .expect("unknown saved"),
         DispatchOutcome::Unknown
     );
@@ -139,13 +146,16 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             json!({}),
             12.0
         )
+        .await
         .is_err()
     );
     assert_eq!(native.calls.load(Ordering::SeqCst), 1);
     drop(native);
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
-    driver::recover(&store, 13.0).expect("recover");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
+    driver::recover(&store, 13.0).await.expect("recover");
     let scope = ConnectionScope {
         account: "target".into(),
         connection: "connection-1".into(),
@@ -163,6 +173,7 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
         },
         14.0,
     )
+    .await
     .expect("exact late receipt");
     assert_eq!(
         operation(&store)["members"]["lead"]["result"]["thread"]["id"],
@@ -180,12 +191,13 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
         },
         15.0,
     )
+    .await
     .expect("replay saved receipt");
     assert_eq!(operation(&store)["updated"], 14.0);
 }
-fn transaction_failpoints_roll_back_operation_agents_and_sync() {
+async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
     let root = state();
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
     let tables = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         vec![
             "runtime_account_transfers",
@@ -197,17 +209,21 @@ fn transaction_failpoints_roll_back_operation_agents_and_sync() {
     };
     for table in tables {
         for timing in ["BEFORE", "AFTER"] {
+            let table = table.to_owned();
+            let timing = timing.to_owned();
             let before = operation(&store);
             let agent = AccountTransferRepository::agent(&store.read().expect("read"), "lead")
                 .expect("agent");
-            store.transaction(|tx| {
+            store.transaction(move |tx| {
                 for (index,event) in ["INSERT","UPDATE"].iter().enumerate() {
                     tx.execute_batch(&format!("CREATE TEMP TRIGGER transfer_fail_{index} {timing} {event} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
                 }
                 Ok(())
-            }).expect("failpoint");
+            }).await.expect("failpoint");
             assert!(
-                driver::action(&store, OP, Action::Cancel, 20.0).is_err(),
+                driver::action(&store, OP, Action::Cancel, 20.0)
+                    .await
+                    .is_err(),
                 "{timing}/{table}"
             );
             assert_eq!(operation(&store), before, "{timing}/{table}");
@@ -221,23 +237,34 @@ fn transaction_failpoints_roll_back_operation_agents_and_sync() {
                     tx.execute_batch("DROP TRIGGER transfer_fail_0; DROP TRIGGER transfer_fail_1;")
                         .map_err(Into::into)
                 })
+                .await
                 .expect("clear failpoints");
         }
     }
     drop(store);
-    let store = RuntimeStore::open(Some(root.path())).expect("restart");
-    driver::recover(&store, 21.0).expect("recover");
-    driver::action(&store, OP, Action::Cancel, 22.0).expect("resume action");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
+    driver::recover(&store, 21.0).await.expect("recover");
+    driver::action(&store, OP, Action::Cancel, 22.0)
+        .await
+        .expect("resume action");
     assert_eq!(operation(&store)["status"], "cancelled");
 }
 
-fn replay_and_conflict_have_no_writes() {
+async fn replay_and_conflict_have_no_writes() {
     let root = state();
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
     let before = operation(&store);
-    driver::request(&store, OP, "lead", "target", "team", "codex", 2.0).expect("exact replay");
+    driver::request(&store, OP, "lead", "target", "team", "codex", 2.0)
+        .await
+        .expect("exact replay");
     assert_eq!(operation(&store), before);
-    assert!(driver::request(&store, OP, "lead", "changed", "team", "codex", 3.0).is_err());
+    assert!(
+        driver::request(&store, OP, "lead", "changed", "team", "codex", 3.0)
+            .await
+            .is_err()
+    );
     assert_eq!(operation(&store), before);
     assert!(
         driver::request(
@@ -249,17 +276,18 @@ fn replay_and_conflict_have_no_writes() {
             "codex",
             4.0
         )
+        .await
         .is_err()
     );
     assert_eq!(operation(&store), before);
 }
 
-#[test]
-fn durable_adapter_failpoint_matrix() {
+#[tokio::test]
+async fn durable_adapter_failpoint_matrix() {
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-        durable_reservation_precedes_native_and_unknown_is_never_resent();
-        transaction_failpoints_roll_back_operation_agents_and_sync();
-        replay_and_conflict_have_no_writes();
+        durable_reservation_precedes_native_and_unknown_is_never_resent().await;
+        transaction_failpoints_roll_back_operation_agents_and_sync().await;
+        replay_and_conflict_have_no_writes().await;
     } else {
         // The default witness checks transaction rollback without a filesystem;
         // real fsync/restart and publication failpoints run in the full corpus.

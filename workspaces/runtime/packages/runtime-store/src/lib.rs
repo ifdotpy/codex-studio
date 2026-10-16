@@ -6,6 +6,7 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
+mod sqlite_actor;
 pub mod supervisor_journal;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
@@ -45,13 +46,15 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
+
+use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::resolve_state_dir;
 pub use records::{
@@ -125,8 +128,13 @@ pub struct OwnedRuntimeIndexDefinition {
 pub const WAL_CHECKPOINT_CADENCE: Duration = Duration::from_secs(60);
 /// WAL size that permits an early maintenance checkpoint; the unit is bytes.
 const WAL_CHECKPOINT_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
-/// Maximum concurrently checked-out read-only canvas connections per store.
-const READ_CONNECTION_POOL_CAPACITY: usize = 4;
+/// Maximum total Canvas reader connections, including the dedicated version reader.
+const CANVAS_READER_CONNECTION_CAPACITY: usize = 4;
+/// Reader connections reserved for the dedicated `PRAGMA data_version` query.
+const VERSION_READER_CONNECTION_RESERVATION: usize = 1;
+/// Maximum ordinary checked-out Canvas read connections after the version-reader reservation.
+const READ_CONNECTION_POOL_CAPACITY: usize =
+    CANVAS_READER_CONNECTION_CAPACITY - VERSION_READER_CONNECTION_RESERVATION;
 
 /// Value-free observations emitted by the optional diagnostics callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,6 +211,21 @@ fn emit_diagnostic(event: StoreDiagnosticsEvent) {
     }
 }
 
+fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
+    let (notifier, observers) = {
+        let notifiers = notifiers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (notifiers.primary.clone(), notifiers.observers.clone())
+    };
+    if let Some(notifier) = notifier {
+        notifier();
+    }
+    for observer in observers {
+        observer();
+    }
+}
+
 fn profile_statement(database: StoreDatabaseKind, event: TraceEvent<'_>) {
     if let TraceEvent::Profile(_statement, elapsed) = event {
         emit_diagnostic(StoreDiagnosticsEvent::SqlProfile { database, elapsed });
@@ -243,6 +266,26 @@ fn install_profile(connection: &mut Connection, database: StoreDatabaseKind) {
 struct IdentityEntry {
     server_id: Option<String>,
     stores: usize,
+}
+
+/// Keeps the process-local identity registered until every queued writer
+/// callback that can consult it has finished, even if its RuntimeStore is gone.
+struct IdentityRegistryLease {
+    path: PathBuf,
+}
+
+impl Drop for IdentityRegistryLease {
+    fn drop(&mut self) {
+        let Ok(mut registry) = identity_registry().lock() else {
+            return;
+        };
+        if let Some(entry) = registry.get_mut(&self.path) {
+            entry.stores = entry.stores.saturating_sub(1);
+            if entry.stores == 0 {
+                registry.remove(&self.path);
+            }
+        }
+    }
 }
 
 fn identity_registry() -> &'static Mutex<HashMap<PathBuf, IdentityEntry>> {
@@ -293,11 +336,33 @@ pub enum StoreError {
     RecordContract(&'static str),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
+    #[error("Canvas SQLite writer actor failed to start: {0}")]
+    WriterActorInitialization(tokio_rusqlite::Error),
+    #[error("Canvas SQLite writer actor control operation failed: {0}")]
+    WriterActorControl(tokio_rusqlite::Error),
+    #[error("Canvas SQLite writer response was lost; transaction outcome is unknown: {0}")]
+    CommitActorOutcomeUnknown(tokio_rusqlite::Error),
     #[error("nested read checkout from the same runtime store is not supported")]
     NestedRead,
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+/// Convert the actor's transport channel error to the store's typed unknown
+/// outcome. `call_raw` only reports a closed channel today; retain a typed close
+/// error if a future control path returns one. Application errors are carried
+/// inside the response value and must not pass through this conversion.
+pub(crate) fn actor_transport_outcome_unknown<E>(error: tokio_rusqlite::Error<E>) -> StoreError {
+    let transport = match error {
+        tokio_rusqlite::Error::ConnectionClosed => tokio_rusqlite::Error::ConnectionClosed,
+        tokio_rusqlite::Error::Close((connection, error)) => {
+            tokio_rusqlite::Error::Close((connection, error))
+        }
+        tokio_rusqlite::Error::Error(_) => tokio_rusqlite::Error::ConnectionClosed,
+        _ => tokio_rusqlite::Error::ConnectionClosed,
+    };
+    StoreError::CommitActorOutcomeUnknown(transport)
+}
 
 /// Exclusive process lease compatible with Python's runtime lock on Unix.
 pub struct RuntimeLock {
@@ -324,20 +389,20 @@ impl RuntimeLock {
 /// Owns the runtime process lock and serializes all Rust writes.
 pub struct RuntimeStore {
     root: PathBuf,
-    _runtime_lock: RuntimeLock,
-    writer: Mutex<Connection>,
-    analytics: Mutex<Connection>,
+    writer: SqliteActor,
+    analytics: Arc<Mutex<Connection>>,
     version_reader: Mutex<Connection>,
     read_pool: Arc<ReadConnectionPool>,
     writer_waiters: AtomicUsize,
     writer_waiter_peak: AtomicUsize,
     identity_registry_path: PathBuf,
-    commit_notifiers: Mutex<CommitNotifiers>,
+    identity_registry_lease: Arc<IdentityRegistryLease>,
+    commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
-    committed_change_generation: AtomicU64,
+    committed_change_generation: Arc<AtomicU64>,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
-    entity_projection_maintenance_lock: Mutex<()>,
-    wal_checkpoint_requested: AtomicBool,
+    entity_projection_maintenance_lock: tokio::sync::Mutex<()>,
+    wal_checkpoint_requested: Arc<AtomicBool>,
     last_wal_checkpoint: Mutex<Instant>,
 }
 
@@ -548,6 +613,46 @@ struct CommitNotifiers {
     observers: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
 
+struct WriterWaiterRegistration<'a> {
+    waiting: &'a AtomicUsize,
+    peak: &'a AtomicUsize,
+}
+
+impl<'a> WriterWaiterRegistration<'a> {
+    fn begin(waiting: &'a AtomicUsize, peak: &'a AtomicUsize) -> Self {
+        let waiting_threads = waiting.fetch_add(1, Ordering::Relaxed) + 1;
+        peak.fetch_max(waiting_threads, Ordering::Relaxed);
+        emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+            waiting_threads,
+            peak_waiters: peak.load(Ordering::Relaxed),
+        });
+        Self { waiting, peak }
+    }
+}
+
+impl Drop for WriterWaiterRegistration<'_> {
+    fn drop(&mut self) {
+        let waiting_threads = self.waiting.fetch_sub(1, Ordering::Relaxed) - 1;
+        emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+            waiting_threads,
+            peak_waiters: self.peak.load(Ordering::Relaxed),
+        });
+    }
+}
+
+struct WalCheckpointClaim<'a> {
+    requested: &'a AtomicBool,
+    completed: bool,
+}
+
+impl Drop for WalCheckpointClaim<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.requested.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl RuntimeStore {
     /// Canonical state root for adapters that must resolve content-addressed receipts.
     pub fn state_dir(&self) -> &Path {
@@ -555,7 +660,7 @@ impl RuntimeStore {
     }
 
     /// Open an existing state directory, bootstrapping the sync family on first open.
-    pub fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
+    pub async fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
         let root = match state_dir {
             Some(path) => path::resolve_explicit_state_dir(path)?,
             None => resolve_state_dir()?,
@@ -563,7 +668,7 @@ impl RuntimeStore {
         fresh_state::validate(&root)?;
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
-        let runtime_lock = RuntimeLock::acquire(&root)?;
+        let runtime_lock = Arc::new(RuntimeLock::acquire(&root)?);
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 
@@ -578,9 +683,28 @@ impl RuntimeStore {
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
 
-        let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        writer.pragma_update(None, "synchronous", "FULL")?;
-        schema::register_python_trigger_functions(&writer)?;
+        let writer = SqliteActor::open(&canvas_path, Arc::clone(&runtime_lock)).await?;
+        writer
+            .call(|connection| {
+                connection
+                    .busy_timeout(Duration::from_millis(u64::from(DATABASE_BUSY_TIMEOUT_MS)))
+                    .map_err(StoreError::from)?;
+                install_profile(connection, StoreDatabaseKind::Canvas);
+                connection
+                    .pragma_update(None, "synchronous", "FULL")
+                    .map_err(StoreError::from)?;
+                schema::register_python_trigger_functions(connection)?;
+                Ok::<(), StoreError>(())
+            })
+            .await
+            .map_err(|error| match error {
+                tokio_rusqlite::Error::Error(error) => error,
+                tokio_rusqlite::Error::ConnectionClosed => {
+                    StoreError::WriterActorInitialization(tokio_rusqlite::Error::ConnectionClosed)
+                }
+                tokio_rusqlite::Error::Close((_, error)) => StoreError::Sqlite(error),
+                _ => StoreError::WriterActorInitialization(tokio_rusqlite::Error::ConnectionClosed),
+            })?;
         let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         analytics.pragma_update(None, "journal_mode", "WAL")?;
         analytics.pragma_update(None, "synchronous", "FULL")?;
@@ -601,35 +725,47 @@ impl RuntimeStore {
         }
         let store = Self {
             root,
-            _runtime_lock: runtime_lock,
-            writer: Mutex::new(writer),
-            analytics: Mutex::new(analytics),
+            writer,
+            analytics: Arc::new(Mutex::new(analytics)),
             version_reader: Mutex::new(version_reader),
             read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
             writer_waiters: AtomicUsize::new(0),
             writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path,
-            commit_notifiers: Mutex::new(CommitNotifiers::default()),
-            committed_change_generation: AtomicU64::new(0),
+            identity_registry_lease: Arc::new(IdentityRegistryLease {
+                path: canvas_path.clone(),
+            }),
+            commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
+            committed_change_generation: Arc::new(AtomicU64::new(0)),
             last_entity_projection_state: Mutex::new(None),
-            entity_projection_maintenance_lock: Mutex::new(()),
-            wal_checkpoint_requested: AtomicBool::new(false),
+            entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
+            wal_checkpoint_requested: Arc::new(AtomicBool::new(false)),
             last_wal_checkpoint: Mutex::new(Instant::now()),
         };
-        store.transaction(|transaction| {
-            bootstrap::prepare_sync_schema(transaction)?;
-            bootstrap::prepare_runtime_event_indexes(transaction)?;
-            feature_schema::prepare(transaction)?;
-            schema::verify_bootstrap(transaction)
-        })?;
+        store
+            .transaction(move |transaction| {
+                bootstrap::prepare_sync_schema(transaction)?;
+                bootstrap::prepare_runtime_event_indexes(transaction)?;
+                feature_schema::prepare(transaction)?;
+                schema::verify_bootstrap(transaction)
+            })
+            .await?;
         let recovery_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
             .unwrap_or_default();
-        store.transaction(|transaction| {
-            CheckpointsRepository::recover_captures(transaction, recovery_time)
-        })?;
-        store.checkpoint_wal_passive()?;
+        store
+            .transaction(move |transaction| {
+                CheckpointsRepository::recover_captures(transaction, recovery_time)
+            })
+            .await?;
+        // Schema preparation and recovery are private startup work. The store
+        // is not observable until open returns, so publish a zero generation
+        // baseline after those commits and count only caller-visible writes.
+        store
+            .committed_change_generation
+            .store(0, Ordering::Release);
+        store.checkpoint_wal_passive().await?;
         Ok(store)
     }
 
@@ -702,42 +838,59 @@ impl RuntimeStore {
     }
 
     /// Install or clear the optional value-free diagnostics observer.
-    pub fn set_diagnostics_callback(&self, callback: Option<StoreDiagnosticsCallback>) {
-        if let Ok(mut current) = diagnostics_callback().lock() {
-            DIAGNOSTICS_ENABLED.store(callback.is_some(), Ordering::Release);
-            *current = callback;
+    pub async fn set_diagnostics_callback(
+        &self,
+        callback: Option<StoreDiagnosticsCallback>,
+    ) -> StoreResult<()> {
+        let mut current = diagnostics_callback()
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        DIAGNOSTICS_ENABLED.store(callback.is_some(), Ordering::Release);
+        *current = callback;
+        drop(current);
+        self.writer
+            .call(|writer| {
+                install_profile(writer, StoreDatabaseKind::Canvas);
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await
+            .map_err(StoreError::WriterActorControl)?;
+        let mut analytics = self
+            .analytics
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        install_profile(&mut analytics, StoreDatabaseKind::Analytics);
+        let mut reader = self
+            .version_reader
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        install_profile(&mut reader, StoreDatabaseKind::Canvas);
+        let mut pool = self
+            .read_pool
+            .state
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        for connection in &mut pool.idle {
+            install_profile(connection, StoreDatabaseKind::Canvas);
         }
-        if let Ok(mut writer) = self.writer.lock() {
-            install_profile(&mut writer, StoreDatabaseKind::Canvas);
-        }
-        if let Ok(mut analytics) = self.analytics.lock() {
-            install_profile(&mut analytics, StoreDatabaseKind::Analytics);
-        }
-        if let Ok(mut reader) = self.version_reader.lock() {
-            install_profile(&mut reader, StoreDatabaseKind::Canvas);
-        }
-        if let Ok(mut pool) = self.read_pool.state.lock() {
-            for connection in &mut pool.idle {
-                install_profile(connection, StoreDatabaseKind::Canvas);
-            }
-        }
+        Ok(())
     }
 
     /// Checkpoint both WAL files without waiting on active readers or truncating them.
-    pub fn checkpoint_wal_passive(&self) -> StoreResult<()> {
-        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        self.checkpoint_connection(
-            &writer,
-            StoreDatabaseKind::Canvas,
-            &self.root.join("canvas.sqlite3-wal"),
-        )?;
-        drop(writer);
+    pub async fn checkpoint_wal_passive(&self) -> StoreResult<()> {
+        let canvas_wal_path = self.root.join("canvas.sqlite3-wal");
+        self.writer
+            .call(move |writer| {
+                Self::checkpoint_connection(writer, StoreDatabaseKind::Canvas, &canvas_wal_path)
+            })
+            .await
+            .map_err(StoreError::WriterActorControl)?;
 
         let analytics = self
             .analytics
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)?;
-        self.checkpoint_connection(
+        Self::checkpoint_connection(
             &analytics,
             StoreDatabaseKind::Analytics,
             &self.root.join("analytics.sqlite3-wal"),
@@ -746,8 +899,8 @@ impl RuntimeStore {
     }
 
     /// Coalesce write requests and apply WAL threshold/cadence policy from the maintenance owner.
-    /// This method performs filesystem and SQLite work; call it only in a bounded blocking stage.
-    pub fn checkpoint_wal_if_due(&self) -> StoreResult<bool> {
+    /// This async method performs filesystem checks and submits its SQLite work to the actor.
+    pub async fn checkpoint_wal_if_due(&self) -> StoreResult<bool> {
         if !self.wal_checkpoint_requested.load(Ordering::Acquire) {
             return Ok(false);
         }
@@ -770,14 +923,16 @@ impl RuntimeStore {
         if !self.wal_checkpoint_requested.swap(false, Ordering::AcqRel) {
             return Ok(false);
         }
-        if let Err(error) = self.checkpoint_wal_passive() {
-            self.wal_checkpoint_requested.store(true, Ordering::Release);
-            return Err(error);
-        }
+        let mut checkpoint_claim = WalCheckpointClaim {
+            requested: &self.wal_checkpoint_requested,
+            completed: false,
+        };
+        self.checkpoint_wal_passive().await?;
         *self
             .last_wal_checkpoint
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)? = Instant::now();
+        checkpoint_claim.completed = true;
         Ok(true)
     }
 
@@ -801,11 +956,10 @@ impl RuntimeStore {
     }
 
     fn checkpoint_connection(
-        &self,
         connection: &Connection,
         database: StoreDatabaseKind,
         wal_path: &Path,
-    ) -> StoreResult<()> {
+    ) -> rusqlite::Result<()> {
         let (busy, log_frames, checkpointed_frames) =
             connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
                 Ok((
@@ -827,98 +981,88 @@ impl RuntimeStore {
 
     fn notify_commit(&self) {
         self.request_wal_checkpoint();
-        let (notifier, observers) = {
-            let notifiers = self
-                .commit_notifiers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (notifiers.primary.clone(), notifiers.observers.clone())
-        };
-        if let Some(notifier) = notifier {
-            notifier();
-        }
-        for observer in observers {
-            observer();
-        }
+        fire_commit_observers(&self.commit_notifiers);
     }
 
     /// Run one durable transaction while holding the sole serialized writer.
-    pub fn transaction<T>(
+    /// Admission waits cancellably when the named actor capacity is exhausted. A
+    /// canceled wait submits no SQL; cancellation after submission cannot retract
+    /// the job, so callers must resolve a lost response through their receipt path.
+    pub async fn transaction<T>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
-    ) -> StoreResult<T> {
-        self.transaction_with(operation)
+        operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> StoreResult<T>
+        + Send
+        + 'static,
+    ) -> StoreResult<T>
+    where
+        T: Send + 'static,
+    {
+        self.transaction_with(operation).await
     }
 
     /// Run one durable transaction with a domain error type that preserves
     /// operation refusals while still reporting store and commit failures.
-    pub fn transaction_with<T, E>(
+    pub async fn transaction_with<T, E>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+        operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
+        + Send
+        + 'static,
     ) -> Result<T, E>
     where
-        E: From<StoreError>,
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
     {
         self.transaction_with_commit_generation(operation)
+            .await
             .map(|(value, _)| value)
     }
 
     /// Run a write transaction and return its committed change generation.
     /// The generation unit is one committed transaction with row changes.
-    pub fn transaction_with_commit_generation<T, E>(
+    pub async fn transaction_with_commit_generation<T, E>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+        operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
+        + Send
+        + 'static,
     ) -> Result<(T, u64), E>
     where
-        E: From<StoreError>,
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        self.transaction_with_post_commit(operation, |_| {}).await
+    }
+
+    /// Run a write transaction and invoke `post_commit` exactly once after a
+    /// successful SQLite commit, even if the submitted response is abandoned.
+    /// The callback runs synchronously after the writer callback releases its
+    /// transaction and admission permit; keep it bounded and free of database
+    /// or provider I/O. Errors, rollback, and cancellation before submission
+    /// do not invoke it.
+    pub async fn transaction_with_post_commit<T, E>(
+        &self,
+        operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
+        + Send
+        + 'static,
+        post_commit: impl FnOnce(&T) + Send + 'static,
+    ) -> Result<(T, u64), E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
     {
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
-        let mut did_wait = false;
-        let (mut writer, waiting_threads) = match self.writer.try_lock() {
-            Ok(writer) => (writer, self.writer_waiters.load(Ordering::Relaxed)),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                did_wait = true;
-                let active_waiters = self.writer_waiters.fetch_add(1, Ordering::Relaxed) + 1;
-                let peak_waiters = self
-                    .writer_waiter_peak
-                    .fetch_max(active_waiters, Ordering::Relaxed)
-                    .max(active_waiters);
-                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
-                    waiting_threads: active_waiters,
-                    peak_waiters,
-                });
-                let writer = match self.writer.lock() {
-                    Ok(writer) => writer,
-                    Err(_) => {
-                        let waiting_threads =
-                            self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-                        if diagnostics_enabled {
-                            emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
-                                waiting_threads,
-                                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
-                            });
-                            emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
-                                wait: waiting.map_or(Duration::ZERO, |started| started.elapsed()),
-                                waited: true,
-                                waiting_threads,
-                                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
-                            });
-                        }
-                        return Err(StoreError::WriterPoisoned.into());
-                    }
-                };
-                let waiting_threads = self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
-                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
-                    waiting_threads,
-                    peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
-                });
-                (writer, waiting_threads)
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err(StoreError::WriterPoisoned.into());
-            }
-        };
+        let did_wait = self.writer.available_admissions() == 0;
+        let waiter_registration = did_wait.then(|| {
+            WriterWaiterRegistration::begin(&self.writer_waiters, &self.writer_waiter_peak)
+        });
+        let permit = self
+            .writer
+            .acquire()
+            .await
+            .map_err(actor_transport_outcome_unknown)
+            .map_err(E::from)?;
+        drop(waiter_registration);
+        let waiting_threads = self.writer_waiters.load(Ordering::Relaxed);
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
         if diagnostics_enabled {
             emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
@@ -929,62 +1073,91 @@ impl RuntimeStore {
             });
         }
         let holding = diagnostics_enabled.then(Instant::now);
-        let outcome = (|| {
-            let transaction = writer
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(StoreError::from)
-                .map_err(E::from)?;
-            let initial_changes = transaction.total_changes();
-            match operation(&transaction) {
-                Ok(value) => {
-                    let changed = transaction.total_changes() != initial_changes;
-                    let commit_started = diagnostics_enabled.then(Instant::now);
-                    transaction
-                        .commit()
-                        .map_err(StoreError::CommitOutcomeUnknown)?;
-                    if let Some(started) = commit_started {
-                        emit_diagnostic(StoreDiagnosticsEvent::CommitDuration {
-                            database: StoreDatabaseKind::Canvas,
-                            elapsed: started.elapsed(),
-                        });
+        let generation = Arc::clone(&self.committed_change_generation);
+        let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
+        let operation =
+            move |writer: &mut Connection| -> Result<Result<(T, u64, bool), E>, StoreError> {
+                let _identity_registry_lease = identity_registry_lease;
+                let transaction = writer
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(StoreError::from)?;
+                let initial_changes = transaction.total_changes();
+                match operation(&transaction) {
+                    Ok(value) => {
+                        let changed = transaction.total_changes() != initial_changes;
+                        let commit_started = diagnostics_enabled.then(Instant::now);
+                        transaction
+                            .commit()
+                            .map_err(StoreError::CommitOutcomeUnknown)?;
+                        if let Some(started) = commit_started {
+                            emit_diagnostic(StoreDiagnosticsEvent::CommitDuration {
+                                database: StoreDatabaseKind::Canvas,
+                                elapsed: started.elapsed(),
+                            });
+                        }
+                        let commit_generation = if changed {
+                            generation.fetch_add(1, Ordering::Release) + 1
+                        } else {
+                            generation.load(Ordering::Acquire)
+                        };
+                        Ok(Ok((value, commit_generation, changed)))
                     }
-                    if changed {
-                        self.committed_change_generation
-                            .fetch_add(1, Ordering::Release);
+                    Err(error) => {
+                        // Dropping rolls back best-effort; preserve the operation error.
+                        drop(transaction);
+                        Ok(Err(error))
                     }
-                    let generation = self.committed_change_generation();
-                    Ok((value, generation, changed))
                 }
-                Err(error) => {
-                    // Dropping rolls back best-effort. Preserve the operation's
-                    // error if SQLite also reports a rollback failure.
-                    drop(transaction);
-                    Err(error)
+            };
+        let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
+        let abandoned_checkpoint = Arc::clone(&self.wal_checkpoint_requested);
+        let actor_outcome = self
+            .writer
+            .call_admitted_with_completion(permit, operation, move |result, disposition| {
+                if let Ok(Ok((value, _, changed))) = result {
+                    if *changed && disposition == ActorResponseDisposition::Abandoned {
+                        abandoned_checkpoint.store(true, Ordering::Release);
+                        // Fire the synchronous wake directly; no Runtime handle or
+                        // detached task is required for this committed transaction.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            fire_commit_observers(&abandoned_notifiers);
+                        }));
+                    }
+                    post_commit(value);
                 }
-            }
-        })();
+            })
+            .await;
         let hold = holding.map_or(Duration::ZERO, |started| started.elapsed());
-        drop(writer);
-        let outcome = outcome.map(|(value, generation, changed)| {
-            if changed {
-                self.notify_commit();
-            }
-            (value, generation)
-        });
         if diagnostics_enabled {
             emit_diagnostic(StoreDiagnosticsEvent::WriterTransaction { wait, hold });
         }
-        outcome
+        let actor_response = actor_outcome
+            .map_err(actor_transport_outcome_unknown)
+            .map_err(E::from)?;
+        let outcome = actor_response
+            .resolve_with(|result| {
+                if result
+                    .as_ref()
+                    .is_ok_and(|result| result.as_ref().is_ok_and(|(_, _, changed)| *changed))
+                {
+                    self.notify_commit();
+                }
+            })
+            .map_err(E::from)?;
+        outcome.map(|(value, generation, _changed)| (value, generation))
     }
 
-    pub fn transaction_with_error<T, E>(
+    pub async fn transaction_with_error<T, E>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+        operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
+        + Send
+        + 'static,
     ) -> Result<T, E>
     where
-        E: From<StoreError>,
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
     {
-        self.transaction_with(operation)
+        self.transaction_with(operation).await
     }
 
     /// Open an independent read-only, query-only connection to the main DB.
@@ -1051,10 +1224,10 @@ impl RuntimeStore {
     }
 
     /// Serialize the cold entity projection maintenance path for this process store.
-    pub fn lock_entity_projection_maintenance(&self) -> StoreResult<MutexGuard<'_, ()>> {
-        self.entity_projection_maintenance_lock
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)
+    pub async fn lock_entity_projection_maintenance(
+        &self,
+    ) -> StoreResult<tokio::sync::MutexGuard<'_, ()>> {
+        Ok(self.entity_projection_maintenance_lock.lock().await)
     }
 
     /// Record the committed store generation and vault input signature after maintenance commits.
@@ -1080,20 +1253,6 @@ impl RuntimeStore {
             &self.root.join("canvas.sqlite3"),
             &self.root.join("analytics.sqlite3"),
         )
-    }
-}
-
-impl Drop for RuntimeStore {
-    fn drop(&mut self) {
-        let Ok(mut registry) = identity_registry().lock() else {
-            return;
-        };
-        if let Some(entry) = registry.get_mut(&self.identity_registry_path) {
-            entry.stores = entry.stores.saturating_sub(1);
-            if entry.stores == 0 {
-                registry.remove(&self.identity_registry_path);
-            }
-        }
     }
 }
 
@@ -1206,28 +1365,12 @@ mod read_pool_tests {
     use super::*;
     use std::sync::mpsc;
 
-    #[test]
-    fn sequential_reads_reuse_a_bounded_connection() {
+    #[tokio::test]
+    async fn sequential_reads_reuse_a_bounded_connection() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let canvas_path = directory.path().join("canvas.sqlite3");
-        Connection::open(&canvas_path).expect("canvas database");
-        let store = RuntimeStore {
-            root: directory.path().to_path_buf(),
-            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
-            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
-            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
-            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
-            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
-            writer_waiters: AtomicUsize::new(0),
-            writer_waiter_peak: AtomicUsize::new(0),
-            identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifiers: Mutex::new(CommitNotifiers::default()),
-            committed_change_generation: AtomicU64::new(0),
-            last_entity_projection_state: Mutex::new(None),
-            entity_projection_maintenance_lock: Mutex::new(()),
-            wal_checkpoint_requested: AtomicBool::new(false),
-            last_wal_checkpoint: Mutex::new(Instant::now()),
-        };
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
 
         for _ in 0..16 {
             let reader = store.read().expect("read checkout");
@@ -1242,31 +1385,21 @@ mod read_pool_tests {
         assert_eq!(store.read_pool.opened_count(), 1);
         const {
             assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+            assert!(
+                READ_CONNECTION_POOL_CAPACITY + VERSION_READER_CONNECTION_RESERVATION
+                    == CANVAS_READER_CONNECTION_CAPACITY
+            );
         }
     }
 
-    #[test]
-    fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
+    #[tokio::test]
+    async fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let canvas_path = directory.path().join("canvas.sqlite3");
-        Connection::open(&canvas_path).expect("canvas database");
-        let store = Arc::new(RuntimeStore {
-            root: directory.path().to_path_buf(),
-            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
-            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
-            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
-            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
-            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
-            writer_waiters: AtomicUsize::new(0),
-            writer_waiter_peak: AtomicUsize::new(0),
-            identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifiers: Mutex::new(CommitNotifiers::default()),
-            committed_change_generation: AtomicU64::new(0),
-            last_entity_projection_state: Mutex::new(None),
-            entity_projection_maintenance_lock: Mutex::new(()),
-            wal_checkpoint_requested: AtomicBool::new(false),
-            last_wal_checkpoint: Mutex::new(Instant::now()),
-        });
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
         let (ready_tx, ready_rx) = mpsc::channel();
         let (start_nested_tx, start_nested_rx) = mpsc::channel();
         let mut start_nested_rx = Some(start_nested_rx);
@@ -1369,82 +1502,29 @@ mod diagnostics_hook_tests {
         }
     }
 
-    #[test]
-    fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
         let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let canvas_path = directory.path().join("canvas.sqlite3");
-        Connection::open(&canvas_path)
-            .expect("create read pool database")
-            .close()
-            .expect("close read pool database");
-        let writer = Connection::open_in_memory().expect("writer connection");
-        let reader = Connection::open_in_memory().expect("reader connection");
-        let store = RuntimeStore {
-            root: directory.path().to_path_buf(),
-            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
-            writer: Mutex::new(writer),
-            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
-            version_reader: Mutex::new(reader),
-            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
-            writer_waiters: AtomicUsize::new(0),
-            writer_waiter_peak: AtomicUsize::new(0),
-            identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifiers: Mutex::new(CommitNotifiers::default()),
-            committed_change_generation: AtomicU64::new(0),
-            last_entity_projection_state: Mutex::new(None),
-            entity_projection_maintenance_lock: Mutex::new(()),
-            wal_checkpoint_requested: AtomicBool::new(false),
-            last_wal_checkpoint: Mutex::new(Instant::now()),
-        };
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
         EVENTS.lock().expect("diagnostic events lock").clear();
-        store.set_diagnostics_callback(Some(record_event));
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
         store
             .transaction(|transaction| {
                 transaction.execute_batch("CREATE TABLE measured(value INTEGER);")?;
                 transaction.execute("INSERT INTO measured(value) VALUES (1)", [])?;
                 Ok(())
             })
+            .await
             .expect("transaction succeeds");
         assert!(EVENTS.lock().expect("diagnostic events lock").len() >= 3);
-
-        EVENTS.lock().expect("diagnostic events lock").clear();
-        let writer_guard = store.writer.lock().expect("hold writer");
-        let writer_wait_observed = std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| store.transaction(|_| Ok::<(), StoreError>(())));
-            let observed = wait_for_event(|event| {
-                matches!(
-                    event,
-                    StoreDiagnosticsEvent::WriterWaiters {
-                        waiting_threads: 1,
-                        ..
-                    }
-                )
-            });
-            drop(writer_guard);
-            waiter
-                .join()
-                .expect("writer waiter thread")
-                .expect("writer wait completes");
-            observed
-        });
-        assert!(
-            writer_wait_observed,
-            "writer queue occupancy was not published"
-        );
-        assert_eq!(
-            EVENTS
-                .lock()
-                .expect("diagnostic events lock")
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
-                ))
-                .count(),
-            1,
-            "one completed wait must produce one admission latency sample"
-        );
 
         EVENTS.lock().expect("diagnostic events lock").clear();
         let read_wait_observed = std::thread::scope(|scope| {
@@ -1521,13 +1601,17 @@ mod diagnostics_hook_tests {
             "one completed read wait must produce one admission latency sample"
         );
 
-        store.set_diagnostics_callback(None);
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
         let previous = EVENTS.lock().expect("diagnostic events lock").len();
         store
             .transaction(|transaction| {
                 transaction.execute("INSERT INTO measured(value) VALUES (2)", [])?;
                 Ok(())
             })
+            .await
             .expect("transaction succeeds with no observer");
         assert_eq!(
             EVENTS.lock().expect("diagnostic events lock").len(),
@@ -1535,89 +1619,93 @@ mod diagnostics_hook_tests {
         );
     }
 
-    #[test]
-    fn analytics_writer_publishes_queue_occupancy_before_blocking() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn analytics_writer_waits_for_canvas_actor_while_raw_reads_remain_independent() {
         let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store =
-            Arc::new(RuntimeStore::open(Some(directory.path())).expect("open runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
         EVENTS.lock().expect("diagnostic events lock").clear();
-        store.set_diagnostics_callback(Some(record_event));
-        let writer_guard = store.writer.lock().expect("hold canvas writer");
-
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| {
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let entered_job = Arc::clone(&entered);
+        let release_job = Arc::clone(&release);
+        let canvas_job = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
                 store
+                    .transaction(move |_| {
+                        entered_job.wait();
+                        release_job.wait();
+                        Ok::<(), StoreError>(())
+                    })
+                    .await
+            })
+        };
+        entered.wait();
+        let (completed_tx, mut completed_rx) = tokio::sync::oneshot::channel();
+        let analytics_job = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                let result = store
                     .analytics_transaction(|_, _| Ok::<(), StoreError>(()))
-                    .expect("analytics transaction succeeds after writer release");
-            });
-            assert!(
-                wait_for_event(|event| {
-                    matches!(
-                        event,
-                        StoreDiagnosticsEvent::WriterWaiters {
-                            waiting_threads: 1,
-                            ..
-                        }
-                    )
-                }),
-                "analytics writer must publish occupancy before waiting on the writer"
-            );
-            assert_eq!(
-                EVENTS
-                    .lock()
-                    .expect("diagnostic events lock")
-                    .iter()
-                    .filter(|event| matches!(
-                        event,
-                        StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
-                    ))
-                    .count(),
-                0,
-                "a blocked analytics admission has no completed latency sample yet"
-            );
-            drop(writer_guard);
-            waiter.join().expect("analytics waiter thread");
-        });
-
-        let events = EVENTS.lock().expect("diagnostic events lock");
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(
-                    event,
-                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
-                ))
-                .count(),
-            1,
-            "completed analytics wait contributes exactly one admission sample"
-        );
-        assert!(
-            events.iter().any(|event| matches!(
-                event,
-                StoreDiagnosticsEvent::WriterWaiters {
-                    waiting_threads: 0,
-                    ..
-                }
-            )),
-            "analytics waiter departure must publish the new occupancy"
-        );
-        store.set_diagnostics_callback(None);
+                    .await;
+                let _sent = completed_tx.send(result.is_ok());
+                result
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.writer.available_admissions() != sqlite_actor::MAX_PENDING_WRITES - 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("analytics transaction is queued behind the held Canvas callback");
+        assert!(matches!(
+            completed_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        release.wait();
+        canvas_job
+            .await
+            .expect("Canvas writer task")
+            .expect("Canvas transaction");
+        analytics_job
+            .await
+            .expect("analytics writer task")
+            .expect("analytics transaction");
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
     }
 
-    #[test]
-    fn sync_pull_completion_after_a_commit_does_not_checkpoint_the_wal() {
+    #[tokio::test]
+    async fn sync_pull_completion_after_a_commit_does_not_checkpoint_the_wal() {
         let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
         EVENTS.lock().expect("diagnostic events lock").clear();
-        store.set_diagnostics_callback(Some(record_event));
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
         store
             .transaction(|transaction| {
                 transaction.execute_batch("CREATE TABLE checkpoint_witness(value INTEGER);")?;
                 transaction.execute("INSERT INTO checkpoint_witness VALUES (1)", [])?;
-                Ok(())
+                Ok::<(), StoreError>(())
             })
+            .await
             .expect("commit before pull maintenance completion");
         assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
         store
@@ -1635,17 +1723,23 @@ mod diagnostics_hook_tests {
             "sync-pull maintenance completion must not checkpoint after its commit"
         );
         assert!(store.wal_checkpoint_requested.load(Ordering::Acquire));
-        store.set_diagnostics_callback(None);
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
     }
 
-    #[test]
-    fn requested_checkpoint_exposes_its_remaining_cadence_without_polling() {
+    #[tokio::test]
+    async fn requested_checkpoint_exposes_its_remaining_cadence_without_polling() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
         // Opening the migrated store commits schema setup. Establish a completed
         // checkpoint baseline so this test measures the fixture commit below.
         store
             .checkpoint_wal_passive()
+            .await
             .expect("baseline checkpoint after schema setup");
         store
             .wal_checkpoint_requested
@@ -1661,6 +1755,7 @@ mod diagnostics_hook_tests {
                 transaction.execute("INSERT INTO checkpoint_deadline_witness VALUES (1)", [])?;
                 Ok(())
             })
+            .await
             .expect("commit requests checkpoint");
         let retry_after = store
             .wal_checkpoint_retry_after()
@@ -1672,30 +1767,154 @@ mod diagnostics_hook_tests {
 #[cfg(test)]
 mod commit_notification_tests {
     use super::*;
+    use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn commit_notifies_after_releasing_writer_for_changed_rows() {
+    #[tokio::test]
+    async fn open_publishes_generation_baseline_before_runtime_writes() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(RuntimeStore {
-            root: directory.path().to_path_buf(),
-            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
-            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
-            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
-            version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
-            read_pool: Arc::new(ReadConnectionPool::new(
-                directory.path().join("canvas.sqlite3"),
-            )),
-            writer_waiters: AtomicUsize::new(0),
-            writer_waiter_peak: AtomicUsize::new(0),
-            identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifiers: Mutex::new(CommitNotifiers::default()),
-            committed_change_generation: AtomicU64::new(0),
-            last_entity_projection_state: Mutex::new(None),
-            entity_projection_maintenance_lock: Mutex::new(()),
-            wal_checkpoint_requested: AtomicBool::new(false),
-            last_wal_checkpoint: Mutex::new(Instant::now()),
-        });
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+
+        assert_eq!(
+            store.committed_change_generation(),
+            0,
+            "private schema and recovery commits establish the baseline before open returns"
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE generation_witness(value INTEGER);")?;
+                transaction.execute("INSERT INTO generation_witness VALUES (1)", [])?;
+                Ok(())
+            })
+            .await
+            .expect("runtime write succeeds");
+        assert_eq!(
+            store.committed_change_generation(),
+            1,
+            "the first caller-visible changed commit advances from the published baseline"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_commit_callback_runs_for_success_without_row_changes() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_count = Arc::clone(&callbacks);
+        let (value, generation) = store
+            .transaction_with_post_commit(
+                |_| Ok::<_, StoreError>(17),
+                move |value| {
+                    assert_eq!(*value, 17);
+                    callback_count.fetch_add(1, Ordering::AcqRel);
+                },
+            )
+            .await
+            .expect("read-only transaction commits");
+
+        assert_eq!(value, 17);
+        assert_eq!(generation, 0);
+        assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn post_commit_callback_runs_even_when_commit_observer_panics() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE post_commit_panic(value INTEGER);")?;
+                Ok(())
+            })
+            .await
+            .expect("create witness table");
+        store.set_commit_notifier(|| panic!("expected commit observer panic"));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_count = Arc::clone(&callbacks);
+        let task = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .transaction_with_post_commit(
+                        |transaction| {
+                            transaction.execute("INSERT INTO post_commit_panic VALUES (1)", [])?;
+                            Ok::<_, StoreError>(())
+                        },
+                        move |_| {
+                            callback_count.fetch_add(1, Ordering::AcqRel);
+                        },
+                    )
+                    .await
+            })
+        };
+
+        assert!(
+            task.await
+                .expect_err("observer panic propagates")
+                .is_panic()
+        );
+        assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn post_commit_callback_skips_operation_error_and_pre_enqueue_cancel() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open runtime store");
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_count = Arc::clone(&callbacks);
+        let refused = store
+            .transaction_with_post_commit(
+                |_| Err::<(), _>(StoreError::RecordContract("test rollback")),
+                move |_| {
+                    callback_count.fetch_add(1, Ordering::AcqRel);
+                },
+            )
+            .await;
+        assert!(refused.is_err());
+        assert_eq!(callbacks.load(Ordering::Acquire), 0);
+
+        let mut permits = Vec::with_capacity(sqlite_actor::MAX_PENDING_WRITES);
+        for _ in 0..sqlite_actor::MAX_PENDING_WRITES {
+            permits.push(store.writer.acquire().await.expect("fill actor admission"));
+        }
+        let callback_count = Arc::clone(&callbacks);
+        let mut canceled = Box::pin(store.transaction_with_post_commit(
+            |_| Ok::<_, StoreError>(()),
+            move |_| {
+                callback_count.fetch_add(1, Ordering::AcqRel);
+            },
+        ));
+        let first_poll =
+            std::future::poll_fn(|context| std::task::Poll::Ready(canceled.as_mut().poll(context)))
+                .await;
+        assert!(
+            first_poll.is_pending(),
+            "saturated admission waits before enqueue"
+        );
+        drop(canceled);
+        drop(permits);
+        tokio::task::yield_now().await;
+        assert_eq!(callbacks.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn commit_notifies_after_releasing_writer_for_changed_rows() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
         let notifications = Arc::new(AtomicUsize::new(0));
         let notified = Arc::clone(&notifications);
         let weak_store = Arc::downgrade(&store);
@@ -1705,8 +1924,8 @@ mod commit_notification_tests {
                     .upgrade()
                     .expect("store remains alive")
                     .writer
-                    .try_lock()
-                    .is_ok()
+                    .available_admissions()
+                    == sqlite_actor::MAX_PENDING_WRITES
             );
             notified.fetch_add(1, Ordering::Relaxed);
         });
@@ -1716,14 +1935,16 @@ mod commit_notification_tests {
             observed.fetch_add(1, Ordering::Relaxed);
         });
         store
-            .writer
-            .lock()
-            .expect("writer mutex")
-            .execute_batch("CREATE TABLE values_table(value INTEGER);")
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE values_table(value INTEGER);")?;
+                Ok(())
+            })
+            .await
             .expect("test table is created");
 
         store
             .transaction(|_| Ok(()))
+            .await
             .expect("no-op transaction succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 0);
         assert_eq!(store.committed_change_generation(), 0);
@@ -1733,6 +1954,7 @@ mod commit_notification_tests {
                 transaction.execute("INSERT INTO values_table(value) VALUES (1)", [])?;
                 Ok(())
             })
+            .await
             .expect("write transaction succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert_eq!(store.committed_change_generation(), 1);
@@ -1747,10 +1969,148 @@ mod commit_notification_tests {
                 transaction.execute("INSERT INTO values_table(value) VALUES (2)", [])?;
                 Ok(())
             })
+            .await
             .expect("write after notifier replacement succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert_eq!(replacement_notifications.load(Ordering::Relaxed), 1);
         assert_eq!(observer_notifications.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn canceled_write_response_keeps_commit_notification() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE canceled_write(value INTEGER);")?;
+                Ok(())
+            })
+            .await
+            .expect("create test table");
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&notifications);
+        store.add_commit_observer(move || {
+            observed.fetch_add(1, Ordering::Release);
+        });
+        let post_commit_callbacks = Arc::new(AtomicUsize::new(0));
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let entered_job = Arc::clone(&entered);
+        let release_job = Arc::clone(&release);
+        let first = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .transaction(move |_| {
+                        entered_job.wait();
+                        release_job.wait();
+                        Ok::<(), StoreError>(())
+                    })
+                    .await
+            })
+        };
+        entered.wait();
+
+        let callback_count = Arc::clone(&post_commit_callbacks);
+        let mut canceled = Box::pin(store.transaction_with_post_commit(
+            |transaction| {
+                transaction.execute("INSERT INTO canceled_write VALUES (1)", [])?;
+                Ok::<(), StoreError>(())
+            },
+            move |_| {
+                callback_count.fetch_add(1, Ordering::Release);
+            },
+        ));
+        let first_poll =
+            std::future::poll_fn(|context| std::task::Poll::Ready(canceled.as_mut().poll(context)))
+                .await;
+        assert!(
+            first_poll.is_pending(),
+            "canceled transaction has submitted its actor callback"
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.writer.available_admissions() != sqlite_actor::MAX_PENDING_WRITES - 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("canceled write is admitted to the actor queue");
+        drop(canceled);
+        release.wait();
+        first
+            .await
+            .expect("first writer task")
+            .expect("first transaction");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while notifications.load(Ordering::Acquire) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoned committed write still notifies observers");
+        assert_eq!(post_commit_callbacks.load(Ordering::Acquire), 1);
+
+        let reader = store.read().expect("read committed row");
+        let count = reader
+            .query_row("SELECT COUNT(*) FROM canceled_write", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count committed row");
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_transaction_retains_local_identity_after_store_drop() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        store
+            .set_local_server_id(Some("lease-test-server".to_owned()))
+            .expect("configure local server identity");
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let entered_job = Arc::clone(&entered);
+        let release_job = Arc::clone(&release);
+        let (identity_sender, identity_receiver) = std::sync::mpsc::channel();
+        let transaction_task = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .transaction(move |transaction| {
+                        entered_job.wait();
+                        release_job.wait();
+                        let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+                        identity_sender
+                            .send(server_id)
+                            .expect("test still receives callback identity");
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        entered.wait();
+        transaction_task.abort();
+        let _ = transaction_task.await;
+        drop(store);
+
+        release.wait();
+        let server_id = tokio::task::spawn_blocking(move || {
+            identity_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("submitted callback completes")
+        })
+        .await
+        .expect("identity assertion task");
+        assert_eq!(server_id.as_deref(), Some("lease-test-server"));
     }
 }
 
@@ -1760,22 +2120,27 @@ mod sync_pull_admission_tests {
     use crate::SyncDocumentsRepository;
     use std::sync::Barrier;
 
-    #[test]
-    fn read_only_pull_completes_while_analytics_transaction_is_held() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_only_pull_completes_while_analytics_transaction_is_held() {
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store"),
+        );
         let analytics_entered = Arc::new(Barrier::new(2));
         let analytics_release = Arc::new(Barrier::new(2));
         let analytics_store = Arc::clone(&store);
         let entered = Arc::clone(&analytics_entered);
         let release = Arc::clone(&analytics_release);
-        let analytics = std::thread::spawn(move || {
+        let analytics = tokio::spawn(async move {
             analytics_store
-                .analytics_transaction(|_, _| {
+                .analytics_transaction(move |_, _| {
                     entered.wait();
                     release.wait();
                     Ok::<_, StoreError>(())
                 })
+                .await
                 .expect("held analytics transaction");
         });
 
@@ -1786,7 +2151,7 @@ mod sync_pull_admission_tests {
         assert!(page.is_empty());
         drop(connection);
         analytics_release.wait();
-        analytics.join().expect("analytics transaction thread");
+        analytics.await.expect("analytics transaction task");
     }
 }
 
@@ -1794,10 +2159,12 @@ mod sync_pull_admission_tests {
 mod projection_generation_tests {
     use super::*;
 
-    #[test]
-    fn projection_watermark_tracks_changes_and_restarts_unset() {
+    #[tokio::test]
+    async fn projection_watermark_tracks_changes_and_restarts_unset() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("store opens");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store opens");
         assert!(
             store
                 .entity_projections_need_maintenance("vault-a")
@@ -1820,6 +2187,7 @@ mod projection_generation_tests {
         );
         store
             .transaction(|_| Ok(()))
+            .await
             .expect("no-op transaction succeeds");
         assert!(
             !store
@@ -1838,6 +2206,7 @@ mod projection_generation_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("source record write succeeds");
         assert!(
             store
@@ -1846,7 +2215,9 @@ mod projection_generation_tests {
         );
         drop(store);
 
-        let restarted = RuntimeStore::open(Some(directory.path())).expect("store reopens");
+        let restarted = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store reopens");
         assert!(
             restarted
                 .entity_projections_need_maintenance("vault-a")

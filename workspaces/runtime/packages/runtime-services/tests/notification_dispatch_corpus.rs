@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 struct Oracle {
@@ -64,8 +65,8 @@ impl Drop for State {
 }
 // The budget owner's decision is independently captured from the real Python
 // call. This corpus owns notification rows; budget's corpus owns its ledger.
-struct CapturedEffects<'a>(&'a Value);
-impl studio_runtime_services::notification_dispatch::NotificationEffects for CapturedEffects<'_> {
+struct CapturedEffects(Value);
+impl studio_runtime_services::notification_dispatch::NotificationEffects for CapturedEffects {
     fn capture_usage(
         &self,
         _tx: &studio_runtime_store::Transaction<'_>,
@@ -85,7 +86,7 @@ impl studio_runtime_services::notification_dispatch::NotificationEffects for Cap
         Ok(())
     }
 }
-fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
+async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
     use studio_runtime_providers::LineDecoder;
     use studio_runtime_services::notification_dispatch::{
         NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext,
@@ -116,48 +117,62 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 .collect(),
             radio_authorized: false,
         };
-        let mut rolled = None;
-        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            rolled = Some(record_user_submission(tx, "agent", &submission)?);
+        let rolled = Arc::new(Mutex::new(None));
+        let submission_for_rollback = submission.clone();
+        let rolled_capture = Arc::clone(&rolled);
+        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
+            *rolled_capture.lock().expect("rollback result") = Some(record_user_submission(tx, "agent", &submission_for_rollback)?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
-        });
+        }).await;
         assert!(rollback.is_err());
+        let submission_for_result = submission.clone();
         let result = store
-            .transaction_with(|tx| record_user_submission(tx, "agent", &submission))
+            .transaction_with(move |tx| record_user_submission(tx, "agent", &submission_for_result))
+            .await
             .map_err(|e| e.to_string())?;
-        assert_eq!(rolled, Some(result.clone()), "submission outer rollback");
-        store.transaction_with(|tx| {
+        assert_eq!(
+            *rolled.lock().expect("rollback result"),
+            Some(result.clone()),
+            "submission outer rollback"
+        );
+        let submission_for_replay = submission.clone();
+        let submission_for_conflicts = submission.clone();
+        let result_for_conflicts = result.clone();
+        store.transaction_with(move |tx| {
             let before = tx.total_changes();
-            assert_eq!(record_user_submission(tx,"agent",&submission)?,result);
+            assert_eq!(record_user_submission(tx,"agent",&submission_for_replay)?,result_for_conflicts);
             assert_eq!(before, tx.total_changes(), "submission replay wrote");
-            let mut changed = submission.clone();
+            let mut changed = submission_for_conflicts.clone();
             changed.text.push_str("CONFLICT-SUFFIX");
             assert!(matches!(record_user_submission(tx,"agent",&changed),Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput)));
-            changed = submission.clone();
+            changed = submission_for_conflicts.clone();
             changed.inputs[0].text.push_str("CONFLICT-INPUT-SUFFIX");
             assert!(matches!(record_user_submission(tx,"agent",&changed),Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput)));
             assert_eq!(before, tx.total_changes(), "conflicting submission wrote");
             Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
-        }).map_err(|e|e.to_string())?;
-        let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
+        }).await.map_err(|e|e.to_string())?;
+        let submission_for_delete = submission.clone();
+        let result_for_delete = result.clone();
+        let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1234.5) WHERE id='agent'", []).map_err(studio_runtime_store::StoreError::from)?;
             let before = tx.total_changes();
-            assert_eq!(record_user_submission(tx,"agent",&submission)?,result);
+            assert_eq!(record_user_submission(tx,"agent",&submission_for_delete)?,result_for_delete);
             assert_eq!(before, tx.total_changes(), "saved replay depends on mutable agent");
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
-        });
+        }).await;
         assert!(deleted_replay.is_err());
         return Ok(json!([result]));
     }
-    let captured_effects = CapturedEffects(prepared);
+    let captured_effects = Arc::new(CapturedEffects(prepared.clone()));
     let runtime_effects =
-        studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
-    let effects: &dyn studio_runtime_services::notification_dispatch::NotificationEffects =
-        if case["runtime_effects"] == true {
-            &runtime_effects
-        } else {
-            &captured_effects
-        };
+        Arc::new(studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects);
+    let effects: Arc<
+        dyn studio_runtime_services::notification_dispatch::NotificationEffects + Send + Sync,
+    > = if case["runtime_effects"] == true {
+        runtime_effects
+    } else {
+        captured_effects
+    };
     let mut handoff = Vec::new();
     let mut analytics_overflow = 0u64;
     let mut results = Vec::new();
@@ -172,33 +187,60 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 NotificationDispatchError, recover_task_in_transaction,
             };
             use studio_runtime_store::NotificationDispatchRepository;
-            let recover = |tx:&studio_runtime_store::Transaction<'_>| -> Result<(),NotificationDispatchError> {
-                let agent=NotificationDispatchRepository::agent_record(tx,"agent")?.expect("agent");
-                let raw:String=tx.query_row("SELECT record FROM runtime_tasks WHERE id='agent:tool'",[],|r|r.get(0)).map_err(studio_runtime_store::StoreError::from)?;
-                let previous:Value=serde_json::from_str(&raw)?;
-                let before=raw_rows(tx);
-                let mut stale=previous.clone(); stale["name"]=json!("stale snapshot");
-                assert!(recover_task_in_transaction(tx,&agent,&stale,&step["frame"]["params"]["item"],1234.5).is_err());
-                assert_eq!(before,raw_rows(tx),"stale recovery snapshot wrote rows");
-                recover_task_in_transaction(tx,&agent,&previous,&step["frame"]["params"]["item"],1234.5)
-            };
+            let recovery_item = step["frame"]["params"]["item"].clone();
+            let recover: Arc<
+                dyn Fn(
+                        &studio_runtime_store::Transaction<'_>,
+                    ) -> Result<(), NotificationDispatchError>
+                    + Send
+                    + Sync,
+            > = Arc::new(move |tx| {
+                let agent =
+                    NotificationDispatchRepository::agent_record(tx, "agent")?.expect("agent");
+                let raw: String = tx
+                    .query_row(
+                        "SELECT record FROM runtime_tasks WHERE id='agent:tool'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let previous: Value = serde_json::from_str(&raw)?;
+                let before = raw_rows(tx);
+                let mut stale = previous.clone();
+                stale["name"] = json!("stale snapshot");
+                assert!(
+                    recover_task_in_transaction(tx, &agent, &stale, &recovery_item, 1234.5)
+                        .is_err()
+                );
+                assert_eq!(before, raw_rows(tx), "stale recovery snapshot wrote rows");
+                recover_task_in_transaction(tx, &agent, &previous, &recovery_item, 1234.5)
+            });
             let before = store
                 .transaction(|tx| Ok(raw_rows(tx)))
+                .await
                 .map_err(|e| e.to_string())?;
-            let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
-                recover(tx)?;
-                Err(NotificationDispatchError::InvalidNotification)
-            });
+            let recover_for_rollback = Arc::clone(&recover);
+            let rollback: Result<(), NotificationDispatchError> = store
+                .transaction_with(move |tx| {
+                    recover_for_rollback(tx)?;
+                    Err(NotificationDispatchError::InvalidNotification)
+                })
+                .await;
             assert!(rollback.is_err());
             assert_eq!(
                 before,
                 store
                     .transaction(|tx| Ok(raw_rows(tx)))
+                    .await
                     .map_err(|e| e.to_string())?,
                 "recovery rollback leaked task/transcript"
             );
-            write_failpoints(store, |tx| recover(tx))?;
-            store.transaction_with(recover).map_err(|e| e.to_string())?;
+            let recover_for_failpoints = Arc::clone(&recover);
+            write_failpoints(store, move |tx| recover_for_failpoints(tx)).await?;
+            store
+                .transaction_with(move |tx| recover(tx))
+                .await
+                .map_err(|e| e.to_string())?;
             results.push(json!({"status":"written"}));
             continue;
         }
@@ -217,31 +259,44 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         if let Some(service) = step["required_service"].as_str() {
             assert_eq!(case["requires_service"], service);
             assert_eq!(index + 1, case["steps"].as_array().expect("steps").len());
-            return store.transaction_with(|tx| {
+            let agent_id = agent_id.to_owned();
+            let publication = publication.clone();
+            let streams = streams.clone();
+            let identity = identity.clone();
+            let frame = frame.clone();
+            let effects = Arc::clone(&effects);
+            let service = service.to_owned();
+            let case_id = case["id"].as_str().expect("case ID").to_owned();
+            return store.transaction_with(move |tx| {
                 let before = raw_rows(tx);
                 let error = dispatch_notification(
-                    tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects,
+                    tx, &agent_id, &publication, &streams, &identity, &frame, 1234.5, effects.as_ref(),
                 ).expect_err("missing service must refuse before acknowledgement");
                 assert!(
                     matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service),
-                    "{}: expected dependency {service}, got {error:?}",
-                    case["id"]
+                    "{case_id}: expected dependency {service}, got {error:?}",
                 );
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
                 Ok::<_,studio_runtime_store::StoreError>(error.to_string())
-            }).map_err(|e|e.to_string()).and_then(Err);
+            }).await.map_err(|e|e.to_string()).and_then(Err);
         }
         if case["late_failure"] == true {
             let original_streams = streams.clone();
-            let refusal = store.transaction_with(|tx| {
+            let agent_id = agent_id.to_owned();
+            let publication = publication.clone();
+            let streams = streams.clone();
+            let identity = identity.clone();
+            let frame = frame.clone();
+            let effects = Arc::clone(&effects);
+            let refusal = store.transaction_with(move |tx| {
                 tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
                 let before = raw_rows(tx);
-                let refusal = dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects).expect_err("late failure must reach the service caller");
+                let refusal = dispatch_notification(tx, &agent_id, &publication, &streams, &identity, &frame, 1234.5, effects.as_ref()).expect_err("late failure must reach the service caller");
                 assert_eq!(before, raw_rows(tx), "service leaked rows after caller caught its error");
                 assert_eq!(streams, original_streams, "service leaked stream state");
                 tx.execute_batch("DROP TRIGGER corpus_late_failure; INSERT INTO corpus_caller VALUES ('caller committed');")?;
                 Ok::<_, studio_runtime_store::StoreError>(refusal.to_string())
-            }).map_err(|e|e.to_string())?;
+            }).await.map_err(|e|e.to_string())?;
             store
                 .transaction(|tx| {
                     assert_eq!(
@@ -251,50 +306,72 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     );
                     Ok(())
                 })
+                .await
                 .expect("unrelated caller work committed");
             return Err(refusal);
         }
         if case["effect_matrix"] == true && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none()
         {
-            effect_failpoints(store, &identity, &frame)?;
+            effect_failpoints(store, &identity, &frame).await?;
         }
         if full_failpoints(case) {
-            write_failpoints(store, |tx| {
+            let fail_agent = agent_id.to_owned();
+            let fail_publication = publication.clone();
+            let fail_streams = streams.clone();
+            let fail_identity = identity.clone();
+            let fail_frame = frame.clone();
+            let fail_effects = Arc::clone(&effects);
+            write_failpoints(store, move |tx| {
                 dispatch_notification(
                     tx,
-                    agent_id,
-                    &publication,
-                    &streams,
-                    &identity,
-                    &frame,
+                    &fail_agent,
+                    &fail_publication,
+                    &fail_streams,
+                    &fail_identity,
+                    &fail_frame,
                     1234.5,
-                    effects,
+                    fail_effects.as_ref(),
                 )
                 .map(|_| ())
-            })?;
+            })
+            .await?;
         }
         let mut rolled = None;
-        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            rolled = Some(dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects)?);
+        let rollback_agent = agent_id.to_owned();
+        let rollback_publication = publication.clone();
+        let rollback_streams = streams.clone();
+        let rollback_identity = identity.clone();
+        let rollback_frame = frame.clone();
+        let rollback_effects = Arc::clone(&effects);
+        let rolled_capture = Arc::clone(&rolled);
+        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
+            *rolled_capture.lock().expect("rollback result") = Some(dispatch_notification(tx, &rollback_agent, &rollback_publication, &rollback_streams, &rollback_identity, &rollback_frame, 1234.5, rollback_effects.as_ref())?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
-        });
+        }).await;
         assert!(rollback.is_err());
         if step["rollback"] == true {
             continue;
         }
+        let result_agent = agent_id.to_owned();
+        let result_publication = publication.clone();
+        let result_streams = streams.clone();
+        let result_identity = identity.clone();
+        let result_frame = frame.clone();
+        let result_effects = Arc::clone(&effects);
         let result = store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 dispatch_notification(
                     tx,
-                    agent_id,
-                    &publication,
-                    &streams,
-                    &identity,
-                    &frame,
+                    &result_agent,
+                    &result_publication,
+                    &result_streams,
+                    &result_identity,
+                    &result_frame,
                     1234.5,
-                    effects,
+                    result_effects.as_ref(),
                 )
             })
+            .await
             .map_err(|error| {
                 if let Some(refusal) = case.get("expect_refusal_detail") {
                     let table = refusal["table"].as_str().expect("refusal table");
@@ -318,22 +395,28 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 error.to_string()
             })?;
         assert_eq!(
-            rolled.as_ref(),
+            rolled.lock().expect("rollback result").as_ref(),
             Some(&result),
             "rollback must leave buffer unchanged"
         );
+        let replay_agent = agent_id.to_owned();
+        let replay_publication = publication.clone();
+        let replay_streams = streams.clone();
+        let replay_identity = identity.clone();
+        let replay_frame = frame.clone();
+        let replay_effects = Arc::clone(&effects);
         let replay = store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 let before = tx.total_changes();
                 let replay = dispatch_notification(
                     tx,
-                    agent_id,
-                    &publication,
-                    &streams,
-                    &identity,
-                    &frame,
+                    &replay_agent,
+                    &replay_publication,
+                    &replay_streams,
+                    &replay_identity,
+                    &replay_frame,
                     9876.0,
-                    effects,
+                    replay_effects.as_ref(),
                 )?;
                 assert_eq!(before, tx.total_changes(), "replay wrote SQLite");
                 assert!(replay.stream_update.is_none(), "replay changed buffer");
@@ -345,6 +428,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     replay,
                 )
             })
+            .await
             .map_err(|e| e.to_string())?;
         assert_eq!(
             replay.outcome, result.outcome,
@@ -358,17 +442,23 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .push(&bytes)
             .expect("conflict frame")
             .remove(0);
-        store.transaction_with(|tx| {
+        let conflict_agent = agent_id.to_owned();
+        let conflict_publication = publication.clone();
+        let conflict_streams = streams.clone();
+        let conflict_identity = identity.clone();
+        let conflict_frame = conflict.clone();
+        let conflict_effects = Arc::clone(&effects);
+        store.transaction_with(move |tx| {
             let before = tx.total_changes();
-            assert!(matches!(dispatch_notification(tx,agent_id,&publication,&streams,&identity,&conflict,1234.5,effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
+            assert!(matches!(dispatch_notification(tx,&conflict_agent,&conflict_publication,&conflict_streams,&conflict_identity,&conflict_frame,1234.5,conflict_effects.as_ref()), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
             assert_eq!(before,tx.total_changes());
             Ok::<_,studio_runtime_store::StoreError>(())
-        }).map_err(|e|e.to_string())?;
+        }).await.map_err(|e|e.to_string())?;
         analytics_overflow += result.post_commit.analytics_overflow;
         for effect in &result.post_commit.effects {
             use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
             let sink = CommittedSink { store };
-            sink.publish(effect).map_err(|e| e.to_string())?;
+            sink.publish(effect).await.map_err(|e| e.to_string())?;
             handoff.push(post_commit_value(effect));
         }
         results.push(json!(result.outcome));
@@ -400,13 +490,14 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             );
         }
         if step["tick"] == true {
-            flush_agents(store, case, &mut streams)?;
+            flush_agents(store, case, &mut streams).await?;
             let batch = streams.take_post_commit().map_err(|e| e.to_string())?;
             analytics_overflow += batch.analytics_overflow;
             for effect in batch.effects {
                 use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
                 CommittedSink { store }
                     .publish(&effect)
+                    .await
                     .map_err(|error| error.to_string())?;
                 handoff.push(post_commit_value(&effect));
             }
@@ -420,7 +511,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             let agent:Value=serde_json::from_str(&raw)?;
             studio_runtime_store::SyncDocumentsRepository::patch_entity(tx,"agent","agent",json!({"turnId":agent["turnId"]}))?;
             Ok(())
-        }).map_err(|e|e.to_string())?;
+        }).await.map_err(|e|e.to_string())?;
     }
     if full_failpoints(case) {
         write_failpoints(store, |tx| {
@@ -432,15 +523,17 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 1234.5,
             )
             .map(|_| ())
-        })?;
+        })
+        .await?;
     }
-    flush_agents(store, case, &mut streams)?;
+    flush_agents(store, case, &mut streams).await?;
     let batch = streams.take_post_commit().map_err(|e| e.to_string())?;
     analytics_overflow += batch.analytics_overflow;
     for effect in batch.effects {
         use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
         CommittedSink { store }
             .publish(&effect)
+            .await
             .map_err(|error| error.to_string())?;
         handoff.push(post_commit_value(&effect));
     }
@@ -503,46 +596,57 @@ struct CommittedSink<'a> {
 impl studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink
     for CommittedSink<'_>
 {
-    fn publish(
-        &self,
-        effect: &studio_runtime_services::notification_dispatch::NotificationPostCommit,
-    ) -> Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> {
-        use studio_runtime_services::notification_dispatch::NotificationPostCommit;
-        let observation = match effect {
-            NotificationPostCommit::Analytics { observation, .. }
-            | NotificationPostCommit::AnalyticsStream { observation, .. }
-            | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation)
-            | NotificationPostCommit::TokenRateUsage(observation) => observation,
-            NotificationPostCommit::Recovered { .. } => return Ok(()),
-        };
-        let identity = &observation.delivery;
-        let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
-        let receipt = format!(
-            "provider-notification:{}",
-            studio_runtime_store::sha256_hex(&signature)
-        );
-        let read = self.store.read()?;
-        assert!(read.is_autocommit());
-        assert_eq!(
-            read.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
-                [receipt],
-                |r| r.get::<_, i64>(0)
-            )
-            .expect("receipt"),
-            1,
-            "publish preceded receipt commit"
-        );
-        if let NotificationPostCommit::Analytics {
-            budget_capture_value: Some(tokens),
-            ..
-        } = effect
-        {
-            let agent = observation.agent.as_ref().expect("budget owner")["id"]
-                .as_str()
-                .expect("agent");
+    fn publish<'a>(
+        &'a self,
+        effect: &'a studio_runtime_services::notification_dispatch::NotificationPostCommit,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        (),
+                        studio_runtime_services::notification_dispatch::NotificationDispatchError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            use studio_runtime_services::notification_dispatch::NotificationPostCommit;
+            let observation = match effect {
+                NotificationPostCommit::Analytics { observation, .. }
+                | NotificationPostCommit::AnalyticsStream { observation, .. }
+                | NotificationPostCommit::TokenRateStream(observation)
+                | NotificationPostCommit::TokenRateAssociation(observation)
+                | NotificationPostCommit::TokenRateUsage(observation) => observation,
+                NotificationPostCommit::Recovered { .. } => return Ok(()),
+            };
+            let identity = &observation.delivery;
+            let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
+            let receipt = format!(
+                "provider-notification:{}",
+                studio_runtime_store::sha256_hex(&signature)
+            );
+            let read = self.store.read()?;
+            assert!(read.is_autocommit());
             assert_eq!(
+                read.query_row(
+                    "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
+                    [receipt],
+                    |r| r.get::<_, i64>(0)
+                )
+                .expect("receipt"),
+                1,
+                "publish preceded receipt commit"
+            );
+            if let NotificationPostCommit::Analytics {
+                budget_capture_value: Some(tokens),
+                ..
+            } = effect
+            {
+                let agent = observation.agent.as_ref().expect("budget owner")["id"]
+                    .as_str()
+                    .expect("agent");
+                assert_eq!(
                 read.query_row(
                     "SELECT json_extract(record,'$.tokensUsed') FROM runtime_agents WHERE id=?1",
                     [agent],
@@ -551,8 +655,9 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
                 .expect("committed budget"),
                 i64::try_from(*tokens).expect("bounded token count")
             );
-        }
-        Ok(())
+            }
+            Ok(())
+        })
     }
 }
 
@@ -649,7 +754,7 @@ fn normalize_observation_agent(mut effect: Value) -> Value {
 
 /// Fail immediately before and after each transactional effect, then let the
 /// ordinary corpus call commit and replay the same provider delivery.
-fn effect_failpoints(
+async fn effect_failpoints(
     store: &RuntimeStore,
     identity: &studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity,
     frame: &studio_runtime_providers::Frame,
@@ -694,16 +799,19 @@ fn effect_failpoints(
         }
     }
     for phase in 0..=3 {
-        let result: Result<(), Error> = store.transaction_with(|tx| {
+        let phase_publication = publication.clone();
+        let phase_identity = identity.clone();
+        let phase_frame = frame.clone();
+        let result: Result<(), Error> = store.transaction_with(move |tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.movedFrom',json('{\"server\":\"remote\"}')) WHERE id='agent'", []).map_err(StoreError::from)?;
             let before = raw_rows(tx);
             let failure = Failure(phase);
             let effects: &dyn NotificationEffects = &failure;
-            let result = dispatch_notification_with_effects(tx, "agent", &publication, &NotificationStreamBuffer::default(), identity, frame, 1234.5, effects);
+            let result = dispatch_notification_with_effects(tx, "agent", &phase_publication, &NotificationStreamBuffer::default(), &phase_identity, &phase_frame, 1234.5, effects);
             assert!(result.is_err(), "effect boundary {phase} must fail");
             assert_eq!(before, raw_rows(tx), "effect boundary {phase} leaked rows/receipt");
             Err(Error::InvalidNotification)
-        });
+        }).await;
         assert!(result.is_err());
     }
     Ok(())
@@ -718,24 +826,30 @@ fn full_failpoints(case: &Value) -> bool {
         && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none()
 }
 
-fn write_failpoints(
+async fn write_failpoints(
     store: &RuntimeStore,
     operation: impl Fn(
         &studio_runtime_store::Transaction<'_>,
     ) -> Result<
         (),
         studio_runtime_services::notification_dispatch::NotificationDispatchError,
-    >,
+    > + Send
+    + Sync
+    + 'static,
 ) -> Result<(), String> {
     use studio_runtime_services::notification_dispatch::NotificationDispatchError;
+    let operation = Arc::new(operation);
     for phase in ["BEFORE", "AFTER"] {
-        let mut writes = 0;
+        let writes = Arc::new(Mutex::new(0));
         // The successful probe counts every ordinary-table write, including
         // repeated writes and writes performed by existing projection triggers.
         // Virtual-table shadow storage is verified by the complete raw snapshot.
         for ordinal in 0.. {
-            let mut baseline_error = None;
-            let rolled_back: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
+            let baseline_error = Arc::new(Mutex::new(None));
+            let operation = Arc::clone(&operation);
+            let writes_capture = Arc::clone(&writes);
+            let baseline_error_capture = Arc::clone(&baseline_error);
+            let rolled_back: Result<(), NotificationDispatchError> = store.transaction_with(move |tx| {
                 tx.execute_batch("CREATE TEMP TABLE notification_write_trace(value INTEGER); CREATE TEMP TABLE notification_failure(ordinal INTEGER); INSERT INTO notification_failure VALUES(0);").expect("trace fixture");
                 tx.execute("UPDATE notification_failure SET ordinal=?1", [ordinal]).expect("failure ordinal");
                 let tables = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").expect("ordinary tables").query_map([], |r|r.get::<_,String>(0)).expect("table names").collect::<Result<Vec<_>,_>>().expect("table names");
@@ -747,20 +861,20 @@ fn write_failpoints(
                 let before = raw_rows(tx);
                 let result = operation(tx);
                 if ordinal == 0 {
-                    baseline_error = result.err().map(|error|error.to_string());
-                    writes = tx.query_row("SELECT count(*) FROM notification_write_trace", [], |r|r.get::<_,i64>(0)).expect("write count");
+                    *baseline_error_capture.lock().expect("baseline error") = result.err().map(|error|error.to_string());
+                    *writes_capture.lock().expect("write count") = tx.query_row("SELECT count(*) FROM notification_write_trace", [], |r|r.get::<_,i64>(0)).expect("write count");
                 } else {
                     assert!(result.is_err(), "{phase} write {ordinal}/{writes} was not exercised");
                     assert_eq!(before, raw_rows(tx), "{phase} write {ordinal}/{writes}: caught failure leaked rows");
                     WRITE_FAILURE_POINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(NotificationDispatchError::InvalidNotification)
-            });
+            }).await;
             assert!(rolled_back.is_err());
-            if let Some(error) = baseline_error {
+            if let Some(error) = baseline_error.lock().expect("baseline error").clone() {
                 return Err(error);
             }
-            if ordinal == writes {
+            if ordinal == *writes.lock().expect("write count") {
                 break;
             }
         }
@@ -792,7 +906,7 @@ fn raw_rows(
         })
         .collect()
 }
-fn flush_agents(
+async fn flush_agents(
     store: &RuntimeStore,
     case: &Value,
     streams: &mut studio_runtime_services::notification_dispatch::NotificationStreamBuffer,
@@ -802,15 +916,15 @@ fn flush_agents(
     }
     if let Some(agents) = case["flush_agents"].as_array() {
         for agent in agents {
-            flush(store, agent.as_str().expect("agent"), streams)?;
+            flush(store, agent.as_str().expect("agent"), streams).await?;
         }
     } else {
-        flush(store, "agent", streams)?;
+        flush(store, "agent", streams).await?;
     }
     Ok(())
 }
 
-fn flush(
+async fn flush(
     store: &RuntimeStore,
     agent_id: &str,
     streams: &mut studio_runtime_services::notification_dispatch::NotificationStreamBuffer,
@@ -819,25 +933,41 @@ fn flush(
         NotificationDispatchError, PublicationContext, flush_notification_streams,
     };
     let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
-    let mut rolled = None;
-    let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
-        rolled = Some(flush_notification_streams(
-            tx,
-            agent_id,
-            &publication,
-            streams,
-            1234.5,
-        )?);
-        Err(NotificationDispatchError::InvalidNotification)
-    });
-    assert!(rollback.is_err());
-    let result = store
-        .transaction_with(|tx| {
-            flush_notification_streams(tx, agent_id, &publication, streams, 1234.5)
+    let rolled = Arc::new(Mutex::new(None));
+    let rollback_streams = streams.clone();
+    let rollback_agent = agent_id.to_owned();
+    let rollback_publication = publication.clone();
+    let rolled_capture = Arc::clone(&rolled);
+    let rollback: Result<(), NotificationDispatchError> = store
+        .transaction_with(move |tx| {
+            *rolled_capture.lock().expect("rollback result") = Some(flush_notification_streams(
+                tx,
+                &rollback_agent,
+                &rollback_publication,
+                &rollback_streams,
+                1234.5,
+            )?);
+            Err(NotificationDispatchError::InvalidNotification)
         })
+        .await;
+    assert!(rollback.is_err());
+    let result_agent = agent_id.to_owned();
+    let result_publication = publication.clone();
+    let result_streams = streams.clone();
+    let result = store
+        .transaction_with(move |tx| {
+            flush_notification_streams(
+                tx,
+                &result_agent,
+                &result_publication,
+                &result_streams,
+                1234.5,
+            )
+        })
+        .await
         .map_err(|e| e.to_string())?;
     assert_eq!(
-        rolled,
+        *rolled.lock().expect("rollback result"),
         Some(result.clone()),
         "timer rollback must preserve pending batches"
     );
@@ -941,32 +1071,35 @@ fn expected_with_deviations(mut expected: Value, case: &Value) -> Value {
     }
     expected
 }
-#[test]
-fn python_written_notification_corpus() {
+#[tokio::test]
+async fn python_written_notification_corpus() {
     if let Some(path) = std::env::var_os("NOTIFICATION_REPLAY_CHILD") {
         let fixture: Value =
             serde_json::from_slice(&fs::read(path).expect("replay fixture")).expect("replay JSON");
         let store = RuntimeStore::open(Some(Path::new(fixture["root"].as_str().expect("root"))))
             .expect("reopen committed database");
         apply(&store, &fixture["case"], &fixture["prepared"])
+            .await
             .expect("replay after lost acknowledgement");
         return;
     }
     corpus(
         std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some(),
         false,
-    );
+    )
+    .await;
 }
 
-#[test]
-fn wave7_p06_runtime_notification_corpus() {
+#[tokio::test]
+async fn wave7_p06_runtime_notification_corpus() {
     corpus(
         std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some(),
         true,
-    );
+    )
+    .await;
 }
 
-fn corpus(full: bool, runtime_effects: bool) {
+async fn corpus(full: bool, runtime_effects: bool) {
     let corpus_started = std::time::Instant::now();
     let mut cases: Vec<Value> = serde_json::from_str(if runtime_effects {
         include_str!("wave7_p06_notification_cases.json")
@@ -1092,7 +1225,7 @@ fn corpus(full: bool, runtime_effects: bool) {
         } else {
             &expected["captures"]
         };
-        let first = apply(&store, case, prepared);
+        let first = apply(&store, case, prepared).await;
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             assert_eq!(

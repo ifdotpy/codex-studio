@@ -5,8 +5,8 @@ mod fixtures;
 mod prepared_python_support;
 use studio_runtime_services::monitor_policy::{self as policy, MonitorSnapshot, Operation};
 
-#[test]
-fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
+#[tokio::test]
+async fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     assert!(cases.len() >= 70);
@@ -135,12 +135,12 @@ fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
     }
 }
 
-#[test]
-fn transaction_adapter_matches_python_event_payloads_and_expiry() {
+#[tokio::test]
+async fn transaction_adapter_matches_python_event_payloads_and_expiry() {
     use studio_runtime_services::monitor_runtime;
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
-    let store = fixtures::store(root.path(), "events");
+    let store = fixtures::store(root.path(), "events").await;
     for case in &cases {
         if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
             && ![
@@ -162,31 +162,36 @@ fn transaction_adapter_matches_python_event_payloads_and_expiry() {
         {
             continue;
         }
-        fixtures::seed(&store, case);
-        let id = case["before"]["id"].as_str().expect("monitor fixture");
+        fixtures::seed(&store, case).await;
+        let id = case["before"]["id"]
+            .as_str()
+            .expect("monitor fixture")
+            .to_owned();
+        let case_for_tx = case.clone();
         let result: Result<(), studio_runtime_services::monitor_policy::MonitorError> = store
-            .transaction_with(|tx| {
-                let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
-                let decision = match case["action"].as_str().expect("monitor fixture") {
+            .transaction_with(move |tx| {
+                let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
+                let decision = match case_for_tx["action"].as_str().expect("monitor fixture") {
                     "cancel" => policy::cancel(&snapshot, None, 2000.0)?,
                     "finish" | "legacy" => policy::finish(
                         &snapshot,
                         snapshot.operation(),
-                        case["argument"][0].as_i64(),
-                        case["argument"][1].as_str(),
+                        case_for_tx["argument"][0].as_i64(),
+                        case_for_tx["argument"][1].as_str(),
                         2000.0,
                     )?,
                     "probe" => policy::probe_result(
                         &snapshot,
-                        case["argument"].as_i64().expect("generation"),
-                        case["probeResults"][0].clone(),
+                        case_for_tx["argument"].as_i64().expect("generation"),
+                        case_for_tx["probeResults"][0].clone(),
                         2000.0,
                     )?,
                     "tick" => policy::tick(&snapshot, 2000.0)?,
                     _ => unreachable!(),
                 };
                 monitor_runtime::apply(tx, &snapshot, &actor, &decision, 2000.0)
-            });
+            })
+            .await;
         result.unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
         assert_eq!(fixtures::events(&store), case["events"], "{}", case["name"]);
     }

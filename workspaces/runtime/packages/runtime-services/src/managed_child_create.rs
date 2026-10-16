@@ -270,7 +270,7 @@ struct Draft {
 /// Create a local host batch using the P02 typed draft and recheck contract.
 /// `request_id` is the callback's durable operation identity, so child ids and
 /// initial-event ids remain stable across retries.
-pub(crate) fn spawn_agents(
+pub(crate) async fn spawn_agents(
     store: &RuntimeStore,
     actor: &crate::managed_host_tools::Actor,
     args: &Value,
@@ -278,7 +278,7 @@ pub(crate) fn spawn_agents(
     now: f64,
     environment: &dyn ManagedCreationEnvironment,
 ) -> Result<crate::managed_host_tools::OperationResult, Error> {
-    let actor_record = actor.record();
+    let actor_record = actor.record().clone();
     if actor_record.extra.get("role").and_then(Value::as_str) == Some("reviewer") {
         return Err(
             crate::managed_host_tools::Error::Invalid("Reviewers cannot create agents").into(),
@@ -511,7 +511,7 @@ pub(crate) fn spawn_agents(
         let requested_account_key = spec.get("account_key").and_then(Value::as_str);
         let default_account_key = defaults.get("accountKey").and_then(Value::as_str);
         let workspace_admission =
-            environment.prepare_workspace(store, actor_record, spec, request_id)?;
+            environment.prepare_workspace(store, &actor_record, spec, request_id)?;
         let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
         let requested_model = spec
             .get("model")
@@ -738,8 +738,9 @@ pub(crate) fn spawn_agents(
             )
         })
         .collect::<Vec<_>>();
-    let mut result = store.transaction_with_error(|tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
-        recheck_actor(tx, actor_record)?;
+    let request_id = request_id.to_owned();
+    let mut result = store.transaction_with_error(move |tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        recheck_actor(tx, &actor_record)?;
         let current_root = AgentRepository::get(tx, &actor_record.root_id)?
             .ok_or(crate::managed_host_tools::Error::Stale)?;
         event_write::assert_delegation(&current_root)
@@ -755,12 +756,12 @@ pub(crate) fn spawn_agents(
             return Err(crate::managed_host_tools::Error::Invalid("This batch exceeds the active agent limit; no workers were created"));
         }
         for draft in &drafts {
-            draft.workspace_admission.check(tx, actor_record)
+            draft.workspace_admission.check(tx, &actor_record)
                 .map_err(|_| crate::managed_host_tools::Error::Unavailable("workspace-state/child-admission"))?;
             crate::host_worker_create::recheck_worker(tx, &draft.typed, draft.epoch, &draft.account)
                 .map_err(map_recheck_error)?;
         }
-        if !can_delegate(tx, actor_record, &current_root)? {
+        if !can_delegate(tx, &actor_record, &current_root)? {
             return Err(crate::managed_host_tools::Error::Invalid("Delegation depth reached"));
         }
         let mut children = Vec::with_capacity(drafts.len());
@@ -797,13 +798,13 @@ pub(crate) fn spawn_agents(
             let record = AgentRecord::from_value(draft.record.clone())
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid child agent record"))?;
             AgentRepository::put(tx, &record)?;
-            record_spawn_effect(tx, actor_record, &draft.record, request_id);
+            record_spawn_effect(tx, &actor_record, &draft.record, &request_id);
             let mut record_value = draft.record.clone();
             record_value["workerBaseMainRef"] = json!(draft.worker_base_main_ref);
             record_value["workerBaseBehindMain"] = json!(draft.worker_base_behind_main);
             crate::agents_create::publish_agent(tx, &record_value)?;
             if let Some(task_id) = &draft.task_id {
-                crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &draft.id, actor_record, now)
+                crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &draft.id, &actor_record, now)
                     .map_err(|_| crate::managed_host_tools::Error::Invalid("Work item assignment was rejected"))?;
             }
             let inserted = event_write::enqueue_event(tx, &record, format!("{}:initial", draft.id), "user", text, now)
@@ -818,7 +819,7 @@ pub(crate) fn spawn_agents(
             value: json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
             signals,
         })
-    }).map_err(Error::from)?;
+    }).await.map_err(Error::from)?;
     for (id, root, epoch) in image_provisions {
         let cwd = match environment.provision_image_workspace(store, Path::new(&root), &id) {
             Ok(cwd) => cwd,
@@ -832,20 +833,25 @@ pub(crate) fn spawn_agents(
                     epoch,
                     &format!("{error:?}"),
                 )
+                .await
                 .map_err(|_| Error::Unavailable("workspace-state/image-provisioning"))?;
                 return Err(Error::from(error));
             }
         };
+        let id_for_update = id.clone();
+        let cwd_for_update = cwd.clone();
         let committed = store
-            .transaction(|tx| {
-                let Some(record) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+            .transaction(move |tx| {
+                let Some(record) =
+                    AgentRepository::get(tx, &AgentId::from(id_for_update.as_str()))?
+                else {
                     return Ok(false);
                 };
                 let mut value = record.into_value();
                 if !crate::agents_create::image_provision_is_current(&value, epoch) {
                     return Ok(false);
                 }
-                value["cwd"] = json!(cwd);
+                value["cwd"] = json!(cwd_for_update);
                 value["imageWorkspaceReady"] = json!(true);
                 value["imageWorkspacePhase"] = json!("ready");
                 let record = AgentRecord::from_value(value)?;
@@ -854,6 +860,7 @@ pub(crate) fn spawn_agents(
                 crate::agents_create::publish_agent(tx, &value)?;
                 Ok::<_, studio_runtime_store::StoreError>(true)
             })
+            .await
             .map_err(Error::from)?;
         if !committed {
             if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
@@ -1232,7 +1239,7 @@ struct ReviewDraft {
 
 /// Reserve a native Codex review child. `nativeReview` is its durable first-turn
 /// intent; the account worker claims it after the callback commits and wakes it.
-pub(crate) fn request_review(
+pub(crate) async fn request_review(
     store: &RuntimeStore,
     actor: &crate::managed_host_tools::Actor,
     args: &Value,
@@ -1240,7 +1247,7 @@ pub(crate) fn request_review(
     now: f64,
     environment: &dyn ManagedCreationEnvironment,
 ) -> Result<crate::managed_host_tools::OperationResult, Error> {
-    let actor_record = actor.record();
+    let actor_record = actor.record().clone();
     if actor_record
         .extra
         .get("executionMode")
@@ -1354,7 +1361,7 @@ pub(crate) fn request_review(
     // repository is validated separately and may differ from the actor's cwd.
     let workspace_admission = environment.prepare_workspace(
         store,
-        actor_record,
+        &actor_record,
         &json!({"workspace":"shared"}),
         request_id,
     )?;
@@ -1429,10 +1436,11 @@ pub(crate) fn request_review(
         account,
         workspace_admission,
     };
+    let child_id = child_id.to_owned();
     let value = store
-        .transaction_with_error(|tx| -> Result<Value, crate::managed_host_tools::Error> {
-            recheck_actor(tx, actor_record)?;
-            if AgentRepository::get(tx, &AgentId::from(child_id))?.is_none() {
+        .transaction_with_error(move |tx| -> Result<Value, crate::managed_host_tools::Error> {
+            recheck_actor(tx, &actor_record)?;
+            if AgentRepository::get(tx, &AgentId::from(child_id.as_str()))?.is_none() {
                 let maximum = root_value
                     .get("maxAgents")
                     .and_then(Value::as_i64)
@@ -1444,7 +1452,7 @@ pub(crate) fn request_review(
                 }
             }
             let creator = ReviewCreator {
-                actor: actor_record,
+                actor: &actor_record,
                 draft: &review,
             };
             let response =
@@ -1461,11 +1469,11 @@ pub(crate) fn request_review(
                         ),
                     },
                 )?;
-            let child = AgentRepository::get(tx, &AgentId::from(child_id))?
+            let child = AgentRepository::get(tx, &AgentId::from(child_id.as_str()))?
                 .ok_or(crate::managed_host_tools::Error::Stale)?;
             crate::agents_create::publish_agent(tx, &child.value())?;
             Ok(response)
-        })
+        }).await
         .map_err(Error::from)?;
     Ok(crate::managed_host_tools::OperationResult {
         value,

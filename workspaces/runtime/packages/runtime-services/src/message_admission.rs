@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -33,7 +34,7 @@ pub trait MessageAdmission: Send + Sync {
 /// transaction, including idle agents: they may start operations before admission.
 /// A newly encountered cwd is refused when its canonical relation cannot be
 /// determined from this snapshot. Budget history needs the host's P09 port.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PreparedAdmission {
     paths: BTreeMap<String, PathBuf>,
 }
@@ -162,16 +163,16 @@ impl MessageAdmission for PreparedAdmission {
 /// Message ingress adapter that combines P03's workspace snapshot with P09's
 /// history-backed budget policy. Filesystem history is read before the caller's
 /// writer transaction; durable bindings are rechecked inside that transaction.
-pub struct MessageIngressAdmission<'a> {
+pub struct MessageIngressAdmission {
     workspace: PreparedAdmission,
-    store: &'a RuntimeStore,
+    store: Arc<RuntimeStore>,
     histories: BTreeMap<String, crate::budget::HistoryObservation>,
     now: f64,
 }
 
-impl<'a> MessageIngressAdmission<'a> {
+impl MessageIngressAdmission {
     pub fn load(
-        store: &'a RuntimeStore,
+        store: Arc<RuntimeStore>,
         connection: &Connection,
         recipient: &str,
     ) -> Result<Self, CoordinationError> {
@@ -191,7 +192,7 @@ impl<'a> MessageIngressAdmission<'a> {
                         .is_some_and(|budget| !budget.is_null())
                 }) {
                     crate::budget_runtime::read_histories_from_connection(
-                        store,
+                        &store,
                         connection,
                         &agent.root_id.0,
                     )?
@@ -210,7 +211,7 @@ impl<'a> MessageIngressAdmission<'a> {
     }
 }
 
-impl MessageAdmission for MessageIngressAdmission<'_> {
+impl MessageAdmission for MessageIngressAdmission {
     fn workspace(
         &self,
         tx: &Transaction<'_>,
@@ -226,7 +227,7 @@ impl MessageAdmission for MessageIngressAdmission<'_> {
         root: &AgentRecord,
     ) -> Result<(), CoordinationError> {
         let decision = crate::budget_runtime::admission(
-            self.store,
+            &self.store,
             tx,
             &agent.value(),
             &root.value(),
@@ -338,12 +339,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
+    #[tokio::test]
+    async fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let project_directory = tempfile::tempdir().expect("temporary project directory");
         let project = project_directory.path().to_path_buf();
-        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
         let agent = AgentRecord::from_value(json!({
             "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
             "isLead":true, "autoWake":true, "accountKey":"default",
@@ -356,10 +361,11 @@ mod tests {
                 AgentRepository::put(tx, &agent)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist lead record");
 
         let connection = store.read().expect("hold message admission snapshot");
-        let admission = MessageIngressAdmission::load(&store, &connection, "lead")
+        let admission = MessageIngressAdmission::load(Arc::clone(&store), &connection, "lead")
             .expect("positive token budget history loads without nested read");
         assert!(admission.histories.contains_key("lead"));
     }

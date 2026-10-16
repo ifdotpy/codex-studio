@@ -24,8 +24,8 @@ const RUST_OWNED_RUNTIME_INDEX_NAMES: &[&str] = &[
     "runtime_event_reviewer_archive_delivery",
 ];
 
-#[test]
-fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration() {
+#[tokio::test]
+async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration() {
     let rust_state = temporary_state("rust");
     let feature_schema = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/feature_schema.rs");
     let expected = create_python_state(&rust_state, &feature_schema);
@@ -33,7 +33,9 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
     fs::create_dir_all(&rust_state).expect("Rust state directory recreates");
 
     let open_started = std::time::Instant::now();
-    let store = RuntimeStore::open(Some(&rust_state)).expect("Rust creates an empty state");
+    let store = RuntimeStore::open(Some(&rust_state))
+        .await
+        .expect("Rust creates an empty state");
     eprintln!(
         "empty synthetic RuntimeStore::open: {:?}",
         open_started.elapsed()
@@ -92,14 +94,14 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
     cleanup(rust_state);
 }
 
-#[test]
-fn partial_database_set_is_refused_without_changing_existing_files() {
+#[tokio::test]
+async fn partial_database_set_is_refused_without_changing_existing_files() {
     let state = temporary_state("partial");
     let canvas = state.join("canvas.sqlite3");
     fs::write(&canvas, b"partial database sentinel").expect("sentinel writes");
     let before = filesystem_snapshot(&state);
 
-    let error = match RuntimeStore::open(Some(&state)) {
+    let error = match RuntimeStore::open(Some(&state)).await {
         Ok(_) => panic!("partial state must be refused"),
         Err(error) => error,
     };
@@ -112,14 +114,14 @@ fn partial_database_set_is_refused_without_changing_existing_files() {
     cleanup(state);
 }
 
-#[test]
-fn foreign_files_are_refused_without_creating_any_state_files() {
+#[tokio::test]
+async fn foreign_files_are_refused_without_creating_any_state_files() {
     let state = temporary_state("foreign");
     let foreign = state.join("notes.txt");
     fs::write(&foreign, b"keep this file byte-for-byte").expect("foreign sentinel writes");
     let before = filesystem_snapshot(&state);
 
-    let error = match RuntimeStore::open(Some(&state)) {
+    let error = match RuntimeStore::open(Some(&state)).await {
         Ok(_) => panic!("foreign state-directory entries must be refused"),
         Err(error) => error,
     };
@@ -130,8 +132,8 @@ fn foreign_files_are_refused_without_creating_any_state_files() {
     cleanup(state);
 }
 
-#[test]
-fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
+#[tokio::test]
+async fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
     let state = temporary_state("desktop-rust-owner");
     let owner = state.join("rust-state-owner.json");
     fs::write(
@@ -151,6 +153,7 @@ fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
     }
 
     let store = RuntimeStore::open(Some(&state))
+        .await
         .expect("desktop's preclaimed fresh state opens in the Rust server");
     drop(store);
     assert!(state.join("canvas.sqlite3").is_file());
@@ -159,16 +162,17 @@ fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
     cleanup(state);
 }
 
-#[test]
-fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
+#[tokio::test]
+async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
     let state = temporary_state("python-lock");
     let lock = state.join("runtime.lock");
     fs::write(&lock, b"python startup lock").expect("Python lock sentinel writes");
     create_private_directory(&state.join("accounts"));
     create_private_directory(&state.join("multi-server"));
 
-    let store =
-        RuntimeStore::open(Some(&state)).expect("Python startup artifacts are allowed entries");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("Python startup artifacts are allowed entries");
     drop(store);
     assert_eq!(
         fs::read(lock).expect("lock remains readable"),

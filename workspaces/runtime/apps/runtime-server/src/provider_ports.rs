@@ -108,91 +108,119 @@ fn supervisor_health_payload(
 }
 
 impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderDiagnostics {
-    fn snapshot(&self) -> studio_runtime_services::diagnostics::ProviderDiagnosticsSnapshot {
+    fn snapshot<'a>(
+        &'a self,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        studio_runtime_services::diagnostics::ProviderDiagnosticsSnapshot,
+    > {
         use studio_runtime_services::diagnostics::ProviderDiagnosticsSnapshot;
-
-        let Ok(registry) = self.accounts.snapshot() else {
-            return ProviderDiagnosticsSnapshot {
-                native_accounts: json!({}),
-                studio_loaded_threads: 0,
-                queues: serde_json::Map::new(),
+        let accounts = Arc::clone(&self.accounts);
+        let session = Arc::clone(&self.session);
+        let store = Arc::clone(&self.store);
+        Box::pin(async move {
+            let local = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/provider-diagnostics-local",
+                move || {
+                    let registry = accounts
+                        .snapshot()
+                        .map_err(|_| AccountSessionError::Unknown)?;
+                    let mut active = registry
+                        .accounts
+                        .iter()
+                        .filter_map(|account| {
+                            let key = account.get("id")?.as_str()?.to_owned();
+                            let provider = account
+                                .get("provider")
+                                .and_then(Value::as_str)
+                                .unwrap_or("codex")
+                                .to_owned();
+                            let scope = session.current_scope(&key)?;
+                            (scope.account == key && !scope.connection.is_empty())
+                                .then_some((key, provider, scope))
+                        })
+                        .collect::<Vec<_>>();
+                    active.sort_by(|left, right| left.0.cmp(&right.0));
+                    let queues = active
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (account, _, _))| {
+                            let alias = format!("account{}", index + 1);
+                            let (callbacks, tool_requests) = account_queue_counts(&store, account);
+                            (alias, callbacks, tool_requests)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok::<_, AccountSessionError>((active, queues))
+                },
+            )
+            .await;
+            let Ok(Ok((active, local_queues))) = local else {
+                return ProviderDiagnosticsSnapshot {
+                    native_accounts: json!({}),
+                    studio_loaded_threads: 0,
+                    queues: serde_json::Map::new(),
+                };
             };
-        };
-        let mut active = registry
-            .accounts
-            .iter()
-            .filter_map(|account| {
-                let key = account.get("id")?.as_str()?.to_owned();
-                let provider = account
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
-                    .to_owned();
-                let scope = self.session.current_scope(&key)?;
-                (scope.account == key && !scope.connection.is_empty())
-                    .then_some((key, provider, scope))
-            })
-            .collect::<Vec<_>>();
-        active.sort_by(|left, right| left.0.cmp(&right.0));
-
-        let mut native_accounts = serde_json::Map::new();
-        let mut queues = serde_json::Map::new();
-        let mut loaded_threads = 0_u64;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        for (index, (account, provider, scope)) in active.iter().enumerate() {
-            let alias = format!("account{}", index + 1);
-            let method = if provider == "claude" {
-                Method::ClaudeDiagnostics
-            } else {
-                Method::ThreadLoadedList
-            };
-            let result = provider_read(
-                self.session.as_ref(),
-                scope,
-                None,
-                method,
-                json!({}),
-                deadline,
-            );
-            match result {
-                Some(value) if provider == "claude" => {
-                    let mut row = serde_json::Map::new();
-                    row.insert("provider".to_owned(), json!("claude"));
-                    if let Some(fields) = value.as_object() {
-                        row.extend(fields.clone());
+            let mut native_accounts = serde_json::Map::new();
+            let mut queues = serde_json::Map::new();
+            let mut loaded_threads = 0_u64;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for (index, (_, provider, scope)) in active.iter().enumerate() {
+                let alias = format!("account{}", index + 1);
+                let method = if provider == "claude" {
+                    Method::ClaudeDiagnostics
+                } else {
+                    Method::ThreadLoadedList
+                };
+                let result = provider_read(
+                    self.session.as_ref(),
+                    scope,
+                    None,
+                    method,
+                    json!({}),
+                    deadline,
+                )
+                .await;
+                match result {
+                    Some(value) if provider == "claude" => {
+                        let mut row = serde_json::Map::new();
+                        row.insert("provider".to_owned(), json!("claude"));
+                        if let Some(fields) = value.as_object() {
+                            row.extend(fields.clone());
+                        }
+                        native_accounts.insert(alias.clone(), Value::Object(row));
                     }
-                    native_accounts.insert(alias.clone(), Value::Object(row));
-                }
-                Some(value) => {
-                    let count = value
-                        .get("data")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len);
-                    loaded_threads = loaded_threads.saturating_add(count as u64);
-                    native_accounts.insert(
-                        alias.clone(),
-                        json!({"provider":"codex", "loadedThreads":count}),
-                    );
-                }
-                None => {
-                    native_accounts.insert(
-                        alias.clone(),
-                        json!({"error":"ProviderDiagnosticsUnavailable"}),
-                    );
+                    Some(value) => {
+                        let count = value
+                            .get("data")
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len);
+                        loaded_threads = loaded_threads.saturating_add(count as u64);
+                        native_accounts.insert(
+                            alias.clone(),
+                            json!({"provider":"codex", "loadedThreads":count}),
+                        );
+                    }
+                    None => {
+                        native_accounts.insert(
+                            alias.clone(),
+                            json!({"error":"ProviderDiagnosticsUnavailable"}),
+                        );
+                    }
                 }
             }
-
-            let (callbacks, tool_requests) = account_queue_counts(&self.store, account);
-            queues.insert(format!("{alias}.callbacks"), json!(callbacks));
-            queues.insert(format!("{alias}.clock_replies"), json!(0));
-            queues.insert(format!("{alias}.tool_requests"), json!(tool_requests));
-        }
-        queues.insert("recoveryPending".to_owned(), json!(0));
-        ProviderDiagnosticsSnapshot {
-            native_accounts: Value::Object(native_accounts),
-            studio_loaded_threads: loaded_threads,
-            queues,
-        }
+            for (alias, callbacks, tool_requests) in local_queues {
+                queues.insert(format!("{alias}.callbacks"), json!(callbacks));
+                queues.insert(format!("{alias}.clock_replies"), json!(0));
+                queues.insert(format!("{alias}.tool_requests"), json!(tool_requests));
+            }
+            queues.insert("recoveryPending".to_owned(), json!(0));
+            ProviderDiagnosticsSnapshot {
+                native_accounts: Value::Object(native_accounts),
+                studio_loaded_threads: loaded_threads,
+                queues,
+            }
+        })
     }
 }
 
@@ -230,7 +258,7 @@ fn account_queue_counts(store: &RuntimeStore, account: &str) -> (u64, u64) {
     (callbacks, tool_requests)
 }
 
-fn provider_read(
+async fn provider_read(
     session: &dyn AccountSessionPort,
     scope: &ConnectionScope,
     actor: Option<RequestActor>,
@@ -261,6 +289,7 @@ fn provider_read(
             params,
             deadline,
         })
+        .await
         .ok()?;
     if receipt.scope != *scope
         || receipt.operation != operation
@@ -611,13 +640,7 @@ impl ProviderTitleRequestPort {
             params,
             deadline,
         };
-        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/provider_ports",
-            move || session.provider_request(request),
-        )
-        .await
-        .ok()?
-        .ok()?;
+        let receipt = session.provider_request(request).await.ok()?;
         (receipt.scope.account == expected_account
             && receipt.operation == expected_operation
             && expected_scope.is_none_or(|scope| &receipt.scope == scope))
@@ -993,10 +1016,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn queue_fields_count_matching_persisted_work() {
+    #[tokio::test]
+    async fn queue_fields_count_matching_persisted_work() {
         let directory = tempfile::tempdir().expect("isolated diagnostics state");
         let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
             .expect("open diagnostics store");
         store
             .transaction_with(|tx| {
@@ -1014,6 +1038,7 @@ mod tests {
                 )?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed durable pending work");
         assert_eq!(account_queue_counts(&store, "account-a"), (1, 1));
         assert_eq!(account_queue_counts(&store, "account-b"), (0, 0));

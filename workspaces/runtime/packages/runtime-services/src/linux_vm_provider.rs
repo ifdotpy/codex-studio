@@ -475,25 +475,15 @@ impl GuestProviderSession {
         let profile = profile.into();
         let params = start_params(&agent_id, &provider, &profile, &launch)?;
         let fingerprint = fingerprint(&params)?;
-        let (identity, dispatch) = tokio::task::spawn_blocking({
-            let store = store.clone();
-            let agent_id = agent_id.clone();
-            let account_key = account_key.clone();
-            let provider = provider.clone();
-            let fingerprint = fingerprint.clone();
-            move || {
-                reserve_start(
-                    &store,
-                    &agent_id,
-                    epoch,
-                    &account_key,
-                    &provider,
-                    &fingerprint,
-                )
-            }
-        })
-        .await
-        .map_err(|_| GuestProviderError::Task)??;
+        let (identity, dispatch) = reserve_start(
+            Arc::clone(&store),
+            agent_id.clone(),
+            epoch,
+            account_key.clone(),
+            provider.clone(),
+            fingerprint.clone(),
+        )
+        .await?;
 
         let started = if dispatch {
             match call_guest(
@@ -850,13 +840,12 @@ pub async fn copy_guest_credentials(
     let receipt_id = request_id.clone();
     let reserve_id = receipt_id.clone();
     let reserve_signature = signature.clone();
-    let reserve_store = Arc::clone(&store);
     let reserve_agent = target.agent_id.to_owned();
     let reserve_account = target.account_key.to_owned();
     let reserve_provider = target.provider.to_owned();
     let actor_epoch = target.actor_epoch;
-    let dispatch = tokio::task::spawn_blocking(move || {
-        reserve_store.transaction(|tx| {
+    let dispatch = store
+        .transaction(move |tx| {
             if !vm_actor_matches(
                 tx,
                 &reserve_agent,
@@ -884,9 +873,7 @@ pub async fn copy_guest_credentials(
             }
             Ok(Some(true))
         })
-    })
-    .await
-    .map_err(|_| GuestProviderError::Task)??;
+        .await?;
     let dispatch = match dispatch {
         Some(dispatch) => dispatch,
         None => return Err(GuestProviderError::Refused),
@@ -936,8 +923,7 @@ pub async fn copy_guest_credentials(
     })?;
     let complete_id = receipt_id;
     let complete_signature = signature;
-    tokio::task::spawn_blocking(move || {
-        store.transaction(|tx| {
+    store.transaction(move |tx| {
             let Some(saved) = EventWriteRepository::receipt(tx, &complete_id)? else {
                 return Err(StoreError::InvalidStoredObject {
                     table: "runtime_operation_receipts",
@@ -955,10 +941,7 @@ pub async fn copy_guest_credentials(
                 rusqlite::params![complete_id, complete_signature],
             )?;
             Ok(())
-        })
-    })
-    .await
-    .map_err(|_| GuestProviderError::Task)??;
+        }).await?;
     Ok(digest)
 }
 
@@ -1009,60 +992,62 @@ fn fingerprint(params: &Value) -> Result<String> {
     Ok(data_encoding::HEXLOWER.encode(&Sha256::digest(encoded)))
 }
 
-fn reserve_start(
-    store: &RuntimeStore,
-    agent_id: &str,
+async fn reserve_start(
+    store: Arc<RuntimeStore>,
+    agent_id: String,
     epoch: i64,
-    account_key: &str,
-    provider: &str,
-    fingerprint: &str,
+    account_key: String,
+    provider: String,
+    fingerprint: String,
 ) -> Result<(StartIdentity, bool)> {
     if epoch < 0 || agent_id.is_empty() || fingerprint.len() != 64 {
         return Err(GuestProviderError::Invalid);
     }
     let receipt_id = format!("{START_RECEIPT_PREFIX}{agent_id}:{epoch}");
     let signature = format!("agent={agent_id};epoch={epoch};launch={fingerprint}");
-    store.transaction_with(|tx| -> Result<(StartIdentity, bool)> {
-        if !vm_actor_matches(tx, agent_id, epoch, account_key, Some(provider))? {
-            return Err(GuestProviderError::Refused);
-        }
-        if let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? {
-            if saved.signature != signature {
-                return Err(StoreError::InvalidStoredObject {
-                    table: "runtime_operation_receipts",
-                    id: receipt_id.clone(),
-                }
-                .into());
+    store
+        .transaction_with(move |tx| -> Result<(StartIdentity, bool)> {
+            if !vm_actor_matches(tx, &agent_id, epoch, &account_key, Some(&provider))? {
+                return Err(GuestProviderError::Refused);
             }
-            let saved: PersistedStart = serde_json::from_str(&saved.result)?;
-            let (identity, dispatch) = match saved {
-                PersistedStart::Reserved { identity } => (identity, false),
-                PersistedStart::NotSent { identity } => (identity, true),
-                PersistedStart::Started { identity, .. } => (identity, false),
+            if let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? {
+                if saved.signature != signature {
+                    return Err(StoreError::InvalidStoredObject {
+                        table: "runtime_operation_receipts",
+                        id: receipt_id.clone(),
+                    }
+                    .into());
+                }
+                let saved: PersistedStart = serde_json::from_str(&saved.result)?;
+                let (identity, dispatch) = match saved {
+                    PersistedStart::Reserved { identity } => (identity, false),
+                    PersistedStart::NotSent { identity } => (identity, true),
+                    PersistedStart::Started { identity, .. } => (identity, false),
+                };
+                return Ok((identity, dispatch));
+            }
+            let request_id = uuid::Uuid::new_v4().to_string();
+            if request_id.len() > START_REQUEST_ID_MAX_BYTES {
+                return Err(GuestProviderError::Invalid);
+            }
+            let identity = StartIdentity {
+                agent_id: agent_id.to_owned(),
+                epoch,
+                handle: format!("{PROVIDER_HANDLE_PREFIX}{agent_id}"),
+                request_id,
+                launch_fingerprint: fingerprint.to_owned(),
             };
-            return Ok((identity, dispatch));
-        }
-        let request_id = uuid::Uuid::new_v4().to_string();
-        if request_id.len() > START_REQUEST_ID_MAX_BYTES {
-            return Err(GuestProviderError::Invalid);
-        }
-        let identity = StartIdentity {
-            agent_id: agent_id.to_owned(),
-            epoch,
-            handle: format!("{PROVIDER_HANDLE_PREFIX}{agent_id}"),
-            request_id,
-            launch_fingerprint: fingerprint.to_owned(),
-        };
-        EventWriteRepository::put_receipt(
-            tx,
-            &receipt_id,
-            &signature,
-            &serde_json::to_string(&PersistedStart::Reserved {
-                identity: identity.clone(),
-            })?,
-        )?;
-        Ok((identity, true))
-    })
+            EventWriteRepository::put_receipt(
+                tx,
+                &receipt_id,
+                &signature,
+                &serde_json::to_string(&PersistedStart::Reserved {
+                    identity: identity.clone(),
+                })?,
+            )?;
+            Ok((identity, true))
+        })
+        .await
 }
 
 async fn persist_not_sent(store: Arc<RuntimeStore>, identity: StartIdentity) -> Result<()> {
@@ -1070,8 +1055,8 @@ async fn persist_not_sent(store: Arc<RuntimeStore>, identity: StartIdentity) -> 
         "{START_RECEIPT_PREFIX}{}:{}",
         identity.agent_id, identity.epoch
     );
-    tokio::task::spawn_blocking(move || {
-        store.transaction_with(|tx: &Transaction<'_>| -> Result<()> {
+    store
+        .transaction_with(move |tx: &Transaction<'_>| -> Result<()> {
             let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? else {
                 return Err(GuestProviderError::Unknown);
             };
@@ -1092,9 +1077,7 @@ async fn persist_not_sent(store: Arc<RuntimeStore>, identity: StartIdentity) -> 
             .map_err(StoreError::from)?;
             Ok(())
         })
-    })
-    .await
-    .map_err(|_| GuestProviderError::Task)?
+        .await
 }
 
 async fn persist_started(
@@ -1106,8 +1089,8 @@ async fn persist_started(
         "{START_RECEIPT_PREFIX}{}:{}",
         identity.agent_id, identity.epoch
     );
-    tokio::task::spawn_blocking(move || {
-        store.transaction_with(|tx: &Transaction<'_>| -> Result<()> {
+    store
+        .transaction_with(move |tx: &Transaction<'_>| -> Result<()> {
             let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? else {
                 return Err(GuestProviderError::Unknown);
             };
@@ -1128,9 +1111,7 @@ async fn persist_started(
             .map_err(StoreError::from)?;
             Ok(())
         })
-    })
-    .await
-    .map_err(|_| GuestProviderError::Task)?
+        .await
 }
 
 async fn call_guest(
@@ -1368,9 +1349,9 @@ mod tests {
         )
     }
 
-    fn open_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    async fn open_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         store
             .transaction(|tx| {
                 AgentRepository::put(
@@ -1382,13 +1363,14 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
         (directory, store)
     }
 
-    #[test]
-    fn legacy_deleted_flag_fences_vm_actor_identity() {
-        let (_directory, store) = open_store();
+    #[tokio::test]
+    async fn legacy_deleted_flag_fences_vm_actor_identity() {
+        let (_directory, store) = open_store().await;
         store
             .transaction(|tx| {
                 let mut record =
@@ -1396,6 +1378,7 @@ mod tests {
                 record.extra.insert("deleted".into(), json!(true));
                 AgentRepository::put(tx, &record)
             })
+            .await
             .unwrap();
         let connection = store.read().unwrap();
         assert!(!vm_actor_matches(&connection, "agent-1", 9, "default", Some("codex")).unwrap());
@@ -1423,7 +1406,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_writes_and_acknowledges_only_after_durable_settlement() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         let session = open_session(store, guest.clone()).await.unwrap();
         assert_eq!(session.info().generation, 3);
@@ -1459,7 +1442,7 @@ mod tests {
 
     #[tokio::test]
     async fn uncertain_start_is_reconciled_without_resending_after_restart() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(true));
         assert!(matches!(
             open_session(store.clone(), guest.clone()).await,
@@ -1472,7 +1455,7 @@ mod tests {
 
     #[tokio::test]
     async fn proven_unsent_start_retries_same_identity_without_info_reconciliation() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         *guest.definite_start_failure_once.lock().unwrap() = true;
         assert!(matches!(
@@ -1489,7 +1472,7 @@ mod tests {
 
     #[tokio::test]
     async fn committed_write_with_guest_internal_error_reconciles_without_resend() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         let session = open_session(store, guest.clone()).await.unwrap();
         *guest.committed_internal_write_once.lock().unwrap() = true;
@@ -1510,7 +1493,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_settlement_does_not_ack_guest_event() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         let session = open_session(store, guest.clone()).await.unwrap();
         let event = session.next().await.unwrap().unwrap();
@@ -1524,7 +1507,7 @@ mod tests {
 
     #[tokio::test]
     async fn credential_copy_receipt_contains_no_secret_material() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         store
             .transaction(|tx| {
@@ -1537,6 +1520,7 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
         let secret = b"{\"accessToken\":\"private-token\"}";
         let digest = copy_guest_credentials(
@@ -1582,7 +1566,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_task_factory_exposes_guest_turn_lanes() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         let factory = GuestProviderTaskFactory::new(
             store,
@@ -1668,7 +1652,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_successful_guest_write_reply_remains_unknown() {
-        let (_directory, store) = open_store();
+        let (_directory, store) = open_store().await;
         let guest = Arc::new(FakeGuest::new(false));
         *guest.malformed_write_once.lock().unwrap() = true;
         let factory = GuestProviderTaskFactory::new(

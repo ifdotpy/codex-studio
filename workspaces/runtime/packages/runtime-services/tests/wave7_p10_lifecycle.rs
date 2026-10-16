@@ -83,7 +83,7 @@ fn cases() -> Vec<Value> {
     );
     serde_json::from_slice(&output.stdout).expect("cases")
 }
-fn seed(store: &RuntimeStore, records: Records) {
+async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(|tx| {
         for (table, records) in records.tables {
             for row in records {
@@ -98,7 +98,7 @@ fn seed(store: &RuntimeStore, records: Records) {
             }
         }
         Ok(())
-    }).expect("Python rows seed");
+    }).await.expect("Python rows seed");
 }
 
 #[tokio::test]
@@ -176,7 +176,8 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     store
         .transaction(|tx| {
             tx.execute(
@@ -189,7 +190,7 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
                 [],
             )?;
             Ok(())
-        })
+        }).await
         .expect("voice row seed");
     let (called_tx, called_rx) = tokio::sync::oneshot::channel();
     let voice = Arc::new(RecordingVoice {
@@ -260,7 +261,7 @@ fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
     let root = tempfile::tempdir().expect("root");
     template(root.path());
     let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
-    seed(&store, records);
+    seed(&store, records).await;
     store
         .transaction(|tx| {
             tx.execute(
@@ -281,6 +282,7 @@ fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
             )?;
             Ok(())
         })
+        .await
         .expect("continuation rows");
     let ports = ProductionLifecyclePorts::new(
         Arc::clone(&store),
@@ -351,7 +353,7 @@ fn production_delete_releases_deleted_worker_work_item() {
     let root = tempfile::tempdir().expect("root");
     template(root.path());
     let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
-    seed(&store, records);
+    seed(&store, records).await;
     let ports = ProductionLifecyclePorts::new(
         Arc::clone(&store),
         Arc::new(Notify::new()),
@@ -496,6 +498,7 @@ impl InterruptFixture {
                 }
                 Ok(())
             })
+            .await
             .expect("post-commit delete reconciliation");
     }
 }
@@ -504,8 +507,10 @@ impl LifecyclePorts for InterruptFixture {
         Ok(())
     }
 
-    fn committed(&self) -> Result<(), ManagementError> {
-        Ok(())
+    fn committed(
+        &self,
+    ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async { Ok(()) })
     }
     fn stage(&self, tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
         if effect.kind() == LifecycleEffectKind::FinalizeDeleted {
@@ -631,29 +636,36 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
     assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
 }
 
-#[test]
-fn python_stop_corpus_complete_records_and_exact_descendants() {
+#[tokio::test]
+async fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
     assert_eq!(cases.len(), 21);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
         let root = tempfile::tempdir().expect("case");
-        let store = clone_store(base.path(), root.path());
+        let store = Arc::new(clone_store(base.path(), root.path()));
         seed(
             &store,
             serde_json::from_value(case["records"].clone()).expect("Python rows"),
-        );
+        )
+        .await;
         let actions = case["actions"]
             .as_array()
             .cloned()
             .unwrap_or_else(|| vec![case["action"].clone()]);
-        let ports = InterruptFixture::for_case(&case);
+        let ports = Arc::new(InterruptFixture::for_case(&case));
         let mut result = Value::Null;
         for action in actions {
             let action: Action = serde_json::from_value(action).expect("action");
-            result = agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &ports)
-                .expect("stop commits");
+            result = agent_lifecycle_runtime::execute(
+                Arc::clone(&store),
+                &action,
+                1234567.5,
+                Arc::clone(&ports),
+            )
+            .await
+            .expect("stop commits");
         }
         ports.settle_deleted(&store);
         assert_eq!(result, case["expected"]["result"], "{}", case["name"]);
@@ -684,8 +696,8 @@ fn python_stop_corpus_complete_records_and_exact_descendants() {
     }
 }
 
-#[test]
-fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
+#[tokio::test]
+async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
     let case = cases()
         .into_iter()
         .find(|c| c["name"] == "unknown-True")
@@ -696,7 +708,8 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     drop(store);
     for (table, operation) in [
         ("runtime_agents", "UPDATE"),
@@ -706,35 +719,38 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
     ] {
         for boundary in ["BEFORE", "AFTER"] {
             let root = tempfile::tempdir().expect("case");
-            let store = clone_store(base.path(), root.path());
+            let store = Arc::new(clone_store(base.path(), root.path()));
             let before = state(&store);
-            store.transaction(|tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'stop failure'); END"))?; Ok(()) }).expect("failpoint");
+            store.transaction(|tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'stop failure'); END"))?; Ok(()) }).await.expect("failpoint");
             let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
             assert!(
                 agent_lifecycle_runtime::execute(
-                    &store,
+                    Arc::clone(&store),
                     &action,
                     1234567.5,
-                    &InterruptFixture::default(),
+                    Arc::new(InterruptFixture::default()),
                 )
+                .await
                 .is_err()
             );
             assert_eq!(state(&store), before, "{boundary} {table}");
             drop(store);
-            let store = RuntimeStore::open(Some(root.path())).expect("restart");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("restart"));
             assert_eq!(state(&store), before);
             store
                 .transaction(|tx| {
                     tx.execute_batch("DROP TRIGGER failpoint")?;
                     Ok(())
                 })
+                .await
                 .expect("remove fault");
             let refusal = agent_lifecycle_runtime::execute(
-                &store,
+                Arc::clone(&store),
                 &action,
                 1234567.5,
-                &UnavailableLifecyclePorts,
-            );
+                Arc::new(UnavailableLifecyclePorts),
+            )
+            .await;
             assert!(matches!(
                 refusal,
                 Err(ManagementError::Unavailable(
@@ -743,11 +759,12 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
             ));
             assert_eq!(state(&store), before);
             agent_lifecycle_runtime::execute(
-                &store,
+                Arc::clone(&store),
                 &action,
                 1234567.5,
-                &InterruptFixture::default(),
+                Arc::new(InterruptFixture::default()),
             )
+            .await
             .expect("recover");
             assert_records(&store, &case);
         }
@@ -819,7 +836,8 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
             seed(
                 &store,
                 serde_json::from_value(case["records"].clone()).expect("Python rows"),
-            );
+            )
+            .await;
             let before = state(&store);
             store
             .transaction(|tx| {
@@ -827,7 +845,7 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
                     "CREATE TRIGGER interrupt_projection_fail {boundary} INSERT ON sync_entities BEGIN SELECT RAISE(ABORT,'projection failure'); END"
                 ))?;
                 Ok(())
-            })
+            }).await
             .expect("install projection failpoint");
             let broker = Arc::new(Broker {
                 store: store.clone(),
@@ -862,6 +880,7 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
                     tx.execute_batch("DROP TRIGGER interrupt_projection_fail")?;
                     Ok(())
                 })
+                .await
                 .expect("remove failpoint");
 
             assert_eq!(
@@ -930,7 +949,8 @@ fn production_child_notification_matches_python_corpus() {
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     let ports = ProductionLifecyclePorts::new(
         store.clone(),
         Arc::new(Notify::new()),
@@ -1015,7 +1035,7 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
     let root = tempfile::tempdir().expect("root");
     template(root.path());
     let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
-    seed(&store, records);
+    seed(&store, records).await;
 
     // Constructing the production bundle represents process restart. The
     // tombstone and stale activity are the durable cleanup intent.
@@ -1137,7 +1157,8 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     store
         .transaction(|tx| {
             tx.execute(
@@ -1178,7 +1199,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
                 rusqlite::params![retained_id, submitted.to_string()],
             )?;
             Ok(())
-        })
+        }).await
         .expect("voice row seed");
     let voice = Arc::new(RecordingVoice {
         store: Arc::clone(&store),
@@ -1238,7 +1259,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
                 rusqlite::params![retained_id, json!({"result":"NotSent","cursor":2}).to_string()],
             )?;
             Ok(())
-        })
+        }).await
         .expect("ordinary stop settles as proven not sent after deletion");
     for _ in 0..8 {
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
@@ -1344,7 +1365,7 @@ fn production_interrupt_requires_in_flight_active_turn() {
     let root = tempfile::tempdir().expect("root");
     template(root.path());
     let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
-    seed(&store, records);
+    seed(&store, records).await;
     let ports = ProductionLifecyclePorts::new(
         store.clone(),
         Arc::new(Notify::new()),
@@ -1408,7 +1429,8 @@ fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
-    );
+    )
+    .await;
     let broker = Arc::new(UnknownBroker {
         scope: ConnectionScope {
             account: "fixture-account".into(),
@@ -1448,8 +1470,8 @@ fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
     assert_eq!(agent["startAttempt"]["interrupt"], first);
 }
 
-#[test]
-fn deletion_requires_release_only_for_releasable_deleted_owner_work() {
+#[tokio::test]
+async fn deletion_requires_release_only_for_releasable_deleted_owner_work() {
     let mut case = cases()
         .into_iter()
         .find(|c| c["name"] == "delete-worker-review-work")
@@ -1457,26 +1479,35 @@ fn deletion_requires_release_only_for_releasable_deleted_owner_work() {
     case["records"]["tables"]["runtime_work"][0]["status"] = json!("ready");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
-    );
+    )
+    .await;
     let before = state(&store);
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     assert!(matches!(
-        agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &UnavailableLifecyclePorts),
+        agent_lifecycle_runtime::execute(
+            Arc::clone(&store),
+            &action,
+            1234567.5,
+            Arc::new(UnavailableLifecyclePorts),
+        )
+        .await,
         Err(ManagementError::Unavailable("work-driver/deletion-release"))
     ));
     assert_eq!(state(&store), before);
 }
 
-#[test]
-fn effect_adapter_failure_rolls_back_its_own_writes() {
+#[tokio::test]
+async fn effect_adapter_failure_rolls_back_its_own_writes() {
     struct Fails;
     impl LifecyclePorts for Fails {
-        fn committed(&self) -> Result<(), ManagementError> {
-            panic!("must not wake after rollback")
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { panic!("must not wake after rollback") })
         }
         fn stage(&self, tx: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
             tx.execute(
@@ -1493,25 +1524,32 @@ fn effect_adapter_failure_rolls_back_its_own_writes() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
-    );
+    )
+    .await;
     let before = state(&store);
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-    assert!(agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &Fails).is_err());
+    assert!(
+        agent_lifecycle_runtime::execute(Arc::clone(&store), &action, 1234567.5, Arc::new(Fails),)
+            .await
+            .is_err()
+    );
     drop(store);
     let store = RuntimeStore::open(Some(root.path())).expect("restart");
     assert_eq!(state(&store), before);
 }
 
-#[test]
-fn successful_adapter_cannot_resurrect_stopped_agent() {
+#[tokio::test]
+async fn successful_adapter_cannot_resurrect_stopped_agent() {
     struct Resumes;
     impl LifecyclePorts for Resumes {
-        fn committed(&self) -> Result<(), ManagementError> {
-            panic!("must not wake after rollback")
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { panic!("must not wake after rollback") })
         }
         fn stage(
             &self,
@@ -1530,15 +1568,22 @@ fn successful_adapter_cannot_resurrect_stopped_agent() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
-    );
+    )
+    .await;
     let before = state(&store);
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     assert!(matches!(
-        agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &Resumes),
+        agent_lifecycle_runtime::execute(
+            Arc::clone(&store),
+            &action,
+            1234567.5,
+            Arc::new(Resumes),
+        )
+        .await,
         Err(ManagementError::Invalid(
             "Lifecycle adapter changed stop identity"
         ))
@@ -1548,12 +1593,14 @@ fn successful_adapter_cannot_resurrect_stopped_agent() {
     assert_eq!(state(&store), before);
 }
 
-#[test]
-fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
+#[tokio::test]
+async fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
     struct ReplacesIdentity(&'static str);
     impl LifecyclePorts for ReplacesIdentity {
-        fn committed(&self) -> Result<(), ManagementError> {
-            panic!("must not wake after rollback")
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { panic!("must not wake after rollback") })
         }
         fn stage(
             &self,
@@ -1573,15 +1620,22 @@ fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
     for field in ["startAttempt", "threadId", "accountKey", "provider"] {
         let root = tempfile::tempdir().expect("root");
         template(root.path());
-        let store = RuntimeStore::open(Some(root.path())).expect("open");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
         seed(
             &store,
             serde_json::from_value(case["records"].clone()).expect("rows"),
-        );
+        )
+        .await;
         let before = state(&store);
         let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
         assert!(matches!(
-            agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &ReplacesIdentity(field)),
+            agent_lifecycle_runtime::execute(
+                Arc::clone(&store),
+                &action,
+                1234567.5,
+                Arc::new(ReplacesIdentity(field)),
+            )
+            .await,
             Err(ManagementError::Invalid(
                 "Lifecycle adapter changed stop identity"
             ))
@@ -1590,8 +1644,8 @@ fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
     }
 }
 
-#[test]
-fn lost_wake_preserves_committed_stop_for_restart() {
+#[tokio::test]
+async fn lost_wake_preserves_committed_stop_for_restart() {
     struct LostWake;
     impl LifecyclePorts for LostWake {
         fn stage(
@@ -1601,8 +1655,10 @@ fn lost_wake_preserves_committed_stop_for_restart() {
         ) -> Result<(), ManagementError> {
             InterruptFixture::default().stage(tx, effect)
         }
-        fn committed(&self) -> Result<(), ManagementError> {
-            Err(ManagementError::Invalid("injected lost wake"))
+        fn committed(
+            &self,
+        ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async { Err(ManagementError::Invalid("injected lost wake")) })
         }
     }
     let case = cases()
@@ -1611,14 +1667,21 @@ fn lost_wake_preserves_committed_stop_for_restart() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
-    );
+    )
+    .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     assert!(matches!(
-        agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &LostWake),
+        agent_lifecycle_runtime::execute(
+            Arc::clone(&store),
+            &action,
+            1234567.5,
+            Arc::new(LostWake),
+        )
+        .await,
         Err(ManagementError::Store(_))
     ));
     drop(store);

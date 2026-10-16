@@ -1,4 +1,4 @@
-//! Synchronous orchestration of persisted agent operations.
+//! Async orchestration of persisted agent operations.
 use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
@@ -12,13 +12,50 @@ use studio_runtime_schema::agent_limits_generated::{
 use studio_runtime_store::RuntimeStore;
 
 pub struct Context<'a> {
-    pub store: &'a RuntimeStore,
+    pub store: std::sync::Arc<RuntimeStore>,
     pub accounts: Option<&'a AccountPolicyState>,
-    pub driver: Option<&'a AccountDriver>,
-    pub catalog: Option<&'a dyn crate::host_worker_create::CreationCatalog>,
+    pub driver: Option<std::sync::Arc<AccountDriver>>,
+    pub catalog: Option<std::sync::Arc<dyn crate::host_worker_create::CreationCatalog>>,
     pub managed_creation_environment:
         Option<&'a dyn crate::managed_child_create::ManagedCreationEnvironment>,
-    pub validate: &'a dyn Fn(&str, &Value) -> bool,
+    pub validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+}
+
+async fn with_read<T, F>(
+    store: std::sync::Arc<RuntimeStore>,
+    operation: F,
+) -> Result<T, OperationError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, OperationError> + Send + 'static,
+{
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/read",
+        move || {
+            let read = store.read()?;
+            operation(&read)
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+}
+
+async fn project_directory_async(value: Option<String>) -> Result<Option<String>, OperationError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/project_directory",
+        move || value.as_deref().map(project_directory).transpose(),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+}
+
+async fn project_directory_default_async() -> Result<String, OperationError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/project_directory_default",
+        project_directory_default,
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
 #[derive(Debug, Error)]
@@ -109,15 +146,15 @@ pub struct AgentAdmission {
 
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 
-pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
-    create(context, request, true)
+pub async fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
+    create(context, request, true).await
 }
 
 /// Return a durable lead replay without consulting catalog or provider state.
 /// The HTTP admission edge calls this before any catalog wait, matching the
 /// Python `new_lead` replay check at `codex_runtime.py:5067-5131`, which runs
 /// before `self.catalog(...)`.
-pub fn replay_lead_request(
+pub async fn replay_lead_request(
     context: &Context<'_>,
     request: &Creation,
 ) -> Result<Option<Value>, OperationError> {
@@ -134,126 +171,169 @@ pub fn replay_lead_request(
         });
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    context.store.transaction_with_error(|tx| {
-        let Some(record) = super::replay_lead(tx, id, &signature, validate)? else {
-            return Ok(None);
-        };
-        Ok(Some(sync_projection(tx, &record)?))
-    })
+    let validate = std::sync::Arc::clone(&context.validate);
+    let id = id.to_owned();
+    context
+        .store
+        .transaction_with_error(move |tx| {
+            let validate = |schema: &str, value: &Value| validate(schema, value);
+            let Some(record) = super::replay_lead(tx, &id, &signature, validate)? else {
+                return Ok(None);
+            };
+            Ok(Some(sync_projection(tx, &record)?))
+        })
+        .await
 }
 
 /// Resolve the same project-bound account used by lead creation before the
 /// HTTP edge admits a model catalog request, matching Python's project account
 /// selection at `codex_runtime.py:5067-5131`.
-pub fn creation_account_key(
+pub async fn creation_account_key(
     context: &Context<'_>,
     request: &Creation,
 ) -> Result<String, OperationError> {
-    let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    let read = context.store.read()?;
-    let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
-    let cwd = requested_cwd.map_or_else(
-        || {
-            previous
-                .as_ref()
-                .and_then(|prior| {
-                    prior
-                        .get("hostProjectPath")
-                        .filter(|value| !value.is_null())
-                        .or_else(|| prior.get("cwd"))
-                        .and_then(Value::as_str)
-                })
-                .map(project_directory)
-                .transpose()
-                .and_then(|cwd| cwd.map_or_else(project_directory_default, Ok))
-        },
-        Ok,
-    )?;
-    drop(read);
-    account_key(context, request.account.as_deref(), &cwd)
+    let requested_cwd = project_directory_async(request.cwd.clone()).await?;
+    let previous_id = request.previous.clone();
+    let validate = std::sync::Arc::clone(&context.validate);
+    let previous = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        previous_lead(read, previous_id.as_deref(), &|schema, value| {
+            validate(schema, value)
+        })
+    })
+    .await?;
+    let cwd = if let Some(cwd) = requested_cwd {
+        cwd
+    } else if let Some(prior) = previous.as_ref() {
+        let raw = prior
+            .get("hostProjectPath")
+            .filter(|value| !value.is_null())
+            .or_else(|| prior.get("cwd"))
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?
+            .to_owned();
+        project_directory_async(Some(raw))
+            .await?
+            .ok_or(OperationError::Internal)?
+    } else {
+        project_directory_default_async().await?
+    };
+    account_key(context, request.account.clone(), cwd).await
 }
 
-pub fn conversation_account_key(
+pub async fn conversation_account_key(
     context: &Context<'_>,
     id: &str,
     expected_account: Option<&str>,
     cwd: Option<&str>,
 ) -> Result<String, OperationError> {
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    let read = context.store.read()?;
-    let initial = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
-    let old_account = initial
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    if expected_account.is_some_and(|expected| expected != old_account) {
-        return Err(MutationError::Stale.into());
-    }
-    drop(read);
+    let store = std::sync::Arc::clone(&context.store);
+    let validate = std::sync::Arc::clone(&context.validate);
+    let id = id.to_owned();
+    let expected = expected_account.map(str::to_owned);
+    let old_account = with_read(store, move |read| {
+        let initial = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent)?;
+        let account = initial
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if expected
+            .as_deref()
+            .is_some_and(|expected| expected != account)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        Ok(account.to_owned())
+    })
+    .await?;
     // Python's conversation update uses the requested project account when cwd
     // changes and otherwise keeps this conversation's account; settings then
     // resolve their catalogs separately (`codex_runtime.py:5484-5491`).
     if let Some(cwd) = cwd {
-        account_key(context, None, &project_directory(cwd)?)
+        let cwd = project_directory_async(Some(cwd.to_owned()))
+            .await?
+            .ok_or(OperationError::Internal)?;
+        account_key(context, None, cwd).await
     } else {
-        Ok(old_account.to_owned())
+        Ok(old_account)
     }
 }
 
 /// Return the currently selected worker account for Python's review-defaults
 /// settings-catalog path (`codex_runtime.py:5487-5491`).
-pub fn conversation_worker_account_key(
+pub async fn conversation_worker_account_key(
     context: &Context<'_>,
     id: &str,
     expected_account: Option<&str>,
 ) -> Result<Option<String>, OperationError> {
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    let read = context.store.read()?;
-    let record = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
-    let account = record
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    if expected_account.is_some_and(|expected| expected != account) {
-        return Err(MutationError::Stale.into());
-    }
-    Ok(record
-        .pointer("/workerDefaults/accountKey")
-        .and_then(Value::as_str)
-        .map(str::to_owned))
+    let store = std::sync::Arc::clone(&context.store);
+    let validate = std::sync::Arc::clone(&context.validate);
+    let id = id.to_owned();
+    let expected = expected_account.map(str::to_owned);
+    with_read(store, move |read| {
+        let record = load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent)?;
+        let account = record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if expected
+            .as_deref()
+            .is_some_and(|expected| expected != account)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        Ok(record
+            .pointer("/workerDefaults/accountKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    })
+    .await
 }
 
-pub fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
-    create(context, request, false)
+pub async fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
+    create(context, request, false).await
 }
 
 /// Transcribe `Runtime.create`'s pre-write ordering for the HTTP admission
 /// edge: replay first, then profile and account resolution, then decide whether
 /// Python's catalog-dependent fields require a catalog. The write path repeats
 /// replay and profile validation to handle races after this read-only phase.
-pub fn prepare_agent_admission(
+pub async fn prepare_agent_admission(
     context: &Context<'_>,
     request: &Creation,
 ) -> Result<AgentAdmission, OperationError> {
     // Python's durable existing-agent replay is the no-side-effect fast path;
     // `codex_runtime.py:4902-4913`. Keep it ahead of profile/account/catalog work.
-    let Some(id) = request.id.as_deref() else {
-        return prepare_new_agent_admission(context, request);
+    let Some(id) = request.id.clone() else {
+        return prepare_new_agent_admission(context, request).await;
     };
-    let intent = agent_creation_intent(request)?;
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let intent = agent_creation_intent(request).await?;
+    let validate = std::sync::Arc::clone(&context.validate);
+    let read_id = id.clone();
+    let read_intent = intent.clone();
     let replayed = {
-        let read = context.store.read()?;
-        super::replay_agent(&read, id, &intent, validate)?
+        with_read(std::sync::Arc::clone(&context.store), move |read| {
+            Ok(super::replay_agent(
+                read,
+                &read_id,
+                &read_intent,
+                |schema, value| validate(schema, value),
+            )?)
+        })
+        .await?
     };
     if replayed.is_some() {
-        let replay = context.store.transaction_with_error(|tx| {
-            let record =
-                super::replay_agent(tx, id, &intent, validate)?.ok_or(CreateError::Conflict)?;
-            Ok::<Value, OperationError>(sync_projection(tx, &record)?)
-        })?;
+        let validate = std::sync::Arc::clone(&context.validate);
+        let replay = context
+            .store
+            .transaction_with_error(move |tx| {
+                let validate = |schema: &str, value: &Value| validate(schema, value);
+                let record = super::replay_agent(tx, &id, &intent, validate)?
+                    .ok_or(CreateError::Conflict)?;
+                Ok::<Value, OperationError>(sync_projection(tx, &record)?)
+            })
+            .await?;
         return Ok(AgentAdmission {
             replay: Some(replay),
             account: None,
@@ -261,29 +341,33 @@ pub fn prepare_agent_admission(
             needs_catalog: false,
         });
     }
-    prepare_new_agent_admission(context, request)
+    prepare_new_agent_admission(context, request).await
 }
 
-fn prepare_new_agent_admission(
+async fn prepare_new_agent_admission(
     context: &Context<'_>,
     request: &Creation,
 ) -> Result<AgentAdmission, OperationError> {
     // Python resolves the parent delegation/profile before deciding whether a
     // catalog is needed (`codex_runtime.py:4853-4888`). A profile contributes
     // only non-null model/effort values that the request did not override.
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    let profile = {
-        let read = context.store.read()?;
-        request
-            .profile
-            .as_deref()
-            .filter(|id| !id.is_empty())
+    let validate = std::sync::Arc::clone(&context.validate);
+    let profile_id = request.profile.clone().filter(|id| !id.is_empty());
+    let profile = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        profile_id
             .map(|id| {
-                load_record(&read, "runtime_profiles", "ProfileRecord", id, &validate)?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+                load_record(
+                    read,
+                    "runtime_profiles",
+                    "ProfileRecord",
+                    &id,
+                    &|schema, value| validate(schema, value),
+                )?
+                .ok_or(OperationError::Invalid("Unknown worker profile"))
             })
-            .transpose()?
-    };
+            .transpose()
+    })
+    .await?;
     let explicit = request.intent.as_object();
     let profile_model_value = profile
         .as_ref()
@@ -315,7 +399,7 @@ fn prepare_new_agent_admission(
     // catalog; child account selection is resolved from the parent at the
     // admission boundary (`codex_runtime.py:4876-4888`).
     let account = if request.parent.is_none() {
-        Some(creation_account_key(context, request)?)
+        Some(creation_account_key(context, request).await?)
     } else {
         None
     };
@@ -418,7 +502,7 @@ mod agent_catalog_requirement_tests {
     }
 }
 
-fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
+async fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
     let mut intent = request.intent.clone();
     let object = intent.as_object_mut().ok_or(OperationError::Internal)?;
     if let Some(imported_from) = &request.imported_from {
@@ -427,13 +511,13 @@ fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
     object.remove("id");
     intent["prompt"] = json!(python_strip(&request.prompt));
     intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
-    if let Some(cwd) = request.cwd.as_deref().map(project_directory).transpose()? {
+    if let Some(cwd) = project_directory_async(request.cwd.clone()).await? {
         intent["cwd"] = json!(cwd);
     }
     Ok(intent)
 }
 
-fn create(
+async fn create(
     context: &Context<'_>,
     mut request: Creation,
     draft: bool,
@@ -446,53 +530,83 @@ fn create(
             "layr"
         } else {
             "worktree"
-        });
-    let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
+        })
+        .to_owned();
+    let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     if !draft {
         // Import source is part of the durable creation identity. Keep it in
         // the intent compared by replay_agent, including the transaction's
         // concurrent recheck, rather than relying on an earlier route read.
-        request.intent = agent_creation_intent(&request)?;
+        request.intent = agent_creation_intent(&request).await?;
     }
-    let signature = lead_signature(&request.intent, workspace, requested_cwd.as_deref());
-    let read = context.store.read()?;
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let signature = lead_signature(&request.intent, &workspace, requested_cwd.as_deref());
+    let validate = std::sync::Arc::clone(&context.validate);
     let intent = request.intent.clone();
-    let replay = |connection: &Connection| {
+    let read_id = id.clone();
+    let read_signature = signature.clone();
+    let read_intent = intent.clone();
+    let read_validate = std::sync::Arc::clone(&validate);
+    let existing = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        let validate = |schema: &str, value: &Value| read_validate(schema, value);
         if draft {
-            replay_lead(connection, &id, &signature, validate)
+            Ok(replay_lead(read, &read_id, &read_signature, validate)?)
         } else {
-            replay_agent(connection, &id, &intent, validate)
+            Ok(replay_agent(read, &read_id, &read_intent, validate)?)
         }
-    };
-    let existing = replay(&read)?;
-    drop(read);
+    })
+    .await?;
     if existing.is_some() {
-        let replayed = context.store.transaction_with_error(|tx| {
-            let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok::<Value, OperationError>(sync_projection(tx, &current)?)
-        })?;
+        let validate = std::sync::Arc::clone(&validate);
+        let id = id.clone();
+        let signature = signature.clone();
+        let intent = intent.clone();
+        let replayed = context
+            .store
+            .transaction_with_error(move |tx| {
+                let validate = |schema: &str, value: &Value| validate(schema, value);
+                let replay = |connection: &Connection| {
+                    if draft {
+                        replay_lead(connection, &id, &signature, validate)
+                    } else {
+                        replay_agent(connection, &id, &intent, validate)
+                    }
+                };
+                let current = replay(tx)?.ok_or(CreateError::Conflict)?;
+                Ok::<Value, OperationError>(sync_projection(tx, &current)?)
+            })
+            .await?;
         #[cfg(target_os = "macos")]
         // Replays use the persisted child workspace mode, even when the retry
         // omitted an explicit workspace (Python `codex_runtime.py:5175-5201`).
         let replayed = if should_resume_image_provisioning(&replayed) {
-            provision_image_workspace(context, &replayed, &id)?
+            provision_image_workspace(context, &replayed, &id).await?
         } else {
             replayed
         };
         return Ok(replayed);
     }
-    let read = context.store.read()?;
-    let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
-    let profile = request
-        .profile
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .map(|id| {
-            load_record(&read, "runtime_profiles", "ProfileRecord", id, &validate)?
+    let previous_id = request.previous.clone();
+    let profile_id = request.profile.clone().filter(|id| !id.is_empty());
+    let read_validate = std::sync::Arc::clone(&validate);
+    let (previous, profile) = with_read(std::sync::Arc::clone(&context.store), move |read| {
+        let previous = previous_lead(read, previous_id.as_deref(), &|schema, value| {
+            read_validate(schema, value)
+        })?;
+        let profile = profile_id
+            .map(|id| {
+                load_record(
+                    read,
+                    "runtime_profiles",
+                    "ProfileRecord",
+                    &id,
+                    &|schema, value| read_validate(schema, value),
+                )?
                 .ok_or(OperationError::Invalid("Unknown worker profile"))
-        })
-        .transpose()?;
+            })
+            .transpose()?;
+        Ok((previous, profile))
+    })
+    .await?;
     if let Some(profile) = &profile {
         if request.role.is_none() {
             request.role = profile
@@ -502,16 +616,23 @@ fn create(
         }
         request.catalog |= merge_profile_catalog_fields(&mut request.intent, &intent, profile);
     }
-    drop(read);
     if request.parent.is_some() {
         if request.worker_catalog {
             return Err(OperationError::Invalid(
                 "Only a lead can change worker defaults",
             ));
         }
-        return create_child(context, &request, &id, &request.intent, &intent, &validate);
+        return create_child(
+            context,
+            &request,
+            &id,
+            &request.intent,
+            &intent,
+            std::sync::Arc::clone(&validate),
+        )
+        .await;
     }
-    if matches!(workspace, "image" | "layr") {
+    if matches!(workspace.as_str(), "image" | "layr") {
         if !cfg!(target_os = "macos") {
             return Err(OperationError::Invalid(
                 "This server supports only worktree chats",
@@ -525,40 +646,47 @@ fn create(
             "Select an existing project directory",
         ));
     }
-    let cwd = requested_cwd.map_or_else(
-        || {
-            if let Some(prior) = &previous {
-                project_directory(
-                    prior
-                        .get("hostProjectPath")
-                        .filter(|value| !value.is_null())
-                        .or_else(|| prior.get("cwd"))
-                        .and_then(Value::as_str)
-                        .ok_or(OperationError::Internal)?,
-                )
-            } else {
-                project_directory_default()
-            }
-        },
-        Ok,
-    )?;
+    let cwd = if let Some(cwd) = requested_cwd {
+        cwd
+    } else if let Some(prior) = &previous {
+        let path = prior
+            .get("hostProjectPath")
+            .filter(|value| !value.is_null())
+            .or_else(|| prior.get("cwd"))
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?
+            .to_owned();
+        project_directory_async(Some(path))
+            .await?
+            .ok_or(OperationError::Internal)?
+    } else {
+        project_directory_default_async().await?
+    };
     let binding = if request.project_binding {
-        Some(resolve_project_binding(
-            context,
-            &cwd,
-            request.intent.get("project_id").and_then(Value::as_str),
-            request
-                .intent
-                .get("project_server_id")
-                .and_then(Value::as_str),
-            request.intent.get("project_folder"),
-        )?)
+        Some(
+            resolve_project_binding(
+                context,
+                cwd.clone(),
+                request
+                    .intent
+                    .get("project_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                request
+                    .intent
+                    .get("project_server_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                request.intent.get("project_folder").cloned(),
+            )
+            .await?,
+        )
     } else {
         None
     };
-    let account = account_key(context, request.account.as_deref(), &cwd)?;
-    let identity = account_identity(context, &account)?;
-    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let account = account_key(context, request.account.clone(), cwd.clone()).await?;
+    let identity = account_identity(context, &account).await?;
+    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
     let settings = if request.catalog || request.worker_catalog {
         let model = request
             .intent
@@ -605,6 +733,7 @@ fn create(
             .unwrap_or(false);
         context
             .catalog
+            .as_deref()
             .ok_or(OperationError::Unavailable("provider-session/model-list"))?
             .resolve(
                 &account,
@@ -653,29 +782,35 @@ fn create(
     } else {
         requested_max_agents.max(concurrency + TEAM_AGENT_HEADROOM)
     };
-    let prompt = python_strip(&request.prompt);
+    let prompt = python_strip(&request.prompt).to_owned();
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
     let (worker_defaults, review_defaults) = if role == "orchestrator" {
         (
-            Some(resolve_worker_defaults(
-                context,
-                request.intent.get("worker_defaults"),
-                &account,
-                &identity,
-                &settings.model,
-                &[],
-            )?),
-            Some(resolve_review_defaults(
-                context,
-                request.intent.get("review_defaults"),
-                &account,
-                &identity,
-                request
-                    .intent
-                    .pointer("/worker_defaults/account_key")
-                    .and_then(Value::as_str),
-                &[],
-            )?),
+            Some(
+                resolve_worker_defaults(
+                    context,
+                    request.intent.get("worker_defaults"),
+                    &account,
+                    &identity,
+                    &settings.model,
+                    &[],
+                )
+                .await?,
+            ),
+            Some(
+                resolve_review_defaults(
+                    context,
+                    request.intent.get("review_defaults"),
+                    &account,
+                    &identity,
+                    request
+                        .intent
+                        .pointer("/worker_defaults/account_key")
+                        .and_then(Value::as_str),
+                    &[],
+                )
+                .await?,
+            ),
         )
     } else {
         (None, None)
@@ -687,15 +822,15 @@ fn create(
         } else {
             python_strip(request.name.as_deref().unwrap_or("Lead"))
         },
-        prompt,
+        &prompt,
         &cwd,
         &account,
-        provider,
+        &provider,
         yolo,
         role,
         role == "orchestrator",
         if draft { "idle" } else { "queued" },
-        workspace,
+        &workspace,
         Some(concurrency),
         max_agents,
         json!(request.token_budget),
@@ -749,7 +884,23 @@ fn create(
     ]
     .iter()
     .any(|field| request.intent.get(*field).is_some());
-    let result = mutate(context, |tx| {
+    let id_for_write = id.clone();
+    let workspace_for_write = workspace.clone();
+    let result = mutate(context, move |tx| {
+        let validate_arc = validate;
+        let validate = |schema: &str, value: &Value| validate_arc(schema, value);
+        let replay_validate = std::sync::Arc::clone(&validate_arc);
+        let replay_id = id_for_write.clone();
+        let replay_signature = signature.clone();
+        let replay_intent = intent.clone();
+        let replay = |connection: &Connection| {
+            let validate = |schema: &str, value: &Value| replay_validate(schema, value);
+            if draft {
+                replay_lead(connection, &replay_id, &replay_signature, validate)
+            } else {
+                replay_agent(connection, &replay_id, &replay_intent, validate)
+            }
+        };
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
         }
@@ -758,18 +909,18 @@ fn create(
             && draft
             && !reuse_execution_fields
             && !request.worker_catalog
-            && reusable_previous_workspace(&prior, workspace, &cwd)
+            && reusable_previous_workspace(&prior, &workspace_for_write, &cwd)
             && !truthy(prior.get("layrReady"))
             && prior
                 .get("workspaceMode")
                 .and_then(Value::as_str)
                 .unwrap_or("worktree")
-                == workspace
+                == workspace_for_write.as_str()
             && prior
                 .get("provider")
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
-                == provider
+                == provider.as_str()
             && crate::sync_entity_context::agent_view_context(tx, &prior, None)?.empty_lead
         {
             let mut reused = prior;
@@ -778,7 +929,7 @@ fn create(
                 .and_then(Value::as_str)
                 .unwrap_or("default")
                 .to_owned();
-            if reused.get("provider").and_then(Value::as_str) != Some(provider) {
+            if reused.get("provider").and_then(Value::as_str) != Some(provider.as_str()) {
                 return Err(OperationError::Create(CreateError::IdentityChanged));
             }
             reused["cwd"] = json!(cwd);
@@ -819,16 +970,16 @@ fn create(
                     .ok_or(OperationError::Internal)?
                     .remove("pendingSettingsAccountKey");
             }
-            if workspace == "layr" {
+            if workspace_for_write == "layr" {
                 set_vm_workspace_fields(&mut reused, &cwd);
-            } else if workspace == "image" {
+            } else if workspace_for_write == "image" {
                 set_image_workspace_fields(&mut reused, &cwd);
             }
             ensure_project(tx, &reused)?;
             save_agent(tx, &reused, &validate)?;
             tx.execute(
                 "INSERT INTO runtime_lead_requests(id,agent,signature) VALUES(?1,?2,?3)",
-                rusqlite::params![id, reused["id"].as_str(), signature],
+                rusqlite::params![id_for_write, reused["id"].as_str(), signature],
             )
             .map_err(StoreError::from)?;
             return Ok(sync_projection(tx, &reused)?);
@@ -849,42 +1000,53 @@ fn create(
             }
         }
         Ok(super::create_agent_with_identity(
-            tx, &id, prompt, record, created, validate,
+            tx,
+            &id_for_write,
+            &prompt,
+            record,
+            created,
+            validate,
         )?)
-    })?;
+    })
+    .await?;
     #[cfg(target_os = "macos")]
     let result = if workspace == "image" {
-        provision_image_workspace(context, &result, &id)?
+        provision_image_workspace(context, &result, &id).await?
     } else {
         result
     };
     Ok(result)
 }
 
-fn create_child(
+async fn create_child(
     context: &Context<'_>,
     request: &Creation,
     id: &str,
     execution_intent: &Value,
     creation_intent: &Value,
-    validate: &impl Fn(&str, &Value) -> bool,
+    validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
-    let (parent, root, project_binding) = {
-        let db = context.store.read()?;
-        let parent =
-            load_agent_value(&db, parent_id, validate)?.ok_or(MutationError::UnknownAgent)?;
-        if truthy(parent.get("deletedAt")) {
-            return Err(MutationError::Deleted.into());
-        }
-        let root_id = parent
-            .get("rootId")
-            .and_then(Value::as_str)
-            .ok_or(OperationError::Internal)?;
-        let root = load_agent_value(&db, root_id, validate)?.ok_or(MutationError::UnknownAgent)?;
-        let project = parent_project_binding(&db, &parent, &root)?;
-        (parent, root, project)
-    };
+    let parent_id_for_read = parent_id.to_owned();
+    let validate_fn = std::sync::Arc::clone(&validate);
+    let (parent, root, project_binding) =
+        with_read(std::sync::Arc::clone(&context.store), move |db| {
+            let validate = |schema: &str, value: &Value| validate_fn(schema, value);
+            let parent = load_agent_value(db, &parent_id_for_read, &validate)?
+                .ok_or(MutationError::UnknownAgent)?;
+            if truthy(parent.get("deletedAt")) {
+                return Err(MutationError::Deleted.into());
+            }
+            let root_id = parent
+                .get("rootId")
+                .and_then(Value::as_str)
+                .ok_or(OperationError::Internal)?;
+            let root =
+                load_agent_value(db, root_id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            let project = parent_project_binding(db, &parent, &root)?;
+            Ok((parent, root, project))
+        })
+        .await?;
     if !truthy(root.get("isLead"))
         || root.get("id").and_then(Value::as_str) != root.get("rootId").and_then(Value::as_str)
     {
@@ -946,7 +1108,7 @@ fn create_child(
                 .unwrap_or("default")
         });
     let (identity, account_status, can_attempt_native_proof) =
-        account_identity_with_status(context, account)?;
+        account_identity_with_status(context, account.to_owned()).await?;
     let parent_account_key = parent
         .get("accountKey")
         .and_then(Value::as_str)
@@ -964,7 +1126,7 @@ fn create_child(
     {
         return Err(MutationError::IdentityChanged.into());
     }
-    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
     let model = execution_intent
         .get("model")
         .and_then(Value::as_str)
@@ -991,12 +1153,8 @@ fn create_child(
         .unwrap_or(false);
     let catalog = context
         .catalog
+        .clone()
         .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
-    let (base_ref, base_commit) = if worktree {
-        crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?
-    } else {
-        (String::new(), String::new())
-    };
     let body = json!({
         "account_key":account,"name":request.name.as_deref().unwrap_or(model),
         "model":model,"effort":effort,"fast_mode":fast_mode,
@@ -1020,30 +1178,60 @@ fn create_child(
         .get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default");
-    let draft = crate::host_worker_create::prepare_work_item(
-        &body,
-        PathBuf::from(host_cwd).as_path(),
-        studio_runtime_store::AgentId::from(id),
-        studio_runtime_store::AgentId::from(root_agent),
-        studio_runtime_store::AgentId::from(parent_id),
-        &base_ref,
-        &base_commit,
-        epoch,
-        parent_cwd,
-        parent_project_path,
-        parent_account_key,
-        parent.get("projectId"),
-        parent.get("projectServerId"),
-        project_binding.as_ref(),
-        &identity,
-        catalog,
-        role,
-        worktree,
-        fast_mode,
-        daybreak,
-    )?;
-    let checked = crate::host_worker_create::persisted_record(&draft)?;
-    let mut record = checked.value();
+    let parent_project_id = parent.get("projectId").cloned();
+    let parent_project_server_id = parent.get("projectServerId").cloned();
+    let root_yolo = root.get("yoloMode").cloned().unwrap_or(json!(true));
+    let root_max_agents = root
+        .get("maxAgents")
+        .cloned()
+        .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
+    let root_token_budget = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
+    let prepare_cwd = cwd.to_owned();
+    let prepare_host_cwd = host_cwd.to_owned();
+    let prepare_parent_cwd = parent_cwd.to_owned();
+    let prepare_parent_project_path = parent_project_path.to_owned();
+    let prepare_parent_account_key = parent_account_key.to_owned();
+    let prepare_role = role.to_owned();
+    let prepare_id = id.to_owned();
+    let prepare_root_agent = root_agent.to_owned();
+    let prepare_parent_id = parent_id.to_owned();
+    let prepare_identity = identity.clone();
+    let (draft, mut record) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/child_prepare",
+        move || {
+            let (base_ref, base_commit) = if worktree {
+                crate::host_worker_create::freeze_base(PathBuf::from(&prepare_cwd).as_path())?
+            } else {
+                (String::new(), String::new())
+            };
+            let draft = crate::host_worker_create::prepare_work_item(
+                &body,
+                PathBuf::from(&prepare_host_cwd).as_path(),
+                studio_runtime_store::AgentId::from(prepare_id),
+                studio_runtime_store::AgentId::from(prepare_root_agent),
+                studio_runtime_store::AgentId::from(prepare_parent_id),
+                &base_ref,
+                &base_commit,
+                epoch,
+                &prepare_parent_cwd,
+                &prepare_parent_project_path,
+                &prepare_parent_account_key,
+                parent_project_id.as_ref(),
+                parent_project_server_id.as_ref(),
+                project_binding.as_ref(),
+                &prepare_identity,
+                catalog.as_ref(),
+                &prepare_role,
+                worktree,
+                fast_mode,
+                daybreak,
+            )?;
+            let checked = crate::host_worker_create::persisted_record(&draft)?;
+            Ok::<_, CreateError>((draft, checked.value()))
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)??;
     if workspace == "layr" {
         record["cwd"] = json!(cwd);
         set_vm_workspace_fields(&mut record, host_cwd);
@@ -1056,24 +1244,33 @@ fn create_child(
     }
     record["creationIntent"] = creation_intent.clone();
     record["provider"] = json!(provider);
-    record["yoloMode"] = root.get("yoloMode").cloned().unwrap_or(json!(true));
-    record["maxAgents"] = root
-        .get("maxAgents")
-        .cloned()
-        .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
-    record["tokenBudget"] = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
+    record["yoloMode"] = root_yolo;
+    record["maxAgents"] = root_max_agents;
+    record["tokenBudget"] = root_token_budget;
     let created = record
         .get("created")
         .and_then(Value::as_f64)
         .ok_or(OperationError::Internal)?;
-    let prompt = request.prompt.trim();
+    let prompt = request.prompt.trim().to_owned();
     let task_id = creation_intent
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let result = mutate(context, |tx| {
+    let id = id.to_owned();
+    let id_for_write = id.clone();
+    let parent_id = parent_id.to_owned();
+    let validate = std::sync::Arc::clone(&validate);
+    let result = mutate(context, move |tx| {
+        let validate = |schema: &str, value: &Value| validate(schema, value);
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
-        let result = super::create_agent_with_identity(tx, id, prompt, record, created, validate)?;
+        let result = super::create_agent_with_identity(
+            tx,
+            &id_for_write,
+            &prompt,
+            record,
+            created,
+            validate,
+        )?;
         if let Some(task_id) = &task_id {
             let actor = studio_runtime_store::AgentRepository::get(
                 tx,
@@ -1081,14 +1278,21 @@ fn create_child(
             )?
             .ok_or(OperationError::Internal)?;
             let now = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
-            crate::work_assignment_runtime::assign_in_transaction(tx, task_id, id, &actor, now)
-                .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
+            crate::work_assignment_runtime::assign_in_transaction(
+                tx,
+                task_id,
+                &id_for_write,
+                &actor,
+                now,
+            )
+            .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
         }
         Ok(result)
-    })?;
+    })
+    .await?;
     #[cfg(target_os = "macos")]
     let result = if workspace == "image" {
-        provision_image_workspace(context, &result, id)?
+        provision_image_workspace(context, &result, id).await?
     } else {
         result
     };
@@ -1219,7 +1423,7 @@ pub(crate) fn set_vm_workspace_fields(record: &mut Value, host_root: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn provision_image_workspace(
+async fn provision_image_workspace(
     context: &Context<'_>,
     result: &Value,
     fallback_id: &str,
@@ -1237,79 +1441,108 @@ fn provision_image_workspace(
         .get("epoch")
         .and_then(Value::as_i64)
         .ok_or(OperationError::Internal)?;
-    let workspace =
-        match crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), id) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                let _ = crate::image_workspace::remove_workspace(id, true);
-                persist_image_provision_failure(
-                    context.store,
-                    id,
-                    expected_epoch,
-                    &error.to_string(),
-                )?;
-                return Err(OperationError::Unavailable(
-                    "workspace-state/image-provisioning",
-                ));
-            }
-        };
+    let root = root.to_owned();
+    let id = id.to_owned();
+    let create_id = id.clone();
+    let workspace = match studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/image_workspace_create",
+        move || crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), &create_id),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            let _ = remove_image_workspace(id.to_owned()).await;
+            persist_image_provision_failure(
+                context.store.as_ref(),
+                id,
+                expected_epoch,
+                &error.to_string(),
+            )
+            .await?;
+            return Err(OperationError::Unavailable(
+                "workspace-state/image-provisioning",
+            ));
+        }
+    };
     let Some(cwd) = workspace.get("path").and_then(Value::as_str) else {
-        let _ = crate::image_workspace::remove_workspace(id, true);
+        let _ = remove_image_workspace(id.to_owned()).await;
         persist_image_provision_failure(
-            context.store,
+            context.store.as_ref(),
             id,
             expected_epoch,
             "Image workspace provider returned no path",
-        )?;
+        )
+        .await?;
         return Err(OperationError::Unavailable(
             "workspace-state/image-provisioning",
         ));
     };
-    let projection = context.store.transaction(|tx| {
-        let Some(agent) = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(id),
-        )?
-        else {
-            return Ok(None);
-        };
-        let mut value = agent.into_value();
-        if !image_provision_is_current(&value, expected_epoch) {
-            return Ok(None);
-        }
-        value["cwd"] = json!(cwd);
-        value["imageWorkspaceReady"] = json!(true);
-        value["imageWorkspacePhase"] = json!("ready");
-        let agent = studio_runtime_store::AgentRecord::from_value(value).map_err(|_| {
-            StoreError::InvalidStoredObject {
-                table: "runtime_agents",
-                id: id.to_owned(),
+    let id = id.to_owned();
+    let cwd = cwd.to_owned();
+    let projection = context
+        .store
+        .transaction(move |tx| {
+            let Some(agent) = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(id.clone()),
+            )?
+            else {
+                return Ok(None);
+            };
+            let mut value = agent.into_value();
+            if !image_provision_is_current(&value, expected_epoch) {
+                return Ok(None);
             }
-        })?;
-        value = agent.value();
-        studio_runtime_store::AgentRepository::put(tx, &agent)?;
-        crate::agents_create::publish_agent(tx, &value)?;
-        Ok(Some(value))
-    })?;
+            value["cwd"] = json!(cwd);
+            value["imageWorkspaceReady"] = json!(true);
+            value["imageWorkspacePhase"] = json!("ready");
+            let agent = studio_runtime_store::AgentRecord::from_value(value).map_err(|_| {
+                StoreError::InvalidStoredObject {
+                    table: "runtime_agents",
+                    id: id.to_owned(),
+                }
+            })?;
+            value = agent.value();
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+            crate::agents_create::publish_agent(tx, &value)?;
+            Ok(Some(value))
+        })
+        .await?;
     if let Some(projection) = projection {
         Ok(projection)
     } else {
-        let _ = crate::image_workspace::remove_workspace(id, true);
+        let _ = remove_image_workspace(id.to_owned()).await;
         Err(OperationError::Create(CreateError::IdentityChanged))
     }
 }
 
-pub(crate) fn persist_image_provision_failure(
+#[cfg(target_os = "macos")]
+async fn remove_image_workspace(id: String) -> Result<(), OperationError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/image_workspace_remove",
+        move || {
+            crate::image_workspace::remove_workspace(&id, true)
+                .map_err(|_| OperationError::Internal)
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+}
+
+pub(crate) async fn persist_image_provision_failure(
     store: &RuntimeStore,
     agent_id: &str,
     expected_epoch: i64,
     message: &str,
 ) -> Result<(), OperationError> {
     let message = message.chars().take(1200).collect::<String>();
-    store.transaction(|tx| {
+    let agent_id = agent_id.to_owned();
+    store.transaction(move |tx| {
         let Some(agent) = studio_runtime_store::AgentRepository::get(
             tx,
-            &studio_runtime_store::AgentId::from(agent_id),
+            &studio_runtime_store::AgentId::from(agent_id.clone()),
         )? else {
             return Ok(());
         };
@@ -1328,12 +1561,16 @@ pub(crate) fn persist_image_provision_failure(
             crate::agents_create::publish_agent(tx, &record.value())?;
         }
         Ok(())
-    })?;
+    })
+    .await?;
     Ok(())
 }
 
-pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+pub async fn configure(
+    context: &Context<'_>,
+    request: Configuration,
+) -> Result<Value, OperationError> {
+    let validate = std::sync::Arc::clone(&context.validate);
     if request
         .max_agents
         .is_some_and(|max_agents| !(1..=1024).contains(&max_agents))
@@ -1364,7 +1601,8 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
             .filter(|id| (1..=200).contains(&id.chars().count()))
             .ok_or(OperationError::Invalid(
                 "A subagent concurrency request id is required",
-            ))?;
+            ))?
+            .to_owned();
         if !(0..=512).contains(&limit) {
             return Err(OperationError::Invalid(
                 "Subagent concurrency must be an integer from 0 to 512",
@@ -1374,7 +1612,9 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
             "operation":"subagent_concurrency","agent":request.id,
             "concurrency":limit,"expectedRevision":revision
         }));
-        return mutate(context, |tx| {
+        let validate = std::sync::Arc::clone(&validate);
+        return mutate(context, move |tx| {
+            let validate = |schema: &str, value: &Value| validate(schema, value);
             let mut root =
                 load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
             if root.get("isLead").and_then(Value::as_bool) != Some(true)
@@ -1382,7 +1622,7 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
             {
                 return Err(MutationError::LeadRequired.into());
             }
-            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+            if let Some(receipt) = EventWriteRepository::receipt(tx, &request_id)? {
                 if receipt.signature != signature {
                     return Err(MutationError::Conflict.into());
                 }
@@ -1416,19 +1656,19 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
             mode_fields(&mut root);
             let changed = current != limit || root["maxAgents"].as_i64() != Some(prior_max);
             if changed {
-                save_agent(tx, &root, &validate)?;
+            save_agent(tx, &root, &validate)?;
             }
             let result = json!({"id":request.id,"concurrency":root["concurrency"],
                 "agentMode":root["agentMode"],"agentModeRevision":root["agentModeRevision"],
                 "maxAgents":root["maxAgents"],"tokenBudget":root.get("tokenBudget").cloned().unwrap_or(Value::Null)});
             EventWriteRepository::put_receipt(
                 tx,
-                request_id,
+                &request_id,
                 &signature,
                 &serde_json::to_string(&result).map_err(StoreError::from)?,
             )?;
             Ok(result)
-        });
+        }).await;
     }
     if request.expected_mode_revision.is_some() || request.request_id.is_some() {
         return Err(OperationError::Invalid(
@@ -1436,15 +1676,17 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
         ));
     }
     let max_agents = request.max_agents;
-    mutate(context, |tx| {
+    let validate = std::sync::Arc::clone(&validate);
+    mutate(context, move |tx| {
+        let validate = |schema: &str, value: &Value| validate(schema, value);
         let result = configure_limits(
             tx,
             &request.id,
             max_agents,
             request.token_budget,
-            |schema, value| (context.validate)(schema, value),
+            |schema, value| validate(schema, value),
         )?;
-        if !(context.validate)("ConfigureResponse", &result) {
+        if !validate("ConfigureResponse", &result) {
             return Err(MutationError::InvalidStoredObject {
                 table: "runtime_agents",
                 id: request.id.clone(),
@@ -1453,9 +1695,13 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
         }
         Ok(result)
     })
+    .await
 }
-pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Value, OperationError> {
-    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+pub async fn conversation(
+    context: &Context<'_>,
+    request: Conversation,
+) -> Result<Value, OperationError> {
+    let validate = std::sync::Arc::clone(&context.validate);
     if (request.model_present && request.model.is_none())
         || (request.fast_mode_present && request.fast_mode.is_none())
     {
@@ -1464,10 +1710,13 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         ));
     }
     if request.worker_settings {
-        let initial = {
-            let db = context.store.read()?;
-            load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
-        };
+        let id = request.id.clone();
+        let read_validate = std::sync::Arc::clone(&validate);
+        let initial = with_read(std::sync::Arc::clone(&context.store), move |db| {
+            load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
+                .ok_or(MutationError::UnknownAgent.into())
+        })
+        .await?;
         if initial.get("isLead").and_then(Value::as_bool) != Some(true) {
             return Err(MutationError::LeadRequired.into());
         }
@@ -1482,7 +1731,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         {
             return Err(MutationError::Stale.into());
         }
-        let identity = account_identity(context, account_key)?;
+        let identity = account_identity(context, account_key).await?;
         let excluded_account_keys = initial
             .get("excludedAccountKeys")
             .and_then(Value::as_array)
@@ -1506,7 +1755,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 &identity,
                 root_model,
                 &excluded_account_keys,
-            )?,
+            ).await?,
             None => initial
                 .get("workerDefaults")
                 .cloned()
@@ -1537,32 +1786,43 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                     &identity,
                     worker_account_key,
                     &excluded_account_keys,
-                )?
+                )
+                .await?
             }
             None => initial
                 .get("reviewDefaults")
                 .cloned()
                 .unwrap_or(json!({"model":null,"effort":null})),
         };
-        return mutate(context, |tx| {
+        let account_key = account_key.to_owned();
+        let validate = std::sync::Arc::clone(&validate);
+        return mutate(context, move |tx| {
+            let validate = |schema: &str, value: &Value| validate(schema, value);
             let mut target =
                 load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
-            if target.get("accountKey").and_then(Value::as_str) != Some(account_key) {
+            if target.get("accountKey").and_then(Value::as_str) != Some(account_key.as_str()) {
                 return Err(MutationError::IdentityChanged.into());
             }
             target["workerDefaults"] = worker_defaults;
             target["reviewDefaults"] = review_defaults;
             Ok(save_agent(tx, &target, &validate)?)
-        });
+        })
+        .await;
     }
     if request.mode_settings {
         let expected = request.mode_revision.ok_or(OperationError::Invalid(
             "A nonnegative expected mode revision is required",
         ))?;
         if let Some(expected_account) = request.expected_account.as_deref() {
-            let connection = context.store.read()?;
-            let record = load_agent_value(&connection, &request.id, &validate)?
-                .ok_or(MutationError::UnknownAgent)?;
+            let id = request.id.clone();
+            let read_validate = std::sync::Arc::clone(&validate);
+            let record = with_read(std::sync::Arc::clone(&context.store), move |connection| {
+                load_agent_value(connection, &id, &|schema, value| {
+                    read_validate(schema, value)
+                })?
+                .ok_or(MutationError::UnknownAgent.into())
+            })
+            .await?;
             if record
                 .get("accountKey")
                 .and_then(Value::as_str)
@@ -1584,10 +1844,17 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 expected_mode_revision: Some(expected),
                 request_id: request.mode_request_id.clone(),
             },
-        )?;
-        let connection = context.store.read()?;
-        let record = load_agent_value(&connection, &request.id, &validate)?
-            .ok_or(MutationError::UnknownAgent)?;
+        )
+        .await?;
+        let id = request.id.clone();
+        let read_validate = std::sync::Arc::clone(&validate);
+        let record = with_read(std::sync::Arc::clone(&context.store), move |connection| {
+            load_agent_value(connection, &id, &|schema, value| {
+                read_validate(schema, value)
+            })?
+            .ok_or(MutationError::UnknownAgent.into())
+        })
+        .await?;
         return Ok(record);
     }
     if request.cwd.is_none()
@@ -1599,26 +1866,32 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         && request.next_turn.flatten().is_none()
         && !request.worker_settings
     {
-        return mutate(context, |tx| {
+        let validate = std::sync::Arc::clone(&validate);
+        return mutate(context, move |tx| {
+            let validate = |schema: &str, value: &Value| validate(schema, value);
             Ok(update_exclusions(
                 tx,
                 &request.id,
                 request.expected_account.as_deref(),
                 request.excluded.as_deref(),
                 request.non_defaults,
-                |schema, value| (context.validate)(schema, value),
+                |schema, value| validate(schema, value),
             )?)
-        });
+        })
+        .await;
     }
     if request.excluded.is_some() && request.non_defaults {
         return Err(OperationError::Invalid(
             "Save chat account exclusions separately from agent mode settings",
         ));
     }
-    let initial = {
-        let db = context.store.read()?;
-        load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
-    };
+    let id = request.id.clone();
+    let read_validate = std::sync::Arc::clone(&validate);
+    let initial = with_read(std::sync::Arc::clone(&context.store), move |db| {
+        load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
+            .ok_or(MutationError::UnknownAgent.into())
+    })
+    .await?;
     let old_account = initial
         .get("accountKey")
         .and_then(Value::as_str)
@@ -1644,13 +1917,14 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         })
         .ok_or(OperationError::Internal)?;
     let account = if request.cwd.is_some() {
-        account_key(context, None, &cwd)?
+        account_key(context, None, cwd.clone()).await?
     } else {
         old_account.clone()
     };
-    let identity = account_identity(context, &account)?;
-    let provider = identity.provider.as_deref().unwrap_or("codex");
-    let provider_changed = initial.get("provider").and_then(Value::as_str) != Some(provider);
+    let identity = account_identity(context, &account).await?;
+    let provider = identity.provider.as_deref().unwrap_or("codex").to_owned();
+    let provider_changed =
+        initial.get("provider").and_then(Value::as_str) != Some(provider.as_str());
     let execution_requested = request.model.is_some()
         || request.model_present
         || request.effort.is_some()
@@ -1734,6 +2008,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         Some(
             context
                 .catalog
+                .as_deref()
                 .ok_or(OperationError::Unavailable("provider-session/model-list"))?
                 .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
         )
@@ -1773,7 +2048,8 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         let request_id = request_id
             .as_deref()
             .filter(|id| (1..=200).contains(&id.chars().count()))
-            .ok_or(OperationError::Invalid("A settings request id is required"))?;
+            .ok_or(OperationError::Invalid("A settings request id is required"))?
+            .to_owned();
         let mut receipt_body = json!({
             "operation": "next_turn_settings",
             "agent": request.id,
@@ -1802,7 +2078,9 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             }
         }
         let signature = crate::event_write::request_signature(&receipt_body);
-        return mutate(context, |tx| {
+        let validate = std::sync::Arc::clone(&validate);
+        return mutate(context, move |tx| {
+            let validate = |schema: &str, value: &Value| validate(schema, value);
             let mut target =
                 load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
             if target
@@ -1813,7 +2091,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             {
                 return Err(MutationError::IdentityChanged.into());
             }
-            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+            if let Some(receipt) = EventWriteRepository::receipt(tx, &request_id)? {
                 if receipt.signature != signature {
                     return Err(MutationError::Conflict.into());
                 }
@@ -1826,11 +2104,13 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 "daybreakEnabled":resolved.daybreak_enabled,"cyberAccessProgram":resolved.cyber_access_program});
             target["pendingSettingsAccountKey"] = json!(account);
             save_agent(tx, &target, &validate)?;
-            EventWriteRepository::put_receipt(tx, request_id, &signature, "{\"applied\":true}")?;
+            EventWriteRepository::put_receipt(tx, &request_id, &signature, "{\"applied\":true}")?;
             Ok(target)
-        });
+        }).await;
     }
-    mutate(context, |tx| {
+    let validate = std::sync::Arc::clone(&validate);
+    mutate(context, move |tx| {
+        let validate = |schema: &str, value: &Value| validate(schema, value);
         let mut target =
             load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
         if target
@@ -1937,6 +2217,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         }
         Ok(projection)
     })
+    .await
 }
 
 fn update_team_yolo(
@@ -2024,7 +2305,7 @@ pub struct RenameOperationResult {
     pub replayed: bool,
 }
 
-pub fn rename_operation(
+pub async fn rename_operation(
     context: &Context<'_>,
     id: &str,
     name: Option<&str>,
@@ -2038,35 +2319,51 @@ pub fn rename_operation(
     }
     let signature = rename_signature(id, name);
     if let Some(request_id) = request_id {
-        let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-        let read = context.store.read()?;
-        load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
-        if let Some(receipt) = EventWriteRepository::receipt(&read, request_id)? {
-            if receipt.signature != signature {
-                return Err(MutationError::Conflict.into());
+        let validate = std::sync::Arc::clone(&context.validate);
+        let id = id.to_owned();
+        let request_id = request_id.to_owned();
+        let signature_for_read = signature.clone();
+        let replay = with_read(std::sync::Arc::clone(&context.store), move |read| {
+            load_agent_value(read, &id, &|schema, value| validate(schema, value))?
+                .ok_or(MutationError::UnknownAgent)?;
+            if let Some(receipt) = EventWriteRepository::receipt(read, &request_id)? {
+                if receipt.signature != signature_for_read {
+                    return Err(MutationError::Conflict.into());
+                }
+                let response = serde_json::from_str(&receipt.result).map_err(|_| {
+                    OperationError::Create(MutationError::InvalidStoredObject {
+                        table: "runtime_operation_receipts",
+                        id: request_id.to_owned(),
+                    })
+                })?;
+                return Ok(Some(RenameOperationResult {
+                    response,
+                    replayed: true,
+                }));
             }
-            let response = serde_json::from_str(&receipt.result).map_err(|_| {
-                OperationError::Create(MutationError::InvalidStoredObject {
-                    table: "runtime_operation_receipts",
-                    id: request_id.to_owned(),
-                })
-            })?;
-            return Ok(RenameOperationResult {
-                response,
-                replayed: true,
-            });
+            Ok(None)
+        })
+        .await?;
+        if let Some(replay) = replay {
+            return Ok(replay);
         }
     }
-    let response = mutate(context, |tx| {
+    let id = id.to_owned();
+    let name = name.map(str::to_owned);
+    let request_id = request_id.map(str::to_owned);
+    let signature = signature.clone();
+    let validate = std::sync::Arc::clone(&context.validate);
+    let response = mutate(context, move |tx| {
         Ok(rename(
             tx,
-            id,
-            name,
-            request_id,
+            &id,
+            name.as_deref(),
+            request_id.as_deref(),
             &signature,
-            |schema, value| (context.validate)(schema, value),
+            |schema, value| validate(schema, value),
         )?)
-    })?;
+    })
+    .await?;
     Ok(RenameOperationResult {
         response,
         replayed: false,
@@ -2097,13 +2394,13 @@ fn previous_lead(
         .transpose()
 }
 
-fn account_key(
+async fn account_key(
     context: &Context<'_>,
-    requested: Option<&str>,
-    cwd: &str,
+    requested: Option<String>,
+    cwd: String,
 ) -> Result<String, OperationError> {
     if let Some(account) = requested {
-        return Ok(account.to_owned());
+        return Ok(account);
     }
     let default = context
         .accounts
@@ -2116,65 +2413,92 @@ fn account_key(
                 .map(str::to_owned)
         })
         .ok_or_else(|| OperationError::Internal)?;
-    let connection = context.store.read()?;
-    let mut statement = connection
-        .prepare("SELECT id,record FROM runtime_projects")
-        .map_err(|_| OperationError::Internal)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|_| OperationError::Internal)?;
-    let mut selected: Option<(usize, String)> = None;
-    for row in rows {
-        let (id, raw) = row.map_err(|_| OperationError::Internal)?;
-        let invalid = || MutationError::InvalidStoredObject {
-            table: "runtime_projects",
-            id: id.clone(),
-        };
-        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-            return Err(invalid().into());
-        }
-        let project_path = record
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?;
-        let project_account = match record.get("accountKey") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(account)) => Some(account.as_str()),
-            Some(_) => return Err(invalid().into()),
-        };
-        let path = PathBuf::from(project_path);
-        if PathBuf::from(cwd).starts_with(&path)
-            && let Some(account) = project_account
-        {
-            let depth = path.components().count();
-            if selected
-                .as_ref()
-                .is_none_or(|(old_depth, _)| depth > *old_depth)
-            {
-                selected = Some((depth, account.to_owned()));
+    let store = std::sync::Arc::clone(&context.store);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/account_key",
+        move || {
+            let connection = store.read()?;
+            let mut statement = connection
+                .prepare("SELECT id,record FROM runtime_projects")
+                .map_err(|_| OperationError::Internal)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|_| OperationError::Internal)?;
+            let mut selected: Option<(usize, String)> = None;
+            for row in rows {
+                let (id, raw) = row.map_err(|_| OperationError::Internal)?;
+                let invalid = || MutationError::InvalidStoredObject {
+                    table: "runtime_projects",
+                    id: id.clone(),
+                };
+                let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                if !record.is_object()
+                    || record.get("id").and_then(Value::as_str) != Some(id.as_str())
+                {
+                    return Err(invalid().into());
+                }
+                let project_path = record
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?;
+                let project_account = match record.get("accountKey") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(account)) => Some(account.as_str()),
+                    Some(_) => return Err(invalid().into()),
+                };
+                let path = PathBuf::from(project_path);
+                if PathBuf::from(&cwd).starts_with(&path)
+                    && let Some(account) = project_account
+                {
+                    let depth = path.components().count();
+                    if selected
+                        .as_ref()
+                        .is_none_or(|(old_depth, _)| depth > *old_depth)
+                    {
+                        selected = Some((depth, account.to_owned()));
+                    }
+                }
             }
-        }
-    }
-    Ok(selected.map_or(default, |(_, account)| account))
+            Ok(selected.map_or(default, |(_, account)| account))
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
-fn account_identity(
+async fn account_identity(
     context: &Context<'_>,
     account_key: &str,
 ) -> Result<AccountIdentity, OperationError> {
-    account_identity_with_status(context, account_key).map(|(identity, _, _)| identity)
+    let driver = context.driver.clone().ok_or(OperationError::Internal)?;
+    let account_key = account_key.to_owned();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/account_identity",
+        move || account_identity_blocking(&driver, &account_key).map(|(identity, _, _)| identity),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
-fn account_identity_with_status(
+async fn account_identity_with_status(
     context: &Context<'_>,
+    account_key: String,
+) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
+    let driver = context.driver.clone().ok_or(OperationError::Internal)?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/account_identity",
+        move || account_identity_blocking(&driver, &account_key),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
+}
+
+fn account_identity_blocking(
+    driver: &AccountDriver,
     account_key: &str,
 ) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
-    let Some(driver) = &context.driver else {
-        return Err(OperationError::Internal);
-    };
     let status = driver.get(account_key).map_err(|error| match error {
         AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
         _ => OperationError::Internal,
@@ -2216,21 +2540,36 @@ fn can_attempt_native_proof_projection(row: &Value) -> bool {
     row.get("canAttemptNativeProof").and_then(Value::as_bool) == Some(true)
 }
 
-fn resolve_project_binding(
+async fn resolve_project_binding(
     context: &Context<'_>,
-    cwd: &str,
-    project_id: Option<&str>,
-    home_server: Option<&str>,
-    folder: Option<&Value>,
+    cwd: String,
+    project_id: Option<String>,
+    home_server: Option<String>,
+    folder: Option<Value>,
 ) -> Result<Value, OperationError> {
-    let local = local_server_id(context)?.ok_or(OperationError::Unavailable(
-        "cross-server-driver/local-identity",
-    ))?;
-    let connection = context.store.read()?;
-    resolve_project_binding_from(&connection, cwd, project_id, home_server, &local, folder)
+    let store = std::sync::Arc::clone(&context.store);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/agents_create/project_binding",
+        move || {
+            let local = store.local_server_id()?.ok_or(OperationError::Unavailable(
+                "cross-server-driver/local-identity",
+            ))?;
+            let connection = store.read()?;
+            resolve_project_binding_from(
+                &connection,
+                &cwd,
+                project_id.as_deref(),
+                home_server.as_deref(),
+                &local,
+                folder.as_ref(),
+            )
+        },
+    )
+    .await
+    .map_err(|_| OperationError::Internal)?
 }
 
-fn resolve_worker_defaults(
+async fn resolve_worker_defaults(
     context: &Context<'_>,
     value: Option<&Value>,
     account_key: &str,
@@ -2299,7 +2638,7 @@ fn resolve_worker_defaults(
             let worker_account = if worker_account_key == account_key {
                 account.clone()
             } else {
-                account_identity(context, worker_account_key)?
+                account_identity(context, worker_account_key).await?
             };
             (worker_account_key.to_owned(), worker_account)
         };
@@ -2334,11 +2673,12 @@ fn resolve_worker_defaults(
     if !(1..=3).contains(&depth) {
         return Err(OperationError::Invalid("delegation_depth must be 1 to 3"));
     }
-    let catalog = context
-        .managed_creation_environment
-        .map(crate::managed_child_create::ManagedCreationEnvironment::catalog)
-        .or(context.catalog)
-        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let catalog = if let Some(environment) = context.managed_creation_environment {
+        Some(environment.catalog())
+    } else {
+        context.catalog.as_deref()
+    }
+    .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
     let settings = catalog.resolve(
         &worker_account_key,
         &worker_account,
@@ -2356,7 +2696,7 @@ fn resolve_worker_defaults(
     Ok(defaults)
 }
 
-fn resolve_review_defaults(
+async fn resolve_review_defaults(
     context: &Context<'_>,
     value: Option<&Value>,
     account_key: &str,
@@ -2416,16 +2756,17 @@ fn resolve_review_defaults(
         } else if let Some(worker_account_key) = worker_account_key {
             (
                 worker_account_key.to_owned(),
-                account_identity(context, worker_account_key)?,
+                account_identity(context, worker_account_key).await?,
             )
         } else {
             (account_key.to_owned(), account.clone())
         };
-    let catalog = context
-        .managed_creation_environment
-        .map(|environment| environment.catalog())
-        .or(context.catalog)
-        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let catalog = if let Some(environment) = context.managed_creation_environment {
+        Some(environment.catalog())
+    } else {
+        context.catalog.as_deref()
+    }
+    .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
     let settings = catalog.resolve(
         &catalog_account_key,
         &catalog_account,
@@ -2631,28 +2972,26 @@ fn merge_records<const N: usize>(parts: [Value; N]) -> Value {
     Value::Object(merged)
 }
 
-fn mutate(
+async fn mutate(
     context: &Context<'_>,
-    operation: impl FnOnce(&Transaction<'_>) -> Result<Value, OperationError>,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<Value, OperationError> + Send + 'static,
 ) -> Result<Value, OperationError> {
-    context.store.transaction_with_error(|tx| {
-        let before = SyncDocumentsRepository::entity_sequence(tx)?;
-        let result = operation(tx)?;
-        Ok(crate::sync_documents::with_entity_delta(
-            tx, before, result,
-        )?)
-    })
-}
-
-fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationError> {
-    Ok(context.store.local_server_id()?)
+    context
+        .store
+        .transaction_with_error(move |tx| {
+            let before = SyncDocumentsRepository::entity_sequence(tx)?;
+            let result = operation(tx)?;
+            Ok(crate::sync_documents::with_entity_delta(
+                tx, before, result,
+            )?)
+        })
+        .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
-    use std::cell::{Cell, RefCell};
 
     struct CatalogFixture {
         models: std::collections::BTreeMap<String, Vec<String>>,
@@ -2877,9 +3216,9 @@ mod tests {
     }
 
     fn worker_defaults_context<'a>(
-        store: &'a RuntimeStore,
+        store: std::sync::Arc<RuntimeStore>,
         environment: &'a dyn crate::managed_child_create::ManagedCreationEnvironment,
-        validate: &'a dyn Fn(&str, &Value) -> bool,
+        validate: std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>,
     ) -> Context<'a> {
         Context {
             store,
@@ -2891,13 +3230,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn managed_worker_settings_use_ordered_account_selection_and_keep_automatic_unpinned() {
+    #[tokio::test]
+    async fn managed_worker_settings_use_ordered_account_selection_and_keep_automatic_unpinned() {
         let root = tempfile::tempdir().expect("isolated settings state");
         let store = RuntimeStore::open(Some(root.path())).expect("state opens");
         let environment = managed_fixture();
         let validate = |_: &str, _: &Value| true;
-        let context = worker_defaults_context(&store, &environment, &validate);
+        let context = worker_defaults_context(
+            std::sync::Arc::new(store),
+            &environment,
+            std::sync::Arc::new(validate),
+        );
         let claude = AccountIdentity {
             provider: Some("claude".to_owned()),
             home: Some("/profiles/claude-local".to_owned()),
@@ -2918,6 +3261,7 @@ mod tests {
             "default",
             &[],
         )
+        .await
         .expect("automatic Luna resolves through the eligible Codex account");
         assert_eq!(resolved["model"], "gpt-6-luna");
         assert_eq!(
@@ -2940,7 +3284,8 @@ mod tests {
                 &claude,
                 "default",
                 &[],
-            ),
+            )
+            .await,
             Err(OperationError::Invalid(_))
         ));
 
@@ -2958,6 +3303,7 @@ mod tests {
             "gpt-6-astra",
             &[],
         )
+        .await
         .expect("null model inherits the current lead model");
         assert_eq!(cleared["model"], Value::Null);
         assert_eq!(
@@ -2968,13 +3314,17 @@ mod tests {
         assert_eq!(cleared["cyberAccessProgram"], "standard");
     }
 
-    #[test]
-    fn lead_worker_and_review_models_validate_on_the_explicit_codex_worker_account() {
+    #[tokio::test]
+    async fn lead_worker_and_review_models_validate_on_the_explicit_codex_worker_account() {
         let root = tempfile::tempdir().expect("isolated create state");
         let store = RuntimeStore::open(Some(root.path())).expect("state opens");
         let environment = managed_fixture();
         let validate = |_: &str, _: &Value| true;
-        let context = worker_defaults_context(&store, &environment, &validate);
+        let context = worker_defaults_context(
+            std::sync::Arc::new(store),
+            &environment,
+            std::sync::Arc::new(validate),
+        );
         let claude = AccountIdentity {
             provider: Some("claude".to_owned()),
             home: Some("/profiles/claude-local".to_owned()),
@@ -3000,6 +3350,7 @@ mod tests {
             "default",
             &[],
         )
+        .await
         .expect("Codex worker model validates");
         assert_eq!(workers["accountKey"], "default");
         assert_eq!(workers["model"], "gpt-6-luna");
@@ -3013,14 +3364,15 @@ mod tests {
                 .and_then(Value::as_str),
             &[],
         )
+        .await
         .expect("review model validates against the worker's Codex catalog");
         assert_eq!(review, json!({"model":"gpt-6.1-sol","effort":"high"}));
         assert_eq!(payload["account_key"], "claude-local");
         assert_eq!(payload["model"], "default");
     }
 
-    #[test]
-    fn image_provision_failure_persists_a_visible_paused_phase() {
+    #[tokio::test]
+    async fn image_provision_failure_persists_a_visible_paused_phase() {
         let root = tempfile::tempdir().expect("temporary state root creates");
         let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
         let mut value = build_agent_record(
@@ -3046,10 +3398,12 @@ mod tests {
         set_image_workspace_fields(&mut value, "/workspace");
         let record = AgentRecord::from_value(value).expect("image agent record validates");
         store
-            .transaction(|tx| studio_runtime_store::AgentRepository::put(tx, &record))
+            .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &record))
+            .await
             .expect("image intent stores");
 
         persist_image_provision_failure(&store, "image-worker", 4, "ASIF mount failed")
+            .await
             .expect("failure phase stores");
         let read = store.read().expect("saved failure reads");
         let saved = studio_runtime_store::AgentRepository::get(
@@ -3307,8 +3661,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn conversation_catalog_account_is_not_the_child_worker_default() {
+    #[tokio::test]
+    async fn conversation_catalog_account_is_not_the_child_worker_default() {
         let root = tempfile::tempdir().expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
             "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
@@ -3350,22 +3704,23 @@ mod tests {
             "workerDefaults":{"accountKey":"worker-default-account"}
         });
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params!["conversation", record.to_string()],
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed conversation");
         let validate = |_: &str, _: &Value| true;
         let context = Context {
-            store: &store,
+            store: std::sync::Arc::new(store),
             accounts: None,
             driver: None,
             catalog: None,
             managed_creation_environment: None,
-            validate: &validate,
+            validate: std::sync::Arc::new(validate),
         };
         let request = Conversation {
             id: "conversation".to_owned(),
@@ -3394,26 +3749,28 @@ mod tests {
         };
         assert_eq!(
             conversation_account_key(&context, &request.id, None, None)
+                .await
                 .expect("conversation account"),
             "conversation-account"
         );
     }
 
-    #[test]
-    fn account_admission_releases_snapshot_before_project_account_lookup() {
+    #[tokio::test]
+    async fn account_admission_releases_snapshot_before_project_account_lookup() {
         let state = tempfile::tempdir().expect("temporary state");
         let project = tempfile::tempdir().expect("existing project directory");
         let project_path = project.path().to_string_lossy().into_owned();
         let store = RuntimeStore::open(Some(state.path())).expect("runtime store");
+        let project_path_for_write = project_path.clone();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
                     rusqlite::params![
-                        project_path,
+                        project_path_for_write,
                         json!({
-                            "id": project_path,
-                            "path": project_path,
+                            "id": project_path_for_write,
+                            "path": project_path_for_write,
                             "accountKey": "project-account"
                         })
                         .to_string()
@@ -3428,6 +3785,7 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed project and conversation");
         let accounts = AccountPolicyState::from_startup(
             Some(
@@ -3438,12 +3796,12 @@ mod tests {
         .expect("valid account policy");
         let validate = |_: &str, _: &Value| true;
         let context = Context {
-            store: &store,
+            store: std::sync::Arc::new(store),
             accounts: Some(&accounts),
             driver: None,
             catalog: None,
             managed_creation_environment: None,
-            validate: &validate,
+            validate: std::sync::Arc::new(validate),
         };
 
         let creation = Creation {
@@ -3451,11 +3809,14 @@ mod tests {
             ..Creation::default()
         };
         assert_eq!(
-            creation_account_key(&context, &creation).expect("creation account"),
+            creation_account_key(&context, &creation)
+                .await
+                .expect("creation account"),
             "project-account"
         );
         assert_eq!(
             conversation_account_key(&context, "conversation", None, Some(&project_path))
+                .await
                 .expect("conversation account"),
             "project-account"
         );
@@ -3544,8 +3905,8 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
         let root = std::env::temp_dir().join(format!("creation-recheck-{}", new_id().expect("id")));
         std::fs::create_dir_all(&root).expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
@@ -3580,7 +3941,7 @@ mod tests {
                 }
             }
         }
-        let store = RuntimeStore::open(Some(&root)).expect("runtime store");
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(&root)).expect("runtime store"));
         let registry_path = root.join("accounts/registry.json");
         std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
             .expect("create registry directory");
@@ -3609,46 +3970,82 @@ mod tests {
             record["quickCreate"] = json!(true);
             record["quickCreateRequest"] =
                 json!(lead_signature(&intent, "worktree", root.to_str()));
+            let seed_record = record.clone();
+            let scenario_id = scenario.to_owned();
             store
-                .transaction(|tx| {
+                .transaction(move |tx| {
                     tx.execute(
                         "INSERT INTO runtime_agents VALUES(?1,?2)",
-                        rusqlite::params![scenario, record.to_string()],
+                        rusqlite::params![scenario_id, seed_record.to_string()],
                     )?;
                     Ok(())
                 })
+                .await
                 .expect("seed existing agent");
-            let interleaved = Cell::new(false);
-            let after_interleaving = RefCell::new(None);
-            let validate = |schema: &str, _: &Value| {
-                if schema == "PersistedAgentRecord" && !interleaved.replace(true) {
-                    let mut changed = record.clone();
-                    match scenario {
-                        "agent" => changed["creationIntent"]["prompt"] = json!("Another request"),
-                        "lead" => changed["quickCreateRequest"] = json!("{}"),
-                        _ => changed["deletedAt"] = json!(1),
+            const INTERLEAVING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+            let (observed_tx, observed_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let observed_tx = std::sync::Mutex::new(Some(observed_tx));
+            let release_rx = std::sync::Mutex::new(release_rx);
+            let first_validation = std::sync::atomic::AtomicBool::new(true);
+            let validate = std::sync::Arc::new(move |schema: &str, _: &Value| {
+                if schema == "PersistedAgentRecord"
+                    && first_validation.swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    if let Some(signal) = observed_tx.lock().ok().and_then(|mut tx| tx.take()) {
+                        let _ = signal.send(());
                     }
-                    store
-                        .transaction(|tx| {
-                            tx.execute(
-                                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                                rusqlite::params![changed.to_string(), scenario],
-                            )?;
-                            Ok(())
-                        })
-                        .expect("concurrent change after initial read");
-                    *after_interleaving.borrow_mut() = Some(snapshot(&store));
+                    if release_rx
+                        .lock()
+                        .ok()
+                        .is_none_or(|rx| rx.recv_timeout(INTERLEAVING_DEADLINE).is_err())
+                    {
+                        return false;
+                    }
                 }
                 true
-            };
+            });
             let context = Context {
-                store: &store,
+                store: std::sync::Arc::clone(&store),
                 accounts: None,
-                driver: Some(&driver),
+                driver: Some(std::sync::Arc::new(driver)),
                 catalog: None,
                 managed_creation_environment: None,
-                validate: &validate,
+                validate,
             };
+            let writer_store = std::sync::Arc::clone(&store);
+            let writer_scenario = scenario.to_owned();
+            let writer_record = record.clone();
+            let writer = tokio::spawn(async move {
+                struct ReleaseOnDrop(std::sync::mpsc::Sender<()>);
+                impl Drop for ReleaseOnDrop {
+                    fn drop(&mut self) {
+                        let _ = self.0.send(());
+                    }
+                }
+                let release_on_drop = ReleaseOnDrop(release_tx);
+                tokio::time::timeout(INTERLEAVING_DEADLINE, observed_rx)
+                    .await
+                    .map_err(|_| "validation signal deadline elapsed")?
+                    .map_err(|_| "validation signal was lost")?;
+                let mut changed = writer_record;
+                match writer_scenario.as_str() {
+                    "agent" => changed["creationIntent"]["prompt"] = json!("Another request"),
+                    "lead" => changed["quickCreateRequest"] = json!("{}"),
+                    _ => changed["deletedAt"] = json!(1),
+                }
+                let result = writer_store
+                    .transaction(move |tx| {
+                        tx.execute(
+                            "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                            rusqlite::params![changed.to_string(), writer_scenario],
+                        )?;
+                        Ok(())
+                    })
+                    .await;
+                drop(release_on_drop);
+                result.map_err(|error| error.to_string())
+            });
             let request = Creation {
                 id: Some(
                     if scenario == "previous" {
@@ -3667,10 +4064,16 @@ mod tests {
                 ..Creation::default()
             };
             let result = if scenario == "agent" {
-                agent(&context, request)
+                agent(&context, request).await
             } else {
-                lead(&context, request)
+                lead(&context, request).await
             };
+            tokio::time::timeout(INTERLEAVING_DEADLINE * 2, writer)
+                .await
+                .expect("controlled writer completes before the test deadline")
+                .expect("controlled writer task joins")
+                .expect("interleaved writer commits");
+            let after_interleaving = snapshot(&store);
             assert!(
                 matches!(
                     result,
@@ -3680,10 +4083,9 @@ mod tests {
                 ),
                 "{scenario}: {result:?}"
             );
-            assert!(interleaved.get());
             assert_eq!(
                 Some(snapshot(&store)),
-                *after_interleaving.borrow(),
+                Some(after_interleaving),
                 "refusal writes nothing after {scenario} interleaving"
             );
         }

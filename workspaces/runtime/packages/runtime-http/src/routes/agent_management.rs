@@ -173,13 +173,16 @@ async fn native_action(
             .as_str()
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A turn ID is required"))?
             .to_owned();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        let prepare_store = store.clone();
+        let prepare_agent = agent.clone();
+        let (actor, resources) = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/agent_management",
             move || {
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                let record = AgentRepository::get(&connection, &AgentId::from(agent.as_str()))
-                    .map_err(|_| ApiError::internal())?
-                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+                let connection = prepare_store.read().map_err(|_| ApiError::internal())?;
+                let record =
+                    AgentRepository::get(&connection, &AgentId::from(prepare_agent.as_str()))
+                        .map_err(|_| ApiError::internal())?
+                        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
                 let account = record
                     .extra
                     .get("accountKey")
@@ -190,7 +193,7 @@ async fn native_action(
                     .as_i64()
                     .ok_or_else(ApiError::internal)?;
                 let actor = studio_runtime_services::account_worker::retained::RequestActor {
-                    agent: agent.clone(),
+                    agent: prepare_agent,
                     epoch,
                 };
                 drop(connection);
@@ -212,23 +215,25 @@ async fn native_action(
                 let mut resources = resources.as_ref().clone();
                 resources.account_home = provider_home.to_owned();
                 let resources = Arc::new(resources);
-                studio_runtime_services::safety_buffering::execute_action(
-                    &store,
-                    port.as_ref(),
-                    &resources,
-                    lifecycle.as_deref(),
-                    studio_runtime_services::safety_buffering::SafetyAction {
-                        agent_id: &agent,
-                        actor,
-                        turn_id: &turn_id,
-                        choice: &safety_action,
-                    },
-                )
-                .map_err(safety_error)
+                Ok::<_, ApiError>((actor, resources))
             },
         )
         .await
         .map_err(|_| ApiError::internal())??;
+        let result = studio_runtime_services::safety_buffering::execute_action(
+            store,
+            port.as_ref(),
+            &resources,
+            lifecycle,
+            studio_runtime_services::safety_buffering::SafetyAction {
+                agent_id: &agent,
+                actor,
+                turn_id: &turn_id,
+                choice: &safety_action,
+            },
+        )
+        .await
+        .map_err(safety_error)?;
         return Ok(Json(result));
     };
     let action = match action {
@@ -320,62 +325,69 @@ async fn native_action(
         })?;
     let host_port = state.account_session.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let execute_store = Arc::clone(&store);
+    let execute_request = request.clone();
     let account_driver = state.account_driver.clone();
     let guest = state.browser_answer_guest.clone();
     let admission_override = state.message_admission.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agent_management",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))
-                .map_err(|_| ApiError::internal())?
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-            let (provider, guest) =
-                native_action_provider(&store, &agent, host_port.clone(), guest)?;
-            let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
-                Box::new(
-                    studio_runtime_services::message_admission::PreparedAdmission::load(
-                        &connection,
-                        &request.agent,
+    let (provider, _guest, bridge, preparation_run) =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agent_management",
+            move || {
+                let connection = store.read().map_err(|_| ApiError::internal())?;
+                let agent =
+                    AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))
+                        .map_err(|_| ApiError::internal())?
+                        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+                let (provider, guest) =
+                    native_action_provider(&store, &agent, host_port.clone(), guest)?;
+                let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
+                    Box::new(
+                        studio_runtime_services::message_admission::PreparedAdmission::load(
+                            &connection,
+                            &request.agent,
+                        )
+                        .map_err(|_| ApiError::internal())?,
                     )
-                    .map_err(|_| ApiError::internal())?,
-                )
-            } else {
-                Box::new(
-                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                        &store,
-                        &connection,
-                        &request.agent,
+                } else {
+                    Box::new(
+                        studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                            Arc::clone(&store),
+                            &connection,
+                            &request.agent,
+                        )
+                        .map_err(|_| ApiError::internal())?,
                     )
-                    .map_err(|_| ApiError::internal())?,
-                )
-            };
-            drop(connection);
-            let admission = admission_override.as_deref().unwrap_or(prepared.as_ref());
-            let bridge = NativeAdmission(admission);
-            let preparation_run = NativeActionPreparationRun {
-                store: store.clone(),
-                provider: provider.clone(),
-                account_driver,
-                repair,
-                preparation: resources,
-                guest,
-            };
-            let now = unix_time();
-            native_actions::execute_provider_prepared(
-                &store,
-                provider.as_ref(),
-                &request,
-                now,
-                &bridge,
-                &NativeActionAcceptance,
-                &preparation_run,
-            )
-            .map_err(native_error)
-        },
+                };
+                drop(connection);
+                let admission: Arc<dyn MessageAdmission> =
+                    admission_override.unwrap_or_else(|| Arc::from(prepared));
+                let bridge: Arc<dyn Admission> = Arc::new(NativeAdmission(admission));
+                let preparation_run = NativeActionPreparationRun {
+                    store: store.clone(),
+                    provider: provider.clone(),
+                    account_driver,
+                    repair,
+                    preparation: resources,
+                    guest: guest.clone(),
+                };
+                Ok::<_, ApiError>((provider, guest, bridge, preparation_run))
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+    let now = unix_time();
+    let result = native_actions::execute_provider_prepared(
+        &execute_store,
+        provider.as_ref(),
+        &execute_request,
+        now,
+        bridge,
+        Arc::new(NativeActionAcceptance),
+        &preparation_run,
     )
     .await
-    .map_err(|_| ApiError::internal())??;
+    .map_err(native_error)?;
     Ok(Json(result))
 }
 
@@ -387,9 +399,10 @@ pub trait NativeContextRepairPort: Send + Sync {
         provider_home: std::path::PathBuf,
         broker: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
         deadline: std::time::Instant,
-    ) -> native_actions::Result<Value>;
+    ) -> futures_util::future::BoxFuture<'static, native_actions::Result<Value>>;
 }
 
+#[derive(Clone)]
 struct NativeActionPreparationRun {
     store: Arc<RuntimeStore>,
     provider: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
@@ -456,7 +469,7 @@ impl NativeActionPreparationRun {
             .ok_or(NativeError::Unavailable("account-driver/provider-home"))
     }
 
-    fn repair_before_reserve(
+    async fn repair_before_reserve(
         &self,
         request: &native_actions::Request,
     ) -> native_actions::Result<()> {
@@ -475,93 +488,129 @@ impl NativeActionPreparationRun {
                 provider_home,
                 self.provider.clone(),
                 std::time::Instant::now() + std::time::Duration::from_secs(20),
-            )?;
+            )
+            .await?;
         Ok(())
     }
 
-    fn prepare_vm_workspace(
+    async fn prepare_vm_workspace(
         &self,
         request: &native_actions::Request,
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
     ) -> native_actions::Result<()> {
-        let connection = self.store.read()?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
-            .ok_or(NativeError::Changed)?
-            .value();
-        drop(connection);
+        let agent = {
+            let connection = self.store.read()?;
+            AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
+                .ok_or(NativeError::Changed)?
+                .value()
+                .clone()
+        };
         if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
             return Ok(());
         }
         let guest = self
             .guest
-            .as_deref()
+            .clone()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
-        let prepare = if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
-            studio_runtime_services::vm_preparation::prepare_lead
+        if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
+            studio_runtime_services::vm_preparation::prepare_lead(
+                self.store.as_ref(),
+                guest,
+                &request.agent,
+                &ticket.operation,
+                &request.request_id,
+                ticket.epoch,
+            )
+            .await
         } else {
-            studio_runtime_services::vm_preparation::prepare_child
-        };
-        prepare(
-            self.store.as_ref(),
-            guest,
-            &request.agent,
-            &ticket.operation,
-            &request.request_id,
-            ticket.epoch,
-        )
+            studio_runtime_services::vm_preparation::prepare_child(
+                self.store.as_ref(),
+                guest,
+                &request.agent,
+                &ticket.operation,
+                &request.request_id,
+                ticket.epoch,
+            )
+            .await
+        }
     }
 }
 impl native_actions::Preparation for NativeActionPreparationRun {
-    fn before_reserve(
-        &self,
-        _store: &RuntimeStore,
-        _provider: &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
-        request: &native_actions::Request,
-        _scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
-    ) -> native_actions::Result<()> {
-        self.repair_before_reserve(request)
+    fn before_reserve<'a>(
+        &'a self,
+        _store: &'a RuntimeStore,
+        _provider: &'a dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        request: &'a native_actions::Request,
+        _scope: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> studio_runtime_services::native_actions::PreparationFuture<'a> {
+        Box::pin(async move { self.repair_before_reserve(request).await })
     }
 
-    fn prepare(
-        &self,
-        _store: &RuntimeStore,
-        _provider: &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
-        request: &native_actions::Request,
-        ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
-        scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
-    ) -> native_actions::Result<()> {
-        self.prepare_vm_workspace(request, ticket)?;
-        let mut resources = self.preparation.as_ref().clone();
-        resources.account_home = self.provider_home(request)?.to_string_lossy().into_owned();
-        let prepared = studio_runtime_services::account_worker::preparation::prepare_native_action(
-            &self.store,
-            &resources,
-            &request.agent,
-            &ticket.operation,
-            ticket.generation,
-        )
-        .map_err(|_| NativeError::Unavailable("thread-preparation/native-action"))?;
-        if Some(prepared.thread_id.as_str()) != ticket.thread.as_deref() {
-            return Err(NativeError::Changed);
-        }
-        let mut params = prepared.settings;
-        if let Some(params) = params.as_object_mut() {
-            params.remove("cwd");
-            params.remove("cyberAccessProgram");
-        }
-        native_actions::update_action_settings(
-            &self.store,
-            self.provider.as_ref(),
-            request,
-            ticket,
-            scope,
-            params,
-        )
+    fn prepare<'a>(
+        &'a self,
+        _store: &'a RuntimeStore,
+        _provider: &'a dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        request: &'a native_actions::Request,
+        ticket: &'a studio_runtime_services::workspace_operations::ProviderTicket,
+        scope: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> studio_runtime_services::native_actions::PreparationFuture<'a> {
+        Box::pin(async move {
+            let preparation = self.clone();
+            let request_for_prepare = request.clone();
+            let preparation_for_home = preparation.clone();
+            let request_for_home = request_for_prepare.clone();
+            let ticket_for_prepare = ticket.clone();
+            preparation
+                .prepare_vm_workspace(&request_for_prepare, &ticket_for_prepare)
+                .await?;
+            let (mut resources, provider_home) =
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/agent_management/preparation",
+                    move || {
+                        let provider_home =
+                            preparation_for_home.provider_home(&request_for_home)?;
+                        Ok::<_, NativeError>((
+                            preparation.preparation.as_ref().clone(),
+                            provider_home,
+                        ))
+                    },
+                )
+                .await
+                .map_err(|_| NativeError::Unavailable("thread-preparation/native-action"))??;
+            resources.account_home = provider_home.to_string_lossy().into_owned();
+            let prepared =
+                studio_runtime_services::account_worker::preparation::prepare_native_action(
+                    Arc::clone(&preparation.store),
+                    &resources,
+                    &request_for_prepare.agent,
+                    &ticket_for_prepare.operation,
+                    ticket_for_prepare.generation,
+                )
+                .await
+                .map_err(|_| NativeError::Unavailable("thread-preparation/native-action"))?;
+            if Some(prepared.thread_id.as_str()) != ticket.thread.as_deref() {
+                return Err(NativeError::Changed);
+            }
+            let mut params = prepared.settings;
+            if let Some(params) = params.as_object_mut() {
+                params.remove("cwd");
+                params.remove("cyberAccessProgram");
+            }
+            native_actions::update_action_settings(
+                &self.store,
+                self.provider.as_ref(),
+                request,
+                ticket,
+                scope,
+                params,
+            )
+            .await
+        })
     }
 }
 
-struct NativeAdmission<'a>(&'a dyn MessageAdmission);
-impl Admission for NativeAdmission<'_> {
+struct NativeAdmission(Arc<dyn MessageAdmission>);
+impl Admission for NativeAdmission {
     fn check(
         &self,
         tx: &Transaction<'_>,
@@ -792,35 +841,26 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,
 ) -> Result<Json<T>, ApiError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agent_management",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ApiError::internal())?
-                .as_secs_f64();
-            let result = match ports {
-                Some(ports) => {
-                    agent_lifecycle_runtime::execute(store, &action, now, ports.as_ref())
-                }
-                None => agent_management_store::execute(store, &action, now),
-            }
-            .map_err(|error| match error {
-                ManagementError::Unavailable(_) => {
-                    ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
-                }
-                ManagementError::Invalid(_) => {
-                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-                }
-                ManagementError::Stored { table, id } => ApiError::invalid_stored(&table, &id),
-                ManagementError::Store(error) => ApiError::stored(error),
-            })?;
-            super::generated_json::<T>(result).map(Json)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal())?
+        .as_secs_f64();
+    let result = match ports {
+        Some(ports) => {
+            agent_lifecycle_runtime::execute(Arc::clone(&store), &action, now, ports).await
+        }
+        None => agent_management_store::execute(Arc::clone(&store), &action, now).await,
+    }
+    .map_err(|error| match error {
+        ManagementError::Unavailable(_) => {
+            ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+        }
+        ManagementError::Invalid(_) => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+        ManagementError::Stored { table, id } => ApiError::invalid_stored(&table, &id),
+        ManagementError::Store(error) => ApiError::stored(error),
+    })?;
+    super::generated_json::<T>(result).map(Json)
 }
 
 inventory::submit! {
@@ -861,16 +901,19 @@ mod native_review_preflight_tests {
     };
     struct ProviderSpy(AtomicUsize);
     impl AccountSessionPort for ProviderSpy {
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             _request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Err(AccountSessionError::Requires("test/provider"))
+        ) -> futures_util::future::BoxFuture<'a, Result<SessionReceipt, AccountSessionError>>
+        {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(AccountSessionError::Requires("test/provider"))
+            })
         }
     }
 
-    struct RepairSpy(AtomicUsize);
+    struct RepairSpy(Arc<AtomicUsize>);
     impl NativeContextRepairPort for RepairSpy {
         fn repair_idle(
             &self,
@@ -879,16 +922,23 @@ mod native_review_preflight_tests {
             _provider_home: std::path::PathBuf,
             _broker: Arc<dyn AccountSessionPort>,
             _deadline: std::time::Instant,
-        ) -> native_actions::Result<Value> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(Value::Null)
+        ) -> futures_util::future::BoxFuture<'static, native_actions::Result<Value>> {
+            let calls = Arc::clone(&self.0);
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Null)
+            })
         }
     }
 
-    #[test]
-    fn remote_origin_and_vm_review_preflight_use_the_provider_home_owner() {
+    #[tokio::test]
+    async fn remote_origin_and_vm_review_preflight_use_the_provider_home_owner() {
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
         let original = AgentRecord::from_value(json!({
             "id":"remote",
             "rootId":"remote",
@@ -903,6 +953,7 @@ mod native_review_preflight_tests {
         .expect("valid agent record");
         store
             .transaction(|tx| AgentRepository::put(tx, &original))
+            .await
             .expect("save agent");
         let before_agent = {
             let connection = store.read().expect("read store");
@@ -934,7 +985,7 @@ mod native_review_preflight_tests {
         )
         .expect("preparation resources");
         let provider = Arc::new(ProviderSpy(AtomicUsize::new(0)));
-        let repair = Arc::new(RepairSpy(AtomicUsize::new(0)));
+        let repair = Arc::new(RepairSpy(Arc::new(AtomicUsize::new(0))));
         let preparation = NativeActionPreparationRun {
             store: store.clone(),
             provider: provider.clone(),
@@ -960,7 +1011,8 @@ mod native_review_preflight_tests {
             provider.as_ref(),
             &request,
             &scope,
-        );
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -974,6 +1026,7 @@ mod native_review_preflight_tests {
         let vm_agent = AgentRecord::from_value(vm_value).expect("valid VM agent record");
         store
             .transaction(|tx| AgentRepository::put(tx, &vm_agent))
+            .await
             .expect("save VM agent");
         let vm_result = native_actions::Preparation::before_reserve(
             &preparation,
@@ -981,7 +1034,8 @@ mod native_review_preflight_tests {
             provider.as_ref(),
             &request,
             &scope,
-        );
+        )
+        .await;
         assert!(vm_result.is_ok());
         assert_eq!(
             preparation
@@ -1019,16 +1073,18 @@ mod native_review_preflight_tests {
     struct NotificationSink;
 
     impl studio_runtime_services::account_session_runtime::AccountSessionPort for NotificationSink {
-        fn deliver_vm_notification(
-            &self,
-            _account: &str,
-            _agent_id: &str,
+        fn deliver_vm_notification<'a>(
+            &'a self,
+            _account: &'a str,
+            _agent_id: &'a str,
             _epoch: u64,
             _sequence: u64,
             _frame: studio_runtime_providers::Frame,
-        ) -> Result<(), studio_runtime_services::account_session_runtime::AccountSessionError>
-        {
-            Ok(())
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<(), studio_runtime_services::account_session_runtime::AccountSessionError>,
+        > {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -1129,14 +1185,16 @@ mod native_review_preflight_tests {
         }
     }
 
-    #[test]
-    fn vm_native_action_selects_fake_guest_with_retained_notifications() {
+    #[tokio::test]
+    async fn vm_native_action_selects_fake_guest_with_retained_notifications() {
         use std::time::{Duration, Instant};
         use studio_runtime_providers::Method;
         use studio_runtime_services::account_session_runtime::RequestCertainty;
 
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("open store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open store");
         let agent = AgentRecord::from_value(json!({
             "id":"vm-native", "rootId":"vm-native", "epoch":5,
             "status":"idle", "executionMode":"vm", "accountKey":"vm-account"
@@ -1229,11 +1287,13 @@ mod native_review_preflight_tests {
         );
     }
 
-    #[test]
-    fn local_archive_failure_does_not_persist_submitted_intent() {
+    #[tokio::test]
+    async fn local_archive_failure_does_not_persist_submitted_intent() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let missing_source = directory.path().join("missing-project");
-        let store = RuntimeStore::open(Some(directory.path())).expect("open store");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("open store");
         let record = AgentRecord::from_value(json!({
             "id":"vm-local-archive-failure", "rootId":"vm-local-archive-failure",
             "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm",
@@ -1241,24 +1301,28 @@ mod native_review_preflight_tests {
             "startAttempt":{"id":"attempt-local-archive-failure"}
         }))
         .expect("valid VM agent");
+        let record_id = record.id.clone();
         store
-            .transaction(|tx| AgentRepository::put(tx, &record))
+            .transaction_with(move |tx| AgentRepository::put(tx, &record))
+            .await
             .expect("save VM agent");
-        let guest = GuestSpy::new(Value::Null);
+        let guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> =
+            Arc::new(GuestSpy::new(Value::Null));
 
         assert!(matches!(
             vm_preparation::prepare_lead(
                 &store,
-                &guest,
+                guest,
                 "vm-local-archive-failure",
                 "attempt-local-archive-failure",
                 "vm-turn-preparation:attempt-local-archive-failure",
                 1,
-            ),
+            )
+            .await,
             Err(NativeError::Unavailable(_))
         ));
         let connection = store.read().expect("read store");
-        let saved = AgentRepository::get(&connection, &record.id)
+        let saved = AgentRepository::get(&connection, &record_id)
             .expect("read agent")
             .expect("agent exists")
             .value();
@@ -1279,8 +1343,8 @@ mod native_review_preflight_tests {
         );
     }
 
-    #[test]
-    fn vm_lead_workspace_binding_is_durably_recorded_with_python_identity() {
+    #[tokio::test]
+    async fn vm_lead_workspace_binding_is_durably_recorded_with_python_identity() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let source_directory = tempfile::tempdir().expect("isolated host project directory");
         let source = source_directory.path().join("project");
@@ -1290,7 +1354,11 @@ mod native_review_preflight_tests {
         let git_object = source.join(".git/objects/aa/fixture-object");
         std::fs::create_dir_all(git_object.parent().unwrap()).expect("create Git object store");
         std::fs::write(&git_object, "fixture git object bytes").expect("write Git object fixture");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
         let record = AgentRecord::from_value(json!({
             "id":"vm-lead", "rootId":"vm-lead", "epoch":7, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
@@ -1299,6 +1367,7 @@ mod native_review_preflight_tests {
         })).expect("valid VM agent");
         store
             .transaction(|tx| AgentRepository::put(tx, &record))
+            .await
             .expect("save VM agent");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
@@ -1322,7 +1391,7 @@ mod native_review_preflight_tests {
             store: store.clone(),
             provider: Arc::new(ProviderSpy(AtomicUsize::new(0))),
             account_driver: None,
-            repair: Some(Arc::new(RepairSpy(AtomicUsize::new(0)))),
+            repair: Some(Arc::new(RepairSpy(Arc::new(AtomicUsize::new(0))))),
             preparation: Arc::new(resources),
             guest: Some(guest.clone()),
         };
@@ -1344,6 +1413,7 @@ mod native_review_preflight_tests {
         };
         preparation
             .prepare_vm_workspace(&request, &ticket)
+            .await
             .expect("bind layr line");
         let calls = guest.calls.lock().expect("guest calls");
         assert_eq!(calls.len(), 8);
@@ -1401,10 +1471,14 @@ mod native_review_preflight_tests {
         );
     }
 
-    #[test]
-    fn vm_reviewer_branches_from_ready_parent_as_read_only() {
+    #[tokio::test]
+    async fn vm_reviewer_branches_from_ready_parent_as_read_only() {
         let directory = tempfile::tempdir().expect("isolated store directory");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
         let parent = AgentRecord::from_value(json!({
             "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
@@ -1426,6 +1500,7 @@ mod native_review_preflight_tests {
                 AgentRepository::put(tx, &parent)?;
                 AgentRepository::put(tx, &reviewer)
             })
+            .await
             .expect("save VM lines");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
@@ -1446,7 +1521,7 @@ mod native_review_preflight_tests {
             store: store.clone(),
             provider: Arc::new(ProviderSpy(AtomicUsize::new(0))),
             account_driver: None,
-            repair: Some(Arc::new(RepairSpy(AtomicUsize::new(0)))),
+            repair: Some(Arc::new(RepairSpy(Arc::new(AtomicUsize::new(0))))),
             preparation: Arc::new(resources),
             guest: Some(guest.clone()),
         };
@@ -1468,6 +1543,7 @@ mod native_review_preflight_tests {
         };
         preparation
             .prepare_vm_workspace(&request, &ticket)
+            .await
             .expect("branch layr reviewer");
         let calls = guest.calls.lock().expect("guest calls");
         assert_eq!(calls[0].0, "line.branch");
@@ -1495,14 +1571,18 @@ mod native_review_preflight_tests {
         assert!(first.starts_with("layr-bind:"));
     }
 
-    #[test]
-    fn uncertain_vm_binding_is_durable_and_never_resent() {
+    #[tokio::test]
+    async fn uncertain_vm_binding_is_durable_and_never_resent() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let source_directory = tempfile::tempdir().expect("isolated host project directory");
         let source = source_directory.path().join("project");
         std::fs::create_dir_all(&source).expect("create source tree");
         std::fs::write(source.join("main.py"), "print('hello')\n").expect("write project source");
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
         let record = AgentRecord::from_value(json!({
             "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
@@ -1512,6 +1592,7 @@ mod native_review_preflight_tests {
         .expect("valid VM agent");
         store
             .transaction(|tx| AgentRepository::put(tx, &record))
+            .await
             .expect("save VM agent");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
@@ -1529,7 +1610,7 @@ mod native_review_preflight_tests {
             store: store.clone(),
             provider: Arc::new(ProviderSpy(AtomicUsize::new(0))),
             account_driver: None,
-            repair: Some(Arc::new(RepairSpy(AtomicUsize::new(0)))),
+            repair: Some(Arc::new(RepairSpy(Arc::new(AtomicUsize::new(0))))),
             preparation: Arc::new(resources),
             guest: Some(guest.clone()),
         };
@@ -1550,11 +1631,11 @@ mod native_review_preflight_tests {
             request: "request-unknown".into(),
         };
         assert!(matches!(
-            preparation.prepare_vm_workspace(&request, &ticket),
+            preparation.prepare_vm_workspace(&request, &ticket).await,
             Err(NativeError::Unknown)
         ));
         assert!(matches!(
-            preparation.prepare_vm_workspace(&request, &ticket),
+            preparation.prepare_vm_workspace(&request, &ticket).await,
             Err(NativeError::Unknown)
         ));
         let calls = guest.calls.lock().expect("guest calls");

@@ -139,8 +139,8 @@ fn registry_path(path: &str) -> String {
     }
 }
 
-#[test]
-fn python_written_completed_start_recovery_exclusion_matches_rust_scans() {
+#[tokio::test]
+async fn python_written_completed_start_recovery_exclusion_matches_rust_scans() {
     let base =
         std::env::temp_dir().join(format!("restart-recovery-exclusion-{}", std::process::id()));
     fs::create_dir_all(&base).expect("create scratch parent");
@@ -206,8 +206,10 @@ fn python_written_completed_start_recovery_exclusion_matches_rust_scans() {
                 );
             }
         }
-        let store = RuntimeStore::open(Some(&rust)).expect("open Python-written Rust state");
-        recover_on_startup(&store).unwrap_or_else(|error| {
+        let store = RuntimeStore::open(Some(&rust))
+            .await
+            .expect("open Python-written Rust state");
+        recover_on_startup(&store).await.unwrap_or_else(|error| {
             panic!("run both Rust startup recovery scans for {id}: {error}")
         });
         let actual = oracle.call(json!({"command":"normalize","value":rust_state(&store)}));

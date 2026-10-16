@@ -739,40 +739,40 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
-    operation: impl FnOnce(&Context<'_>) -> Result<Value, OperationError> + Send + 'static,
-) -> Result<Json<T>, ApiError> {
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let catalog = RouteCreationCatalog {
-                service: state.model_catalog.clone(),
-            };
-            let managed_environment = state
-                .account_driver
-                .clone()
-                .map(|driver| managed_creation_environment(driver, state.model_catalog.clone()));
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: Some(&catalog),
-                managed_creation_environment: managed_environment.as_deref(),
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            let result = operation(&context).map_err(operation_error)?;
-            state.event_wake.notify_one();
-            super::generated_json::<T>(result).map(Json)
-        },
+    operation: impl for<'a> FnOnce(
+        &'a Context<'a>,
     )
-    .await
-    .map_err(|_| ApiError::internal())??;
-    Ok(result)
+        -> futures_util::future::BoxFuture<'a, Result<Value, OperationError>>,
+) -> Result<Json<T>, ApiError> {
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let catalog = RouteCreationCatalog {
+        service: state.model_catalog.clone(),
+    };
+    let managed_environment = state
+        .account_driver
+        .clone()
+        .map(|driver| managed_creation_environment(driver, state.model_catalog.clone()));
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: Some(std::sync::Arc::new(catalog)),
+        managed_creation_environment: managed_environment.as_deref(),
+        validate: validation_callback(&state),
+    };
+    let result = operation(&context).await.map_err(operation_error)?;
+    state.event_wake.notify_one();
+    super::generated_json::<T>(result).map(Json)
+}
+
+fn validation_callback(
+    state: &HttpState,
+) -> std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync> {
+    let validators = state.validators.clone();
+    std::sync::Arc::new(move |schema, value| match schema {
+        "PersistedAgentRecord" => validators.validate_table_record("runtime_agents", value),
+        _ => validators.validate_stored(schema, value),
+    })
 }
 
 async fn preflight_lead_replay<
@@ -781,29 +781,18 @@ async fn preflight_lead_replay<
     state: &HttpState,
     request: agents_create::Creation,
 ) -> Result<Option<Json<T>>, ApiError> {
-    let state = state.clone();
-    let replay = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/replay",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: None,
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            agents_create::replay_lead_request(&context, &request).map_err(operation_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: validation_callback(state),
+    };
+    let replay = agents_create::replay_lead_request(&context, &request)
+        .await
+        .map_err(operation_error)?;
     match replay {
         Some(value) => Ok(Some(Json(super::generated_json::<T>(value)?))),
         None => Ok(None),
@@ -814,58 +803,36 @@ async fn lead_catalog_account(
     state: &HttpState,
     request: agents_create::Creation,
 ) -> Result<String, ApiError> {
-    let state = state.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/account",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: None,
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            agents_create::creation_account_key(&context, &request).map_err(operation_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: validation_callback(state),
+    };
+    agents_create::creation_account_key(&context, &request)
+        .await
+        .map_err(operation_error)
 }
 
 async fn prepare_agent_admission(
     state: &HttpState,
     request: agents_create::Creation,
 ) -> Result<agents_create::AgentAdmission, ApiError> {
-    let state = state.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/admission",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: None,
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            agents_create::prepare_agent_admission(&context, &request).map_err(operation_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: validation_callback(state),
+    };
+    agents_create::prepare_agent_admission(&context, &request)
+        .await
+        .map_err(operation_error)
 }
 
 async fn conversation_catalog_account(
@@ -874,35 +841,23 @@ async fn conversation_catalog_account(
     expected_account: Option<String>,
     cwd: Option<String>,
 ) -> Result<String, ApiError> {
-    let state = state.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/conversation-account",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: None,
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            agents_create::conversation_account_key(
-                &context,
-                &id,
-                expected_account.as_deref(),
-                cwd.as_deref(),
-            )
-            .map_err(operation_error)
-        },
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: validation_callback(state),
+    };
+    agents_create::conversation_account_key(
+        &context,
+        &id,
+        expected_account.as_deref(),
+        cwd.as_deref(),
     )
     .await
-    .map_err(|_| ApiError::internal())?
+    .map_err(operation_error)
 }
 
 async fn conversation_worker_catalog_account(
@@ -910,34 +865,18 @@ async fn conversation_worker_catalog_account(
     id: String,
     expected_account: Option<String>,
 ) -> Result<Option<String>, ApiError> {
-    let state = state.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/worker-account",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: None,
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            agents_create::conversation_worker_account_key(
-                &context,
-                &id,
-                expected_account.as_deref(),
-            )
-            .map_err(operation_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: validation_callback(state),
+    };
+    agents_create::conversation_worker_account_key(&context, &id, expected_account.as_deref())
+        .await
+        .map_err(operation_error)
 }
 
 async fn create_lead(
@@ -1046,7 +985,7 @@ async fn create_lead_with_model(
         .await?;
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
-        agents_create::lead(context, request)
+        Box::pin(agents_create::lead(context, request))
     })
     .await
 }
@@ -1122,7 +1061,7 @@ async fn create_agent_with_import(
     )
     .await?;
     dispatch::<generated::AgentResponse>(state, move |context| {
-        agents_create::agent(context, request)
+        Box::pin(agents_create::agent(context, request))
     })
     .await
 }
@@ -1342,7 +1281,7 @@ async fn wait_for_agent_catalog(
     }
     for (account, home, provider) in accounts {
         let session = std::sync::Arc::clone(session);
-        let ensured = tokio::time::timeout_at(deadline, session.ensure_session_async(&account))
+        let ensured = tokio::time::timeout_at(deadline, session.ensure_session(&account))
             .await
             .is_ok_and(|result| result.is_ok());
         if !ensured {
@@ -1409,7 +1348,7 @@ async fn configure(
         request_id: body.request_id.flatten(),
     };
     dispatch::<generated::ConfigureResponse>(state, move |context| {
-        agents_create::configure(context, request)
+        Box::pin(agents_create::configure(context, request))
     })
     .await
 }
@@ -1581,7 +1520,7 @@ async fn conversation(
         .await?;
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
-        agents_create::conversation(context, request)
+        Box::pin(agents_create::conversation(context, request))
     })
     .await
 }
@@ -1601,21 +1540,15 @@ async fn finish_title_request(
         agent_id: String,
         request_id: String,
     ) {
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agents_create/rename-settle",
-            move || {
-                studio_runtime_services::title_generation::settle_catalog_failure(
-                    &store,
-                    &agent_id,
-                    &request_id,
-                )
-            },
+        let result = studio_runtime_services::title_generation::settle_catalog_failure(
+            &store,
+            &agent_id,
+            &request_id,
         )
         .await;
         match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => eprintln!("Could not settle unavailable title catalog: {error}"),
-            Err(error) => eprintln!("Could not run title receipt settlement: {error}"),
+            Ok(()) => {}
+            Err(error) => eprintln!("Could not settle unavailable title catalog: {error}"),
         }
     }
     let Some(provider) = provider else {
@@ -1778,28 +1711,31 @@ mod title_http_tests {
             })
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            let scope = self
-                .current_scope(&request.account)
-                .expect("fake catalog scope");
-            Ok(SessionReceipt {
-                scope,
-                operation: request.operation,
-                ticket: Some(RequestTicket {
-                    id: RequestId::String("fake-model-list".into()),
-                    generation: 4,
-                    method: Method::ModelList,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(json!({
-                    "data":[{"model":"gpt-6-mini"}],
-                    "nextCursor":null
-                }))),
-                not_sent_reason: None,
-                replayed: false,
+        ) -> Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let scope = self
+                    .current_scope(&request.account)
+                    .expect("fake catalog scope");
+                Ok(SessionReceipt {
+                    scope,
+                    operation: request.operation,
+                    ticket: Some(RequestTicket {
+                        id: RequestId::String("fake-model-list".into()),
+                        generation: 4,
+                        method: Method::ModelList,
+                    }),
+                    certainty: RequestCertainty::Written,
+                    result: Some(ProviderResponse::Reply(json!({
+                        "data":[{"model":"gpt-6-mini"}],
+                        "nextCursor":null
+                    }))),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }
@@ -1834,8 +1770,11 @@ mod title_http_tests {
     #[tokio::test]
     async fn rename_http_route_uses_injected_title_provider_and_settles() {
         let directory = tempfile::tempdir().expect("isolated HTTP state");
-        let store =
-            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let agent = AgentRecord::from_value(json!({
             "id":"title-http-agent",
             "rootId":"title-http-agent",
@@ -1867,6 +1806,7 @@ mod title_http_tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("seed title agent and transcript");
         let (requested_tx, requested_rx) = oneshot::channel();
         let mut state = crate::router::HttpState::new(
@@ -2170,33 +2110,25 @@ async fn rename(
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let agent_id = body.id.clone();
-        let request_store = store.clone();
-        let request_agent = agent_id.clone();
-        let request_identity = request_id.clone();
-        let (receipt, should_finish) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agents_create/rename",
-            move || {
-                studio_runtime_services::title_generation::admit_python_request(
-                    &request_store,
-                    &request_agent,
-                    &request_identity,
-                )
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(|error| match error {
-            studio_runtime_services::title_generation::TitleError::AgentNotFound => {
-                ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
-            }
-            studio_runtime_services::title_generation::TitleError::DeletedAgent => {
-                ApiError::new(StatusCode::BAD_REQUEST, "This conversation was deleted")
-            }
-            error @ studio_runtime_services::title_generation::TitleError::Conflict => {
-                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-            }
-            _ => ApiError::internal(),
-        })?;
+        let (receipt, should_finish) =
+            studio_runtime_services::title_generation::admit_python_request(
+                &store,
+                &agent_id,
+                &request_id,
+            )
+            .await
+            .map_err(|error| match error {
+                studio_runtime_services::title_generation::TitleError::AgentNotFound => {
+                    ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
+                }
+                studio_runtime_services::title_generation::TitleError::DeletedAgent => {
+                    ApiError::new(StatusCode::BAD_REQUEST, "This conversation was deleted")
+                }
+                error @ studio_runtime_services::title_generation::TitleError::Conflict => {
+                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+                }
+                _ => ApiError::internal(),
+            })?;
         if should_finish {
             let store = store.clone();
             let provider = state.title_request.clone();
@@ -2219,50 +2151,39 @@ async fn rename(
             .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
         return Ok(response);
     }
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/agents_create/rename",
-        move || {
-            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-            let catalog = RouteCreationCatalog {
-                service: state.model_catalog.clone(),
-            };
-            let context = Context {
-                store,
-                accounts: state.account_policy.as_deref(),
-                driver: state.account_driver.as_deref(),
-                catalog: Some(&catalog),
-                managed_creation_environment: None,
-                validate: &|schema, value| match schema {
-                    "PersistedAgentRecord" => state
-                        .validators
-                        .validate_table_record("runtime_agents", value),
-                    _ => state.validators.validate_stored(schema, value),
-                },
-            };
-            let result = agents_create::rename_operation(
-                &context,
-                &body.id,
-                name.as_deref(),
-                body.request_id.flatten().as_deref(),
-            )
-            .map_err(operation_error)?;
-            if !result.replayed {
-                state.event_wake.notify_one();
-            }
-            let mut response = super::generated_json::<generated::RenameResponse>(result.response)
-                .map(Json)
-                .map_err(|_| ApiError::internal())?
-                .into_response();
-            if result.replayed {
-                response
-                    .extensions_mut()
-                    .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-            }
-            Ok(response)
-        },
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let catalog = RouteCreationCatalog {
+        service: state.model_catalog.clone(),
+    };
+    let context = Context {
+        store,
+        accounts: state.account_policy.as_deref(),
+        driver: state.account_driver.clone(),
+        catalog: Some(std::sync::Arc::new(catalog)),
+        managed_creation_environment: None,
+        validate: validation_callback(&state),
+    };
+    let result = agents_create::rename_operation(
+        &context,
+        &body.id,
+        name.as_deref(),
+        body.request_id.flatten().as_deref(),
     )
     .await
-    .map_err(|_| ApiError::internal())?
+    .map_err(operation_error)?;
+    if !result.replayed {
+        state.event_wake.notify_one();
+    }
+    let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+        .map(Json)
+        .map_err(|_| ApiError::internal())?
+        .into_response();
+    if result.replayed {
+        response
+            .extensions_mut()
+            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+    }
+    Ok(response)
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;

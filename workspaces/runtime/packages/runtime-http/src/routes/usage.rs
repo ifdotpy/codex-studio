@@ -135,15 +135,10 @@ async fn reset_limits(
         .account_session
         .clone()
         .ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/usage",
-        move || {
-            studio_runtime_services::limit_reset::consume_reset(&store, session.as_ref(), &body)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(reset_error)?;
+    let result =
+        studio_runtime_services::limit_reset::consume_reset(&store, session.as_ref(), &body)
+            .await
+            .map_err(reset_error)?;
     Ok(Json(result))
 }
 
@@ -152,7 +147,8 @@ fn reset_error(error: studio_runtime_services::limit_reset::ResetError) -> ApiEr
     match error {
         ResetError::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         ResetError::Provider(message) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message),
-        ResetError::Store(_) | ResetError::Sql(_) | ResetError::Json(_) => ApiError::internal(),
+        ResetError::Store(error) => ApiError::stored(error),
+        ResetError::Sql(_) | ResetError::Json(_) => ApiError::internal(),
     }
 }
 
@@ -166,50 +162,43 @@ async fn capacity_retry(
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let now = current_time()?;
         let retry_for_read = retry_id.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/usage",
-            move || {
-                store.transaction_with(
-                    |tx| -> Result<_, studio_runtime_services::continuation::ContinuationError> {
-                        let staged =
-                            studio_runtime_services::continuation_runtime::stage_capacity_retry(
-                                tx, &agent_id, &retry_id, now, false,
-                            )?;
-                        let raw: String = tx
+        let result = store
+            .transaction_with(
+                move |tx| -> Result<_, studio_runtime_services::continuation::ContinuationError> {
+                    let staged =
+                        studio_runtime_services::continuation_runtime::stage_capacity_retry(
+                            tx, &agent_id, &retry_id, now, false,
+                        )?;
+                    let raw: String = tx
                         .query_row(
                             "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
                             rusqlite::params![retry_for_read, agent_id],
                             |row| row.get(0),
                         )
                         .map_err(studio_runtime_store::StoreError::from)?;
-                        let value: Value = serde_json::from_str(&raw).map_err(|_| {
-                            studio_runtime_services::continuation::ContinuationError::Invalid(
-                                "/capacity/record".to_owned(),
-                            )
-                        })?;
-                        let response = serde_json::from_value::<crate::generated::RetryResponse>(
-                            value,
+                    let value: Value = serde_json::from_str(&raw).map_err(|_| {
+                        studio_runtime_services::continuation::ContinuationError::Invalid(
+                            "/capacity/record".to_owned(),
                         )
+                    })?;
+                    let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
                         .map_err(|_| {
                             studio_runtime_services::continuation::ContinuationError::Invalid(
                                 "/capacity/response".to_owned(),
                             )
                         })?;
-                        Ok::<_, studio_runtime_services::continuation::ContinuationError>((
-                            serde_json::to_value(response).map_err(|_| {
-                                studio_runtime_services::continuation::ContinuationError::Invalid(
-                                    "/capacity/response".to_owned(),
-                                )
-                            })?,
-                            staged.changed(),
-                        ))
-                    },
-                )
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(continuation_error)?;
+                    Ok::<_, studio_runtime_services::continuation::ContinuationError>((
+                        serde_json::to_value(response).map_err(|_| {
+                            studio_runtime_services::continuation::ContinuationError::Invalid(
+                                "/capacity/response".to_owned(),
+                            )
+                        })?,
+                        staged.changed(),
+                    ))
+                },
+            )
+            .await
+            .map_err(continuation_error)?;
         if result.1 {
             state.continuation_wake.notify_one();
             state.event_wake.notify_one();
@@ -220,30 +209,30 @@ async fn capacity_retry(
     let retry_id = body.retry_id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/usage",
-        move || {
-            let value = store.transaction_with(|tx| {
+    let result = {
+        let value = store
+            .transaction_with(move |tx| {
                 studio_runtime_services::continuation_runtime::stage_capacity_cancel(
                     tx, &agent_id, &retry_id, now,
                 )
-            })?;
-            let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
-                .map_err(|_| {
-                    studio_runtime_services::continuation::ContinuationError::Invalid(
-                        "/capacity/response".to_owned(),
-                    )
-                })?;
-            serde_json::to_value(response).map_err(|_| {
+            })
+            .await
+            .map_err(continuation_error)?;
+        let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
+            .map_err(|_| {
                 studio_runtime_services::continuation::ContinuationError::Invalid(
                     "/capacity/response".to_owned(),
                 )
             })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(continuation_error)?;
+            .map_err(continuation_error)?;
+        serde_json::to_value(response)
+            .map_err(|_| {
+                studio_runtime_services::continuation::ContinuationError::Invalid(
+                    "/capacity/response".to_owned(),
+                )
+            })
+            .map_err(continuation_error)
+    }?;
     state.continuation_wake.notify_one();
     state.event_wake.notify_one();
     Ok(Json(result))
@@ -261,23 +250,15 @@ async fn usage_resume(
     if enabled {
         let agent = agent_id.clone();
         let record = resume_id.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/usage",
-            move || {
-                studio_runtime_services::continuation_driver::drive(
-                    &store,
-                    &agent,
-                    studio_runtime_store::ContinuationTable::Usage,
-                    Some(&record),
-                    now,
-                    |snapshot| {
-                        studio_runtime_services::usage_resume::set_enabled(snapshot, true, now)
-                    },
-                )
-            },
+        let result = studio_runtime_services::continuation_driver::drive(
+            &store,
+            &agent,
+            studio_runtime_store::ContinuationTable::Usage,
+            Some(&record),
+            now,
+            move |snapshot| studio_runtime_services::usage_resume::set_enabled(snapshot, true, now),
         )
         .await
-        .map_err(|_| ApiError::internal())?
         .map_err(continuation_error)?;
         let value = result.record;
         state.continuation_wake.notify_one();
@@ -291,34 +272,29 @@ async fn usage_resume(
             serde_json::to_value(response).map_err(|_| ApiError::internal())?,
         )));
     }
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/usage",
-        move || {
-            store.transaction_with(
-                |transaction| -> Result<Option<Value>, UsageRepositoryError> {
-                    let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
-                    if value.is_null() {
-                        return Ok(None);
-                    }
-                    let response =
-                        serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
-                            .map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                                table: "runtime_usage_resumes",
-                                id: resume_id.clone(),
-                            })?;
-                    serde_json::to_value(response).map(Some).map_err(|_| {
-                        UsageRepositoryError::InvalidStoredObject {
+    let result = store
+        .transaction_with(
+            move |transaction| -> Result<Option<Value>, UsageRepositoryError> {
+                let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
+                if value.is_null() {
+                    return Ok(None);
+                }
+                let response =
+                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
+                        .map_err(|_| UsageRepositoryError::InvalidStoredObject {
                             table: "runtime_usage_resumes",
                             id: resume_id.clone(),
-                        }
-                    })
-                },
-            )
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|error| usage_error(error, "/api/usage-resume"))?;
+                        })?;
+                serde_json::to_value(response).map(Some).map_err(|_| {
+                    UsageRepositoryError::InvalidStoredObject {
+                        table: "runtime_usage_resumes",
+                        id: resume_id.clone(),
+                    }
+                })
+            },
+        )
+        .await
+        .map_err(|error| usage_error(error, "/api/usage-resume"))?;
     state.continuation_wake.notify_one();
     state.event_wake.notify_one();
     Ok(Json(result))
@@ -386,8 +362,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
     use studio_runtime_services::account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty, SessionReceipt,
+        AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
+        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use tower::ServiceExt;
 
@@ -398,49 +374,58 @@ mod tests {
     }
 
     impl AccountSessionPort for FakeResetSession {
-        fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
-            assert_eq!(account, "default");
-            Ok(self.scope.clone())
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> AccountSessionFuture<'a, ConnectionScope> {
+            Box::pin(async move {
+                assert_eq!(account, "default");
+                Ok(self.scope.clone())
+            })
         }
 
-        fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-            assert_eq!(account, "default");
-            *self.reads.lock().unwrap() += 1;
-            Ok(
-                json!({"accountKey":"default","data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{"id":"credit-A","status":"available","resetType":"codexRateLimits"}]}}}),
-            )
-        }
-
-        fn provider_request(
-            &self,
-            request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
-            self.calls
-                .lock()
-                .unwrap()
-                .push((request.operation.clone(), request.params.clone()));
-            let (certainty, result, ticket) = if self.calls.lock().unwrap().len() == 1 {
-                (RequestCertainty::NotSent, None, None)
-            } else {
-                (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Reply(json!({"outcome":"reset"}))),
-                    Some(RequestTicket {
-                        generation: self.scope.generation,
-                        id: RequestId::String(request.operation.clone()),
-                        method: request.method,
-                    }),
+        fn read_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+            Box::pin(async move {
+                assert_eq!(account, "default");
+                *self.reads.lock().unwrap() += 1;
+                Ok(
+                    json!({"accountKey":"default","data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{"id":"credit-A","status":"available","resetType":"codexRateLimits"}]}}}),
                 )
-            };
-            Ok(SessionReceipt {
-                scope: self.scope.clone(),
-                operation: request.operation,
-                ticket,
-                certainty,
-                result,
-                not_sent_reason: None,
-                replayed: false,
+            })
+        }
+
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((request.operation.clone(), request.params.clone()));
+                let (certainty, result, ticket) = if self.calls.lock().unwrap().len() == 1 {
+                    (RequestCertainty::NotSent, None, None)
+                } else {
+                    (
+                        RequestCertainty::Written,
+                        Some(ProviderResponse::Reply(json!({"outcome":"reset"}))),
+                        Some(RequestTicket {
+                            generation: self.scope.generation,
+                            id: RequestId::String(request.operation.clone()),
+                            method: request.method,
+                        }),
+                    )
+                };
+                Ok(SessionReceipt {
+                    scope: self.scope.clone(),
+                    operation: request.operation,
+                    ticket,
+                    certainty,
+                    result,
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }

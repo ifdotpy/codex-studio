@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use studio_runtime_services::workspace_operations::*;
 use studio_runtime_services::workspace_operations_effects::*;
 use studio_runtime_store::workspace_operations::WorkspaceOperationsRepository;
@@ -214,12 +215,12 @@ fn receipt_identity_and_unknown_provider_outcomes_never_allow_redispatch() {
 
 struct Fixture {
     root: tempfile::TempDir,
-    store: RuntimeStore,
+    store: Arc<RuntimeStore>,
     actor: Value,
     repo: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    async fn new() -> Self {
         let root = temporary();
         let repo = root.path().join("repo");
         std::fs::create_dir(&repo).expect("repo");
@@ -244,7 +245,11 @@ impl Fixture {
             root.path(),
             json!({"command":"seed","root":state,"cwd":repo}),
         );
-        let store = RuntimeStore::open(Some(&state)).expect("open Python-written template");
+        let store = Arc::new(
+            RuntimeStore::open(Some(&state))
+                .await
+                .expect("open Python-written template"),
+        );
         Self {
             root,
             store,
@@ -255,15 +260,18 @@ impl Fixture {
     fn id(&self) -> &str {
         self.actor["id"].as_str().expect("id")
     }
-    fn patch(&self, field: &str, value: Value) {
+    async fn patch(&self, field: &str, value: Value) {
+        let agent_id = self.id().to_owned();
+        let field = field.to_owned();
         self.store
-            .transaction(|tx| {
-                let mut a = CheckpointsRepository::agent(tx, self.id())?
+            .transaction(move |tx| {
+                let mut a = CheckpointsRepository::agent(tx, &agent_id)?
                     .expect("agent")
                     .record;
                 a[field] = value;
                 AgentRepository::put(tx, &AgentRecord::from_value(a)?)
             })
+            .await
             .expect("patch");
     }
     fn snapshot(&self) -> Value {
@@ -310,13 +318,14 @@ fn git(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).expect("Git UTF8")
 }
 
-#[test]
-fn committed_turn_captures_once_preserving_user_index_and_files() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn committed_turn_captures_once_preserving_user_index_and_files() {
+    let f = Fixture::new().await;
     std::fs::write(f.repo.join("file"), "dirty\n").expect("dirty file");
     let index = std::fs::read(f.repo.join(".git/index")).expect("index");
     let request = CompletedTurn::from_record(&f.actor).expect("request");
-    let checkpoint = checkpoint_after_turn(&f.store, &request)
+    let checkpoint = checkpoint_after_turn(Arc::clone(&f.store), &request)
+        .await
         .expect("capture")
         .expect("checkpoint");
     assert_eq!(checkpoint["label"], "After turn");
@@ -331,42 +340,49 @@ fn committed_turn_captures_once_preserving_user_index_and_files() {
     );
     let state = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(&f.store, &request).expect("replay"),
+        checkpoint_after_turn(Arc::clone(&f.store), &request)
+            .await
+            .expect("replay"),
         Some(checkpoint)
     );
     assert_eq!(f.snapshot(), state);
     assert_eq!(state["agent"]["workspaceOperation"], Value::Null);
 }
 
-#[test]
-fn late_completion_and_missing_receipt_write_nothing() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn late_completion_and_missing_receipt_write_nothing() {
+    let f = Fixture::new().await;
     let request = CompletedTurn::from_record(&f.actor).expect("request");
-    f.patch("epoch", json!(2));
+    f.patch("epoch", json!(2)).await;
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(&f.store, &request).expect("stale"),
+        checkpoint_after_turn(Arc::clone(&f.store), &request)
+            .await
+            .expect("stale"),
         None
     );
     assert_eq!(f.snapshot(), before);
-    f.patch("epoch", json!(1));
+    f.patch("epoch", json!(1)).await;
     f.store
         .transaction(|tx| {
             tx.execute("DELETE FROM runtime_completed_turns", [])?;
             Ok(())
         })
+        .await
         .expect("remove receipt");
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(&f.store, &request).expect("no receipt"),
+        checkpoint_after_turn(Arc::clone(&f.store), &request)
+            .await
+            .expect("no receipt"),
         None
     );
     assert_eq!(f.snapshot(), before);
 }
 
-#[test]
-fn failed_capture_and_restart_release_only_the_owned_reservation() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn failed_capture_and_restart_release_only_the_owned_reservation() {
+    let f = Fixture::new().await;
     let snapshot = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
         .expect("snapshot")
         .expect("agent");
@@ -382,9 +398,14 @@ fn failed_capture_and_restart_release_only_the_owned_reservation() {
             )?);
             Ok(())
         })
+        .await
         .expect("reserve");
-    f.patch("workspaceReservationId", json!("checkpoint:replacement"));
-    assert_eq!(recover_operations(&f.store, 2.0).expect("recovery"), 1);
+    f.patch("workspaceReservationId", json!("checkpoint:replacement"))
+        .await;
+    assert_eq!(
+        recover_operations(&f.store, 2.0).await.expect("recovery"),
+        1
+    );
     let state = f.snapshot();
     assert_eq!(
         state["agent"]["workspaceReservationId"],
@@ -399,9 +420,9 @@ fn failed_capture_and_restart_release_only_the_owned_reservation() {
     assert_eq!(op["phase"], "failed");
 }
 
-#[test]
-fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() {
+    let f = Fixture::new().await;
     let request = CompletedTurn::from_record(&f.actor).expect("request");
     // Every write transaction is forced to fail before its durable boundary.
     for (name, table, event, when) in [
@@ -422,15 +443,24 @@ fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() 
                 tx.execute_batch(&trigger)?;
                 Ok(())
             })
+            .await
             .expect("arm failpoint");
-        assert!(checkpoint_after_turn(&f.store, &request).is_err(), "{name}");
+        assert!(
+            checkpoint_after_turn(Arc::clone(&f.store), &request)
+                .await
+                .is_err(),
+            "{name}"
+        );
         f.store
             .transaction(|tx| {
                 tx.execute_batch("DROP TRIGGER failpoint")?;
                 Ok(())
             })
+            .await
             .expect("disarm");
-        recover_operations(&f.store, 3.0).expect("restart recovery");
+        recover_operations(&f.store, 3.0)
+            .await
+            .expect("restart recovery");
         assert_eq!(f.snapshot()["checkpoints"], 0, "{name}");
         assert!(
             f.snapshot()["agent"]["workspaceOperation"].is_null(),
@@ -442,10 +472,12 @@ fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() 
                 tx.execute("DELETE FROM runtime_workspace_operations", [])?;
                 Ok(())
             })
+            .await
             .expect("next isolated failpoint");
     }
     assert!(
-        checkpoint_after_turn(&f.store, &request)
+        checkpoint_after_turn(Arc::clone(&f.store), &request)
+            .await
             .expect("capture after faults")
             .is_some()
     );
@@ -453,9 +485,9 @@ fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() 
     assert!(f.root.path().exists());
 }
 
-#[test]
-fn stale_source_at_publication_cannot_attach_checkpoint() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn stale_source_at_publication_cannot_attach_checkpoint() {
+    let f = Fixture::new().await;
     let snapshot = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
         .expect("snapshot")
         .expect("agent");
@@ -471,6 +503,7 @@ fn stale_source_at_publication_cannot_attach_checkpoint() {
             )?);
             Ok(())
         })
+        .await
         .expect("reserve");
     let reserved = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("db"), f.id())
         .expect("snapshot")
@@ -485,8 +518,9 @@ fn stale_source_at_publication_cannot_attach_checkpoint() {
             )?);
             Ok(())
         })
+        .await
         .expect("start");
-    f.patch("epoch", json!(2));
+    f.patch("epoch", json!(2)).await;
     f.store
         .transaction(|tx| {
             assert!(!CheckpointsRepository::complete_capture(
@@ -499,19 +533,20 @@ fn stale_source_at_publication_cannot_attach_checkpoint() {
             )?);
             Ok(())
         })
+        .await
         .expect("stale publication refused");
     assert_eq!(f.snapshot()["checkpoints"], 0);
 }
 
-#[test]
-fn restart_after_each_committed_capture_stage_never_repeats_git() {
+#[tokio::test]
+async fn restart_after_each_committed_capture_stage_never_repeats_git() {
     for running in [false, true] {
         let Fixture {
             root,
             store,
             actor,
             repo,
-        } = Fixture::new();
+        } = Fixture::new().await;
         let request = CompletedTurn::from_record(&actor).expect("request");
         let id = format!("checkpoint:{}", request.checkpoint_id());
         let snapshot = CheckpointsRepository::workspace_snapshot(
@@ -532,6 +567,7 @@ fn restart_after_each_committed_capture_stage_never_repeats_git() {
                 )?);
                 Ok(())
             })
+            .await
             .expect("reserve");
         if running {
             let reserved = CheckpointsRepository::workspace_snapshot(
@@ -547,13 +583,20 @@ fn restart_after_each_committed_capture_stage_never_repeats_git() {
                     )?);
                     Ok(())
                 })
+                .await
                 .expect("running");
         }
         let index = std::fs::read(repo.join(".git/index")).expect("index");
         drop(store);
-        let reopened = RuntimeStore::open(Some(&root.path().join("state"))).expect("restart");
+        let reopened = Arc::new(
+            RuntimeStore::open(Some(&root.path().join("state")))
+                .await
+                .expect("restart"),
+        );
         assert_eq!(
-            checkpoint_after_turn(&reopened, &request).expect("recovered callback"),
+            checkpoint_after_turn(Arc::clone(&reopened), &request)
+                .await
+                .expect("recovered callback"),
             None
         );
         assert_eq!(
@@ -567,9 +610,9 @@ fn restart_after_each_committed_capture_stage_never_repeats_git() {
     }
 }
 
-#[test]
-fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_result() {
-    let f = Fixture::new();
+#[tokio::test]
+async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_result() {
+    let f = Fixture::new().await;
     let mut expected = ticket();
     expected.agent = f.id().into();
     let operation = json!({"id":expected.operation,"kind":"branch","agent":f.id(),"phase":"provider_pending",
@@ -582,6 +625,7 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
             )?;
             Ok(())
         })
+        .await
         .expect("prepared ticket");
     let before = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("read"), f.id())
         .expect("snapshot")
@@ -589,19 +633,25 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
     assert!(
         f.store
             .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .await
             .expect("unchanged")
     );
-    f.patch("epoch", json!(2));
+    f.patch("epoch", json!(2)).await;
     assert!(
         !f.store
             .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .await
             .expect("changed")
     );
-    f.patch("epoch", json!(1));
+    f.patch("epoch", json!(1)).await;
     let response = json!({"thread":{"id":"fork"},"approvalPolicy":"never"});
     let mut foreign = expected.clone();
     foreign.request = "other-request".into();
-    assert!(record_provider_response(&f.store, &foreign, &response).is_err());
+    assert!(
+        record_provider_response(&f.store, &foreign, response.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(
         WorkspaceOperationsRepository::operation(
             &f.store.read().expect("read"),
@@ -610,8 +660,12 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
         .expect("read"),
         Some(operation.clone())
     );
-    f.patch("epoch", json!(2));
-    assert!(record_provider_response(&f.store, &expected, &response).is_err());
+    f.patch("epoch", json!(2)).await;
+    assert!(
+        record_provider_response(&f.store, &expected, response.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(
         WorkspaceOperationsRepository::operation(
             &f.store.read().expect("read"),
@@ -620,9 +674,11 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
         .expect("read"),
         Some(operation)
     );
-    f.patch("epoch", json!(1));
+    f.patch("epoch", json!(1)).await;
     assert_eq!(
-        record_provider_response(&f.store, &expected, &response).expect("accept"),
+        record_provider_response(&f.store, &expected, response.clone())
+            .await
+            .expect("accept"),
         response
     );
     let accepted = WorkspaceOperationsRepository::operation(
@@ -631,7 +687,9 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
     )
     .expect("read");
     assert_eq!(
-        record_provider_response(&f.store, &expected, &response).expect("replay"),
+        record_provider_response(&f.store, &expected, response.clone())
+            .await
+            .expect("replay"),
         response
     );
     assert_eq!(

@@ -4,18 +4,21 @@
 
 - **Responsibility:** Open an existing Studio state directory in place, exclude
   other runtime processes with `runtime.lock`, validate supported repository
-  requirements, prepare the sync schema family, and provide synchronous typed
-  reads and writes.
-- **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
-  `RuntimeStore::transaction`; `JsonRecord` and `Table<R>`
+  requirements, prepare the sync schema family, and provide typed reads plus
+  asynchronous Canvas writes.
+- **Public interface:** async `RuntimeStore::open` and `RuntimeStore::transaction*`,
+  synchronous `RuntimeStore::read` and `RuntimeStore::read_transaction*`, and
+  async writer checkpoint/diagnostic operations; `JsonRecord` and `Table<R>`
   for JSON-record tables; repositories for agents, tasks, queue events, and
   chat messages.
-- **Boundaries:** No Tokio, Python, general schema migration, or state
+- **Boundaries:** Tokio and `tokio-rusqlite` own the Canvas writer boundary;
+  each actor job runs a synchronous `rusqlite` closure. Reads still use the
+  existing connection APIs. No Python, general schema migration, or state
   directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
   Python persisted models and the OpenAPI document own the schemas.
-- **Invariants:** One exclusive runtime lock, one serialized writer using
-  `BEGIN IMMEDIATE`, independent query-only read connections, WAL and FULL
-  synchronous writes, and fail-closed checks for required tables, columns,
+- **Invariants:** One exclusive runtime lock, one serialized Canvas writer
+  using `BEGIN IMMEDIATE`, independent query-only read connections, WAL and
+  FULL synchronous writes, and fail-closed checks for required tables, columns,
   triggers and migration-marker meaning. `Table<R>` validates records against
   their named schemas on reads and writes, checks declared key modes, and
   reports invalid records with one table/key error while preserving extension
@@ -29,6 +32,27 @@
   `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
   Python subprocesses create disposable state under the system temporary
   directory (the command sets it to `/var/tmp/cs-rust-store/tests`).
+
+## Canvas writer actor
+
+The Canvas connection has one async owner. Each submitted operation is a
+synchronous transaction closure with owned `Send + 'static` inputs and output;
+SQL transactions and borrowed rows do not cross an `await`. A bounded admission
+permit remains with the queued or running callback if its caller cancels. A
+caller cancelled before admission submits no SQL; after submission, the job may
+still commit and its result is unknown to that caller. Receipt-backed retries
+must use the original identity and content and are never automatic.
+
+The actor holds the `RuntimeLock` lease through every queued or running
+callback. After the last callback returns, dropping the sender leaves only
+`tokio-rusqlite`'s library-managed native connection-close tail; application SQL
+and callbacks do not run after the lock and identity leases end. The analytics
+database remains under its separate writer owner, and the dedicated version
+reader remains separate from the ordinary Canvas read pool. Raw read API
+migration and removal of synchronous read leases are later work. See the
+[SQLite actor migration preflight](../../../../docs/plans/rust-sqlite-actor.md)
+for the full cutover and acceptance contracts. The production caller cutover
+is not claimed complete by this package description.
 
 ## JSON-record table scope
 

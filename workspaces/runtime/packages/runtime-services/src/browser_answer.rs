@@ -1,6 +1,6 @@
 //! Durable browser-open card answers bridged to the VM guest.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -37,10 +37,10 @@ pub struct BrowserAnswerResult {
     pub replayed: bool,
 }
 
-pub struct BrowserAnswerContext<'a, V> {
+pub struct BrowserAnswerContext<V> {
     pub local_window: bool,
-    pub guest: &'a dyn crate::linux_vm_guest::GuestRpc,
-    pub local_forwarder: Option<&'a crate::browser::BrowserForwarder>,
+    pub guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
+    pub local_forwarder: Option<Arc<crate::browser::BrowserForwarder>>,
     pub now: f64,
     pub validate: V,
 }
@@ -57,11 +57,11 @@ pub fn is_host_source(store: &RuntimeStore, id: &str) -> Result<bool, BrowserAns
 
 /// The guest owns the sign-in request. A stable request ID lets its durable
 /// receipt resolve an unknown transport outcome without delivering twice.
-pub fn answer<V: Fn(&Value) -> bool>(
+pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     store: &RuntimeStore,
     id: &str,
     data: &Value,
-    context: BrowserAnswerContext<'_, V>,
+    context: BrowserAnswerContext<V>,
 ) -> Result<Option<BrowserAnswerResult>, BrowserAnswerError> {
     let BrowserAnswerContext {
         local_window,
@@ -175,35 +175,47 @@ pub fn answer<V: Fn(&Value) -> bool>(
                     .to_owned(),
                 now + LOCAL_FORWARD_SECONDS as f64,
             );
-            let handle =
-                tokio::runtime::Handle::try_current().map_err(|_| BrowserAnswerError::Unknown)?;
-            handle.block_on(forwarder.open(input, now, None))?;
-            Some((forwarder, handle))
+            forwarder.open(input, now, None).await?;
+            Some(forwarder)
         } else {
             None
         }
     } else {
         None
     };
-    let call = guest.call(
-        "browser.answer",
-        &json!({"id":bridge_id,"decision":rpc_decision}),
-        Some(&format!("browser-answer:{bridge_id}:{rpc_decision}")),
-        BROWSER_ANSWER_TIMEOUT,
-    );
+    let guest = Arc::clone(&guest);
+    let guest_params = json!({"id":bridge_id,"decision":rpc_decision});
+    let guest_request_id = format!("browser-answer:{bridge_id}:{rpc_decision}");
+    let call = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/browser_answer_guest_rpc",
+        move || {
+            guest.call(
+                "browser.answer",
+                &guest_params,
+                Some(&guest_request_id),
+                BROWSER_ANSWER_TIMEOUT,
+            )
+        },
+    )
+    .await
+    .map_err(|_| BrowserAnswerError::Unknown)?;
     let answered = match call {
         Ok(value) => Some(value),
         Err(_error) if decision == "decline" => None,
         Err(error) if error.code() == Some("stale") => {
-            if let Some((forwarder, handle)) = &local_forward {
-                drop(handle.block_on(forwarder.close(bridge_id)));
+            if let Some(forwarder) = &local_forward {
+                drop(forwarder.close(bridge_id).await);
             }
-            store.transaction_with_error(|tx| expire(tx, id, &validate))?;
+            let id = id.to_owned();
+            let validate = Arc::new(validate);
+            store
+                .transaction_with_error(move |tx| expire(tx, &id, validate.as_ref()))
+                .await?;
             return Err(BrowserAnswerError::Stale);
         }
         Err(error) => {
-            if let Some((forwarder, handle)) = &local_forward {
-                drop(handle.block_on(forwarder.close(bridge_id)));
+            if let Some(forwarder) = &local_forward {
+                drop(forwarder.close(bridge_id).await);
             }
             return Err(BrowserAnswerError::Guest(error));
         }
@@ -260,19 +272,28 @@ pub fn answer<V: Fn(&Value) -> bool>(
     } else {
         None
     };
-    store.transaction_with_error(|tx| {
-        finish(
-            tx,
-            id,
-            &signature,
-            decision,
-            forward
-                .as_ref()
-                .and_then(|value| value.get("_forwardState")),
-            now,
-            &validate,
-        )
-    })?;
+    let id = id.to_owned();
+    let signature = signature.to_owned();
+    let decision = decision.to_owned();
+    let forward_state = forward
+        .as_ref()
+        .and_then(|value| value.get("_forwardState"))
+        .cloned();
+    let validate = Arc::new(validate);
+    let decision_for_write = decision.clone();
+    store
+        .transaction_with_error(move |tx| {
+            finish(
+                tx,
+                &id,
+                &signature,
+                &decision_for_write,
+                forward_state.as_ref(),
+                now,
+                validate.as_ref(),
+            )
+        })
+        .await?;
     let response = if let Some(forward) = forward {
         let mut spec = forward;
         spec.as_object_mut()
@@ -442,7 +463,7 @@ mod tests {
         }
     }
 
-    fn store_with_browser_request() -> (
+    async fn store_with_browser_request() -> (
         tempfile::TempDir,
         studio_runtime_store::RuntimeStore,
         String,
@@ -451,31 +472,32 @@ mod tests {
         let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
             .expect("runtime store opens");
         let id = "browser-answer-test".to_owned();
+        let request_id = id.clone();
         store
-            .transaction_with(|tx| {
+            .transaction_with(move |tx| {
                 studio_runtime_store::QuestionsWriteRepository::put_request(
                     tx,
-                    &id,
+                    &request_id,
                     &studio_runtime_store::python_json_utf8(&json!({
-                        "id":id,
+                        "id":request_id,
                         "agent":"browser-answer-agent",
                         "method":"browser/open",
                         "status":"pending",
                         "params":{"bridgeId":"0123456789abcdef0123456789abcdef","url":"https://login.example.test/"}
                     })),
                 )
-            })
+            }).await
             .expect("browser request is seeded");
         (dir, store, id)
     }
 
-    #[test]
-    fn browser_answer_uses_guest_receipt_and_replays_without_second_call() {
-        let (_dir, store, id) = store_with_browser_request();
-        let guest = FakeGuest {
+    #[tokio::test]
+    async fn browser_answer_uses_guest_receipt_and_replays_without_second_call() {
+        let (_dir, store, id) = store_with_browser_request().await;
+        let guest = Arc::new(FakeGuest {
             calls: Mutex::new(Vec::new()),
             fail_unknown_once: Mutex::new(false),
-        };
+        });
         let answer_data = json!({"decision":"accept"});
         let first = answer(
             &store,
@@ -483,12 +505,13 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: &guest,
+                guest: Arc::clone(&guest),
                 local_forwarder: None,
                 now: 10.0,
                 validate: |_: &serde_json::Value| true,
             },
         )
+        .await
         .expect("guest approval succeeds")
         .expect("browser card is handled");
         assert_eq!(first.response["openUrl"], "https://login.example.test/");
@@ -499,25 +522,26 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: &guest,
+                guest: Arc::clone(&guest),
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,
             },
         )
+        .await
         .expect("answer replay succeeds")
         .expect("browser card is handled");
         assert!(replay.replayed);
         assert_eq!(guest.calls.lock().expect("call log").len(), 1);
     }
 
-    #[test]
-    fn unknown_browser_answer_keeps_card_pending_and_retries_same_guest_identity() {
-        let (_dir, store, id) = store_with_browser_request();
-        let guest = FakeGuest {
+    #[tokio::test]
+    async fn unknown_browser_answer_keeps_card_pending_and_retries_same_guest_identity() {
+        let (_dir, store, id) = store_with_browser_request().await;
+        let guest = Arc::new(FakeGuest {
             calls: Mutex::new(Vec::new()),
             fail_unknown_once: Mutex::new(true),
-        };
+        });
         let answer_data = json!({"decision":"accept"});
         assert!(
             answer(
@@ -526,12 +550,13 @@ mod tests {
                 &answer_data,
                 BrowserAnswerContext {
                     local_window: true,
-                    guest: &guest,
+                    guest: Arc::clone(&guest),
                     local_forwarder: None,
                     now: 10.0,
                     validate: |_: &serde_json::Value| true,
                 },
             )
+            .await
             .is_err()
         );
         let call_ids = guest.calls.lock().expect("call log").clone();
@@ -553,12 +578,13 @@ mod tests {
             &answer_data,
             BrowserAnswerContext {
                 local_window: true,
-                guest: &guest,
+                guest: Arc::clone(&guest),
                 local_forwarder: None,
                 now: 11.0,
                 validate: |_: &serde_json::Value| true,
             },
         )
+        .await
         .expect("same guest receipt resolves retry")
         .expect("browser card is handled");
         let call_ids = guest.calls.lock().expect("call log").clone();

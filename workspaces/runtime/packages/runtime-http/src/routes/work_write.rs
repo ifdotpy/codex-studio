@@ -200,29 +200,22 @@ async fn prepare_vm_accept(
     };
 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let store_for_prepare = store.clone();
     let agent_id = agent.to_owned();
     let task_id = input.task_id.clone();
     let expected_version = input.version;
     let request = request_id.map(str::to_owned);
     let request_signature = signature.to_owned();
     let reason = input.reason.clone();
-    let preparation = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_write",
-        move || {
-            prepare(
-                &store_for_prepare,
-                &agent_id,
-                &task_id,
-                expected_version,
-                request.as_deref(),
-                &request_signature,
-                &reason,
-            )
-        },
+    let preparation = prepare(
+        &store,
+        &agent_id,
+        &task_id,
+        expected_version,
+        request.as_deref(),
+        &request_signature,
+        &reason,
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(write_error)?;
     match preparation {
         VmAcceptPreparation::NotVm => {}
@@ -252,33 +245,18 @@ async fn prepare_vm_accept(
             let result_id = call.result_id;
             match response {
                 Ok(_) => {
-                    let store_for_finish = store.clone();
-                    let task_for_finish = task_id.clone();
                     let request = call.request_id;
-                    studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-http/routes/work_write",
-                        move || {
-                            finish_vm_accept(&store_for_finish, &task_for_finish, &request, None)
-                        },
-                    )
-                    .await
-                    .map_err(|_| ApiError::internal())?
-                    .map_err(write_error)?;
+                    finish_vm_accept(&store, &task_id, &request, None)
+                        .await
+                        .map_err(write_error)?;
                     input.merged_result_id = Some(result_id);
                 }
                 Err(error) => {
-                    let store_for_finish = store.clone();
                     let request = call.request_id;
                     let uncertain = error.uncertain();
-                    studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-http/routes/work_write",
-                        move || {
-                            finish_vm_accept(&store_for_finish, &task_id, &request, Some(uncertain))
-                        },
-                    )
-                    .await
-                    .map_err(|_| ApiError::internal())?
-                    .map_err(write_error)?;
+                    finish_vm_accept(&store, &task_id, &request, Some(uncertain))
+                        .await
+                        .map_err(write_error)?;
                     return Err(ApiError::new(
                         StatusCode::BAD_GATEWAY,
                         format!("Layr merge failed: {error}"),
@@ -305,25 +283,17 @@ async fn prepare_vm_submission(
     };
 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let store_for_prepare = store.clone();
     let agent_id = agent.to_owned();
     let request = request_id.map(str::to_owned);
     let signature_owned = signature.to_owned();
-    let input_for_prepare = input.clone();
-    let preparation = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_write",
-        move || {
-            prepare(
-                &store_for_prepare,
-                &agent_id,
-                request.as_deref(),
-                &signature_owned,
-                &input_for_prepare,
-            )
-        },
+    let preparation = prepare(
+        &store,
+        &agent_id,
+        request.as_deref(),
+        &signature_owned,
+        input,
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(write_error)?;
     match preparation {
         VmSubmissionPreparation::NotVm | VmSubmissionPreparation::Replay => {}
@@ -359,24 +329,12 @@ async fn prepare_vm_submission(
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
-                    let store_for_finish = store.clone();
                     let task_id = input.task_id.clone();
                     let operation_id = call.request_id;
                     let uncertain = error.uncertain();
-                    studio_runtime_process::blocking_pool::spawn_blocking(
-                        "runtime-http/routes/work_write",
-                        move || {
-                            finish_vm_submission(
-                                &store_for_finish,
-                                &task_id,
-                                &operation_id,
-                                Err(uncertain),
-                            )
-                        },
-                    )
-                    .await
-                    .map_err(|_| ApiError::internal())?
-                    .map_err(write_error)?;
+                    finish_vm_submission(&store, &task_id, &operation_id, Err(uncertain))
+                        .await
+                        .map_err(write_error)?;
                     return Err(ApiError::new(
                         StatusCode::BAD_GATEWAY,
                         format!("Layr evidence request failed: {error}"),
@@ -384,18 +342,11 @@ async fn prepare_vm_submission(
                 }
             };
             if response.get("stateId").and_then(Value::as_str) != Some(expected_revision.as_str()) {
-                let store_for_finish = store.clone();
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-http/routes/work_write",
-                    move || {
-                        finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
-                    },
-                )
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(write_error)?;
+                finish_vm_submission(&store, &task_id, &operation_id, Err(false))
+                    .await
+                    .map_err(write_error)?;
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "Submit the exact layr state ID",
@@ -409,36 +360,22 @@ async fn prepare_vm_submission(
             if evidence["layrProjectId"].as_str().is_none()
                 || evidence["layrLine"].as_str().is_none()
             {
-                let store_for_finish = store.clone();
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-http/routes/work_write",
-                    move || {
-                        finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
-                    },
-                )
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(write_error)?;
+                finish_vm_submission(&store, &task_id, &operation_id, Err(false))
+                    .await
+                    .map_err(write_error)?;
                 return Err(ApiError::new(
                     StatusCode::BAD_GATEWAY,
                     "Invalid layr evidence",
                 ));
             }
-            let store_for_finish = store.clone();
             let task_id = input.task_id.clone();
             let operation_id = call.request_id;
-            let evidence = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/work_write",
-                move || {
-                    finish_vm_submission(&store_for_finish, &task_id, &operation_id, Ok(evidence))
-                },
-            )
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(write_error)?
-            .ok_or_else(ApiError::internal)?;
+            let evidence = finish_vm_submission(&store, &task_id, &operation_id, Ok(evidence))
+                .await
+                .map_err(write_error)?
+                .ok_or_else(ApiError::internal)?;
             input.vm_evidence = Some(evidence);
         }
     }
@@ -459,67 +396,66 @@ async fn commit(
     let is_accept = matches!(&command, WorkWrite::Accept(_));
     let has_monitor = runtime.is_some();
     let request_id_for_archive = request_id.clone();
-    let (result, checks, rule_now) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/work_write",
-        move || {
-            let (result, checks, rule_now) = store
-                .transaction_with_error(|tx| -> Result<_, WorkCommitError> {
-                    let result =
-                        work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
-                    let mut checks = Vec::new();
-                    let mut rule_now = 0.0;
-                    if is_submit && result.event_inserted {
-                        let submission = result.record["results"]
-                            .as_array()
-                            .and_then(|results| results.last())
-                            .ok_or_else(|| WorkCommitError::Store)?;
-                        let root = result.record["rootId"].as_str().unwrap_or_default();
-                        let result_id = submission["id"].as_str().unwrap_or_default();
-                        let key = format!("work-result:{result_id}");
-                        let text = serde_json::to_string(&serde_json::json!({
-                            "task": result.record["id"],
-                            "title": result.record["title"],
-                            "result": submission,
-                        }))
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                        rule_now = submission["created"].as_f64().unwrap_or_default();
-                        let mut after_rowid = 0;
-                        loop {
-                            let (report, batch) =
-                                studio_runtime_services::rules_tick::event_in_transaction(
-                                    tx,
-                                    studio_runtime_services::rules_tick::RuleEvent {
-                                        agent_id: root,
-                                        kind: "work_review",
-                                        text: &text,
-                                        key: &key,
-                                        now: rule_now,
-                                    },
-                                    after_rowid,
-                                    has_monitor,
-                                )?;
-                            checks.extend(batch);
-                            let Some(next) = report.next_rowid else { break };
-                            after_rowid = next;
-                        }
+    let committed_wake = wake.clone();
+    let ((result, checks, rule_now), _) = store
+        .transaction_with_post_commit(
+            move |tx| -> Result<_, WorkCommitError> {
+                let result =
+                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
+                let mut checks = Vec::new();
+                let mut rule_now = 0.0;
+                if is_submit && result.event_inserted {
+                    let submission = result.record["results"]
+                        .as_array()
+                        .and_then(|results| results.last())
+                        .ok_or_else(|| WorkCommitError::Store)?;
+                    let root = result.record["rootId"].as_str().unwrap_or_default();
+                    let result_id = submission["id"].as_str().unwrap_or_default();
+                    let key = format!("work-result:{result_id}");
+                    let text = serde_json::to_string(&serde_json::json!({
+                        "task": result.record["id"],
+                        "title": result.record["title"],
+                        "result": submission,
+                    }))
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                    rule_now = submission["created"].as_f64().unwrap_or_default();
+                    let mut after_rowid = 0;
+                    loop {
+                        let (report, batch) =
+                            studio_runtime_services::rules_tick::event_in_transaction(
+                                tx,
+                                studio_runtime_services::rules_tick::RuleEvent {
+                                    agent_id: root,
+                                    kind: "work_review",
+                                    text: &text,
+                                    key: &key,
+                                    now: rule_now,
+                                },
+                                after_rowid,
+                                has_monitor,
+                            )?;
+                        checks.extend(batch);
+                        let Some(next) = report.next_rowid else { break };
+                        after_rowid = next;
                     }
-                    Ok((result, checks, rule_now))
-                })
-                .map_err(commit_error)?;
-            if result.event_inserted {
-                wake.notify_one();
-            }
-            Ok::<_, ApiError>((result, checks, rule_now))
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+                }
+                Ok((result, checks, rule_now))
+            },
+            move |(result, _, _)| {
+                if result.event_inserted {
+                    committed_wake.notify_one();
+                }
+            },
+        )
+        .await
+        .map_err(commit_error)?;
     if !checks.is_empty() {
         let Some(runtime) = runtime else {
             return Err(ApiError::internal());
         };
         runtime
             .submit_event_checks(&checks, rule_now)
+            .await
             .map_err(|_| ApiError::internal())?;
     }
     if let Some(artifact) = result.artifact {
@@ -538,6 +474,15 @@ async fn commit(
     Ok(result.record)
 }
 
+enum AcceptedArchivePreparation {
+    Finished(Value, bool),
+    Archive {
+        owner_id: String,
+        root_id: String,
+        lead_epoch: u64,
+    },
+}
+
 async fn finalize_accepted_archive(
     state: &HttpState,
     record: Value,
@@ -546,23 +491,24 @@ async fn finalize_accepted_archive(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let work_id = record["id"].as_str().unwrap_or_default().to_owned();
     let work_id_for_read = work_id.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/work_write", move || -> Result<(Value, Value, bool), ApiError> {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
+    let read_store = store.clone();
+    let result = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/work_write", move || -> Result<(Value, AcceptedArchivePreparation), ApiError> {
+        let connection = read_store.read().map_err(|_| ApiError::internal())?;
         let work = studio_runtime_store::WorkItemsRepository::work_record(&connection, &work_id_for_read)
             .map_err(|_| ApiError::internal())?
             .ok_or_else(ApiError::internal)?;
-        let owner_id = work["owner"].as_str().unwrap_or_default();
-        let root_id = work["rootId"].as_str().unwrap_or_default();
+        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+        let root_id = work["rootId"].as_str().unwrap_or_default().to_owned();
         if owner_id.is_empty() || owner_id == root_id {
-            return Ok((work, serde_json::json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"}), false));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"}), false)));
         }
         let owner = studio_runtime_store::AgentRepository::get(
             &connection,
-            &studio_runtime_store::AgentId::from(owner_id),
+            &studio_runtime_store::AgentId::from(owner_id.as_str()),
         )?.ok_or_else(ApiError::internal)?;
         let lead = studio_runtime_store::AgentRepository::get(
             &connection,
-            &studio_runtime_store::AgentId::from(root_id),
+            &studio_runtime_store::AgentId::from(root_id.as_str()),
         )?.ok_or_else(ApiError::internal)?;
         let owner_value = owner.value();
         let open_tasks = studio_runtime_store::WorkItemsRepository::work(&connection)?
@@ -572,15 +518,15 @@ async fn finalize_accepted_archive(
             .filter_map(|item| item["id"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
         if !open_tasks.is_empty() {
-            return Ok((work, serde_json::json!({"status":"kept","reason":"The owner has another open task","tasks":open_tasks.into_iter().take(20).collect::<Vec<_>>(),"retryable":true}), true));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner has another open task","tasks":open_tasks.into_iter().take(20).collect::<Vec<_>>(),"retryable":true}), true)));
         }
         if owner_value.get("deletedAt").is_some_and(|value| !value.is_null()) {
-            return Ok((work, serde_json::json!({"status":"kept","reason":"The owner is already removed"}), false));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The owner is already removed"}), false)));
         }
         if owner_value.get("remoteWorker").is_some_and(|value| {
             !value.is_null() && value != false && value != ""
         }) {
-            return Ok((work, serde_json::json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}), false));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}), false)));
         }
         let latest = work["results"].as_array().and_then(|values| values.last()).cloned().unwrap_or(Value::Null);
         let revision = latest["revision"].as_str().unwrap_or_default();
@@ -597,7 +543,7 @@ async fn finalize_accepted_archive(
                 } else {
                     "The result commit is not reachable from local main"
                 };
-                return Ok((work, serde_json::json!({"status":"kept","reason":reason}), false));
+                return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":reason}), false)));
             }
         } else if !studio_runtime_services::work_write::vm_merge_confirmed(
             &connection,
@@ -607,36 +553,58 @@ async fn finalize_accepted_archive(
         )
         .map_err(write_error)?
         {
-            return Ok((work, serde_json::json!({"status":"kept","reason":"The layr result merge is not confirmed"}), false));
+            return Ok((work, AcceptedArchivePreparation::Finished(serde_json::json!({"status":"kept","reason":"The layr result merge is not confirmed"}), false)));
         }
-        drop(connection);
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-        work_write::begin_accepted_archive_attempt(&store, &work_id_for_read, now)
-            .map_err(write_error)?;
-        let archived = studio_runtime_services::agent_management_store::execute(
-            &store,
-            &studio_runtime_services::agent_management::Action::Archive {
-                actor: root_id.to_owned(),
-                epoch: lead.epoch,
-                target: owner_id.to_owned(),
-                reason: "Accepted task result is on main".to_owned(),
-                unassign_work: false,
-            },
-            now,
-        );
-        let outcome = match archived {
-            Ok(value) => value,
-            Err(error) => serde_json::json!({
-                "status":"kept",
-                "reason":format!("The archive check failed: {error}"),
-            }),
-        };
-        let retryable = outcome["status"] == "blocked"
-            || outcome["retryable"] == true
-            || outcome["cleanupPending"] == true;
-        Ok((work, outcome, retryable))
+        Ok((work, AcceptedArchivePreparation::Archive {
+            owner_id,
+            root_id,
+            lead_epoch: u64::try_from(lead.epoch).map_err(|_| ApiError::internal())?,
+        }))
     }).await.map_err(|_| ApiError::internal())??;
-    let (mut work, outcome, retryable) = result;
+    let (mut work, outcome, retryable) = match result {
+        (work, AcceptedArchivePreparation::Finished(outcome, retryable)) => {
+            (work, outcome, retryable)
+        }
+        (
+            work,
+            AcceptedArchivePreparation::Archive {
+                owner_id,
+                root_id,
+                lead_epoch,
+            },
+        ) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            work_write::begin_accepted_archive_attempt(&store, &work_id, now)
+                .await
+                .map_err(write_error)?;
+            let archived = studio_runtime_services::agent_management_store::execute(
+                store.clone(),
+                &studio_runtime_services::agent_management::Action::Archive {
+                    actor: root_id,
+                    epoch: i64::try_from(lead_epoch).map_err(|_| ApiError::internal())?,
+                    target: owner_id,
+                    reason: "Accepted task result is on main".to_owned(),
+                    unassign_work: false,
+                },
+                now,
+            )
+            .await;
+            let outcome = match archived {
+                Ok(value) => value,
+                Err(error) => serde_json::json!({
+                    "status":"kept",
+                    "reason":format!("The archive check failed: {error}"),
+                }),
+            };
+            let retryable = outcome["status"] == "blocked"
+                || outcome["retryable"] == true
+                || outcome["cleanupPending"] == true;
+            (work, outcome, retryable)
+        }
+    };
     let archive_result_id = work["decisions"]
         .as_array()
         .and_then(|values| values.last())
@@ -675,128 +643,139 @@ async fn finalize_accepted_archive(
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let request = request_id.map(str::to_owned);
-    let wake = state.event_wake.clone();
-    let (response, event_inserted) = store
-        .transaction(|tx| {
-            studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
-            let attempt_status = if retryable {
-                "retryable"
-            } else if work["archive"]["status"] == "archived" {
-                "complete"
-            } else if work["archive"]["reason"]
-                .as_str()
-                .is_some_and(|reason| reason.starts_with("The archive check failed:"))
-            {
-                "unknown"
-            } else {
-                "terminal"
-            };
-            let actor_epoch = studio_runtime_store::AgentRepository::get(
-                tx,
-                &studio_runtime_store::AgentId::from(work["rootId"].as_str().unwrap_or_default()),
-            )?
-            .map(|actor| actor.epoch)
-            .unwrap_or_default();
-            if work["owner"]
-                .as_str()
-                .is_some_and(|owner| owner != work["rootId"].as_str().unwrap_or_default())
-            {
-                let attempt_receipt_id = format!("work-archive:{}:{archive_result_id}", work_id);
-                let prior_attempt = tx.query_row(
-                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                    [attempt_receipt_id.as_str()],
-                    |row| row.get::<_, String>(0),
-                )?;
-                let prior_attempt =
-                    serde_json::from_str::<Value>(&prior_attempt).map_err(|_| {
-                        studio_runtime_store::StoreError::RecordContract("archive attempt receipt")
-                    })?;
-                let attempts = prior_attempt["attempts"].as_u64().unwrap_or_default();
-                let delay = 2_u64.pow(attempts.min(6) as u32).min(60);
-                let mut attempt_receipt = prior_attempt;
-                attempt_receipt["status"] = Value::String(if retryable {
-                    "pending".to_owned()
+    let committed_wake = state.event_wake.clone();
+    let ((response, _event_inserted), _) = store
+        .transaction_with_post_commit(
+            move |tx| -> Result<_, studio_runtime_store::StoreError> {
+                studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
+                let attempt_status = if retryable {
+                    "retryable"
+                } else if work["archive"]["status"] == "archived" {
+                    "complete"
+                } else if work["archive"]["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("The archive check failed:"))
+                {
+                    "unknown"
                 } else {
-                    attempt_status.to_owned()
-                });
-                attempt_receipt["taskId"] = serde_json::json!(work_id);
-                attempt_receipt["intentId"] =
-                    serde_json::json!(format!("{}:{archive_result_id}", work_id));
-                attempt_receipt["actor"] = work["rootId"].clone();
-                attempt_receipt["actorEpoch"] = serde_json::json!(actor_epoch);
-                attempt_receipt["target"] = work["owner"].clone();
-                attempt_receipt["attempts"] = serde_json::json!(attempts);
-                attempt_receipt["nextAttemptAt"] =
-                    serde_json::json!(updated + if retryable { delay as f64 } else { 60.0 });
-                attempt_receipt["lastOutcome"] = work["archive"].clone();
-                attempt_receipt["updated"] = serde_json::json!(updated);
-                if !retryable {
-                    attempt_receipt["outcome"] = work["archive"].clone();
-                }
-                tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                    [attempt_receipt.to_string(), attempt_receipt_id],
-                )?;
-            }
-            let mut event_inserted = false;
-            if outcome_status_is_terminal(&work)
-                && work["archive"]["status"] != "archived"
-                && let Some(owner_id) = work["owner"].as_str()
-                && owner_id != work["rootId"].as_str().unwrap_or_default()
-                && let Some(owner) = studio_runtime_store::AgentRepository::get(
+                    "terminal"
+                };
+                let actor_epoch = studio_runtime_store::AgentRepository::get(
                     tx,
-                    &studio_runtime_store::AgentId::from(owner_id),
-                )?
-                && owner.extra.get("deletedAt").is_none_or(Value::is_null)
-            {
-                let decision = work["decisions"]
-                    .as_array()
-                    .and_then(|values| values.last())
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                event_inserted = studio_runtime_services::event_write::enqueue_recovery_event(
-                    tx,
-                    &owner,
-                    format!(
-                        "work-decision:{}:{}",
-                        work_id,
-                        work["version"].as_i64().unwrap_or_default() - 1
+                    &studio_runtime_store::AgentId::from(
+                        work["rootId"].as_str().unwrap_or_default(),
                     ),
-                    "work_decision",
-                    serde_json::to_string(&serde_json::json!({
-                        "task": work_id,
-                        "decision": "accept",
-                        "reason": decision["reason"],
-                    }))?,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs_f64(),
-                )
-                .map_err(|_| {
-                    studio_runtime_store::StoreError::RecordContract("work decision event")
+                )?
+                .map(|actor| actor.epoch)
+                .unwrap_or_default();
+                if work["owner"]
+                    .as_str()
+                    .is_some_and(|owner| owner != work["rootId"].as_str().unwrap_or_default())
+                {
+                    let attempt_receipt_id =
+                        format!("work-archive:{}:{archive_result_id}", work_id);
+                    let prior_attempt = tx.query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [attempt_receipt_id.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    let prior_attempt =
+                        serde_json::from_str::<Value>(&prior_attempt).map_err(|_| {
+                            studio_runtime_store::StoreError::RecordContract(
+                                "archive attempt receipt",
+                            )
+                        })?;
+                    let attempts = prior_attempt["attempts"].as_u64().unwrap_or_default();
+                    let delay = 2_u64.pow(attempts.min(6) as u32).min(60);
+                    let mut attempt_receipt = prior_attempt;
+                    attempt_receipt["status"] = Value::String(if retryable {
+                        "pending".to_owned()
+                    } else {
+                        attempt_status.to_owned()
+                    });
+                    attempt_receipt["taskId"] = serde_json::json!(work_id);
+                    attempt_receipt["intentId"] =
+                        serde_json::json!(format!("{}:{archive_result_id}", work_id));
+                    attempt_receipt["actor"] = work["rootId"].clone();
+                    attempt_receipt["actorEpoch"] = serde_json::json!(actor_epoch);
+                    attempt_receipt["target"] = work["owner"].clone();
+                    attempt_receipt["attempts"] = serde_json::json!(attempts);
+                    attempt_receipt["nextAttemptAt"] =
+                        serde_json::json!(updated + if retryable { delay as f64 } else { 60.0 });
+                    attempt_receipt["lastOutcome"] = work["archive"].clone();
+                    attempt_receipt["updated"] = serde_json::json!(updated);
+                    if !retryable {
+                        attempt_receipt["outcome"] = work["archive"].clone();
+                    }
+                    tx.execute(
+                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                        [attempt_receipt.to_string(), attempt_receipt_id],
+                    )?;
+                }
+                let mut event_inserted = false;
+                if outcome_status_is_terminal(&work)
+                    && work["archive"]["status"] != "archived"
+                    && let Some(owner_id) = work["owner"].as_str()
+                    && owner_id != work["rootId"].as_str().unwrap_or_default()
+                    && let Some(owner) = studio_runtime_store::AgentRepository::get(
+                        tx,
+                        &studio_runtime_store::AgentId::from(owner_id),
+                    )?
+                    && owner.extra.get("deletedAt").is_none_or(Value::is_null)
+                {
+                    let decision = work["decisions"]
+                        .as_array()
+                        .and_then(|values| values.last())
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    event_inserted = studio_runtime_services::event_write::enqueue_recovery_event(
+                        tx,
+                        &owner,
+                        format!(
+                            "work-decision:{}:{}",
+                            work_id,
+                            work["version"].as_i64().unwrap_or_default() - 1
+                        ),
+                        "work_decision",
+                        serde_json::to_string(&serde_json::json!({
+                            "task": work_id,
+                            "decision": "accept",
+                            "reason": decision["reason"],
+                        }))?,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs_f64(),
+                    )
+                    .map_err(|_| {
+                        studio_runtime_store::StoreError::RecordContract("work decision event")
+                    })?;
+                }
+                let mut response = studio_runtime_services::work_write::work_item_view(tx, &work)?;
+                response["archive"] = work["archive"].clone();
+                response["archivePending"] = Value::Bool(retryable);
+                if let Some(object) = response.as_object_mut() {
+                    object.remove("archiveIntent");
+                }
+                let receipt_result = serde_json::to_string(&response).map_err(|_| {
+                    studio_runtime_store::StoreError::RecordContract("work response")
                 })?;
-            }
-            let mut response = studio_runtime_services::work_write::work_item_view(tx, &work)?;
-            response["archive"] = work["archive"].clone();
-            response["archivePending"] = Value::Bool(retryable);
-            if let Some(object) = response.as_object_mut() {
-                object.remove("archiveIntent");
-            }
-            let receipt_result = serde_json::to_string(&response)
-                .map_err(|_| studio_runtime_store::StoreError::RecordContract("work response"))?;
-            if let Some(request_id) = request {
-                tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                    (&receipt_result, request_id),
-                )?;
-            }
-            Ok((response, event_inserted))
-        })
+                if let Some(request_id) = request {
+                    tx.execute(
+                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                        (&receipt_result, request_id),
+                    )?;
+                }
+                Ok((response, event_inserted))
+            },
+            move |(_, event_inserted)| {
+                if *event_inserted {
+                    committed_wake.notify_one();
+                }
+            },
+        )
+        .await
         .map_err(|_| ApiError::internal())?;
-    if event_inserted {
-        wake.notify_one();
-    }
     Ok(response)
 }
 
@@ -821,6 +800,7 @@ fn commit_error(error: WorkCommitError) -> ApiError {
 fn write_error(error: WorkWriteError) -> ApiError {
     match error {
         WorkWriteError::Event(error) => work_items::write_error(error),
+        WorkWriteError::PreparationWorker => ApiError::internal(),
         WorkWriteError::Store(_) => ApiError::internal(),
         WorkWriteError::NotImplemented(dependency) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,

@@ -1,10 +1,7 @@
-//! Retained-session adapter for native cards. All methods run on a blocking
-//! store bridge. A port receives only committed replies and must enforce the
-//! supplied deadline; losing its receipt leaves the exact attempt Unknown.
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+//! Retained-session adapter for native cards. A port receives only committed
+//! replies and must enforce the supplied deadline; losing its receipt leaves
+//! the exact attempt Unknown.
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use serde_json::{Value, json};
 use studio_runtime_providers::{Frame, RequestId};
@@ -31,6 +28,9 @@ pub struct ReplyReceipt {
     pub outcome: ReplyOutcome,
 }
 
+pub type CallbackReplyFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ReplyReceipt, CallbackError>> + Send + 'a>>;
+
 /// The account owner checks connection AND generation immediately before
 /// submission, preserves identity.attempt in the transport operation, and
 /// returns Written only from its transport receipt. Timeout is Unknown, never
@@ -39,19 +39,20 @@ pub trait CallbackReplyPort: Send + Sync {
     /// Read-only preflight used before preparing a native-question delete.
     /// Implementations must verify the exact account connection generation.
     fn has_live_session(&self, context: &CallbackContext) -> bool;
-    fn deliver(&self, reply: &Reply, deadline: Duration) -> Result<ReplyReceipt, CallbackError>;
+    fn deliver<'a>(&'a self, reply: &'a Reply, deadline: Duration) -> CallbackReplyFuture<'a>;
 }
 
 #[derive(Default)]
-struct LifecycleGate(Mutex<()>);
+struct LifecycleGate(tokio::sync::Mutex<()>);
 
 impl LifecycleGate {
-    fn with<T>(
-        &self,
-        action: impl FnOnce() -> Result<T, CallbackError>,
-    ) -> Result<T, CallbackError> {
-        let _guard = self.0.lock().map_err(|_| CallbackError::Unknown)?;
-        action()
+    async fn with<T, F, Fut>(&self, action: F) -> Result<T, CallbackError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, CallbackError>>,
+    {
+        let _guard = self.0.lock().await;
+        action().await
     }
 }
 
@@ -70,51 +71,59 @@ impl CallbackRuntime {
     }
 
     /// Shared by the retained owner for resolution, stop, delete, completion
-    /// and transport acceptance. Run on the blocking bridge; never await the
-    /// HTTP mailbox receipt or final write receipt here. Bound acceptance by
-    /// REPLY_DEADLINE; the closure must return before the owner handles events.
-    pub fn with_lifecycle<T>(
-        &self,
-        action: impl FnOnce() -> Result<T, CallbackError>,
-    ) -> Result<T, CallbackError> {
-        self.lifecycle.with(action)
+    /// and transport acceptance. The gate spans the async operation so a
+    /// competing lifecycle transition cannot overtake its committed receipt.
+    pub async fn with_lifecycle<T, F, Fut>(&self, action: F) -> Result<T, CallbackError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, CallbackError>>,
+    {
+        self.lifecycle.with(action).await
     }
 
     /// Run on the retained owner immediately before bounded submit_frame admission.
     /// The submit closure checks the exact live connection/generation under the gate.
     /// The read transaction ends BEFORE submit; the lifecycle gate spans both.
     /// None means a resolution/completion proof cancelled this queued reply.
-    pub fn submit_committed<T>(
+    pub async fn submit_committed<T, Fut>(
         &self,
         reply: &Reply,
-        submit: impl FnOnce() -> Result<T, CallbackError>,
-    ) -> Result<Option<T>, CallbackError> {
-        self.with_lifecycle(|| {
-            if !callbacks::submission_ready(&self.store, reply)? {
+        submit: impl FnOnce() -> Fut,
+    ) -> Result<Option<T>, CallbackError>
+    where
+        Fut: Future<Output = Result<T, CallbackError>>,
+    {
+        self.with_lifecycle(|| async {
+            if !callbacks::submission_ready(&self.store, reply).await? {
                 return Ok(None);
             }
-            submit().map(Some)
+            submit().await.map(Some)
         })
+        .await
     }
 
-    pub fn dispatch(
+    pub async fn dispatch(
         &self,
         context: &CallbackContext,
         frame: &Frame,
         now: f64,
     ) -> Result<CallbackDecision, CallbackError> {
-        callbacks::dispatch(&self.store, context, frame, now)
+        callbacks::dispatch(Arc::clone(&self.store), context, frame, now).await
     }
 
     /// Commit Submitted before entering the port. False means a Written or
     /// retired receipt already proves completion; the caller only owes its ACK.
-    pub fn deliver(&self, reply: &Reply) -> Result<bool, CallbackError> {
-        let Some(receipt) = self.submit_committed(reply, || {
-            if !callbacks::delivery(&self.store, &reply.identity, DeliveryOutcome::Submitted)? {
-                return Ok(None);
-            }
-            self.port.deliver(reply, REPLY_DEADLINE).map(Some)
-        })?
+    pub async fn deliver(&self, reply: &Reply) -> Result<bool, CallbackError> {
+        let Some(receipt) = self
+            .submit_committed(reply, || async {
+                if !callbacks::delivery(&self.store, &reply.identity, DeliveryOutcome::Submitted)
+                    .await?
+                {
+                    return Ok(None);
+                }
+                self.port.deliver(reply, REPLY_DEADLINE).await.map(Some)
+            })
+            .await?
         else {
             return Ok(false);
         };
@@ -134,15 +143,16 @@ impl CallbackRuntime {
                 ReplyOutcome::NotSent => DeliveryOutcome::NotSent,
                 ReplyOutcome::Unknown => DeliveryOutcome::Unknown,
             },
-        )?;
+        )
+        .await?;
         if outcome == ReplyOutcome::Written {
-            self.store.transaction_with(|tx| {
-                callbacks::retire_checkpointed(
-                    tx,
-                    &reply.identity.context.account,
-                    reply.identity.context.generation,
-                )
-            })?;
+            let account = reply.identity.context.account.clone();
+            let generation = reply.identity.context.generation;
+            self.store
+                .transaction_with(move |tx| {
+                    callbacks::retire_checkpointed(tx, &account, generation)
+                })
+                .await?;
         }
         match outcome {
             ReplyOutcome::Written => Ok(true),
@@ -153,7 +163,7 @@ impl CallbackRuntime {
         }
     }
 
-    pub fn answer(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
+    pub async fn answer(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
         if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
             && !self.port.has_live_session(&context)
         {
@@ -161,13 +171,13 @@ impl CallbackRuntime {
                 "provider-session/question-answer",
             ));
         }
-        self.answer_committed(id, data, now)
+        self.answer_committed(id, data, now).await
     }
 
     /// Answer through a caller that has independently verified the exact live
     /// account connection and generation. The callback mailbox itself has no
     /// registry view, so its generic live-session probe is intentionally false.
-    pub fn answer_on_live_session(
+    pub async fn answer_on_live_session(
         &self,
         id: &str,
         data: &Value,
@@ -179,20 +189,25 @@ impl CallbackRuntime {
         {
             return Err(CallbackError::Stale);
         }
-        self.answer_committed(id, data, now)
+        self.answer_committed(id, data, now).await
     }
 
-    fn answer_committed(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
-        match callbacks::prepare_user_answer(&self.store, id, data, now, false)? {
+    async fn answer_committed(
+        &self,
+        id: &str,
+        data: &Value,
+        now: f64,
+    ) -> Result<Value, CallbackError> {
+        match callbacks::prepare_user_answer(&self.store, id, data, now, false).await? {
             Some(reply) => {
-                self.deliver(&reply)?;
+                self.deliver(&reply).await?;
                 Ok(json!({"status":"answered"}))
             }
             None => Ok(json!({"status":"answered","replayed":true})),
         }
     }
 
-    pub fn delete_question(&self, id: &str, now: f64) -> Result<Value, CallbackError> {
+    pub async fn delete_question(&self, id: &str, now: f64) -> Result<Value, CallbackError> {
         if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
             && !self.port.has_live_session(&context)
         {
@@ -200,30 +215,33 @@ impl CallbackRuntime {
                 "provider-session/question-answer",
             ));
         }
-        if let Some(reply) =
-            self.with_lifecycle(|| callbacks::prepare_delete(&self.store, id, now))?
+        if let Some(reply) = self
+            .with_lifecycle(|| callbacks::prepare_delete(&self.store, id, now))
+            .await?
         {
-            self.deliver(&reply)?;
+            self.deliver(&reply).await?;
         }
         Ok(json!({"id":id,"status":"deleted"}))
     }
 
-    pub fn resolve(
+    pub async fn resolve(
         &self,
         context: &CallbackContext,
         rpc: &RequestId,
         now: f64,
     ) -> Result<usize, CallbackError> {
         self.with_lifecycle(|| callbacks::resolve(&self.store, context, rpc, now))
+            .await
     }
 
-    pub fn recover_connection(
+    pub async fn recover_connection(
         &self,
         account: &str,
         connection: &str,
         now: f64,
     ) -> Result<usize, CallbackError> {
         self.with_lifecycle(|| callbacks::recover_connection(&self.store, account, connection, now))
+            .await
     }
 }
 
@@ -236,7 +254,7 @@ pub struct CallbackMailbox {
 }
 pub struct CommittedReply {
     pub reply: Reply,
-    pub receipt: std::sync::mpsc::SyncSender<ReplyReceipt>,
+    pub receipt: tokio::sync::oneshot::Sender<ReplyReceipt>,
 }
 impl CallbackMailbox {
     pub fn new(
@@ -251,25 +269,28 @@ impl CallbackReplyPort for CallbackMailbox {
         false
     }
 
-    fn deliver(&self, reply: &Reply, deadline: Duration) -> Result<ReplyReceipt, CallbackError> {
-        let (receipt, receiver) = std::sync::mpsc::sync_channel(1);
-        if self
-            .sender
-            .try_send(CommittedReply {
-                reply: reply.clone(),
-                receipt,
-            })
-            .is_err()
-        {
-            return Ok(ReplyReceipt {
-                identity: reply.identity.clone(),
-                outcome: ReplyOutcome::NotSent,
-            });
-        }
-        (self.wake)();
-        receiver
-            .recv_timeout(deadline.min(REPLY_DEADLINE))
-            .map_err(|_| CallbackError::Unknown)
+    fn deliver<'a>(&'a self, reply: &'a Reply, deadline: Duration) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            let (receipt, receiver) = tokio::sync::oneshot::channel();
+            if self
+                .sender
+                .try_send(CommittedReply {
+                    reply: reply.clone(),
+                    receipt,
+                })
+                .is_err()
+            {
+                return Ok(ReplyReceipt {
+                    identity: reply.identity.clone(),
+                    outcome: ReplyOutcome::NotSent,
+                });
+            }
+            (self.wake)();
+            tokio::time::timeout(deadline.min(REPLY_DEADLINE), receiver)
+                .await
+                .map_err(|_| CallbackError::Unknown)?
+                .map_err(|_| CallbackError::Unknown)
+        })
     }
 }
 
@@ -289,19 +310,21 @@ mod tests {
             true
         }
 
-        fn deliver(&self, reply: &Reply, _: Duration) -> Result<ReplyReceipt, CallbackError> {
-            let submitted: i64 = self.store.read()?.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts \
+        fn deliver<'a>(&'a self, reply: &'a Reply, _: Duration) -> CallbackReplyFuture<'a> {
+            Box::pin(async move {
+                let submitted: i64 = self.store.read()?.query_row(
+                    "SELECT count(*) FROM runtime_operation_receipts \
                  WHERE signature='provider-callback' \
                    AND json_extract(result,'$.delivery')='submitted'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(submitted, 1, "durable intent commits before provider I/O");
-            self.delivered.lock().unwrap().push(reply.clone());
-            Ok(ReplyReceipt {
-                identity: reply.identity.clone(),
-                outcome: self.outcome,
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(submitted, 1, "durable intent commits before provider I/O");
+                self.delivered.lock().unwrap().push(reply.clone());
+                Ok(ReplyReceipt {
+                    identity: reply.identity.clone(),
+                    outcome: self.outcome,
+                })
             })
         }
     }
@@ -338,8 +361,8 @@ mod tests {
         (directory, store)
     }
 
-    #[test]
-    fn deleting_native_question_uses_durable_provider_answer_and_never_resends_unknown() {
+    #[tokio::test]
+    async fn deleting_native_question_uses_durable_provider_answer_and_never_resends_unknown() {
         // Python codex_questions.py:86-90 answers pending native questions on
         // delete; codex_runtime.py:11300-11304 sends the empty answers object.
         for (outcome, expected_status) in [
@@ -353,7 +376,7 @@ mod tests {
                 delivered: Mutex::new(Vec::new()),
             });
             let runtime = CallbackRuntime::new(store.clone(), port.clone());
-            let first = runtime.delete_question("native-question", 10.0);
+            let first = runtime.delete_question("native-question", 10.0).await;
             if outcome == ReplyOutcome::Written {
                 assert_eq!(
                     first.unwrap(),
@@ -373,7 +396,7 @@ mod tests {
 
             if outcome == ReplyOutcome::Unknown {
                 assert!(matches!(
-                    runtime.delete_question("native-question", 11.0),
+                    runtime.delete_question("native-question", 11.0).await,
                     Err(CallbackError::Invalid(
                         "Question delivery is uncertain; wait for its receipt"
                     ))
@@ -407,18 +430,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lifecycle_gate_is_held_during_the_action() {
+    #[tokio::test]
+    async fn lifecycle_gate_is_held_during_the_action() {
         let gate = LifecycleGate::default();
-        gate.with(|| {
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(|| assert!(gate.0.try_lock().is_err()))
-                    .join()
-                    .unwrap();
-            });
+        gate.with(|| async {
+            assert!(gate.0.try_lock().is_err());
             Ok(())
         })
+        .await
         .unwrap();
         assert!(gate.0.try_lock().is_ok());
     }

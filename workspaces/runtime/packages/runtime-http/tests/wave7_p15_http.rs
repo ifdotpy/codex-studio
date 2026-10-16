@@ -117,7 +117,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         .expect("case")
         .clone();
     case["before"]["interactive"] = json!(true);
-    let store = Arc::new(fixtures::store(root.path(), "http"));
+    let store = Arc::new(fixtures::store(root.path(), "http").await);
     fixtures::seed(&store, &case);
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
@@ -203,7 +203,7 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
         .expect("running monitor case")
         .clone();
     case["before"]["interactive"] = json!(true);
-    let store = Arc::new(fixtures::store(root.path(), "http-input-ack"));
+    let store = Arc::new(fixtures::store(root.path(), "http-input-ack").await);
     fixtures::seed(&store, &case);
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
@@ -290,24 +290,25 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             .as_object_mut()
             .expect("monitor record")
             .remove("operation");
-        let store = Arc::new(fixtures::store(root.path(), decision));
+        let store = Arc::new(fixtures::store(root.path(), decision).await);
         studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
+            .await
             .expect("server startup recovery");
         fixtures::seed(&store, &case);
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");
+        let request = RequestRecord::from_value(json!({
+            "id":request_id,
+            "method":"monitor/approve",
+            "agent":"agent",
+            "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+            "status":"pending",
+            "createdAt":1000.0
+        }))
+        .expect("approval request");
         store
-            .transaction(|tx| {
-                let request = RequestRecord::from_value(json!({
-                    "id":request_id,
-                    "method":"monitor/approve",
-                    "agent":"agent",
-                    "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
-                    "status":"pending",
-                    "createdAt":1000.0
-                }))?;
-                Table::<RequestRecord>::new(tx).put(&request)
-            })
+            .transaction(move |tx| Table::<RequestRecord>::new(tx).put(&request))
+            .await
             .expect("seed monitor approval request");
         let port = Arc::new(support::Port::default());
         let state = HttpState::new(
@@ -351,12 +352,16 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             assert_eq!(monitor["status"], "starting");
             runtime
                 .tick(1001.0)
+                .await
                 .expect("dispatch committed start intent");
             assert_eq!(port.starts.lock().expect("starts").len(), 1);
             assert_eq!(port.starts.lock().expect("starts")[0].0, id);
         } else {
             assert_eq!(monitor["status"], "cancelled");
-            runtime.tick(1001.0).expect("no start dispatch for decline");
+            runtime
+                .tick(1001.0)
+                .await
+                .expect("no start dispatch for decline");
             assert!(port.starts.lock().expect("starts").is_empty());
         }
     }

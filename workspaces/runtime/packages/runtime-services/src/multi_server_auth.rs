@@ -105,6 +105,7 @@ pub(crate) fn identifier(value: &str) -> bool {
 }
 
 /// Owned and bounded wire input. Header multiplicity is retained until checked.
+#[derive(Clone)]
 pub struct SignedRequest {
     method: String,
     target: String,
@@ -240,6 +241,7 @@ impl SignedRequest {
 
 /// Observations are supplied by the host's trusted Tailscale adapter, never the
 /// request body. The request IP is checked against the observation's lookup key.
+#[derive(Clone)]
 pub struct OwnerObservation {
     address: IpAddr,
     login: String,
@@ -390,6 +392,7 @@ pub(crate) fn origin_host(origin: &str) -> Result<String, AccessError> {
 }
 
 /// Only constructed from validated stored records, preserving unknown fields.
+#[derive(Clone)]
 pub struct AccessSnapshot {
     client: Option<Value>,
     invite: Option<Value>,

@@ -1,6 +1,15 @@
 //! Tailscale host adapter for owner-only server discovery.
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
+use futures_util::future::BoxFuture;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use studio_runtime_services::{
@@ -23,7 +32,7 @@ const MAX_PROBE_BATCH: usize = 4;
 pub struct TailscaleServerDiscovery {
     state_root: PathBuf,
     executable: PathBuf,
-    discovery_lock: Mutex<()>,
+    discovery_lock: Arc<AtomicBool>,
 }
 
 impl TailscaleServerDiscovery {
@@ -35,11 +44,11 @@ impl TailscaleServerDiscovery {
         Self {
             state_root,
             executable,
-            discovery_lock: Mutex::new(()),
+            discovery_lock: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn probe(&self, origin: &str, timeout: Duration) -> Result<Value, AccessError> {
+    fn probe(origin: &str, timeout: Duration) -> Result<Value, AccessError> {
         let url = format!("{origin}{IDENTITY_PATH}");
         let response = SignedHttpClient::exchange(
             "GET",
@@ -57,9 +66,9 @@ impl TailscaleServerDiscovery {
             .map_err(|_| unavailable("The peer identity is invalid"))
     }
 
-    fn exchange_auto_pair(
+    async fn exchange_auto_pair(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         identity: &Value,
         origin: &str,
         peer: &Value,
@@ -70,7 +79,7 @@ impl TailscaleServerDiscovery {
         let local_origin = text(identity, "origin");
         // Reuse the persisted request ID. The shared exchange path recovers a
         // completed receipt and refuses an unknown outcome without resending.
-        let request_id = reserve_auto_pair_id(store, peer_id, identity, local_origin)?;
+        let request_id = reserve_auto_pair_id(&store, peer_id, identity, local_origin).await?;
         let body = json!({
             "protocol": 1,
             "serverId": identity["serverId"],
@@ -83,13 +92,19 @@ impl TailscaleServerDiscovery {
             .map_err(|_| unavailable("The auto-pair request could not be encoded"))?
             .into_bytes();
         let now = unix_time()?;
-        let remote_identity = remote_transport::load_multi_server_identity(&self.state_root)
-            .map_err(|_| unavailable("The local server identity is unavailable"))?;
+        let state_root = self.state_root.clone();
+        let remote_identity = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/discovery-identity",
+            move || remote_transport::load_multi_server_identity(&state_root),
+        )
+        .await
+        .map_err(|_| unavailable("The local server identity is unavailable"))?
+        .map_err(|_| unavailable("The local server identity is unavailable"))?;
         let nonce = remote_transport::new_nonce()
             .map_err(|_| unavailable("The auto-pair request could not be signed"))?;
         let url = format!("{origin}{AUTO_PAIR_PATH}");
         let reply = remote_transport::exchange_multi_server(
-            store,
+            Arc::clone(&store),
             &remote_identity,
             &MultiServerExchangeInput {
                 server_id: peer_id,
@@ -104,6 +119,7 @@ impl TailscaleServerDiscovery {
             },
             now,
         )
+        .await
         .map_err(|_| unavailable("The auto-pair outcome is unknown; its request was not resent"))?;
         if reply.get("paired") != Some(&Value::Bool(true))
             || text(&reply, "clientId") != text(identity, "serverId")
@@ -116,97 +132,127 @@ impl TailscaleServerDiscovery {
                 "The automatic pairing response differs",
             ));
         }
-        save_auto_pair(store, peer, owner, &request_id, &raw, &reply, now)
+        save_auto_pair(&store, peer, owner, &request_id, &raw, &reply, now).await
     }
 }
 
 impl ServerDiscoveryPort for TailscaleServerDiscovery {
-    fn discover(
-        &self,
-        store: &RuntimeStore,
-        identity: &Value,
-        public_origin: &str,
-    ) -> Result<Value, AccessError> {
-        let _discovery_guard = self
-            .discovery_lock
-            .try_lock()
-            .map_err(|_| refused(409, "discovery_busy", "A discovery pass is already running"))?;
-        let status = crate::multi_server_owner::tailscale_json_from(
-            &self.executable,
-            &["status", "--json"],
-        )?;
-        let snapshot =
-            DiscoverySnapshot::from_status(&status, text(identity, "serverId"), public_origin)?;
-        mark_missing_peers_unreachable(store, &snapshot)?;
-        let candidates = snapshot
-            .candidates()
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<std::collections::VecDeque<_>>();
-        let queue = std::sync::Mutex::new(candidates);
-        let deadline = std::time::Instant::now() + DISCOVERY_PASS_TIMEOUT;
-        std::thread::scope(|scope| {
-            let mut workers = Vec::with_capacity(MAX_PROBE_BATCH);
-            for _ in 0..MAX_PROBE_BATCH {
-                workers.push(scope.spawn(|| -> Result<(), AccessError> {
-                    loop {
-                        if std::time::Instant::now() >= deadline {
-                            break;
-                        }
-                        let origin = queue.lock().ok().and_then(|mut queue| queue.pop_front());
-                        let Some(origin) = origin else { break };
-                        let remaining =
-                            deadline.saturating_duration_since(std::time::Instant::now());
-                        let mut peer = match self.probe(&origin, PROBE_TIMEOUT.min(remaining)) {
-                            Ok(peer) => peer,
-                            Err(_) => {
-                                mark_origin_unreachable(store, &origin)?;
-                                continue;
-                            }
-                        };
-                        self.refresh_paired_identity(store, &mut peer, &origin, remaining);
-                        let now = unix_time()?;
-                        let decision = match multi_server_discovery::record_probe(
-                            store, &snapshot, &origin, &peer, now,
-                        ) {
-                            Ok(decision) => decision,
-                            Err(_) => {
-                                mark_origin_unreachable(store, &origin)?;
-                                continue;
-                            }
-                        };
-                        if decision.auto_pair() && std::time::Instant::now() < deadline {
-                            let timeout = AUTO_PAIR_TIMEOUT
-                                .min(deadline.saturating_duration_since(std::time::Instant::now()));
-                            // The durable request ID is retained on every failure. The
-                            // signed exchange layer turns an uncertain send into Unknown.
-                            if self
-                                .exchange_auto_pair(
-                                    store,
-                                    identity,
+    fn discover<'a>(
+        &'a self,
+        store: Arc<RuntimeStore>,
+        identity: &'a Value,
+        public_origin: &'a str,
+    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        Box::pin(async move {
+            let _guard = DiscoveryPassGuard::acquire(Arc::clone(&self.discovery_lock))?;
+            let executable = self.executable.clone();
+            let status = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/discovery-status",
+                move || {
+                    crate::multi_server_owner::tailscale_json_from(
+                        &executable,
+                        &["status", "--json"],
+                    )
+                },
+            )
+            .await
+            .map_err(|_| unavailable("The Tailscale peers are unavailable"))??;
+            let snapshot =
+                DiscoverySnapshot::from_status(&status, text(identity, "serverId"), public_origin)?;
+            mark_missing_peers_unreachable(&store, &snapshot).await?;
+            let mut candidates = snapshot
+                .candidates()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<VecDeque<_>>();
+            let deadline = std::time::Instant::now() + DISCOVERY_PASS_TIMEOUT;
+            while !candidates.is_empty() && std::time::Instant::now() < deadline {
+                let mut probes = tokio::task::JoinSet::new();
+                for _ in 0..MAX_PROBE_BATCH {
+                    let Some(origin) = candidates.pop_front() else {
+                        break;
+                    };
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    probes.spawn(async move {
+                        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                            "runtime-server/discovery-probe",
+                            move || {
+                                TailscaleServerDiscovery::probe(
                                     &origin,
-                                    &peer,
-                                    snapshot.owner(),
-                                    timeout,
+                                    PROBE_TIMEOUT.min(remaining),
                                 )
-                                .is_err()
-                            {
-                                eprintln!("automatic server pairing exchange did not complete");
-                            }
+                            },
+                        )
+                        .await
+                        .map_err(|_| unavailable("The peer identity is unavailable"))?;
+                        Ok::<_, AccessError>((origin, result))
+                    });
+                }
+                while let Some(result) = probes.join_next().await {
+                    let (origin, observed) =
+                        result.map_err(|_| unavailable("The discovery worker failed"))??;
+                    let mut peer = match observed {
+                        Ok(peer) => peer,
+                        Err(_) => {
+                            mark_origin_unreachable(&store, &origin).await?;
+                            continue;
+                        }
+                    };
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    self.refresh_paired_identity(Arc::clone(&store), &mut peer, &origin, remaining)
+                        .await;
+                    let now = unix_time()?;
+                    let decision = match multi_server_discovery::record_probe(
+                        &store, &snapshot, &origin, &peer, now,
+                    )
+                    .await
+                    {
+                        Ok(decision) => decision,
+                        Err(_) => {
+                            mark_origin_unreachable(&store, &origin).await?;
+                            continue;
+                        }
+                    };
+                    if decision.auto_pair() && std::time::Instant::now() < deadline {
+                        let timeout = AUTO_PAIR_TIMEOUT
+                            .min(deadline.saturating_duration_since(std::time::Instant::now()));
+                        if self
+                            .exchange_auto_pair(
+                                Arc::clone(&store),
+                                identity,
+                                &origin,
+                                &peer,
+                                snapshot.owner(),
+                                timeout,
+                            )
+                            .await
+                            .is_err()
+                        {
+                            eprintln!("automatic server pairing exchange did not complete");
                         }
                     }
-                    Ok(())
-                }));
+                }
             }
-            for worker in workers {
-                worker
-                    .join()
-                    .map_err(|_| unavailable("The discovery worker failed"))??;
-            }
-            Ok::<(), AccessError>(())
-        })?;
-        multi_server::snapshot(store, identity)
-            .map_err(|_| unavailable("The server discovery snapshot is unavailable"))
+            multi_server::snapshot(&store, identity)
+                .await
+                .map_err(|_| unavailable("The server discovery snapshot is unavailable"))
+        })
+    }
+}
+
+struct DiscoveryPassGuard(Arc<AtomicBool>);
+
+impl DiscoveryPassGuard {
+    fn acquire(lock: Arc<AtomicBool>) -> Result<Self, AccessError> {
+        lock.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self(lock))
+            .map_err(|_| refused(409, "discovery_busy", "A discovery pass is already running"))
+    }
+}
+
+impl Drop for DiscoveryPassGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -214,32 +260,47 @@ impl TailscaleServerDiscovery {
     /// Python refreshes the display name of already-paired peers through the
     /// signed status endpoint before publishing discovery results. A failed
     /// refresh leaves the previously trusted name intact.
-    fn refresh_paired_identity(
+    async fn refresh_paired_identity(
         &self,
-        store: &RuntimeStore,
+        store: Arc<RuntimeStore>,
         peer: &mut Value,
         origin: &str,
         remaining: Duration,
     ) {
-        let id = text(peer, "serverId");
-        let paired = store
-            .read_transaction(|tx| {
-                tx.query_row(
-                    "SELECT record FROM runtime_access_clients WHERE id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(Into::into)
-            })
-            .ok()
-            .flatten()
-            .and_then(|record| serde_json::from_str::<Value>(&record).ok())
-            .is_some_and(|record| text(&record, "status") == "paired");
+        let id = text(peer, "serverId").to_owned();
+        let paired_store = Arc::clone(&store);
+        let paired_id = id.clone();
+        let paired = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/discovery-paired-check",
+            move || {
+                paired_store.read_transaction(|tx| {
+                    tx.query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [&paired_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(Into::into)
+                })
+            },
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .and_then(|record| serde_json::from_str::<Value>(&record).ok())
+        .is_some_and(|record| text(&record, "status") == "paired");
         if !paired {
             return;
         }
-        let Ok(identity) = remote_transport::load_multi_server_identity(&self.state_root) else {
+        let state_root = self.state_root.clone();
+        let Some(identity) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/discovery-status-identity",
+            move || remote_transport::load_multi_server_identity(&state_root),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok) else {
             return;
         };
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -249,10 +310,10 @@ impl TailscaleServerDiscovery {
         let Ok(now) = unix_time() else { return };
         let url = format!("{origin}{STATUS_PATH}");
         let Ok(status) = remote_transport::exchange_multi_server(
-            store,
+            Arc::clone(&store),
             &identity,
             &MultiServerExchangeInput {
-                server_id: id,
+                server_id: &id,
                 method: "GET",
                 url: &url,
                 request_id: &request_id,
@@ -263,7 +324,9 @@ impl TailscaleServerDiscovery {
                 timeout: PROBE_TIMEOUT.min(remaining),
             },
             now,
-        ) else {
+        )
+        .await
+        else {
             return;
         };
         if text(&status, "serverId") != id
@@ -274,46 +337,50 @@ impl TailscaleServerDiscovery {
             return;
         }
         let label = status["label"].clone();
-        let saved = store.transaction_with(|tx| {
-            let raw = tx
-                .query_row(
-                    "SELECT record FROM runtime_access_clients WHERE id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            let Some(raw) = raw else {
-                return Ok::<_, studio_runtime_store::StoreError>(false);
-            };
-            let mut client: Value = serde_json::from_str(&raw).map_err(|_| {
-                studio_runtime_store::StoreError::SchemaMismatch(
-                    "invalid stored object runtime_access_clients".into(),
-                )
-            })?;
-            if text(&client, "status") != "paired"
-                || text(&client, "publicKey") != text(peer, "publicKey")
-            {
-                return Ok(false);
-            }
-            client["label"] = label.clone();
-            tx.execute(
-                "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
-                params![client.to_string(), id],
-            )?;
-            Ok(true)
-        });
+        let peer_public_key = text(peer, "publicKey").to_owned();
+        let saved = store
+            .transaction_with(move |tx| {
+                let raw = tx
+                    .query_row(
+                        "SELECT record FROM runtime_access_clients WHERE id=?1",
+                        [&id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let Some(raw) = raw else {
+                    return Ok::<_, studio_runtime_store::StoreError>(false);
+                };
+                let mut client: Value = serde_json::from_str(&raw).map_err(|_| {
+                    studio_runtime_store::StoreError::SchemaMismatch(
+                        "invalid stored object runtime_access_clients".into(),
+                    )
+                })?;
+                if text(&client, "status") != "paired"
+                    || text(&client, "publicKey") != peer_public_key
+                {
+                    return Ok(false);
+                }
+                client["label"] = label.clone();
+                tx.execute(
+                    "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
+                    params![client.to_string(), id],
+                )?;
+                Ok(true)
+            })
+            .await;
         if matches!(saved, Ok(true)) {
             peer["label"] = label;
         }
     }
 }
 
-fn reserve_auto_pair_id(
+async fn reserve_auto_pair_id(
     store: &RuntimeStore,
     peer_id: &str,
     identity: &Value,
     origin: &str,
 ) -> Result<String, AccessError> {
+    let peer_id = peer_id.to_owned();
     let request_content = json!({
         "protocol": 1,
         "serverId": identity["serverId"],
@@ -321,11 +388,11 @@ fn reserve_auto_pair_id(
         "origin": origin,
         "publicKey": identity["publicKey"],
     });
-    store.transaction_with(|tx| {
+    store.transaction_with(move |tx| {
         let saved = tx
             .query_row(
                 "SELECT record FROM runtime_access_auto_attempts WHERE id=?1",
-                [peer_id],
+                [&peer_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -354,11 +421,11 @@ fn reserve_auto_pair_id(
             params![peer_id, record.to_string()],
         )?;
         Ok::<_, studio_runtime_store::StoreError>(request_id)
-    })
+    }).await
     .map_err(|_| unavailable("The auto-pair intent could not be saved"))
 }
 
-fn save_auto_pair(
+async fn save_auto_pair(
     store: &RuntimeStore,
     peer: &Value,
     owner: &str,
@@ -367,11 +434,15 @@ fn save_auto_pair(
     reply: &Value,
     now: i64,
 ) -> Result<(), AccessError> {
-    let id = text(peer, "serverId");
+    let id = text(peer, "serverId").to_owned();
     let url = format!("{}{AUTO_PAIR_PATH}", text(peer, "origin"));
     let fingerprint = remote_transport::multi_server_request_fingerprint("POST", &url, raw)
         .map_err(|_| unavailable("The auto-pair response identity is invalid"))?;
-    store.transaction_with(|tx| {
+    let peer = peer.clone();
+    let reply = reply.clone();
+    let owner = owner.to_owned();
+    let request_id = request_id.to_owned();
+    store.transaction_with(move |tx| {
         let auto_pair_enabled = tx
             .query_row(
                 "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
@@ -441,42 +512,50 @@ fn save_auto_pair(
             )?;
         }
         Ok::<_, studio_runtime_store::StoreError>(true)
-    })
+    }).await
     .map_err(|_| unavailable("The auto-paired server could not be registered"))?
     .then_some(())
     .ok_or_else(|| refused(403, "auto_pair_disabled", "Automatic pairing is disabled"))
 }
 
-fn mark_missing_peers_unreachable(
-    store: &RuntimeStore,
+async fn mark_missing_peers_unreachable(
+    store: &Arc<RuntimeStore>,
     snapshot: &DiscoverySnapshot,
 ) -> Result<(), AccessError> {
-    let origins = store
-        .read_transaction(|tx| {
-            let mut statement = tx.prepare("SELECT record FROM runtime_access_discovered")?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            Ok(rows.collect::<Result<Vec<_>, _>>()?)
-        })
-        .map_err(|_| unavailable("Stored discovery state is unavailable"))?;
+    let read_store = Arc::clone(store);
+    let origins = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/discovery-read-peers",
+        move || {
+            read_store.read_transaction(|tx| {
+                let mut statement = tx.prepare("SELECT record FROM runtime_access_discovered")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+        },
+    )
+    .await
+    .map_err(|_| unavailable("Stored discovery state is unavailable"))?
+    .map_err(|_| unavailable("Stored discovery state is unavailable"))?;
     for raw in origins {
         let peer: Value = serde_json::from_str(&raw)
             .map_err(|_| unavailable("Stored discovery identity is invalid"))?;
         let origin = text(&peer, "origin");
         if !snapshot.has_candidate(origin) {
-            mark_origin_unreachable(store, origin)?;
+            mark_origin_unreachable(store, origin).await?;
         }
     }
     Ok(())
 }
 
-fn mark_origin_unreachable(store: &RuntimeStore, origin: &str) -> Result<(), AccessError> {
+async fn mark_origin_unreachable(store: &RuntimeStore, origin: &str) -> Result<(), AccessError> {
+    let origin = origin.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let mut statement = tx.prepare(
                 "SELECT id,record FROM runtime_access_discovered WHERE json_extract(record,'$.origin')=?1",
             )?;
             let rows = statement
-                .query_map([origin], |row| {
+                .query_map([origin.as_str()], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -493,7 +572,7 @@ fn mark_origin_unreachable(store: &RuntimeStore, origin: &str) -> Result<(), Acc
                 )?;
             }
             Ok::<_, studio_runtime_store::StoreError>(())
-        })
+        }).await
         .map_err(|_| unavailable("Stored discovery state could not be updated"))
 }
 
@@ -518,17 +597,19 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn auto_pair_request_identity_is_persisted_before_network_send() {
+    #[tokio::test]
+    async fn auto_pair_request_identity_is_persisted_before_network_send() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         let identity = json!({"serverId":"local","label":"Local","publicKey":"key"});
-        let first =
-            reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example").unwrap();
+        let first = reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example")
+            .await
+            .unwrap();
         drop(store);
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
-        let second =
-            reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example").unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        let second = reserve_auto_pair_id(&store, "peer", &identity, "https://peer.example")
+            .await
+            .unwrap();
         assert_eq!(
             second, first,
             "the durable request identity is recovered after restart"
@@ -555,10 +636,10 @@ mod tests {
         assert_eq!(state, "attempted");
     }
 
-    #[test]
-    fn auto_pair_registration_uses_absolute_url_and_rechecks_setting_atomically() {
+    #[tokio::test]
+    async fn auto_pair_registration_uses_absolute_url_and_rechecks_setting_atomically() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         let peer = json!({
             "serverId":"peer", "origin":"https://peer.example",
             "publicKey":"peer-key", "label":"Peer"
@@ -577,6 +658,7 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("disable auto-pair during exchange");
         let denied = save_auto_pair(
             &store,
@@ -586,7 +668,8 @@ mod tests {
             raw,
             &reply,
             100,
-        );
+        )
+        .await;
         assert!(matches!(
             denied,
             Err(AccessError::Refused {
@@ -612,6 +695,7 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("enable auto-pair");
         save_auto_pair(
             &store,
@@ -622,6 +706,7 @@ mod tests {
             &reply,
             100,
         )
+        .await
         .expect("register after re-enabling auto-pair");
         let expected = remote_transport::multi_server_request_fingerprint(
             "POST",
@@ -641,21 +726,22 @@ mod tests {
         assert_eq!(saved, expected);
     }
 
-    #[test]
-    fn overlapping_discovery_returns_busy_before_probing() {
+    #[tokio::test]
+    async fn overlapping_discovery_returns_busy_before_probing() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         let discovery = TailscaleServerDiscovery::with_executable(
             root.path().to_owned(),
             root.path().join("must-not-run-tailscale"),
         );
-        let _guard = discovery.discovery_lock.lock().unwrap();
+        let _guard = DiscoveryPassGuard::acquire(Arc::clone(&discovery.discovery_lock)).unwrap();
         let error = discovery
             .discover(
-                &store,
+                Arc::clone(&store),
                 &json!({"serverId":"local"}),
                 "https://local.example",
             )
+            .await
             .unwrap_err();
         assert!(matches!(
             error,

@@ -5,6 +5,7 @@ use ring::hmac;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use studio_runtime_store::{MultiServerRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -28,17 +29,23 @@ pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
     Ok(store.read_transaction(|tx| MultiServerRepository::audit(tx))?)
 }
 
-pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
-    Ok(store.transaction_with(|tx| snapshot_in_transaction(tx, identity, true))?)
+pub async fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
+    let identity = identity.clone();
+    Ok(store
+        .transaction_with(move |tx| snapshot_in_transaction(tx, &identity, true))
+        .await?)
 }
 
 /// Read a snapshot-shaped view without persisting default aliases.
 /// Use for side-effect-free comparisons before authenticating signed writes.
-pub fn snapshot_for_comparison(
+pub async fn snapshot_for_comparison(
     store: &RuntimeStore,
     identity: &Value,
 ) -> Result<Value, MultiServerError> {
-    Ok(store.transaction_with(|tx| snapshot_in_transaction(tx, identity, false))?)
+    let identity = identity.clone();
+    Ok(store
+        .transaction_with(move |tx| snapshot_in_transaction(tx, &identity, false))
+        .await?)
 }
 
 fn snapshot_in_transaction(
@@ -107,7 +114,7 @@ fn snapshot_in_transaction(
     )
 }
 
-pub fn manage(
+pub async fn manage(
     store: &RuntimeStore,
     identity: &Value,
     body: &Value,
@@ -142,10 +149,13 @@ pub fn manage(
         .get("autoPair")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    store.transaction_with(|tx| -> Result<Value, MultiServerError> {
+    let identity = identity.clone();
+    let body = body.clone();
+    let actor = actor.to_owned();
+    store.transaction_with(move |tx| -> Result<Value, MultiServerError> {
         match action.as_str() {
-            "settings" => { tx.execute("UPDATE runtime_access_settings SET auto_pair=?1 WHERE id=1",[i64::from(auto)])?; audit_write(tx,"local",actor,"settings")?; }
-            "revoke" => { let id=body.get("clientId").and_then(Value::as_str).unwrap_or_default(); let mut client=stored(tx,"runtime_access_clients",id)?.ok_or_else(||MultiServerError::Refused("client does not exist".into()))?; if client.get("status").and_then(Value::as_str)!=Some("revoked") { client["status"]=json!("revoked"); client["revoked"]=json!(unix_time()?); tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2",rusqlite::params![client.to_string(),id])?; audit_write(tx,id,actor,"revoke")?; } }
+            "settings" => { tx.execute("UPDATE runtime_access_settings SET auto_pair=?1 WHERE id=1",[i64::from(auto)])?; audit_write(tx,"local",&actor,"settings")?; }
+            "revoke" => { let id=body.get("clientId").and_then(Value::as_str).unwrap_or_default(); let mut client=stored(tx,"runtime_access_clients",id)?.ok_or_else(||MultiServerError::Refused("client does not exist".into()))?; if client.get("status").and_then(Value::as_str)!=Some("revoked") { client["status"]=json!("revoked"); client["revoked"]=json!(unix_time()?); tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2",rusqlite::params![client.to_string(),id])?; audit_write(tx,id,&actor,"revoke")?; } }
             "alias" => {
                 if !valid_identifier(&server) || !valid_identifier(&request) || !valid_alias(&alias) {
                     return Err(MultiServerError::Refused("invalid server alias request".into()));
@@ -158,7 +168,7 @@ pub fn manage(
                         return Err(MultiServerError::Conflict("request ID has different content".into()));
                     }
                 } else {
-                    let aliases = ensure_server_aliases(tx, identity)?;
+                    let aliases = ensure_server_aliases(tx, &identity)?;
                     let local_id = identity["serverId"].as_str().unwrap_or_default();
                     if !local && !aliases.contains_key(&server) {
                         return Err(MultiServerError::Refused("server does not exist".into()));
@@ -178,24 +188,24 @@ pub fn manage(
                         tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2", rusqlite::params![peer.to_string(), server])?;
                     }
                     tx.execute("INSERT INTO runtime_access_alias_requests VALUES(?,?,?)", rusqlite::params![request,target,alias])?;
-                    audit_write(tx,target,actor,"alias")?;
+                    audit_write(tx,target,&actor,"alias")?;
                 }
             }
-            "unrevoke" => { let prior=tx.query_row("SELECT client FROM runtime_access_unrevokes WHERE id=?1",[&request],|r|r.get::<_,String>(0)).optional()?; if let Some(saved)=prior {if saved!=target{return Err(MultiServerError::Conflict("request ID selected another server".into()));}} else {let v=stored(tx,"runtime_access_clients",&target)?.ok_or_else(||MultiServerError::Refused("select a revoked server".into()))?;if v.get("status").and_then(Value::as_str)!=Some("revoked")||v.get("kind").and_then(Value::as_str)!=Some("server"){return Err(MultiServerError::Refused("select a revoked server".into()));}tx.execute("DELETE FROM runtime_access_clients WHERE id=?1",[&target])?;tx.execute("DELETE FROM runtime_access_auto_attempts WHERE id=?1",[&target])?;tx.execute("INSERT INTO runtime_access_unrevokes VALUES(?1,?2)",rusqlite::params![request,target])?;audit_write(tx,&target,actor,"unrevoke")?;} }
+            "unrevoke" => { let prior=tx.query_row("SELECT client FROM runtime_access_unrevokes WHERE id=?1",[&request],|r|r.get::<_,String>(0)).optional()?; if let Some(saved)=prior {if saved!=target{return Err(MultiServerError::Conflict("request ID selected another server".into()));}} else {let v=stored(tx,"runtime_access_clients",&target)?.ok_or_else(||MultiServerError::Refused("select a revoked server".into()))?;if v.get("status").and_then(Value::as_str)!=Some("revoked")||v.get("kind").and_then(Value::as_str)!=Some("server"){return Err(MultiServerError::Refused("select a revoked server".into()));}tx.execute("DELETE FROM runtime_access_clients WHERE id=?1",[&target])?;tx.execute("DELETE FROM runtime_access_auto_attempts WHERE id=?1",[&target])?;tx.execute("INSERT INTO runtime_access_unrevokes VALUES(?1,?2)",rusqlite::params![request,target])?;audit_write(tx,&target,&actor,"unrevoke")?;} }
             _ => return Err(MultiServerError::Refused(format!("unsupported local multi-server action: {action}"))),
         }
         let clients=project_records(tx,"runtime_access_clients")?;
         let records=MultiServerRepository::audit(tx)?;
         let _=(clients,records);
-        snapshot_in_transaction(tx, identity, true).map_err(MultiServerError::from)
-    })
+        snapshot_in_transaction(tx, &identity, true).map_err(MultiServerError::from)
+    }).await
 }
 
 /// Create a single-use signed pairing invitation. The token is deterministically
 /// recoverable from the saved invite and request ID, so an exact retry returns
 /// the same secret without replacing the durable invitation.
-pub fn create_invite(
-    store: &RuntimeStore,
+pub async fn create_invite(
+    store: Arc<RuntimeStore>,
     identity: &Value,
     body: &Value,
     actor: &str,
@@ -239,34 +249,45 @@ pub fn create_invite(
         .ok_or_else(|| {
             MultiServerError::Refused("The Tailscale owner identity is unavailable".into())
         })?;
-    let stored =
-        crate::remote_transport::read_multi_server_identity(store.root()).map_err(|_| {
-            MultiServerError::Refused("The local server credentials are unavailable".into())
-        })?;
+    let identity_root = store.root().to_path_buf();
+    let stored = tokio::task::spawn_blocking(move || {
+        crate::remote_transport::read_multi_server_identity(&identity_root)
+    })
+    .await
+    .map_err(|_| MultiServerError::Refused("The local server credentials are unavailable".into()))?
+    .map_err(|_| {
+        MultiServerError::Refused("The local server credentials are unavailable".into())
+    })?;
     let fingerprint = studio_runtime_store::sha256_hex(
         crate::remote_transport::canonical_json(body)
             .map_err(|_| MultiServerError::Refused("Invalid pairing request".into()))?
             .as_bytes(),
     );
-    let prior = store.read_transaction(|tx| {
-        let saved: Option<(String, String)> = tx
-            .query_row(
-                "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
-                [request_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        saved
-            .map(|(hash, raw)| {
-                let record: Value = serde_json::from_str(&raw).map_err(|_| {
-                    StoreError::SchemaMismatch(format!(
-                        "invalid stored object runtime_access_invites/{request_id}"
-                    ))
-                })?;
-                Ok((hash, record))
-            })
-            .transpose()
-    })?;
+    let store_for_read = Arc::clone(&store);
+    let request_id_for_read = request_id.to_owned();
+    let prior = tokio::task::spawn_blocking(move || {
+        store_for_read.read_transaction(|tx| {
+            let saved: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT hash,record FROM runtime_access_invites WHERE request_id=?1",
+                    [&request_id_for_read],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            saved
+                .map(|(hash, raw)| {
+                    let record: Value = serde_json::from_str(&raw).map_err(|_| {
+                        StoreError::SchemaMismatch(format!(
+                            "invalid stored object runtime_access_invites/{request_id_for_read}"
+                        ))
+                    })?;
+                    Ok((hash, record))
+                })
+                .transpose()
+        })
+    })
+    .await
+    .map_err(|_| MultiServerError::Refused("The invitation store is unavailable".into()))??;
     let invite = if let Some(invite) = prior {
         if invite.0 != fingerprint {
             return Err(MultiServerError::Conflict(
@@ -298,14 +319,21 @@ pub fn create_invite(
             "status": "open",
             "tokenHash": studio_runtime_store::sha256_hex(token.as_bytes()),
         });
-        store.transaction_with(|tx| {
-            tx.execute(
+        let invite_id = invite_id.clone();
+        let request_id = request_id.to_owned();
+        let fingerprint = fingerprint.clone();
+        let invite_for_write = invite.clone();
+        let actor = actor.to_owned();
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
                 "INSERT INTO runtime_access_invites(id,request_id,hash,record) VALUES(?1,?2,?3,?4)",
-                rusqlite::params![invite_id, request_id, fingerprint, invite.to_string()],
+                rusqlite::params![invite_id, request_id, fingerprint, invite_for_write.to_string()],
             )?;
-            audit_write(tx, "local", actor, "create_invite")?;
-            Ok::<_, StoreError>(())
-        })?;
+                audit_write(tx, "local", &actor, "create_invite")?;
+                Ok::<_, StoreError>(())
+            })
+            .await?;
         invite
     };
     let invite_id = invite["inviteId"].as_str().unwrap_or_default();
@@ -565,15 +593,21 @@ mod tests {
     use super::{create_invite, manage};
     use crate::federation_credentials::Credentials;
     use serde_json::json;
+    use std::sync::Arc;
     use studio_runtime_store::RuntimeStore;
 
-    #[test]
-    fn invitation_uses_injected_owner_identity_and_exact_retry_is_stable() {
+    #[tokio::test]
+    async fn invitation_uses_injected_owner_identity_and_exact_retry_is_stable() {
         let root = tempfile::tempdir().expect("isolated multi-server state");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let credentials = Credentials::default();
         let identity = credentials
-            .identity(&store, Some("https://studio.example.ts.net"))
+            .identity(Arc::clone(&store), Some("https://studio.example.ts.net"))
+            .await
             .expect("fixture identity is created");
         let mut identity = identity;
         identity["label"] = json!("Saved server label");
@@ -586,6 +620,7 @@ mod tests {
             "local",
             Some("owner@example.test"),
         )
+        .await
         .expect("fixture owner can create invitation");
         let retry = create_invite(
             &store,
@@ -594,6 +629,7 @@ mod tests {
             "local",
             Some("owner@example.test"),
         )
+        .await
         .expect("exact invitation retry reuses durable invite");
         assert_eq!(first, retry);
         assert_eq!(first["invitation"]["tailscaleUser"], "owner@example.test");
@@ -633,6 +669,7 @@ mod tests {
                 "local",
                 Some("owner@example.test"),
             )
+            .await
             .is_err()
         );
         let count = store
@@ -651,6 +688,7 @@ mod tests {
             "local",
             Some("owner@example.test"),
         )
+        .await
         .expect("Python default label is used when label is omitted");
         assert_eq!(default_label["invitation"]["label"], identity["label"]);
         let null_label = create_invite(
@@ -660,17 +698,23 @@ mod tests {
             "local",
             Some("owner@example.test"),
         )
+        .await
         .expect("null label uses the saved identity label");
         assert_eq!(null_label["invitation"]["label"], identity["label"]);
     }
 
-    #[test]
-    fn peer_alias_mutation_is_local_idempotent_and_rejects_collisions() {
+    #[tokio::test]
+    async fn peer_alias_mutation_is_local_idempotent_and_rejects_collisions() {
         let root = tempfile::tempdir().expect("isolated multi-server state");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let credentials = Credentials::default();
         let identity = credentials
-            .identity(&store, Some("https://local.example.ts.net"))
+            .identity(Arc::clone(&store), Some("https://local.example.ts.net"))
+            .await
             .expect("fixture identity is created");
         store
             .transaction(|tx| {
@@ -692,36 +736,39 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("paired peer fixtures insert");
 
         let request =
             json!({"action":"alias","serverId":"peer-a","alias":"NEW","requestId":"peer-alias"});
         let first = manage(&store, &identity, &request, "local")
+            .await
             .expect("a paired peer alias updates local state");
         assert_eq!(first["settings"]["aliases"]["peer-a"], "NEW");
         assert_eq!(first["settings"]["aliases"]["peer-c"], "ONE");
         let retry = manage(&store, &identity, &request, "local")
+            .await
             .expect("exact alias retry returns the saved state");
         assert_eq!(retry, first);
 
         let changed =
             json!({"action":"alias","serverId":"peer-a","alias":"TWO","requestId":"peer-alias"});
         assert!(matches!(
-            manage(&store, &identity, &changed, "local"),
+            manage(&store, &identity, &changed, "local").await,
             Err(super::MultiServerError::Conflict(_))
         ));
         let collision = json!({"action":"alias","serverId":"peer-a","alias":"OTH","requestId":"peer-alias-collision"});
         assert!(matches!(
-            manage(&store, &identity, &collision, "local"),
+            manage(&store, &identity, &collision, "local").await,
             Err(super::MultiServerError::Conflict(_))
         ));
         let default_collision = json!({"action":"alias","serverId":"peer-a","alias":"ONE","requestId":"peer-alias-default-collision"});
         assert!(matches!(
-            manage(&store, &identity, &default_collision, "local"),
+            manage(&store, &identity, &default_collision, "local").await,
             Err(super::MultiServerError::Conflict(_))
         ));
         let missing = json!({"action":"alias","serverId":"unknown-peer","alias":"NEW","requestId":"peer-alias-missing"});
-        assert!(manage(&store, &identity, &missing, "local").is_err());
+        assert!(manage(&store, &identity, &missing, "local").await.is_err());
 
         let audit_count = store
             .read_transaction(|tx| {
@@ -736,12 +783,17 @@ mod tests {
         assert_eq!(audit_count, 1);
     }
 
-    #[test]
-    fn default_peer_alias_is_persisted_before_a_lexically_earlier_peer_arrives() {
+    #[tokio::test]
+    async fn default_peer_alias_is_persisted_before_a_lexically_earlier_peer_arrives() {
         let root = tempfile::tempdir().expect("isolated multi-server state");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let identity = crate::federation_credentials::Credentials::default()
-            .identity(&store, Some("https://local.example.ts.net"))
+            .identity(Arc::clone(&store), Some("https://local.example.ts.net"))
+            .await
             .expect("fixture identity is created");
         store
             .transaction(|tx| {
@@ -754,9 +806,12 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("first paired peer inserts");
 
-        let first = super::snapshot(&store, &identity).expect("snapshot seeds peer alias");
+        let first = super::snapshot(&store, &identity)
+            .await
+            .expect("snapshot seeds peer alias");
         assert_eq!(first["settings"]["aliases"]["peer-b"], "BOB");
         let saved: String = store
             .read_transaction(|tx| {
@@ -781,19 +836,27 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("lexically earlier peer inserts");
 
-        let later = super::snapshot(&store, &identity).expect("snapshot preserves saved aliases");
+        let later = super::snapshot(&store, &identity)
+            .await
+            .expect("snapshot preserves saved aliases");
         assert_eq!(later["settings"]["aliases"]["peer-b"], "BOB");
         assert_eq!(later["settings"]["aliases"]["peer-a"], "AAA");
     }
 
-    #[test]
-    fn comparison_snapshot_does_not_persist_default_aliases() {
+    #[tokio::test]
+    async fn comparison_snapshot_does_not_persist_default_aliases() {
         let root = tempfile::tempdir().expect("isolated multi-server state");
-        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let identity = crate::federation_credentials::Credentials::default()
-            .identity(&store, Some("https://local.example.ts.net"))
+            .identity(Arc::clone(&store), Some("https://local.example.ts.net"))
+            .await
             .expect("fixture identity is created");
         store
             .transaction(|tx| {
@@ -806,9 +869,11 @@ mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("fixture peer inserts");
 
         let snapshot = super::snapshot_for_comparison(&store, &identity)
+            .await
             .expect("comparison snapshot computes default alias");
         assert_eq!(snapshot["settings"]["aliases"]["peer-b"], "BOB");
         let saved: Option<String> = store

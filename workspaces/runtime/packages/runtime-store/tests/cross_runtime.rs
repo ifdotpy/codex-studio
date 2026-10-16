@@ -305,8 +305,8 @@ with sqlite3.connect(target / "canvas.sqlite3") as db:
 (target / "runtime.lock").touch()
 "#;
 
-#[test]
-fn python_flock_excludes_rust_and_rust_flock_excludes_python() {
+#[tokio::test]
+async fn python_flock_excludes_rust_and_rust_flock_excludes_python() {
     let root = temporary_state("locks");
     let python_lock = start_python_lock(&root);
     assert!(matches!(
@@ -329,8 +329,8 @@ fn python_flock_excludes_rust_and_rust_flock_excludes_python() {
     root.cleanup().expect("temporary lock state is removed");
 }
 
-#[test]
-fn python_fixture_records_are_readable_and_writable_in_rust() {
+#[tokio::test]
+async fn python_fixture_records_are_readable_and_writable_in_rust() {
     let root = temporary_state("cross-runtime");
     let created = python(&root, CREATE_PYTHON_STATE, &[]);
     let agent_id: String = serde_json::from_str::<Value>(&created)
@@ -339,7 +339,9 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
         .expect("cross-runtime test operation succeeds")
         .to_owned();
 
-    let store = RuntimeStore::open(Some(&root)).expect("cross-runtime test operation succeeds");
+    let store = RuntimeStore::open(Some(&root))
+        .await
+        .expect("cross-runtime test operation succeeds");
     let reader = store.read().expect("cross-runtime test operation succeeds");
     let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
         .expect("cross-runtime test operation succeeds")
@@ -388,18 +390,21 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
     assert_eq!(message.deliveries["delivery"], true);
     drop(reader);
 
-    let failure: Result<(), StoreError> = store.transaction(|_| {
-        Err(StoreError::SchemaMismatch(
-            "original transaction failure".to_owned(),
-        ))
-    });
+    let failure: Result<(), StoreError> = store
+        .transaction(move |_| {
+            Err(StoreError::SchemaMismatch(
+                "original transaction failure".to_owned(),
+            ))
+        })
+        .await;
     assert!(matches!(
         failure,
         Err(StoreError::SchemaMismatch(message)) if message == "original transaction failure"
     ));
 
+    let write_agent_id = agent_id.clone();
     store
-        .transaction(|transaction| {
+        .transaction(move |transaction| {
             let mut event =
                 QueueEventRepository::get(transaction, &QueueEventId::from("cross-event"))?
                     .expect("Python fixture contains the event");
@@ -424,8 +429,9 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
                 numeric_event.status = "running".to_owned();
                 QueueEventRepository::put(transaction, &numeric_event)?;
             }
-            let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
-                .expect("Python fixture contains the agent");
+            let mut agent =
+                AgentRepository::get(transaction, &AgentId::from(write_agent_id.as_str()))?
+                    .expect("Python fixture contains the agent");
             agent.extra.insert("rustAgentFlag".into(), json!(true));
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
@@ -447,6 +453,7 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
             MessageRepository::put(transaction, &message)?;
             Ok(())
         })
+        .await
         .expect("cross-runtime test operation succeeds");
     store
         .verify_schema()
@@ -558,7 +565,9 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
     drop(reader);
     drop(store);
 
-    let reopened = RuntimeStore::open(Some(&root)).expect("cross-runtime test operation succeeds");
+    let reopened = RuntimeStore::open(Some(&root))
+        .await
+        .expect("cross-runtime test operation succeeds");
     let read_back = reopened
         .read()
         .expect("cross-runtime test operation succeeds");
@@ -575,8 +584,9 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
     root.cleanup().expect("temporary Python state is removed");
 }
 
-#[test]
-fn analytics_limit_queries_use_python_initialized_index_and_state_check_allows_either_catalog() {
+#[tokio::test]
+async fn analytics_limit_queries_use_python_initialized_index_and_state_check_allows_either_catalog()
+ {
     let root = temporary_state("analytics-index");
     python(&root, CREATE_ANALYTICS_INDEX_STATE, &[]);
     let path = root.join("analytics.sqlite3");
@@ -702,19 +712,25 @@ fn explain_plan(
         .expect("query plan rows read")
 }
 
-#[test]
-fn python_feature_initialized_state_round_trips_through_rust() {
+#[tokio::test]
+async fn python_feature_initialized_state_round_trips_through_rust() {
     let root = temporary_state("features");
     let created = python(&root, CREATE_FEATURE_STATE, &[]);
     let output: Value = serde_json::from_str(&created).expect("feature setup returns JSON");
-    let agent_id = output["agent_id"].as_str().expect("agent id exists");
+    let agent_id = output["agent_id"]
+        .as_str()
+        .expect("agent id exists")
+        .to_owned();
     assert_eq!(output["search_phase"], "complete");
 
-    let store = RuntimeStore::open(Some(&root)).expect("feature-initialized state opens");
+    let store = RuntimeStore::open(Some(&root))
+        .await
+        .expect("feature-initialized state opens");
+    let write_agent_id = agent_id.clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let mut agent =
-                AgentRepository::get(tx, &AgentId::from(agent_id))?.expect("agent exists");
+                AgentRepository::get(tx, &AgentId::from(write_agent_id))?.expect("agent exists");
             agent.extra.insert("rustWrite".into(), json!(true));
             AgentRepository::put(tx, &agent)?;
             let mut task =
@@ -722,9 +738,10 @@ fn python_feature_initialized_state_round_trips_through_rust() {
             task.set("status", json!("running"));
             TaskRepository::put(tx, &task)
         })
+        .await
         .expect("Rust writes supported records");
     let reader = store.read().expect("Rust reads its updated records");
-    let agent = AgentRepository::get(&reader, &AgentId::from(agent_id))
+    let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
         .expect("updated agent read succeeds")
         .expect("updated agent remains present");
     assert_eq!(agent.value()["rustWrite"], true);
@@ -737,8 +754,8 @@ fn python_feature_initialized_state_round_trips_through_rust() {
     root.cleanup().expect("feature state is removed");
 }
 
-#[test]
-fn rust_bootstrap_matches_python_feature_table_catalog() {
+#[tokio::test]
+async fn rust_bootstrap_matches_python_feature_table_catalog() {
     let reference = temporary_state("bootstrap-python");
     let rust_state = temporary_state("bootstrap-rust");
     python(&reference, CREATE_FEATURE_STATE, &[]);
@@ -748,8 +765,9 @@ fn rust_bootstrap_matches_python_feature_table_catalog() {
         &[rust_state.to_str().expect("temporary path is UTF-8")],
     );
 
-    let store =
-        RuntimeStore::open(Some(&rust_state)).expect("Rust prepares missing feature tables");
+    let store = RuntimeStore::open(Some(&rust_state))
+        .await
+        .expect("Rust prepares missing feature tables");
     let auto_pair: i64 = store
         .read()
         .expect("Rust feature state opens")
@@ -1071,8 +1089,8 @@ fn temporary_state(label: &str) -> TemporaryState {
         .expect("cross-runtime test operation succeeds");
     TemporaryState(directory.path().to_path_buf(), directory)
 }
-#[test]
-fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_database() {
+#[tokio::test]
+async fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_database() {
     let first_root = temporary_state("identity-registry-first");
     let second_root = temporary_state("identity-registry-second");
     python(&first_root, CREATE_PYTHON_STATE, &[]);
@@ -1101,8 +1119,12 @@ fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_databas
         }
     }
 
-    let first = RuntimeStore::open(Some(&first_root)).expect("first store opens");
-    let second = RuntimeStore::open(Some(&second_root)).expect("second store opens");
+    let first = RuntimeStore::open(Some(&first_root))
+        .await
+        .expect("first store opens");
+    let second = RuntimeStore::open(Some(&second_root))
+        .await
+        .expect("second store opens");
     assert_eq!(
         first.local_server_id().expect("identity lookup"),
         Some("server-first".to_owned())
@@ -1112,22 +1134,24 @@ fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_databas
         Some("server-second".to_owned())
     );
     first
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert_eq!(
                 RuntimeStore::transaction_local_server_id(tx)?,
                 Some("server-first".to_owned())
             );
             Ok(())
         })
+        .await
         .expect("writer sees its store identity");
     second
-        .transaction(|tx| {
+        .transaction(move |tx| {
             assert_eq!(
                 RuntimeStore::transaction_local_server_id(tx)?,
                 Some("server-second".to_owned())
             );
             Ok(())
         })
+        .await
         .expect("second database sees its own identity");
     let reader = first.read().expect("reader opens");
     let tx = reader

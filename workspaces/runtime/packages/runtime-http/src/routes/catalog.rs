@@ -69,19 +69,12 @@ async fn limits(
         .and_then(serde_json::Value::as_str)
         == Some("1");
     if let Some(port) = state.account_session.clone() {
-        let account = account_key.to_owned();
-        let response = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/catalog",
-            move || {
-                studio_runtime_services::account_session_runtime::limits(
-                    port.as_ref(),
-                    &account,
-                    cached,
-                )
-            },
+        let response = studio_runtime_services::account_session_runtime::limits(
+            port.as_ref(),
+            account_key,
+            cached,
         )
-        .await
-        .map_err(|_| ApiError::internal())?;
+        .await;
         let response = match response {
             Ok(response) => response,
             Err(

@@ -26,50 +26,68 @@ async fn repair(
     let driver = state.account_driver.clone();
     let broker = state.account_session.clone();
     let id = body.id;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/context_repair",
-        move || {
-            match context_repair::repair_idle(&store, &id) {
-                Ok(result) => return Ok(result),
-                Err(RepairError::RewriteUnavailable) => {}
-                Err(error) => return Err(error),
-            }
-            let driver = driver.ok_or(RepairError::AccountSession)?;
-            let broker = broker.ok_or(RepairError::AccountSession)?;
-            let connection = store.read()?;
-            let agent = studio_runtime_store::AgentRepository::get(
-                &connection,
-                &studio_runtime_store::AgentId::from(id.clone()),
-            )?
-            .ok_or(RepairError::MissingAgent)?;
-            let account_key = agent
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default");
-            let snapshot = driver.snapshot().map_err(|_| RepairError::AccountSession)?;
-            let account = snapshot
-                .accounts
-                .iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
-                .ok_or(RepairError::AccountSession)?;
-            let home = account
-                .get("home")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .ok_or(RepairError::AccountSession)?;
-            drop(connection);
+    let result = match context_repair::repair_idle(std::sync::Arc::clone(&store), &id).await {
+        Ok(result) => Ok(result),
+        Err(RepairError::RewriteUnavailable) => {
+            let prepare_store = store.clone();
+            let prepare_id = id.clone();
+            let home = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/context_repair",
+                move || {
+                    let driver = driver.ok_or(RepairError::AccountSession)?;
+                    let connection = prepare_store.read()?;
+                    let agent = studio_runtime_store::AgentRepository::get(
+                        &connection,
+                        &studio_runtime_store::AgentId::from(prepare_id),
+                    )?
+                    .ok_or(RepairError::MissingAgent)?;
+                    let account_key = agent
+                        .extra
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default");
+                    let snapshot = driver.snapshot().map_err(|_| RepairError::AccountSession)?;
+                    let account = snapshot
+                        .accounts
+                        .iter()
+                        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+                        .ok_or(RepairError::AccountSession)?;
+                    let home = account
+                        .get("home")
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from)
+                        .ok_or(RepairError::AccountSession)?;
+                    Ok::<_, RepairError>(home)
+                },
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(|error| match error {
+                RepairError::MissingAgent => {
+                    ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent")
+                }
+                RepairError::AccountSession => {
+                    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+                }
+                _ => ApiError::internal(),
+            })?;
+            let broker = broker.ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    RepairError::AccountSession.to_string(),
+                )
+            })?;
             context_repair::repair_idle_with_broker(
-                &store,
+                std::sync::Arc::clone(&store),
                 &id,
                 &home,
                 broker.as_ref(),
                 Instant::now() + Duration::from_secs(60),
             )
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+            .await
+        }
+        Err(error) => Err(error),
+    }
     .map_err(|error| match error {
         RepairError::MissingAgent => ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"),
         RepairError::ReceiptHold => ApiError::new(

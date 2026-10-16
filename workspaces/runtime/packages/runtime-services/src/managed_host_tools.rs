@@ -43,6 +43,7 @@
 use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::{future::Future, pin::Pin};
 use studio_runtime_store::WorkItemsRepository;
 use thiserror::Error;
 
@@ -375,7 +376,9 @@ pub(crate) struct Staged {
 }
 
 pub(crate) trait Ports:
-    ChildCreationPort
+    Send
+    + Sync
+    + ChildCreationPort
     + SendPort
     + InterruptPort
     + StatusPort
@@ -389,7 +392,9 @@ pub(crate) trait Ports:
 }
 
 impl<T> Ports for T where
-    T: ChildCreationPort
+    T: Send
+        + Sync
+        + ChildCreationPort
         + SendPort
         + InterruptPort
         + StatusPort
@@ -406,16 +411,16 @@ pub(crate) trait PostCommitPort {
     /// Execute an operation after its callback claim has committed. `None`
     /// selects the leaf's transaction-local adapter; implementations return a
     /// certainty receipt for provider/process effects and preserve the exact id.
-    fn dispatch_managed(
-        &self,
-        _store: &studio_runtime_store::RuntimeStore,
-        _actor: &Actor,
-        _tool: &str,
-        _args: &Value,
-        _request_id: &str,
+    fn dispatch_managed<'a>(
+        &'a self,
+        _store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+        _actor: &'a Actor,
+        _tool: &'a str,
+        _args: &'a Value,
+        _request_id: &'a str,
         _now: f64,
-    ) -> Result<Option<DispatchedOperation>, Error> {
-        Ok(None)
+    ) -> Pin<Box<dyn Future<Output = Result<Option<DispatchedOperation>, Error>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Wake only. The owner must independently reconcile the durable intent.
@@ -560,6 +565,18 @@ impl ReviewPort for UnavailablePorts {
 }
 
 impl PostCommitPort for UnavailablePorts {
+    fn dispatch_managed<'a>(
+        &'a self,
+        _: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+        _: &'a Actor,
+        _: &'a str,
+        _: &'a Value,
+        _: &'a str,
+        _: f64,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<DispatchedOperation>, Error>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn release(&self, signals: &[WakeSignal]) -> Result<(), Error> {
         // Touch owner labels to keep the wake contract available to adapters,
         // while the fallback correctly performs no external activity.
@@ -575,7 +592,7 @@ pub(crate) fn execute(
     args: &Value,
     request_id: &str,
     now: f64,
-    ports: &impl Ports,
+    ports: &(impl Ports + ?Sized),
 ) -> Result<Staged, Error> {
     let call = Call::checked(tool, args.clone(), request_id)?;
     if !now.is_finite() || now < 0.0 {
@@ -716,7 +733,7 @@ fn spawn(
     actor: &Actor,
     call: &Call,
     now: f64,
-    ports: &impl Ports,
+    ports: &(impl Ports + ?Sized),
 ) -> Result<OperationResult, Error> {
     if actor.reviewer {
         return Err(Error::Invalid("Reviewers cannot create agents"));

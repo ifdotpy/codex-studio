@@ -28,8 +28,10 @@ pub struct ReviewCleanupCounts {
 }
 
 /// Remove retired review assignments atomically during runtime startup.
-pub fn remove_review_assignments(store: &RuntimeStore) -> StoreResult<ReviewCleanupCounts> {
-    store.transaction(remove_review_assignments_in_transaction)
+pub async fn remove_review_assignments(store: &RuntimeStore) -> StoreResult<ReviewCleanupCounts> {
+    store
+        .transaction(remove_review_assignments_in_transaction)
+        .await
 }
 
 fn remove_review_assignments_in_transaction(

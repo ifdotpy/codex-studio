@@ -1,11 +1,26 @@
 pub(super) mod support;
 
-#[test]
-fn event_persistence_failure_returns_error_and_rolls_back_voice_delivery() {
+async fn count_rows(
+    store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+    table: &'static str,
+) -> i64 {
+    support::read(store, move |connection| {
+        connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("row count")
+    })
+    .await
+}
+
+#[tokio::test]
+async fn event_persistence_failure_returns_error_and_rolls_back_voice_delivery() {
     let fixture = support::Fixture::new(
         "voice-persistence-failure",
         crate::agents_create::prepared_python,
-    );
+    )
+    .await;
     fixture
         .store
         .transaction(|tx| {
@@ -31,38 +46,36 @@ fn event_persistence_failure_returns_error_and_rolls_back_voice_delivery() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed transcript and arm failure");
-    let counts = |table: &str| {
-        fixture
-            .store
-            .read()
-            .expect("read counts")
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("row count")
-    };
-    let before = (counts("voice_deliveries"), counts("runtime_events"));
+    let before = (
+        count_rows(fixture.store.clone(), "voice_deliveries").await,
+        count_rows(fixture.store.clone(), "runtime_events").await,
+    );
     let result = super::submit(
-        &fixture.store,
+        fixture.store.clone(),
         "late-operation-recipient",
         "voice-failure",
         &["spoken-failure".into()],
         None,
-    );
+    )
+    .await;
     assert!(
         result.is_err(),
         "event persistence failure must reach the service caller"
     );
     assert_eq!(
-        (counts("voice_deliveries"), counts("runtime_events")),
+        (
+            count_rows(fixture.store.clone(), "voice_deliveries").await,
+            count_rows(fixture.store.clone(), "runtime_events").await,
+        ),
         before
     );
 }
 
-#[test]
-fn voice_accepts_unrelated_operation_started_after_preparation() {
-    let fixture = support::Fixture::new("voice", crate::agents_create::prepared_python);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn voice_accepts_unrelated_operation_started_after_preparation() {
+    let fixture = support::Fixture::new("voice", crate::agents_create::prepared_python).await;
     fixture
         .store
         .transaction(|tx| {
@@ -82,23 +95,27 @@ fn voice_accepts_unrelated_operation_started_after_preparation() {
                 },
             )
         })
+        .await
         .expect("transcript");
     let (ready, release) = support::arm();
     let store = fixture.store.clone();
-    let caller = std::thread::spawn(move || {
+    let caller = tokio::spawn(async move {
         super::submit(
-            &store,
+            store,
             "late-operation-recipient",
             "voice-late",
             &["spoken".into()],
             None,
         )
+        .await
     });
-    support::start_late_operation(&fixture.store, ready, release);
-    let receipt = caller
-        .join()
-        .expect("caller joins")
-        .expect("voice accepted");
+    let operation = tokio::spawn(support::start_late_operation(
+        fixture.store.clone(),
+        ready,
+        release,
+    ));
+    operation.await.unwrap();
+    let receipt = caller.await.expect("caller joins").expect("voice accepted");
     assert_eq!(receipt["status"], "queued");
     assert!(
         receipt.get("waitingFor").is_none(),

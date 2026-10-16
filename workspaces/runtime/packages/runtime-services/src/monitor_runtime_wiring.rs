@@ -20,7 +20,7 @@ use std::time::Duration;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::Value;
 use studio_runtime_store::RuntimeStore;
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
 use tokio::task::JoinHandle;
 
 use crate::monitor_driver::{self, InputRequest, MonitorNative, Submission};
@@ -81,17 +81,38 @@ pub enum InputReply {
 pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     /// Prepare and submit one persisted managed start. Implementations must return
     /// after a durable intent and retain Unknown without another command/exec.
-    fn start_monitor(&self, _id: &str, _now: f64) -> Result<(), MonitorError> {
-        Err(MonitorError::Unavailable("provider-session/monitor-start"))
+    fn start_monitor<'a>(
+        &'a self,
+        _id: &'a str,
+        _now: f64,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+        Box::pin(async { Err(MonitorError::Unavailable("provider-session/monitor-start")) })
     }
-    fn next(&self) -> Result<Option<Delivery>, MonitorError>;
-    fn acknowledge(&self, delivery: &Delivery) -> Result<(), MonitorError>;
-    fn reattach(&self, snapshot: &MonitorSnapshot) -> Result<Option<ReattachProof>, MonitorError>;
+    fn next<'a>(
+        &'a self,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>>;
+    fn acknowledge<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>>;
+    fn reattach<'a>(
+        &'a self,
+        snapshot: &'a MonitorSnapshot,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>>;
     /// Reserve through the account owner, using liveness:{id}:{generation}.
     /// Return promptly; completion is delivered as MonitorEvent::Probe.
-    fn probe(&self, id: &str, generation: i64, command: &str) -> Result<(), MonitorError>;
+    fn probe<'a>(
+        &'a self,
+        id: &'a str,
+        generation: i64,
+        command: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>>;
     /// Wait for this exact submitted ticket, bounded by the native request deadline.
-    fn input_reply(&self, operation: &Operation, ticket: &str) -> InputReply;
+    fn input_reply<'a>(
+        &'a self,
+        operation: &'a Operation,
+        ticket: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, InputReply>;
 }
 
 #[derive(Default)]
@@ -107,7 +128,7 @@ pub struct MonitorRuntime {
     store: Arc<RuntimeStore>,
     port: Arc<dyn MonitorPort>,
     output: MonitorOutput,
-    scan: Mutex<Scan>,
+    scan: AsyncMutex<Scan>,
     dispatch_wake: Arc<Notify>,
     last_tick_error: Mutex<Option<String>>,
     watcher_error: Mutex<Option<String>>,
@@ -149,7 +170,7 @@ impl MonitorRuntime {
             port,
             output: MonitorOutput::default(),
             dispatch_wake,
-            scan: Mutex::new(Scan {
+            scan: AsyncMutex::new(Scan {
                 recovering_rules: true,
                 recovering_receipts: true,
                 ..Scan::default()
@@ -172,24 +193,21 @@ impl MonitorRuntime {
 
     /// Submit rule checks reserved by a committed event transaction. A lost or
     /// uncertain native submission is left to the monitor port's receipt logic.
-    pub fn submit_event_checks(
+    pub async fn submit_event_checks(
         &self,
         checks: &[RuleCheck],
         now: f64,
     ) -> Result<usize, MonitorError> {
         let mut submitted = 0;
         for check in checks {
-            match rules_tick::submit_check(&self.store, check, now, self.port.as_ref()) {
+            match rules_tick::submit_check(&self.store, check, now, self.port.as_ref()).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
                 Err(error) => {
                     // The event transaction already committed the exact launch intent.
                     // Restart recovery from the first row so this saved identity is
                     // reconciled on the next tick; it will never invent a fresh command.
-                    let mut scan = self
-                        .scan
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut scan = self.scan.lock().await;
                     scan.rule = 0;
                     scan.recovering_rules = true;
                     drop(scan);
@@ -206,16 +224,13 @@ impl MonitorRuntime {
         self.dispatch_wake.notify_one();
     }
 
-    fn wake_receipt_recovery(&self) {
-        self.request_receipt_recovery();
+    async fn wake_receipt_recovery(&self) {
+        self.request_receipt_recovery().await;
         self.dispatch_wake.notify_one();
     }
 
-    fn request_receipt_recovery(&self) {
-        let mut scan = self
-            .scan
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    async fn request_receipt_recovery(&self) {
+        let mut scan = self.scan.lock().await;
         scan.recovering_receipts = true;
     }
 
@@ -384,14 +399,14 @@ impl MonitorRuntime {
     }
 
     /// Caller supplies wall time once per batch; tests can drive time deterministically.
-    pub fn tick(&self, now: f64) -> Result<(), MonitorError> {
-        self.tick_with_progress(now).map(|_| ())
+    pub async fn tick(&self, now: f64) -> Result<(), MonitorError> {
+        self.tick_with_progress(now).await.map(|_| ())
     }
 
-    fn tick_with_progress(&self, now: f64) -> Result<bool, MonitorError> {
+    async fn tick_with_progress(&self, now: f64) -> Result<bool, MonitorError> {
         #[cfg(test)]
         self.loop_activity.ticks.fetch_add(1, Ordering::SeqCst);
-        let result = self.tick_inner(now);
+        let result = self.tick_inner(now).await;
         *self
             .last_tick_error
             .lock()
@@ -406,7 +421,7 @@ impl MonitorRuntime {
         result
     }
 
-    fn tick_inner(&self, now: f64) -> Result<bool, MonitorError> {
+    async fn tick_inner(&self, now: f64) -> Result<bool, MonitorError> {
         let mut scan = self
             .scan
             .try_lock()
@@ -414,17 +429,17 @@ impl MonitorRuntime {
         // Receipt files are scanned only at startup or on a native filesystem event.
         // Full batches remain scheduled immediately so recovery is bounded per pass.
         let result_batch_full = if scan.recovering_receipts {
-            let full = monitor_receipts::recover_pending(&self.store, BATCH)? == BATCH;
+            let full = monitor_receipts::recover_pending(&self.store, BATCH).await? == BATCH;
             scan.recovering_receipts = full;
             full
         } else {
             false
         };
-        let attach_more = self.attach_batch(&mut scan, now)?;
+        let attach_more = self.attach_batch(&mut scan, now).await?;
         let mut drained = false;
         let mut failure = None;
         for _ in 0..BATCH {
-            let delivery = match self.port.next() {
+            let delivery = match self.port.next().await {
                 Ok(Some(delivery)) => delivery,
                 Ok(None) => {
                     drained = true;
@@ -436,15 +451,16 @@ impl MonitorRuntime {
                     break;
                 }
             };
-            if let Err(error) = self.deliver_inner(&delivery, now, false) {
+            if let Err(error) = self.deliver_inner(&delivery, now, false).await {
                 if error.is_bad_delivery() {
-                    if let Err(quarantine_error) = self.quarantine_delivery(&delivery, &error, now)
+                    if let Err(quarantine_error) =
+                        self.quarantine_delivery(&delivery, &error, now).await
                     {
                         failure = Some(quarantine_error);
                         break;
                     }
                     record_tick_failure(&mut failure, error);
-                    if let Err(ack_error) = self.port.acknowledge(&delivery) {
+                    if let Err(ack_error) = self.port.acknowledge(&delivery).await {
                         record_tick_failure(&mut failure, ack_error);
                         break;
                     }
@@ -454,7 +470,7 @@ impl MonitorRuntime {
                 break;
             }
             // A failed ACK leaves an exact replay, never an instruction to resend.
-            if let Err(error) = self.port.acknowledge(&delivery) {
+            if let Err(error) = self.port.acknowledge(&delivery).await {
                 failure = Some(error);
                 break;
             }
@@ -467,7 +483,7 @@ impl MonitorRuntime {
             Ok(ids) => {
                 start_more = ids.len() == BATCH;
                 for id in ids {
-                    if let Err(error) = self.port.start_monitor(&id, now) {
+                    if let Err(error) = self.port.start_monitor(&id, now).await {
                         record_tick_failure(&mut failure, error);
                     }
                 }
@@ -481,6 +497,7 @@ impl MonitorRuntime {
                 for id in ids {
                     if let Err(error) =
                         monitor_driver::cancel(&self.store, self.port.as_ref(), &id, None, now)
+                            .await
                     {
                         record_tick_failure(&mut failure, error);
                     }
@@ -491,7 +508,7 @@ impl MonitorRuntime {
             }
         }
         let rules = if scan.recovering_rules {
-            rules_tick::recover_batch(&self.store, scan.rule, now, self.port.as_ref())
+            rules_tick::recover_batch(&self.store, scan.rule, now, self.port.as_ref()).await
         } else {
             rules_tick::tick_batch(
                 &self.store,
@@ -500,6 +517,7 @@ impl MonitorRuntime {
                 &rules_tick::LocalRuleFiles,
                 self.port.as_ref(),
             )
+            .await
         };
         let mut rules_more = false;
         match rules {
@@ -522,7 +540,8 @@ impl MonitorRuntime {
         // result receipts. Cancellation and rule work above does not.
         let mut stall_more = false;
         if drained && !result_batch_full && failure.is_none() {
-            match monitor_runtime::tick_page(&self.store, now, scan.stall_monitor.as_deref()) {
+            match monitor_runtime::tick_page(&self.store, now, scan.stall_monitor.as_deref()).await
+            {
                 Ok(page) => {
                     stall_more = page.next_after.is_some();
                     scan.stall_monitor = page.next_after;
@@ -531,7 +550,7 @@ impl MonitorRuntime {
                             generation,
                             command,
                         } = effect
-                            && let Err(error) = self.port.probe(&id, generation, &command)
+                            && let Err(error) = self.port.probe(&id, generation, &command).await
                         {
                             record_tick_failure(&mut failure, error);
                         }
@@ -554,45 +573,49 @@ impl MonitorRuntime {
         }
     }
 
-    fn quarantine_delivery(
+    async fn quarantine_delivery(
         &self,
         delivery: &Delivery,
         error: &MonitorError,
         now: f64,
     ) -> Result<(), MonitorError> {
         let located_error = format!("{error} at delivery cursor {}", delivery.cursor);
-        self.store.transaction_with(|tx| {
-            let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
-            let mut decision = crate::monitor_policy::Decision {
-                record: snapshot.record().clone(),
-                effects: vec![],
-                response: Value::Null,
-            };
-            decision.record["status"] = serde_json::json!("failed");
-            decision.record["error"] = serde_json::json!(located_error);
-            decision.record["finished"] = serde_json::json!(now);
-            decision.record["configurationPending"] = serde_json::json!(false);
-            decision.record["deliveryFailure"] = serde_json::json!({
-                "cursor": delivery.cursor,
-                "error": error.to_string(),
-            });
-            decision.effects.push(
-                if snapshot
-                    .record()
-                    .get("ruleId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                {
-                    crate::monitor_policy::Effect::RuleFinished
-                } else {
-                    crate::monitor_policy::Effect::ExitEvent { wake: true }
-                },
-            );
-            monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
-        })
+        let delivery = delivery.clone();
+        let error_text = error.to_string();
+        self.store
+            .transaction_with(move |tx| {
+                let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
+                let mut decision = crate::monitor_policy::Decision {
+                    record: snapshot.record().clone(),
+                    effects: vec![],
+                    response: Value::Null,
+                };
+                decision.record["status"] = serde_json::json!("failed");
+                decision.record["error"] = serde_json::json!(located_error);
+                decision.record["finished"] = serde_json::json!(now);
+                decision.record["configurationPending"] = serde_json::json!(false);
+                decision.record["deliveryFailure"] = serde_json::json!({
+                    "cursor": delivery.cursor,
+                    "error": error_text,
+                });
+                decision.effects.push(
+                    if snapshot
+                        .record()
+                        .get("ruleId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+                    {
+                        crate::monitor_policy::Effect::RuleFinished
+                    } else {
+                        crate::monitor_policy::Effect::ExitEvent { wake: true }
+                    },
+                );
+                monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
+            })
+            .await
     }
 
-    fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
+    async fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
         let ids = {
             let connection = self.store.read()?;
             let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2").map_err(studio_runtime_store::StoreError::from)?;
@@ -603,11 +626,13 @@ impl MonitorRuntime {
                 .map_err(studio_runtime_store::StoreError::from)?
         };
         for id in &ids {
+            let id_for_read = id.clone();
             let (snapshot, _) = self
                 .store
-                .transaction_with(|tx| monitor_runtime::snapshot(tx, id))?;
-            if let Some(proof) = self.port.reattach(&snapshot)? {
-                monitor_runtime::reattach(&self.store, id, &proof, now)?;
+                .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_for_read))
+                .await?;
+            if let Some(proof) = self.port.reattach(&snapshot).await? {
+                monitor_runtime::reattach(&self.store, id, &proof, now).await?;
             }
             scan.monitor.clone_from(id);
         }
@@ -618,25 +643,29 @@ impl MonitorRuntime {
     }
 
     /// The retained session may call this directly before committing its own cursor.
-    pub fn deliver(&self, delivery: &Delivery, now: f64) -> Result<(), MonitorError> {
-        self.deliver_inner(delivery, now, true)
+    pub async fn deliver(&self, delivery: &Delivery, now: f64) -> Result<(), MonitorError> {
+        self.deliver_inner(delivery, now, true).await
     }
 
-    fn deliver_inner(
+    async fn deliver_inner(
         &self,
         delivery: &Delivery,
         now: f64,
         wake_dispatch: bool,
     ) -> Result<(), MonitorError> {
         match &delivery.event {
-            MonitorEvent::Output { offset, bytes } => self.output.append(
-                &self.store,
-                &delivery.id,
-                &delivery.operation,
-                *offset,
-                bytes,
-                now,
-            )?,
+            MonitorEvent::Output { offset, bytes } => {
+                self.output
+                    .append(
+                        &self.store,
+                        &delivery.id,
+                        &delivery.operation,
+                        *offset,
+                        bytes,
+                        now,
+                    )
+                    .await?
+            }
             MonitorEvent::Exit {
                 code,
                 error,
@@ -644,9 +673,11 @@ impl MonitorRuntime {
             } => {
                 // Reject a foreign stream before it can occupy the first-result file.
                 // On a read failure the retained delivery remains unacknowledged.
+                let id = delivery.id.clone();
                 let (snapshot, _) = self
                     .store
-                    .transaction_with(|tx| monitor_runtime::snapshot(tx, &delivery.id))?;
+                    .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id))
+                    .await?;
                 if snapshot.operation() != Some(&delivery.operation) {
                     return Err(MonitorError::InvalidDeliveryIdentity(
                         "result operation changed",
@@ -662,7 +693,8 @@ impl MonitorRuntime {
                         operation: Some(delivery.operation.clone()),
                         finished: *finished,
                     },
-                )?;
+                )
+                .await?;
             }
             MonitorEvent::Input { ticket, outcome } => monitor_runtime::settle_input(
                 &self.store,
@@ -672,6 +704,7 @@ impl MonitorRuntime {
                 outcome.clone(),
                 now,
             )
+            .await
             .map_err(|error| match error {
                 MonitorError::Refused("Monitor operation identity changed") => {
                     MonitorError::InvalidDeliveryIdentity("input operation changed")
@@ -682,21 +715,24 @@ impl MonitorRuntime {
                 error => error,
             })?,
             MonitorEvent::Probe { generation, result } => {
-                self.store.transaction_with(|tx| {
-                    let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
-                    if snapshot.operation() != Some(&delivery.operation) {
-                        return Err(MonitorError::InvalidDeliveryIdentity(
-                            "probe operation changed",
-                        ));
-                    }
-                    let decision = crate::monitor_policy::probe_result(
-                        &snapshot,
-                        *generation,
-                        result.clone(),
-                        now,
-                    )?;
-                    monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
-                })?;
+                let id = delivery.id.clone();
+                let operation = delivery.operation.clone();
+                let generation = *generation;
+                let result = result.clone();
+                self.store
+                    .transaction_with(move |tx| {
+                        let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
+                        if snapshot.operation() != Some(&operation) {
+                            return Err(MonitorError::InvalidDeliveryIdentity(
+                                "probe operation changed",
+                            ));
+                        }
+                        let decision = crate::monitor_policy::probe_result(
+                            &snapshot, generation, result, now,
+                        )?;
+                        monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
+                    })
+                    .await?;
             }
         }
         if wake_dispatch {
@@ -705,8 +741,14 @@ impl MonitorRuntime {
         Ok(())
     }
 
-    pub fn cancel(&self, id: &str, owner: Option<&str>, now: f64) -> Result<Value, MonitorError> {
-        let result = monitor_driver::cancel(&self.store, self.port.as_ref(), id, owner, now)?;
+    pub async fn cancel(
+        &self,
+        id: &str,
+        owner: Option<&str>,
+        now: f64,
+    ) -> Result<Value, MonitorError> {
+        let result =
+            monitor_driver::cancel(&self.store, self.port.as_ref(), id, owner, now).await?;
         self.dispatch_wake.notify_one();
         Ok(result)
     }
@@ -716,21 +758,28 @@ impl MonitorRuntime {
     /// from a new identical request; that retry gap is registered in this module's
     /// documentation. Provider writes still commit an intent first, and an
     /// uncertain provider outcome is retained and never resent.
-    pub fn input_http(&self, id: &str, input: &Input, now: f64) -> Result<Value, MonitorError> {
+    pub async fn input_http(
+        &self,
+        id: &str,
+        input: &Input,
+        now: f64,
+    ) -> Result<Value, MonitorError> {
         let ticket = http_input_ticket()?;
-        self.input(id, &ticket, input, now)
+        self.input(id, &ticket, input, now).await
     }
 
-    pub fn input(
+    pub async fn input(
         &self,
         id: &str,
         ticket: &str,
         input: &Input,
         now: f64,
     ) -> Result<Value, MonitorError> {
+        let id_for_read = id.to_owned();
         let (snapshot, _) = self
             .store
-            .transaction_with(|tx| monitor_runtime::snapshot(tx, id))?;
+            .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_for_read))
+            .await?;
         let operation = snapshot.operation().ok_or(MonitorError::Refused(
             "This interactive monitor is not active",
         ))?;
@@ -744,13 +793,14 @@ impl MonitorRuntime {
                 input,
             },
             now,
-        )?;
+        )
+        .await?;
         if !matches!(submitted, Submission::Written) {
             return Err(MonitorError::Refused(
                 "Monitor input was not acknowledged; inspect its receipt",
             ));
         }
-        let (outcome, response) = match self.port.input_reply(operation, ticket) {
+        let (outcome, response) = match self.port.input_reply(operation, ticket).await {
             InputReply::Acknowledged(value) => (InputOutcome::Acknowledged, Ok(value)),
             InputReply::Rejected(error) => (
                 InputOutcome::Rejected(error),
@@ -763,13 +813,13 @@ impl MonitorRuntime {
                 )),
             ),
         };
-        monitor_runtime::settle_input(&self.store, id, operation, ticket, outcome, now)?;
+        monitor_runtime::settle_input(&self.store, id, operation, ticket, outcome, now).await?;
         response
     }
 
     /// Submit managed input only when the authenticated caller still owns the
     /// active monitor at the same actor epoch.
-    pub fn input_for_owner(
+    pub async fn input_for_owner(
         &self,
         caller_id: &str,
         caller_epoch: i64,
@@ -809,7 +859,7 @@ impl MonitorRuntime {
             }
             Ok(())
         })?;
-        self.input(id, ticket, input, now)
+        self.input(id, ticket, input, now).await
     }
 }
 
@@ -905,7 +955,7 @@ pub fn start(
                         runtime.clear_watcher_error();
                         // Registration precedes this baseline scan, closing the
                         // gap for receipts written while watching was unavailable.
-                        runtime.request_receipt_recovery();
+                        runtime.request_receipt_recovery().await;
                         immediate = true;
                     }
                     Err(error) if error.store_failure_for_task() => return Err(error),
@@ -929,15 +979,9 @@ pub fn start(
                         continue;
                     }
                 };
-                let tick_runtime = Arc::clone(&runtime);
-                let tick_result = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/monitor_runtime_wiring",
-                    move || tick_runtime.tick_with_progress(wall_now),
-                )
-                .await
-                .map_err(|_| MonitorError::TaskFailed);
+                let tick_result = runtime.tick_with_progress(wall_now).await;
                 match tick_result {
-                    Ok(Ok(more)) => {
+                    Ok(more) => {
                         immediate = more;
                         retry_at = None;
                         retry_delay = ERROR_RETRY_MIN;
@@ -974,9 +1018,8 @@ pub fn start(
                             watcher_retry_delay = (watcher_retry_delay * 2).min(ERROR_RETRY_MAX);
                         }
                     }
-                    Ok(Err(error)) if error.store_failure_for_task() => return Err(error),
-                    Err(error) => return Err(error),
-                    Ok(Err(error)) => {
+                    Err(error) if error.store_failure_for_task() => return Err(error),
+                    Err(error) => {
                         runtime.record_runtime_error(&error);
                         retry_at = Some(tokio::time::Instant::now() + retry_delay);
                         retry_delay = (retry_delay * 2).min(ERROR_RETRY_MAX);
@@ -1036,7 +1079,7 @@ pub fn start(
                 changed = receipt_events.changed() => {
                     if changed.is_err() { return Err(MonitorError::TaskFailed); }
                     if *receipt_events.borrow_and_update() {
-                        runtime.wake_receipt_recovery();
+                        runtime.wake_receipt_recovery().await;
                         immediate = true;
                     }
                 }
@@ -1049,7 +1092,7 @@ pub fn start(
                 changed = watch_reset_events.changed() => {
                     if changed.is_err() { return Err(MonitorError::TaskFailed); }
                     watch_reset_events.borrow_and_update();
-                    runtime.request_receipt_recovery();
+                    runtime.request_receipt_recovery().await;
                     watcher = None;
                     watched_rule_directories.clear();
                     watcher_retry_at = None;
@@ -1211,8 +1254,12 @@ mod tests {
     }
 
     impl MonitorNative for EventPort {
-        fn submit(&self, _operation: &Operation, _effect: &Effect) -> Submission {
-            Submission::Unknown
+        fn submit<'a>(
+            &'a self,
+            _operation: &'a Operation,
+            _effect: &'a Effect,
+        ) -> futures_util::future::BoxFuture<'a, Submission> {
+            Box::pin(async { Submission::Unknown })
         }
     }
 
@@ -1220,50 +1267,78 @@ mod tests {
         fn available(&self) -> bool {
             false
         }
-        fn launch(&self, _check: &RuleCheck) -> CheckSubmission {
-            CheckSubmission::Unknown
+        fn launch<'a>(
+            &'a self,
+            _check: &'a RuleCheck,
+        ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
+            Box::pin(async { CheckSubmission::Unknown })
         }
-        fn cancel(&self, _monitor_id: &str) -> Result<(), RulesTickError> {
-            Ok(())
+        fn cancel<'a>(
+            &'a self,
+            _monitor_id: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), RulesTickError>> {
+            Box::pin(async { Ok(()) })
         }
-        fn reconcile(&self, _check: &RuleCheck) -> CheckReconciliation {
-            CheckReconciliation::Unknown
+        fn reconcile<'a>(
+            &'a self,
+            _check: &'a RuleCheck,
+        ) -> futures_util::future::BoxFuture<'a, CheckReconciliation> {
+            Box::pin(async { CheckReconciliation::Unknown })
         }
     }
 
     impl super::MonitorPort for EventPort {
-        fn next(&self) -> Result<Option<Delivery>, MonitorError> {
-            self.next_calls.fetch_add(1, Ordering::SeqCst);
-            self.called.notify_one();
-            let queued = self.queued_results.swap(0, Ordering::SeqCst);
-            self.drained_results.fetch_add(queued, Ordering::SeqCst);
-            if self
-                .fail_next
-                .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                    if count > 0 { Some(count - 1) } else { None }
-                })
-                .is_ok()
-            {
-                return Err(MonitorError::Refused("test transient"));
-            }
-            Ok(None)
+        fn next<'a>(
+            &'a self,
+        ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
+            Box::pin(async move {
+                self.next_calls.fetch_add(1, Ordering::SeqCst);
+                self.called.notify_one();
+                let queued = self.queued_results.swap(0, Ordering::SeqCst);
+                self.drained_results.fetch_add(queued, Ordering::SeqCst);
+                if self
+                    .fail_next
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                        if count > 0 { Some(count - 1) } else { None }
+                    })
+                    .is_ok()
+                {
+                    return Err(MonitorError::Refused("test transient"));
+                }
+                Ok(None)
+            })
         }
-        fn acknowledge(&self, _delivery: &Delivery) -> Result<(), MonitorError> {
-            Ok(())
+        fn acknowledge<'a>(
+            &'a self,
+            _delivery: &'a Delivery,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+            Box::pin(async { Ok(()) })
         }
-        fn reattach(
-            &self,
-            _snapshot: &MonitorSnapshot,
-        ) -> Result<Option<ReattachProof>, MonitorError> {
-            Ok(None)
+        fn reattach<'a>(
+            &'a self,
+            _snapshot: &'a MonitorSnapshot,
+        ) -> futures_util::future::BoxFuture<'a, Result<Option<ReattachProof>, MonitorError>>
+        {
+            Box::pin(async { Ok(None) })
         }
-        fn probe(&self, _id: &str, _generation: i64, _command: &str) -> Result<(), MonitorError> {
-            self.probes.fetch_add(1, Ordering::SeqCst);
-            self.probe_called.notify_one();
-            Ok(())
+        fn probe<'a>(
+            &'a self,
+            _id: &'a str,
+            _generation: i64,
+            _command: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
+            Box::pin(async move {
+                self.probes.fetch_add(1, Ordering::SeqCst);
+                self.probe_called.notify_one();
+                Ok(())
+            })
         }
-        fn input_reply(&self, _operation: &Operation, _ticket: &str) -> InputReply {
-            InputReply::Unknown("unused".into())
+        fn input_reply<'a>(
+            &'a self,
+            _operation: &'a Operation,
+            _ticket: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, InputReply> {
+            Box::pin(async { InputReply::Unknown("unused".into()) })
         }
     }
 
@@ -1375,7 +1450,7 @@ mod tests {
         (root, store, port)
     }
 
-    fn insert_active_owner(store: &RuntimeStore) {
+    async fn insert_active_owner(store: &RuntimeStore) {
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1388,11 +1463,12 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist active owner fixture");
     }
 
-    #[test]
-    fn fatal_phase_error_replaces_an_earlier_retryable_error() {
+    #[tokio::test]
+    async fn fatal_phase_error_replaces_an_earlier_retryable_error() {
         let mut failure = Some(MonitorError::Refused("transport unavailable"));
         record_tick_failure(&mut failure, MonitorError::InvalidResultReceipt("json"));
         assert!(matches!(
@@ -1497,7 +1573,7 @@ mod tests {
             RuntimeStore::open(Some(&state_directory)).expect("open isolated state store"),
         );
         let port = Arc::new(EventPort::default());
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         let missing_parent = root.path().join("new-directory/deeper");
         store
             .transaction_with(|tx| {
@@ -1514,6 +1590,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist file rule fixture");
         let runtime = Arc::new(MonitorRuntime::new(
             store,
@@ -1540,10 +1617,10 @@ mod tests {
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[test]
-    fn stall_monitor_scan_pages_past_the_first_sixty_four_ids() {
+    #[tokio::test]
+    async fn stall_monitor_scan_pages_past_the_first_sixty_four_ids() {
         let (_root, store, _port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 for index in 0..65 {
@@ -1565,13 +1642,16 @@ mod tests {
                 }
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist 65 running monitor fixtures");
 
         let first = crate::monitor_runtime::tick_page(&store, 100.0, None)
+            .await
             .expect("process first monitor page");
         assert_eq!(first.next_after.as_deref(), Some("monitor-063"));
         assert!(first.effects.is_empty());
         let second = crate::monitor_runtime::tick_page(&store, 100.0, first.next_after.as_deref())
+            .await
             .expect("process second monitor page");
         assert_eq!(second.next_after, None);
         assert_eq!(second.effects.len(), 1);
@@ -1582,7 +1662,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn monitor_loop_reaches_a_due_sixty_fifth_monitor_then_sleeps() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH + 1;
         let page_count = monitor_count.div_ceil(crate::monitor_runtime::MONITOR_TICK_BATCH);
         // The probe commit resets the cursor, so the follow-up scan traverses the
@@ -1614,6 +1694,7 @@ mod tests {
                 }
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist running monitor fixtures");
         let runtime = Arc::new(MonitorRuntime::new(
             store,
@@ -1621,10 +1702,7 @@ mod tests {
             Arc::new(Notify::new()),
         ));
         {
-            let mut scan = runtime
-                .scan
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut scan = runtime.scan.lock().await;
             scan.recovering_rules = false;
         }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1635,12 +1713,7 @@ mod tests {
         wait_for_completed_ticks(&runtime, expected_ticks).await;
         wait_for_cycles(&runtime, page_count).await;
         assert!(
-            runtime
-                .scan
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .stall_monitor
-                .is_none(),
+            runtime.scan.lock().await.stall_monitor.is_none(),
             "both cursor traversals must finish before claiming the loop is idle"
         );
         assert_eq!(port.probes.load(Ordering::SeqCst), 1);
@@ -1708,8 +1781,8 @@ mod tests {
         stop_task(&restart_shutdown, restart_task).await;
     }
 
-    #[test]
-    fn earliest_deadline_uses_only_finite_durable_times() {
+    #[tokio::test]
+    async fn earliest_deadline_uses_only_finite_durable_times() {
         assert_eq!(
             super::earliest_deadline([Some(12.0), Some(7.0), None, Some(f64::INFINITY)]),
             Some(7.0)
@@ -1717,8 +1790,8 @@ mod tests {
         assert_eq!(super::earliest_deadline([None, Some(f64::NAN)]), None);
     }
 
-    #[test]
-    fn durable_stall_and_rule_deadlines_choose_the_earliest_timestamp() {
+    #[tokio::test]
+    async fn durable_stall_and_rule_deadlines_choose_the_earliest_timestamp() {
         let (_root, store, port) = fixture();
         let runtime = MonitorRuntime::new(store.clone(), port, Arc::new(Notify::new()));
         store
@@ -1746,6 +1819,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist deadline fixtures");
         assert_eq!(
             runtime.next_deadline().expect("read deadlines"),
@@ -1753,8 +1827,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn recovery_pending_rule_does_not_leave_a_past_deadline_hot() {
+    #[tokio::test]
+    async fn recovery_pending_rule_does_not_leave_a_past_deadline_hot() {
         let (_root, store, port) = fixture();
         store
             .transaction_with(|tx| {
@@ -1779,6 +1853,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist recovery-pending rule fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1788,8 +1863,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_native_failure_hold_matches_store_truthiness() {
+    #[tokio::test]
+    async fn empty_native_failure_hold_matches_store_truthiness() {
         let (_root, store, port) = fixture();
         store
             .transaction_with(|tx| {
@@ -1814,6 +1889,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist empty-hold fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1823,10 +1899,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn omitted_monitor_stall_timeout_uses_the_policy_default_deadline() {
+    #[tokio::test]
+    async fn omitted_monitor_stall_timeout_uses_the_policy_default_deadline() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1840,6 +1916,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist legacy monitor fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1848,10 +1925,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unstarted_stall_probe_state_does_not_leave_a_past_deadline_hot() {
+    #[tokio::test]
+    async fn unstarted_stall_probe_state_does_not_leave_a_past_deadline_hot() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1867,6 +1944,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist legacy unstarted-probe state");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1876,10 +1954,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn omitted_file_rule_stall_timeout_uses_the_policy_default_deadline() {
+    #[tokio::test]
+    async fn omitted_file_rule_stall_timeout_uses_the_policy_default_deadline() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1894,6 +1972,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist legacy file-rule fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1902,10 +1981,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn low_worker_deadline_uses_low_since_and_strict_duration_boundary() {
+    #[tokio::test]
+    async fn low_worker_deadline_uses_low_since_and_strict_duration_boundary() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1920,6 +1999,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist low-worker deadline fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(
@@ -1935,7 +2015,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn low_worker_commit_wakes_monitor_without_stealing_registry_wake() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1960,6 +2040,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist low-worker owner and rule");
         let registry_wake = Arc::new(Notify::new());
         let registry_commit_wake = Arc::clone(&registry_wake);
@@ -1970,10 +2051,7 @@ mod tests {
             Arc::clone(&registry_wake),
         ));
         {
-            let mut scan = runtime
-                .scan
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut scan = runtime.scan.lock().await;
             scan.recovering_rules = false;
         }
         let registry_initial_waiter = tokio::spawn({
@@ -2012,6 +2090,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("commit worker completion");
         wait_for_calls(&port, calls + 1).await;
         wait_for_completed_ticks(&runtime, completed_ticks + 1).await;
@@ -2040,7 +2119,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn due_low_worker_alert_settles_then_monitor_waits_without_past_next_at_spin() {
         let (_root, store, port) = fixture();
-        insert_active_owner(&store);
+        insert_active_owner(&store).await;
         let now = crate::event_write::unix_time().expect("read fixture time");
         store
             .transaction_with(|tx| {
@@ -2058,6 +2137,7 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist already-due low-worker rule");
         let runtime = Arc::new(MonitorRuntime::new(
             store.clone(),
@@ -2065,10 +2145,7 @@ mod tests {
             Arc::new(Notify::new()),
         ));
         {
-            let mut scan = runtime
-                .scan
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut scan = runtime.scan.lock().await;
             scan.recovering_rules = false;
         }
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -2096,8 +2173,8 @@ mod tests {
         stop_task(&shutdown_tx, task).await;
     }
 
-    #[test]
-    fn missing_cancel_retry_deadline_is_immediately_due() {
+    #[tokio::test]
+    async fn missing_cancel_retry_deadline_is_immediately_due() {
         let (_root, store, port) = fixture();
         store
             .transaction_with(|tx| {
@@ -2111,13 +2188,14 @@ mod tests {
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
+            .await
             .expect("persist pending cancel fixture");
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
         assert_eq!(runtime.next_deadline().expect("read deadlines"), Some(0.0));
     }
 
-    #[test]
-    fn filesystem_overflow_requests_a_full_rescan() {
+    #[tokio::test]
+    async fn filesystem_overflow_requests_a_full_rescan() {
         let event = notify::Event::new(notify::EventKind::Other);
         assert!(super::filesystem_event_needs_rescan(&event));
     }

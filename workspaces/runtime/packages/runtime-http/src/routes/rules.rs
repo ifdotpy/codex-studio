@@ -73,17 +73,64 @@ async fn update(
     let agent_id = string(&body, "agent").unwrap_or_default().to_owned();
     let supplied_id = string(&body, "id").map(str::to_owned);
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
-    let (result, cancel_ids) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/rules",
-        move || {
-            store.transaction_with(|transaction| {
+    let prepare_store = store.clone();
+    let prepare_agent_id = agent_id.clone();
+    let prepare_rule_id = rule_id.clone();
+    let prepare_action = action.clone();
+    let prepare_body = body.clone();
+    let (prepared_agent, prepared_old, prepared_path, prepared_fingerprint) =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/rules",
+            move || {
+                let connection = prepare_store.read().map_err(store_api_error)?;
+                let agent = RulesRepository::agent(&connection, &prepare_agent_id)
+                    .map_err(store_api_error)?
+                    .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
+                let agent_value = agent.value();
+                validate_agent(agent.id().as_ref(), &agent_value)?;
+                let old =
+                    RulesRepository::get(&connection, &prepare_rule_id).map_err(store_api_error)?;
+                let old_value = old.as_ref().map(|old| old.value().clone());
+                let path = if prepare_action == "resume"
+                    && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
+                {
+                    old_value
+                        .as_ref()
+                        .and_then(|value| string(value, "path"))
+                        .map(str::to_owned)
+                } else if !matches!(prepare_action.as_str(), "delete" | "pause" | "resume")
+                    && string(&prepare_body, "kind") == Some("file")
+                {
+                    Some(resolve_workspace_path(
+                        &agent_value,
+                        string(&prepare_body, "path").unwrap_or(""),
+                    )?)
+                } else {
+                    None
+                };
+                let fingerprint = path
+                    .as_deref()
+                    .and_then(|path| file_fingerprint(Path::new(path)));
+                Ok::<_, ApiError>((agent_value, old_value, path, fingerprint))
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+    let (result, cancel_ids) = store
+        .transaction_with(move |transaction| {
             let agent = RulesRepository::agent(transaction, &agent_id)
                 .map_err(store_api_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
             let agent_value = agent.value();
             validate_agent(agent.id().as_ref(), &agent_value)?;
+            if agent_value != prepared_agent {
+                return Err(ApiError::new(StatusCode::CONFLICT, "Agent changed while updating its rule"));
+            }
             let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
             let old_value = old.as_ref().map(|old| old.value().clone());
+            if old_value != prepared_old {
+                return Err(ApiError::new(StatusCode::CONFLICT, "Rule changed while applying this update"));
+            }
             if let (Some(old), Some(value)) = (&old, &old_value) {
                 if string(value, "id") != Some(old.id().as_ref()) {
                     return Err(invalid_rule(old.id().as_ref()));
@@ -125,13 +172,11 @@ async fn update(
                         } else {
                             let interval = value.get("intervalSeconds").and_then(Value::as_f64).unwrap_or(60.0);
                             let kind = string(&value, "kind").unwrap_or("").to_owned();
-                            let file_update = (action == "resume" && kind == "file").then(|| {
-                                file_resume(
-                                    string(&value, "path").unwrap_or(""),
-                                    now,
-                                    value.get("fileGeneration").and_then(Value::as_u64).unwrap_or(0),
-                                )
-                            });
+                            let file_update = (action == "resume" && kind == "file").then(|| (
+                                now,
+                                prepared_fingerprint.clone().unwrap_or(Value::Null),
+                                value.get("fileGeneration").and_then(Value::as_u64).unwrap_or(0).saturating_add(1),
+                            ));
                             if let Some(object) = value.as_object_mut() {
                                 object.insert("status".into(), json!(desired));
                                 object.insert("epoch".into(), agent_value["epoch"].clone());
@@ -172,10 +217,8 @@ async fn update(
                     let text = string(&body, "text").unwrap_or("Check this event and continue the original task.").trim();
                     if text.is_empty() { return Err(located("text")); }
                     let name = trimmed_text(&body, "name")?;
-                    let path = if kind == "file" { Some(resolve_workspace_path(&agent_value, raw_path.unwrap_or(""))?) } else { None };
-                    let fingerprint = path
-                        .as_deref()
-                        .and_then(|path| file_fingerprint(Path::new(path)));
+                    let path = if kind == "file" { prepared_path.clone() } else { None };
+                    let fingerprint = if kind == "file" { prepared_fingerprint.clone() } else { None };
                     let old_record = old_value.as_ref();
                     let value = json!({
                         "id": rule_id, "agent": agent_id,
@@ -216,49 +259,37 @@ async fn update(
                     .map(|value| RuleWriteResponse::Record(Box::new(value)))
             }
                 .map(|result| (result, cancel_ids))
-            })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+    .await?;
     if !cancel_ids.is_empty() {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let ids = cancel_ids;
         if let Some(Extension(runtime)) = runtime {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/rules",
-                move || {
-                    for id in ids {
-                        runtime.cancel(&id, None, now).map_err(monitor_api_error)?;
-                    }
-                    Ok::<(), ApiError>(())
-                },
-            )
-            .await
-            .map_err(|_| ApiError::internal())??;
+            for id in ids {
+                runtime
+                    .cancel(&id, None, now)
+                    .await
+                    .map_err(monitor_api_error)?;
+            }
         } else {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/rules",
-                move || {
-                    store
-                        .transaction_with(|transaction| {
-                            for id in ids {
-                                studio_runtime_services::monitor_runtime::cancel_in_transaction(
-                                    transaction,
-                                    &id,
-                                    None,
-                                    now,
-                                )?;
-                            }
-                            Ok(())
-                        })
-                        .map_err(monitor_api_error)?;
-                    Ok::<(), ApiError>(())
-                },
-            )
-            .await
-            .map_err(|_| ApiError::internal())??;
-            state.event_wake.notify_one();
+            let wake = state.event_wake.clone();
+            store
+                .transaction_with_post_commit(
+                    move |transaction| {
+                        for id in ids {
+                            studio_runtime_services::monitor_runtime::cancel_in_transaction(
+                                transaction,
+                                &id,
+                                None,
+                                now,
+                            )?;
+                        }
+                        Ok(())
+                    },
+                    move |_| wake.notify_one(),
+                )
+                .await
+                .map_err(monitor_api_error)?;
         }
     }
     Ok(Json(result))
@@ -383,15 +414,6 @@ fn low_worker_rule_unchanged(old: &Value, new: &Value) -> bool {
     ]
     .into_iter()
     .all(|key| old.get(key) == new.get(key))
-}
-
-fn file_resume(path: &str, now: f64, previous_generation: u64) -> (f64, Value, u64) {
-    let fingerprint = file_fingerprint(Path::new(path));
-    (
-        now,
-        fingerprint.unwrap_or(Value::Null),
-        previous_generation.saturating_add(1),
-    )
 }
 
 fn file_fingerprint(path: &Path) -> Option<Value> {

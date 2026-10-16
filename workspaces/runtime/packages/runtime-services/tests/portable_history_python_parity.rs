@@ -199,8 +199,8 @@ fn python_archive_writer_and_context_are_read_without_loss() {
     }
 }
 
-#[test]
-fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
+#[tokio::test]
+async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     let root = isolated_test_root();
     let output = Command::new(python_executable())
         .arg(
@@ -220,7 +220,9 @@ fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     let state: Value = serde_json::from_slice(&output.stdout).expect("Python state identity");
     let agent_id = state["agent"].as_str().expect("agent ID").to_owned();
     let epoch = state["epoch"].as_i64().expect("agent epoch");
-    let store = RuntimeStore::open(Some(root.path())).expect("Rust opens Python state");
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("Rust opens Python state");
     let base_input = || ExportInput {
         agent_id: agent_id.clone(),
         account_key: "default".to_owned(),

@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
 use studio_runtime_services::{
     context_repair::{
-        self, ConnectionIdentity, DeliveredManifestWriter, HistoryReader, InputDecision,
-        ManifestWriterUnavailable, NativeHistory, RecoverySnapshot, RepairError,
+        self, ConnectionIdentity, DeliveredManifestWriter, HistoryReadFuture, HistoryReader,
+        InputDecision, ManifestWriterUnavailable, NativeHistory, RecoverySnapshot, RepairError,
     },
     historical_input_receipts::HistoricalBatch,
 };
@@ -266,8 +266,8 @@ impl HistoryReader for Reader {
     fn identity(&self) -> ConnectionIdentity {
         identity()
     }
-    fn read(&mut self, _: &RecoverySnapshot) -> Result<NativeHistory, RepairError> {
-        Ok(self.value.clone())
+    fn read<'a>(&'a mut self, _: &'a RecoverySnapshot) -> HistoryReadFuture<'a> {
+        Box::pin(async move { Ok(self.value.clone()) })
     }
 }
 struct FixtureWriter;
@@ -294,20 +294,22 @@ impl DeliveredManifestWriter for FixtureWriter {
         Ok(())
     }
 }
-fn clone_store(template: &std::path::Path, root: &std::path::Path) -> RuntimeStore {
+async fn clone_store(template: &std::path::Path, root: &std::path::Path) -> RuntimeStore {
     fs::create_dir_all(root).expect("valid synthetic fixture");
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         fs::copy(template.join(name), root.join(name)).expect("valid synthetic fixture");
     }
-    RuntimeStore::open(Some(root)).expect("Python-written template opens")
+    RuntimeStore::open(Some(root))
+        .await
+        .expect("Python-written template opens")
 }
-#[test]
-fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
+#[tokio::test]
+async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
     let dir = tempfile::tempdir().expect("valid synthetic fixture");
     let template = dir.path().join("template");
     let _ = corpus(Some(&template));
     let root = dir.path().join("state");
-    let store = clone_store(&template, &root);
+    let store = std::sync::Arc::new(clone_store(&template, &root).await);
     store
         .transaction(|tx| {
             let mut agent =
@@ -321,9 +323,12 @@ fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
             agent["contextRepair"] = Value::Null;
             ContextRepairRepository::put_agent(tx, &agent)
         })
+        .await
         .expect("Linux workspace fixture commits");
 
-    let result = context_repair::repair_idle(&store, "agent").expect("guest history is skipped");
+    let result = context_repair::repair_idle(std::sync::Arc::clone(&store), "agent")
+        .await
+        .expect("guest history is skipped");
     assert_eq!(result["id"], "agent");
     assert_eq!(
         ContextRepairRepository::agent(&store.read().expect("store readable"), "agent")
@@ -346,8 +351,8 @@ fn state(store: &RuntimeStore) -> Value {
         .expect("valid synthetic fixture");
     json!({"agent":agent,"event":{"status":status,"turn":turn}})
 }
-#[test]
-fn context_repair_atomic_restart_and_lost_response_matrix() {
+#[tokio::test]
+async fn context_repair_atomic_restart_and_lost_response_matrix() {
     if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() != Ok("1") {
         return;
     }
@@ -363,7 +368,7 @@ fn context_repair_atomic_restart_and_lost_response_matrix() {
         "requeue",
     ] {
         let root = dir.path().join(cut);
-        let store = clone_store(&template, &root);
+        let store = clone_store(&template, &root).await;
         let before = state(&store);
         let mut case = data["recurring"][0].clone();
         if cut == "requeue" {
@@ -380,7 +385,7 @@ fn context_repair_atomic_restart_and_lost_response_matrix() {
             } else {
                 "sync_entities"
             };
-            store.transaction(|tx| {tx.execute_batch(&format!("CREATE TRIGGER fixture_fail BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'fixture-cut'); END"))?;Ok(())}).expect("valid synthetic fixture");
+            store.transaction(|tx| {tx.execute_batch(&format!("CREATE TRIGGER fixture_fail BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'fixture-cut'); END"))?;Ok(())}).await.expect("valid synthetic fixture");
         }
         let result = if cut == "after-event" {
             context_repair::recover(
@@ -390,8 +395,9 @@ fn context_repair_atomic_restart_and_lost_response_matrix() {
                 &ManifestWriterUnavailable,
                 5.0,
             )
+            .await
         } else {
-            context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 5.0)
+            context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 5.0).await
         };
         let success = matches!(cut, "success" | "requeue");
         assert_eq!(result.is_ok(), success, "{cut}: {result:?}");
@@ -399,7 +405,9 @@ fn context_repair_atomic_restart_and_lost_response_matrix() {
             assert_eq!(state(&store), before, "{cut}");
         }
         drop(store);
-        let store = RuntimeStore::open(Some(&root)).expect("valid synthetic fixture");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("valid synthetic fixture");
         if !success {
             assert_eq!(state(&store), before, "restart {cut}");
             continue;
@@ -415,6 +423,7 @@ fn context_repair_atomic_restart_and_lost_response_matrix() {
         );
         assert!(committed["agent"].get("contextRepairWait").is_none());
         let retry = context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 6.0)
+            .await
             .expect("valid synthetic fixture");
         assert!(retry.is_empty());
         assert_eq!(
@@ -434,30 +443,35 @@ impl HistoryReader for RacingReader<'_> {
     fn identity(&self) -> ConnectionIdentity {
         identity()
     }
-    fn read(&mut self, _: &RecoverySnapshot) -> Result<NativeHistory, RepairError> {
-        self.store.transaction(|tx| {
-            match self.change {
-                "event" => {
-                    tx.execute(
-                        "UPDATE runtime_events SET text='changed in flight' WHERE id='event'",
-                        [],
-                    )?;
-                }
-                "agent" => {
-                    let mut a = ContextRepairRepository::agent(tx, "agent")?
-                        .expect("valid synthetic fixture");
-                    a["epoch"] = json!(2);
-                    ContextRepairRepository::put_agent(tx, &a)?;
-                }
-                _ => unreachable!(),
-            }
-            Ok(())
-        })?;
-        Ok(self.history.clone())
+    fn read<'a>(&'a mut self, _: &'a RecoverySnapshot) -> HistoryReadFuture<'a> {
+        Box::pin(async move {
+            let change = self.change;
+            self.store
+                .transaction(move |tx| {
+                    match change {
+                        "event" => {
+                            tx.execute(
+                                "UPDATE runtime_events SET text='changed in flight' WHERE id='event'",
+                                [],
+                            )?;
+                        }
+                        "agent" => {
+                            let mut a = ContextRepairRepository::agent(tx, "agent")?
+                                .expect("valid synthetic fixture");
+                            a["epoch"] = json!(2);
+                            ContextRepairRepository::put_agent(tx, &a)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                })
+                .await?;
+            Ok(self.history.clone())
+        })
     }
 }
-#[test]
-fn context_repair_changed_snapshot_never_acknowledges() {
+#[tokio::test]
+async fn context_repair_changed_snapshot_never_acknowledges() {
     if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() != Ok("1") {
         return;
     }
@@ -466,13 +480,14 @@ fn context_repair_changed_snapshot_never_acknowledges() {
     let data = corpus(Some(&template));
     for change in ["event", "agent"] {
         let root = dir.path().join(change);
-        let store = clone_store(&template, &root);
+        let store = clone_store(&template, &root).await;
         let mut reader = RacingReader {
             store: &store,
             history: history(&data["recurring"][0]),
             change,
         };
         let result = context_repair::recover(&store, "agent", &mut reader, &FixtureWriter, 5.0)
+            .await
             .expect("valid synthetic fixture");
         assert!(
             matches!(&result[0], InputDecision::Waiting { .. }),

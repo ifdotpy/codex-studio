@@ -37,13 +37,9 @@ async fn upload_asset(
         .or_else(|| take_string(&mut body, "data"))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let asset = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/workspace_files",
-        move || payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(map_payload_store_error)?;
+    let asset = payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
+        .await
+        .map_err(map_payload_store_error)?;
     super::generated_json::<crate::generated::AssetRecord>(asset).map(Json)
 }
 

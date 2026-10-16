@@ -253,7 +253,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     startup_trace("store-open-started");
-    let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref()).await?);
     startup_trace("store-open-completed");
     // This guard drops before `store`, so the runtime lock remains held while
     // the PID file is checked and removed on every post-open exit path.
@@ -268,16 +268,18 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "system clock unavailable")?
         .as_secs_f64();
-    studio_runtime_services::voice::provider::recover_after_restart(&store, startup_recovery_time)?;
-    studio_runtime_services::maintenance::remove_review_assignments(&store)?;
+    studio_runtime_services::voice::provider::recover_after_restart(&store, startup_recovery_time)
+        .await?;
+    studio_runtime_services::maintenance::remove_review_assignments(&store).await?;
     let credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
     #[cfg(unix)]
     {
-        credentials.identity(&store, None)?;
+        credentials.identity(Arc::clone(&store), None).await?;
     }
-    studio_runtime_services::workspace_operations_effects::startup_recovery(&store)?;
-    studio_runtime_services::monitor_runtime::recover_on_startup(&store, startup_recovery_time)?;
+    studio_runtime_services::workspace_operations_effects::startup_recovery(&store).await?;
+    studio_runtime_services::monitor_runtime::recover_on_startup(&store, startup_recovery_time)
+        .await?;
     startup_trace("store-recovery-completed");
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
@@ -418,29 +420,38 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             Arc::new(studio_runtime_services::provider_versions::SystemVersionProbe),
             Arc::new(studio_runtime_services::provider_versions::NpmReleaseFetcher),
             Arc::new(studio_runtime_services::provider_versions::SystemClock),
-        )?;
+        )
+        .await?;
     startup_trace("provider-version-monitor-completed");
-    let multi_server_boundary = public_origin
-        .as_deref()
-        .map(|origin| {
-            let identity = credentials.identity(&store, Some(origin))?;
-            let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
-                identity,
-                Arc::new(multi_server_owner::TailscaleOwnerLookup),
-            )?;
+    let multi_server_boundary = if let Some(origin) = public_origin.as_deref() {
+        let identity = credentials
+            .identity(Arc::clone(&store), Some(origin))
+            .await?;
+        let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+            identity,
+            Arc::new(multi_server_owner::TailscaleOwnerLookup),
+        )?;
+        let credentials = Arc::clone(&credentials);
+        let origin = origin.to_owned();
+        Some(boundary.with_identity_source(move |store| {
             let credentials = Arc::clone(&credentials);
-            let origin = origin.to_owned();
-            Ok::<_, Box<dyn std::error::Error>>(boundary.with_identity_source(move |store| {
-                credentials.identity(store, Some(&origin)).map_err(|_| {
-                    studio_runtime_services::multi_server_auth::refused(
-                        503,
-                        "identity_unavailable",
-                        "The server identity is unavailable",
-                    )
-                })
-            }))
-        })
-        .transpose()?;
+            let origin = origin.clone();
+            Box::pin(async move {
+                credentials
+                    .identity(store, Some(&origin))
+                    .await
+                    .map_err(|_| {
+                        studio_runtime_services::multi_server_auth::refused(
+                            503,
+                            "identity_unavailable",
+                            "The server identity is unavailable",
+                        )
+                    })
+            })
+        }))
+    } else {
+        None
+    };
     let mut state = HttpState::new(
         token,
         workspace_id,
@@ -456,52 +467,63 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .with_provider_versions(provider_versions)
     .with_credentials(credentials)
     .with_tailscale_whoami(Arc::new(|| {
-        let raw = multi_server_owner::tailscale_json(&["whoami", "--json"]).ok();
-        let user = raw.as_ref().and_then(|value| {
-            value
-                .get("UserProfile")
-                .or_else(|| value.get("User"))
-                .and_then(|profile| profile.get("LoginName").or_else(|| profile.get("Name")))
-                .and_then(serde_json::Value::as_str)
-                .filter(|login| !login.trim().is_empty())
-                .map(|login| login.trim().to_ascii_lowercase())
-        });
-        let node = raw.as_ref().and_then(|value| {
-            value
-                .get("Self")
-                .or_else(|| value.get("Machine"))
-                .and_then(|self_node| self_node.get("ID"))
-                .cloned()
-        });
-        let owner_login = multi_server_owner::tailscale_json(&["status", "--json"])
+        Box::pin(async {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/tailscale-whoami",
+                || {
+                    let raw = multi_server_owner::tailscale_json(&["whoami", "--json"]).ok();
+                    let user = raw.as_ref().and_then(|value| {
+                        value
+                            .get("UserProfile")
+                            .or_else(|| value.get("User"))
+                            .and_then(|profile| {
+                                profile.get("LoginName").or_else(|| profile.get("Name"))
+                            })
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|login| !login.trim().is_empty())
+                            .map(|login| login.trim().to_ascii_lowercase())
+                    });
+                    let node = raw.as_ref().and_then(|value| {
+                        value
+                            .get("Self")
+                            .or_else(|| value.get("Machine"))
+                            .and_then(|self_node| self_node.get("ID"))
+                            .cloned()
+                    });
+                    let owner_login = multi_server_owner::tailscale_json(&["status", "--json"])
+                        .ok()
+                        .and_then(|status| {
+                            let local = status.get("Self")?;
+                            let users = status.get("User")?.as_object()?;
+                            let profile = users.get(&local.get("UserID")?.to_string())?;
+                            if status
+                                .get("BackendState")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("Running")
+                                || local
+                                    .get("Tags")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|tags| !tags.is_empty())
+                            {
+                                return None;
+                            }
+                            profile
+                                .get("LoginName")
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|login| !login.trim().is_empty() && login.len() <= 254)
+                                .map(|login| login.trim().to_ascii_lowercase())
+                        });
+                    Some(serde_json::json!({
+                        "status": if user.is_some() { "verified" } else { "unavailable" },
+                        "user": user,
+                        "node": node,
+                        "ownerLogin": owner_login,
+                    }))
+                },
+            )
+            .await
             .ok()
-            .and_then(|status| {
-                let local = status.get("Self")?;
-                let users = status.get("User")?.as_object()?;
-                let profile = users.get(&local.get("UserID")?.to_string())?;
-                if status
-                    .get("BackendState")
-                    .and_then(serde_json::Value::as_str)
-                    != Some("Running")
-                    || local
-                        .get("Tags")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|tags| !tags.is_empty())
-                {
-                    return None;
-                }
-                profile
-                    .get("LoginName")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|login| !login.trim().is_empty() && login.len() <= 254)
-                    .map(|login| login.trim().to_ascii_lowercase())
-            });
-        Some(serde_json::json!({
-            "status": if user.is_some() { "verified" } else { "unavailable" },
-            "user": user,
-            "node": node,
-            "ownerLogin": owner_login,
-        }))
+        })
     }));
     {
         state = state.with_server_discovery(Arc::new(
@@ -550,7 +572,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     #[cfg(unix)]
     startup_trace("io-runtime-started");
     #[cfg(unix)]
-    let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
+    let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone()).await?);
     #[cfg(unix)]
     startup_trace("io-runtime-completed");
     #[cfg(unix)]
@@ -558,7 +580,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         let runtime = Arc::clone(&io_runtime);
         state = state
             .with_terminal_driver(io_runtime.terminal_driver())
-            .with_terminal_write_gate(Arc::new(move || runtime.reconcile_before_write()));
+            .with_terminal_write_gate(Arc::new(move || {
+                let runtime = Arc::clone(&runtime);
+                Box::pin(async move { runtime.reconcile_before_write().await })
+            }));
     }
     #[cfg(unix)]
     startup_trace("claude-login-attach-started");
@@ -674,7 +699,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         );
     if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(
         lifecycle_ports.as_ref(),
-    ) {
+    )
+    .await
+    {
         eprintln!("lifecycle startup reconciliation remains pending: {error}");
     }
     state = state.with_lifecycle_ports(Arc::clone(&lifecycle_ports));
@@ -841,147 +868,174 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                 read_failure_retry_at = None;
                 continue;
             }
-            let store = Arc::clone(&federation_store);
             let cancelled = Arc::clone(&federation_stop);
-            let mut retries = pairing_retries.clone();
-            let mut delivery_retry_state = delivery_retries.clone();
-            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/main",
+            let now = tokio::time::Instant::now();
+            let wall_now = epoch_seconds();
+            let mut read_retry_due = None;
+            let pairings_store = Arc::clone(&federation_store);
+            let pairings = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/federation-pairing-scan",
                 move || {
-                    let wall_now = epoch_seconds();
-                    let monotonic_now = tokio::time::Instant::now();
-                    let mut read_retry_due = None;
-                    let pairings_read_ok;
-                    let pairings = match studio_runtime_services::federation_delivery::pending_pairings(&store) {
-                        Ok(pairings) => {
-                            pairings_read_ok = true;
-                            pairings
+                    studio_runtime_services::federation_delivery::pending_pairings(&pairings_store)
+                },
+            )
+            .await;
+            let pairings = match pairings {
+                Ok(Ok(pairings)) => {
+                    let pending = pairings
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    pairing_retries.retain(|id, _| pending.contains(id));
+                    pairings
+                }
+                Ok(Err(error)) => {
+                    eprintln!("federation pairing scan failed: {error}");
+                    read_retry_due = Some(now + SCHEDULER_FAILURE_RETRY);
+                    Vec::new()
+                }
+                Err(error) => {
+                    eprintln!("federation pairing scan failed: {error}");
+                    read_retry_due = Some(now + SCHEDULER_FAILURE_RETRY);
+                    Vec::new()
+                }
+            };
+            for id in pairings {
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                if pairing_retry_is_pending(&pairing_retries, &id, now) {
+                    continue;
+                }
+                let transport =
+                    studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                match studio_runtime_services::federation_delivery::pair_peer(
+                    Arc::clone(&federation_store),
+                    &id,
+                    wall_now,
+                    &transport,
+                    Arc::clone(&cancelled),
+                )
+                .await
+                {
+                    Ok(updated) => {
+                        if let Some(delay) = successful_pair_retry_delay(
+                            &updated,
+                            pairing_retries.get(&id).map(|(_, previous)| *previous),
+                        ) {
+                            pairing_retries
+                                .insert(id, (tokio::time::Instant::now() + delay, delay));
+                        } else {
+                            pairing_retries.remove(&id);
                         }
-                        Err(error) => {
-                            eprintln!("federation pairing scan failed: {error}");
-                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                            pairings_read_ok = false;
-                            Vec::new()
-                        }
-                    };
-                    if pairings_read_ok {
-                        let pending = pairings.iter().cloned().collect::<std::collections::BTreeSet<_>>();
-                        retries.retain(|id, _| pending.contains(id));
                     }
-                    for id in pairings {
+                    Err(error) => {
+                        eprintln!("federation pairing failed: {error}");
+                        let delay = next_federation_retry_delay(
+                            pairing_retries.get(&id).map(|(_, previous)| *previous),
+                        );
+                        pairing_retries.insert(id, (tokio::time::Instant::now() + delay, delay));
+                    }
+                }
+            }
+            let snapshot_store = Arc::clone(&federation_store);
+            let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/federation-peer-snapshot",
+                move || studio_runtime_services::federation::snapshot(&snapshot_store),
+            )
+            .await;
+            match snapshot {
+                Ok(Ok(snapshot)) => {
+                    let approved = snapshot["peers"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|peer| peer["status"] == "approved")
+                        .filter_map(|peer| peer["id"].as_str().map(str::to_owned))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    delivery_retries.retain(|id, _| approved.contains(id));
+                    for id in approved {
+                        if delivery_retries.get(&id).is_some_and(|(at, _)| *at > now) {
+                            continue;
+                        }
+                        let transport =
+                            studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                        if let Err(error) = studio_runtime_services::federation_delivery::pump_peer(
+                            Arc::clone(&federation_store),
+                            &id,
+                            wall_now,
+                            &transport,
+                            Arc::clone(&cancelled),
+                        )
+                        .await
+                        {
+                            eprintln!("federation delivery failed: {error}");
+                            let delay = next_federation_retry_delay(
+                                delivery_retries.get(&id).map(|(_, previous)| *previous),
+                            );
+                            delivery_retries
+                                .insert(id, (tokio::time::Instant::now() + delay, delay));
+                        } else {
+                            delivery_retries.remove(&id);
+                        }
                         if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                             break;
                         }
-                        if pairing_retry_is_pending(&retries, &id, monotonic_now) {
-                            continue;
-                        }
-                        let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
-                        match studio_runtime_services::federation_delivery::pair_peer(
-                            &store, &id, wall_now, &mut transport, &cancelled,
-                        ) {
-                            Ok(updated) => {
-                                // The remote has not accepted this same durable invite yet. Its
-                                // successful response still needs bounded retry, even though the
-                                // peer-row update itself wakes this scheduler.
-                                if let Some(delay) = successful_pair_retry_delay(
-                                    &updated,
-                                    retries.get(&id).map(|(_, previous)| *previous),
-                                ) {
-                                    retries.insert(
-                                        id,
-                                        (tokio::time::Instant::now() + delay, delay),
-                                    );
-                                } else {
-                                    retries.remove(&id);
-                                }
-                            }
-                            Err(error) => {
-                                eprintln!("federation pairing failed: {error}");
-                                let delay = next_federation_retry_delay(retries.get(&id).map(|(_, previous)| *previous));
-                                retries.insert(id, (tokio::time::Instant::now() + delay, delay));
-                            }
-                        }
                     }
-                    match studio_runtime_services::federation::snapshot(&store) {
-                        Ok(snapshot) => {
-                            let approved = snapshot["peers"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter(|peer| peer["status"] == "approved")
-                                .filter_map(|peer| peer["id"].as_str().map(str::to_owned))
-                                .collect::<std::collections::BTreeSet<_>>();
-                            delivery_retry_state.retain(|id, _| approved.contains(id));
-                            for id in approved {
-                                if delivery_retry_state
-                                    .get(&id)
-                                    .is_some_and(|(at, _)| *at > monotonic_now)
-                                {
-                                    continue;
-                                }
-                                let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
-                                if let Err(error) = studio_runtime_services::federation_delivery::pump_peer(
-                                    &store, &id, wall_now, &mut transport, &cancelled,
-                                ) {
-                                    eprintln!("federation delivery failed: {error}");
-                                    let delay = next_federation_retry_delay(
-                                        delivery_retry_state.get(&id).map(|(_, previous)| *previous),
-                                    );
-                                    delivery_retry_state.insert(id, (tokio::time::Instant::now() + delay, delay));
-                                } else {
-                                    delivery_retry_state.remove(&id);
-                                }
-                                if cancelled.load(std::sync::atomic::Ordering::Acquire) { break; }
-                            }
-                        }
-                        Err(error) => {
-                            eprintln!("federation peer snapshot failed: {error}");
-                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                        }
-                    }
-                    let delivery_due = match studio_runtime_services::federation_delivery::delivery_deadlines_by_peer(&store) {
-                        Ok(values) => values.into_iter().filter_map(|(peer, at)| {
-                            let retry = delivery_retry_state.get(&peer).map(|(retry_at, _)| *retry_at);
-                            if retry.is_some_and(|retry_at| retry_at > monotonic_now) {
-                                retry
-                            } else {
-                                Some(tokio::time::Instant::now()
-                                    + Duration::from_secs_f64((at - epoch_seconds()).max(0.0)))
-                            }
-                        }).min(),
-                        Err(error) => {
-                            eprintln!("federation delivery deadline read failed: {error}");
-                            read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
-                            Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY)
-                        }
-                    };
-                    let due = read_retry_due
-                        .into_iter()
-                        .chain(delivery_due)
-                        .chain(delivery_retry_state.values().map(|(at, _)| *at))
-                        .min();
-                    (retries, delivery_retry_state, due, read_retry_due)
-                },
-            ).await;
-            let due = match outcome {
-                Ok((retries, delivery_retry_state, delivery_due, read_retry_due)) => {
-                    pairing_retries = retries;
-                    delivery_retries = delivery_retry_state;
-                    read_failure_retry_at = read_retry_due;
-                    pairing_retries
-                        .values()
-                        .map(|(at, _)| *at)
-                        .chain(delivery_retries.values().map(|(at, _)| *at))
-                        .chain(delivery_due)
-                        .min()
+                }
+                Ok(Err(error)) => {
+                    eprintln!("federation peer snapshot failed: {error}");
+                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
                 }
                 Err(error) => {
-                    eprintln!("federation delivery worker failed: {error}");
-                    let retry_at = tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY;
-                    read_failure_retry_at = Some(retry_at);
-                    Some(retry_at)
+                    eprintln!("federation peer snapshot failed: {error}");
+                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                }
+            }
+            let deadlines_store = Arc::clone(&federation_store);
+            let delivery_deadlines = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/federation-delivery-deadlines",
+                move || {
+                    studio_runtime_services::federation_delivery::delivery_deadlines_by_peer(
+                        &deadlines_store,
+                    )
+                },
+            )
+            .await;
+            let delivery_due = match delivery_deadlines {
+                Ok(Ok(values)) => values
+                    .into_iter()
+                    .filter_map(|(peer, at)| {
+                        let retry = delivery_retries.get(&peer).map(|(retry_at, _)| *retry_at);
+                        if retry.is_some_and(|retry_at| retry_at > now) {
+                            retry
+                        } else {
+                            Some(
+                                tokio::time::Instant::now()
+                                    + Duration::from_secs_f64((at - epoch_seconds()).max(0.0)),
+                            )
+                        }
+                    })
+                    .min(),
+                Ok(Err(error)) => {
+                    eprintln!("federation delivery deadline read failed: {error}");
+                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                    Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY)
+                }
+                Err(error) => {
+                    eprintln!("federation delivery deadline read failed: {error}");
+                    read_retry_due = Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY);
+                    Some(tokio::time::Instant::now() + SCHEDULER_FAILURE_RETRY)
                 }
             };
+            read_failure_retry_at = read_retry_due;
+            let due = pairing_retries
+                .values()
+                .map(|(at, _)| *at)
+                .chain(delivery_retries.values().map(|(at, _)| *at))
+                .chain(delivery_due)
+                .chain(read_retry_due)
+                .min();
             if !wait_for_scheduler_wake(&federation_wake_task, &mut federation_shutdown, due).await
             {
                 federation_stop.store(true, std::sync::atomic::Ordering::Release);
@@ -993,7 +1047,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
-    let shutdown_monitor_task = monitor_shutdown.clone();
+    let mutation_shutdown = state.clone();
+    let shutdown_sync_changes = Arc::clone(&sync_changes);
     let shutdown_cost_scans = Arc::clone(&cost_scan_cancelled);
     let result = axum::serve(
         listener,
@@ -1001,18 +1056,29 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     )
     .with_graceful_shutdown(async move {
         let reason = shutdown_signal().await;
+        mutation_shutdown.close_mutation_admission();
         eprintln!("{}", shutdown_exit_log(reason));
         shutdown_cost_scans.store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = shutdown_requested.send(()) {
             eprintln!("runtime server shutdown watchdog could not start: {error}");
         }
-        shutdown_monitor_task.send_replace(true);
-        #[cfg(unix)]
-        stop_runtime.cancel();
-        sync_changes.close();
     })
     .await;
+    // Keep account/provider dependencies live while HTTP mutations and durable
+    // login/cancel work drain. The existing 20-second watchdog bounds this
+    // sequence; if it forces exit, existing receipt, unknown-outcome, and
+    // recovery rules remain authoritative without automatic request replay.
+    state.shutdown_mutations().await;
+    let durable_session_cleanup = shutdown_join(
+        "provider login and cancellation operations",
+        account_session.shutdown_durable_operations(),
+    )
+    .await?;
+    durable_session_cleanup.map_err(std::io::Error::other)?;
+    shutdown_sync_changes.close();
     monitor_shutdown.send_replace(true);
+    #[cfg(unix)]
+    stop_runtime.cancel();
     #[cfg(unix)]
     if let Some(peer_link) = peer_link_runtime.as_mut() {
         peer_link.shutdown();
@@ -1111,25 +1177,16 @@ async fn continuation_scheduler(
             ContinuationWait::Due => {
                 let store_for_tick = Arc::clone(&store);
                 let tick_now = epoch_seconds();
-                let result = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/continuation-scheduler",
-                    move || run_continuation_tick(&store_for_tick, tick_now),
-                )
-                .await;
+                let result = run_continuation_tick(store_for_tick, tick_now).await;
                 match result {
-                    Ok(Ok(changed)) => {
+                    Ok(changed) => {
                         retry_not_before = None;
                         if changed {
                             event_wake.notify_one();
                         }
                     }
-                    Ok(Err(error)) => {
-                        eprintln!("continuation scheduler tick failed: {error}");
-                        retry_not_before =
-                            Some(epoch_seconds() + CONTINUATION_FAILURE_RETRY_SECONDS);
-                    }
                     Err(error) => {
-                        eprintln!("continuation scheduler blocking tick failed: {error}");
+                        eprintln!("continuation scheduler tick failed: {error}");
                         retry_not_before =
                             Some(epoch_seconds() + CONTINUATION_FAILURE_RETRY_SECONDS);
                     }
@@ -1171,8 +1228,8 @@ async fn wait_for_continuation(
     }
 }
 
-fn run_continuation_tick(
-    store: &RuntimeStore,
+async fn run_continuation_tick(
+    store: Arc<RuntimeStore>,
     now: f64,
 ) -> studio_runtime_store::StoreResult<bool> {
     let db = store.read()?;
@@ -1196,7 +1253,8 @@ fn run_continuation_tick(
     let mut changed = false;
     for agent_id in agents {
         let observations = limits.clone();
-        let staged = store.transaction_with(|tx| {
+        let agent_id = agent_id.clone();
+        let staged = store.transaction_with(move |tx| {
             let account: Option<String> = tx
                 .query_row(
                     "SELECT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents WHERE id=?1",
@@ -1214,7 +1272,7 @@ fn run_continuation_tick(
             )
             .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
             Ok::<_, studio_runtime_store::StoreError>(stage.changed())
-        })?;
+        }).await?;
         changed |= staged;
     }
     Ok(changed)
@@ -1364,18 +1422,28 @@ impl studio_runtime_http::NativeContextRepairPort for NativeContextRepairAdapter
         provider_home: PathBuf,
         broker: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
         deadline: std::time::Instant,
-    ) -> studio_runtime_services::native_actions::Result<serde_json::Value> {
-        studio_runtime_services::context_repair::repair_idle_with_broker(
-            store.as_ref(),
-            &agent_id,
-            provider_home.as_path(),
-            broker.as_ref(),
-            deadline,
-        )
-        .map_err(|_| {
-            studio_runtime_services::native_actions::NativeError::Unavailable(
-                "context-repair/repair-idle-broker",
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = studio_runtime_services::native_actions::Result<serde_json::Value>,
+                > + Send
+                + 'static,
+        >,
+    > {
+        Box::pin(async move {
+            studio_runtime_services::context_repair::repair_idle_with_broker(
+                store.as_ref(),
+                &agent_id,
+                provider_home.as_path(),
+                broker.as_ref(),
+                deadline,
             )
+            .await
+            .map_err(|_| {
+                studio_runtime_services::native_actions::NativeError::Unavailable(
+                    "context-repair/repair-idle-broker",
+                )
+            })
         })
     }
 }
@@ -1384,12 +1452,7 @@ impl studio_runtime_http::NativeContextRepairPort for NativeContextRepairAdapter
 async fn shutdown_io_runtime(
     runtime: Arc<io_runtime::IoRuntime>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result =
-        studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || {
-            runtime.shutdown()
-        })
-        .await?;
-    result?;
+    runtime.shutdown().await?;
     Ok(())
 }
 
@@ -1807,12 +1870,14 @@ mod exit_logging_tests {
     async fn committed_change_wakes_both_independent_scheduler_subscribers() {
         let directory = tempfile::tempdir().expect("state directory");
         let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
             .expect("runtime store");
         store
             .transaction(|tx| {
                 tx.execute_batch("CREATE TABLE scheduler_wake_fixture(id INTEGER PRIMARY KEY);")?;
                 Ok(())
             })
+            .await
             .expect("wake fixture table");
         let registry = Arc::new(Notify::new());
         let orchestration = Arc::new(Notify::new());
@@ -1829,6 +1894,7 @@ mod exit_logging_tests {
                 tx.execute("INSERT INTO scheduler_wake_fixture DEFAULT VALUES", [])?;
                 Ok(())
             })
+            .await
             .expect("committed change");
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         assert!(wait_for_scheduler_wake(&registry, &mut shutdown_rx, None).await);

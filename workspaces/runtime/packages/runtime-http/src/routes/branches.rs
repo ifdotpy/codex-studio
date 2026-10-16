@@ -69,15 +69,13 @@ async fn branch(
         .map_err(|_| ApiError::internal())?
         .as_bytes(),
     );
-    let (source, selected, operation) =
+    let (snapshot, source, selected) =
         studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
             let store = store.clone();
             let port = port.clone();
             let scope_account = account.clone();
             let agent_id = body.agent.clone();
             let message_id = body.message_id.clone();
-            let operation_id = operation_id.clone();
-            let signature = signature.clone();
             move || {
                 let snapshot = {
                     let db = store.read().map_err(ApiError::stored)?;
@@ -116,173 +114,171 @@ async fn branch(
                 // Match Python's read-only request validation before requiring a live native
                 // consumer. Invalid branch inputs must not depend on provider availability.
                 let _scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
-                let mut operation = None;
-                store
-                    .transaction_with(|tx| {
-                        if !CheckpointsRepository::workspace_unchanged(tx, &snapshot)? {
-                            return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                                "branch workspace changed".into(),
-                            ));
-                        }
-                        if let Some(prior) = tx
-                            .query_row(
-                                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                                [&operation_id],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .optional()?
-                        {
-                            let mut prior: Value = serde_json::from_str(&prior)?;
-                            if prior.get("signature").and_then(Value::as_str)
-                                != Some(signature.as_str())
-                            {
-                                return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                                    "branch request id has different content".into(),
-                                ));
-                            }
-                            match prior.get("phase").and_then(Value::as_str) {
-                                Some("completed") => {
-                                    operation = Some(prior);
-                                    return Ok(());
-                                }
-                                Some("provider_ready") => {}
-                                Some("failed") => {
-                                    prior["phase"] = json!("provider_pending");
-                                    if let Some(value) = prior.as_object_mut() {
-                                        value.remove("provider");
-                                        value.remove("result");
-                                        value.remove("error");
-                                    }
-                                    tx.execute(
-                                    "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                                    params![operation_id, prior.to_string()],
-                                )?;
-                                }
-                                Some("provider_pending" | "recovery_required") => {
-                                    // Re-submit the same broker operation identity
-                                    // below. The retained broker returns its saved
-                                    // receipt or Unknown and never sends a duplicate.
-                                    let mut actor = AgentRepository::get(
-                                        tx,
-                                        &AgentId::from(agent_id.as_str()),
-                                    )?
-                                    .ok_or_else(|| {
-                                        rusqlite::Error::QueryReturnedNoRows
-                                    })?;
-                                    if (actor.extra.get("workspaceOperation").is_some_and(
-                                        |value| !value.is_null() && value != "",
-                                    ) && actor
-                                        .extra
-                                        .get("workspaceReservationId")
-                                        .and_then(Value::as_str)
-                                        != Some(operation_id.as_str()))
-                                        || snapshot.agents.iter().any(|entry| {
-                                            entry.id != agent_id
-                                                && entry.record.get("cwd") == source.get("cwd")
-                                                && entry.record.get("workspaceOperation").is_some_and(
-                                                    |value| !value.is_null() && value != "",
-                                                )
-                                        })
-                                    {
-                                        return Err(
-                                            studio_runtime_store::StoreError::SchemaMismatch(
-                                                "workspace is busy".into(),
-                                            ),
-                                        );
-                                    }
-                                    actor
-                                        .extra
-                                        .insert("workspaceOperation".into(), json!("branch"));
-                                    actor.extra.insert(
-                                        "workspaceReservationId".into(),
-                                        json!(operation_id),
-                                    );
-                                    AgentRepository::put(tx, &actor)?;
-                                    prior["reserved"] = json!(true);
-                                    tx.execute(
-                                        "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                                        params![operation_id, prior.to_string()],
-                                    )?;
-                                    operation = Some(prior);
-                                    return Ok(());
-                                }
-                                _ => {
-                                    return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                                    "Workspace recovery is required before retrying this branch"
-                                        .into(),
-                                ));
-                                }
-                            }
-                        }
-                        if (source
-                            .get("workspaceOperation")
-                            .is_some_and(|value| !value.is_null() && value != "")
-                            && source.get("workspaceReservationId").and_then(Value::as_str)
-                                != Some(operation_id.as_str()))
-                            || snapshot.agents.iter().any(|entry| {
-                                entry.id != agent_id
-                                    && entry.record.get("cwd") == source.get("cwd")
-                                    && entry
-                                        .record
-                                        .get("workspaceOperation")
-                                        .is_some_and(|value| !value.is_null() && value != "")
-                            })
-                        {
-                            return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                                "workspace is busy".into(),
-                            ));
-                        }
-                        let source_stamp = CheckpointsRepository::workspace_source(&source);
-                        let mut record = if let Some(existing) = tx
-                            .query_row(
-                                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                                [&operation_id],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .optional()?
-                        {
-                            serde_json::from_str::<Value>(&existing)?
-                        } else {
-                            let record = json!({
-                                "id":operation_id,"kind":"branch","agent":agent_id,
-                                "phase":"provider_pending","signature":signature,
-                                "source":source_stamp,"message_id":message_id,
-                                "turn_id":selected.record["turnId"],
-                                "previousStatus":source.get("status"),
-                                "previousAutoWake":source.get("autoWake"),
-                                "previousWorkspaceOperation":source.get("workspaceOperation"),
-                                "created":unix_time()
-                            });
-                            tx.execute(
-                                "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
-                                params![operation_id, record.to_string()],
-                            )?;
-                            record
-                        };
-                        let mut actor =
-                            AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                                .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
-                        actor
-                            .extra
-                            .insert("workspaceOperation".into(), json!("branch"));
-                        actor
-                            .extra
-                            .insert("workspaceReservationId".into(), json!(operation_id));
-                        AgentRepository::put(tx, &actor)?;
-                        record["reserved"] = json!(true);
-                        tx.execute(
-                            "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                            params![operation_id, record.to_string()],
-                        )?;
-                        operation = Some(record);
-                        Ok(())
-                    })
-                    .map_err(|error| bad_request(&error.to_string()))?;
-                Ok::<_, ApiError>((source, selected, operation))
+                Ok::<_, ApiError>((snapshot, source, selected))
             }
         })
         .await
         .map_err(|_| ApiError::internal())??;
+    let operation = {
+        let snapshot = snapshot.clone();
+        let source = source.clone();
+        let selected = selected.clone();
+        let agent_id = body.agent.clone();
+        let message_id = body.message_id.clone();
+        let operation_id = operation_id.clone();
+        let signature = signature.clone();
+        store
+            .transaction_with(move |tx| {
+                if !CheckpointsRepository::workspace_unchanged(tx, &snapshot)? {
+                    return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                        "branch workspace changed".into(),
+                    ));
+                }
+                if let Some(prior) = tx
+                    .query_row(
+                        "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                        [&operation_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                {
+                    let mut prior: Value = serde_json::from_str(&prior)?;
+                    if prior.get("signature").and_then(Value::as_str) != Some(signature.as_str()) {
+                        return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                            "branch request id has different content".into(),
+                        ));
+                    }
+                    match prior.get("phase").and_then(Value::as_str) {
+                        Some("completed") => {
+                            return Ok(Some(prior));
+                        }
+                        Some("provider_ready") => {}
+                        Some("failed") => {
+                            prior["phase"] = json!("provider_pending");
+                            if let Some(value) = prior.as_object_mut() {
+                                value.remove("provider");
+                                value.remove("result");
+                                value.remove("error");
+                            }
+                            tx.execute(
+                                "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                                params![operation_id, prior.to_string()],
+                            )?;
+                        }
+                        Some("provider_pending" | "recovery_required") => {
+                            // Re-submit the same broker operation identity
+                            // below. The retained broker returns its saved
+                            // receipt or Unknown and never sends a duplicate.
+                            let mut actor =
+                                AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                                    .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+                            if (actor
+                                .extra
+                                .get("workspaceOperation")
+                                .is_some_and(|value| !value.is_null() && value != "")
+                                && actor
+                                    .extra
+                                    .get("workspaceReservationId")
+                                    .and_then(Value::as_str)
+                                    != Some(operation_id.as_str()))
+                                || snapshot.agents.iter().any(|entry| {
+                                    entry.id != agent_id
+                                        && entry.record.get("cwd") == source.get("cwd")
+                                        && entry
+                                            .record
+                                            .get("workspaceOperation")
+                                            .is_some_and(|value| !value.is_null() && value != "")
+                                })
+                            {
+                                return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                                    "workspace is busy".into(),
+                                ));
+                            }
+                            actor
+                                .extra
+                                .insert("workspaceOperation".into(), json!("branch"));
+                            actor
+                                .extra
+                                .insert("workspaceReservationId".into(), json!(operation_id));
+                            AgentRepository::put(tx, &actor)?;
+                            prior["reserved"] = json!(true);
+                            tx.execute(
+                                "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                                params![operation_id, prior.to_string()],
+                            )?;
+                            return Ok(Some(prior));
+                        }
+                        _ => {
+                            return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                                "Workspace recovery is required before retrying this branch".into(),
+                            ));
+                        }
+                    }
+                }
+                if (source
+                    .get("workspaceOperation")
+                    .is_some_and(|value| !value.is_null() && value != "")
+                    && source.get("workspaceReservationId").and_then(Value::as_str)
+                        != Some(operation_id.as_str()))
+                    || snapshot.agents.iter().any(|entry| {
+                        entry.id != agent_id
+                            && entry.record.get("cwd") == source.get("cwd")
+                            && entry
+                                .record
+                                .get("workspaceOperation")
+                                .is_some_and(|value| !value.is_null() && value != "")
+                    })
+                {
+                    return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                        "workspace is busy".into(),
+                    ));
+                }
+                let source_stamp = CheckpointsRepository::workspace_source(&source);
+                let mut record = if let Some(existing) = tx
+                    .query_row(
+                        "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                        [&operation_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                {
+                    serde_json::from_str::<Value>(&existing)?
+                } else {
+                    let record = json!({
+                        "id":operation_id,"kind":"branch","agent":agent_id,
+                        "phase":"provider_pending","signature":signature,
+                        "source":source_stamp,"message_id":message_id,
+                        "turn_id":selected.record["turnId"],
+                        "previousStatus":source.get("status"),
+                        "previousAutoWake":source.get("autoWake"),
+                        "previousWorkspaceOperation":source.get("workspaceOperation"),
+                        "created":unix_time()
+                    });
+                    tx.execute(
+                        "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                        params![operation_id, record.to_string()],
+                    )?;
+                    record
+                };
+                let mut actor = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+                actor
+                    .extra
+                    .insert("workspaceOperation".into(), json!("branch"));
+                actor
+                    .extra
+                    .insert("workspaceReservationId".into(), json!(operation_id));
+                AgentRepository::put(tx, &actor)?;
+                record["reserved"] = json!(true);
+                tx.execute(
+                    "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                    params![operation_id, record.to_string()],
+                )?;
+                Ok(Some(record))
+            })
+            .await
+            .map_err(|error| bad_request(&error.to_string()))?
+    };
     let needs_catalog = branch_needs_catalog(&store, &operation_id, &signature).await?;
     if needs_catalog {
         ensure_branch_model_catalog(&state, &account).await?;
@@ -304,7 +300,7 @@ async fn branch(
         .as_ref()
         .and_then(|op| op.get("provider"))
         .cloned();
-    let scope = port.ensure_session_async(&account).await.map_err(|error| {
+    let scope = port.ensure_session(&account).await.map_err(|error| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Could not ensure account session: {error}"),
@@ -388,11 +384,11 @@ async fn branch(
     let fork_turn = match fork_turn {
         Ok(turn) => turn,
         Err(error) => {
-            settle_failure(&store, &operation_id, false, "Native turn lookup failed")?;
+            settle_failure(&store, &operation_id, false, "Native turn lookup failed").await?;
             return Err(error);
         }
     };
-    persist_fork_turn(&store, &operation_id, fork_turn.as_deref())?;
+    persist_fork_turn(&store, &operation_id, fork_turn.as_deref()).await?;
     let provider = if let Some(provider) = prior_provider {
         provider
     } else {
@@ -426,18 +422,12 @@ async fn branch(
             params,
             deadline: Instant::now() + Duration::from_secs(60),
         };
-        let sender = port.clone();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/branches",
-            move || sender.provider_request(request),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?;
+        let result = port.provider_request(request).await;
         match result {
             Ok(receipt) if receipt.certainty == RequestCertainty::Written => match receipt.result {
                 Some(ProviderResponse::Reply(value)) => value,
                 Some(ProviderResponse::Rejected(error)) => {
-                    settle_failure(&store, &operation_id, false, &error.to_string())?;
+                    settle_failure(&store, &operation_id, false, &error.to_string()).await?;
                     return Err(bad_request(&error.to_string()));
                 }
                 _ => {
@@ -446,12 +436,13 @@ async fn branch(
                         &operation_id,
                         true,
                         "Provider fork outcome is unknown",
-                    )?;
+                    )
+                    .await?;
                     return Err(unavailable());
                 }
             },
             Ok(receipt) if receipt.certainty == RequestCertainty::NotSent => {
-                settle_failure(&store, &operation_id, false, "Provider fork was not sent")?;
+                settle_failure(&store, &operation_id, false, "Provider fork was not sent").await?;
                 return Err(unavailable());
             }
             Err(AccountSessionError::Unknown) => {
@@ -460,7 +451,8 @@ async fn branch(
                     &operation_id,
                     true,
                     "Provider fork outcome is unknown",
-                )?;
+                )
+                .await?;
                 return Err(unavailable());
             }
             Ok(_) => {
@@ -469,11 +461,12 @@ async fn branch(
                     &operation_id,
                     true,
                     "Provider fork outcome is unknown",
-                )?;
+                )
+                .await?;
                 return Err(unavailable());
             }
             Err(error) => {
-                settle_failure(&store, &operation_id, false, &error.to_string())?;
+                settle_failure(&store, &operation_id, false, &error.to_string()).await?;
                 return Err(bad_request(&error.to_string()));
             }
         }
@@ -489,48 +482,55 @@ async fn branch(
             &operation_id,
             true,
             "Provider returned an invalid fork thread",
-        )?;
+        )
+        .await?;
         return Err(unavailable());
     }
-    let persisted = store.transaction_with(|tx| {
-        let raw: String = tx.query_row(
-            "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-            [&operation_id],
-            |row| row.get(0),
-        )?;
-        let mut op: Value = serde_json::from_str(&raw)?;
-        let current = AgentRepository::get(tx, &AgentId::from(body.agent.as_str()))?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        let current_source = CheckpointsRepository::workspace_source(&current.value());
-        if current_source != op["source"]
-            || current
-                .extra
-                .get("workspaceReservationId")
-                .and_then(Value::as_str)
-                != Some(operation_id.as_str())
-        {
-            return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                "branch source changed after provider hand-off".into(),
-            ));
-        }
-        op["provider"] = provider.clone();
-        op["phase"] = json!("provider_ready");
-        tx.execute(
-            "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-            params![operation_id, op.to_string()],
-        )?;
-        Ok::<_, studio_runtime_store::StoreError>(())
-    });
+    let persist_operation_id = operation_id.clone();
+    let persist_agent_id = body.agent.clone();
+    let persist_provider = provider.clone();
+    let persisted = store
+        .transaction_with(move |tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                [&persist_operation_id],
+                |row| row.get(0),
+            )?;
+            let mut op: Value = serde_json::from_str(&raw)?;
+            let current = AgentRepository::get(tx, &AgentId::from(persist_agent_id.as_str()))?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let current_source = CheckpointsRepository::workspace_source(&current.value());
+            if current_source != op["source"]
+                || current
+                    .extra
+                    .get("workspaceReservationId")
+                    .and_then(Value::as_str)
+                    != Some(persist_operation_id.as_str())
+            {
+                return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                    "branch source changed after provider hand-off".into(),
+                ));
+            }
+            op["provider"] = persist_provider;
+            op["phase"] = json!("provider_ready");
+            tx.execute(
+                "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                params![persist_operation_id, op.to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await;
     if let Err(error) = persisted {
         settle_failure(
             &store,
             &operation_id,
             true,
             "Branch source changed after provider hand-off",
-        )?;
+        )
+        .await?;
         return Err(ApiError::stored(error));
     }
-    ensure_branch_source(&store, &operation_id, &body.agent)?;
+    ensure_branch_source(&store, &operation_id, &body.agent).await?;
     let child_id = deterministic_uuid(&operation_id);
     let created = super::agents_create::create_branch_draft(
         state.clone(),
@@ -545,7 +545,7 @@ async fn branch(
     let Json(created) = match created {
         Ok(created) => created,
         Err(error) => {
-            release_provider_ready_reservation(&store, &operation_id, &body.agent)?;
+            release_provider_ready_reservation(&store, &operation_id, &body.agent).await?;
             return Err(error);
         }
     };
@@ -562,8 +562,9 @@ async fn branch(
             provider: &provider,
             operation_id: &operation_id,
         },
-    )?;
-    state.event_wake.notify_one();
+        Arc::clone(&state.event_wake),
+    )
+    .await?;
     Ok(Json(super::generated_json::<
         crate::generated::BranchResponse,
     >(branch_result)?))
@@ -588,42 +589,33 @@ async fn provider_request(
         params,
         deadline: Instant::now() + Duration::from_secs(30),
     };
-    let sender = Arc::clone(&port);
     let initial_request = request.clone();
-    let mut receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/branches",
-        move || sender.provider_request(initial_request),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(|error| match error {
-        AccountSessionError::Requires(name) => ApiError::dependency(name),
-        AccountSessionError::Unknown => unavailable(),
-        _ => bad_request(&error.to_string()),
-    })?;
+    let mut receipt =
+        port.provider_request(initial_request)
+            .await
+            .map_err(|error| match error {
+                AccountSessionError::Requires(name) => ApiError::dependency(name),
+                AccountSessionError::Unknown => unavailable(),
+                _ => bad_request(&error.to_string()),
+            })?;
     if receipt.certainty == RequestCertainty::NotSent {
         // A worker can disappear between ensuring the account session and
         // submitting the request. A NotSent receipt permits retrying, but the
         // operation identity and payload remain unchanged.
-        request.expected_scope =
-            Some(port.ensure_session_async(account).await.map_err(|error| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Could not ensure account session: {error}"),
-                )
-            })?);
-        let sender = Arc::clone(&port);
-        receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/branches",
-            move || sender.provider_request(request),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(|error| match error {
-            AccountSessionError::Requires(name) => ApiError::dependency(name),
-            AccountSessionError::Unknown => unavailable(),
-            _ => bad_request(&error.to_string()),
-        })?;
+        request.expected_scope = Some(port.ensure_session(account).await.map_err(|error| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Could not ensure account session: {error}"),
+            )
+        })?);
+        receipt = port
+            .provider_request(request)
+            .await
+            .map_err(|error| match error {
+                AccountSessionError::Requires(name) => ApiError::dependency(name),
+                AccountSessionError::Unknown => unavailable(),
+                _ => bad_request(&error.to_string()),
+            })?;
     }
     match (receipt.certainty, receipt.result) {
         (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
@@ -634,17 +626,19 @@ async fn provider_request(
     }
 }
 
-fn settle_failure(
+async fn settle_failure(
     store: &RuntimeStore,
     operation_id: &str,
     unknown: bool,
     error: &str,
 ) -> Result<(), ApiError> {
+    let operation_id = operation_id.to_owned();
+    let error = error.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                [operation_id],
+                [operation_id.as_str()],
                 |row| row.get(0),
             )?;
             let mut operation: Value = serde_json::from_str(&raw)?;
@@ -653,10 +647,10 @@ fn settle_failure(
             } else {
                 "failed"
             });
-            operation["error"] = json!(error);
+            operation["error"] = json!(error.clone());
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                params![operation_id, operation.to_string()],
+                params![operation_id.as_str(), operation.to_string()],
             )?;
             if let Some(mut actor) = AgentRepository::get(
                 tx,
@@ -665,7 +659,7 @@ fn settle_failure(
                 if unknown {
                     actor.extra.insert("status".into(), json!("interrupted"));
                     actor.extra.insert("autoWake".into(), json!(false));
-                    actor.extra.insert("error".into(), json!(error));
+                    actor.extra.insert("error".into(), json!(error.clone()));
                 } else {
                     actor.extra.remove("workspaceReservationId");
                     actor.extra.insert("workspaceOperation".into(), Value::Null);
@@ -674,19 +668,22 @@ fn settle_failure(
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .map_err(ApiError::stored)
 }
 
-fn release_provider_ready_reservation(
+async fn release_provider_ready_reservation(
     store: &RuntimeStore,
     operation_id: &str,
     agent_id: &str,
 ) -> Result<(), ApiError> {
+    let operation_id = operation_id.to_owned();
+    let agent_id = agent_id.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                [operation_id],
+                [operation_id.as_str()],
                 |row| row.get(0),
             )?;
             let mut operation: Value = serde_json::from_str(&raw)?;
@@ -700,14 +697,14 @@ fn release_provider_ready_reservation(
             operation["reserved"] = json!(false);
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                params![operation_id, operation.to_string()],
+                params![operation_id.as_str(), operation.to_string()],
             )?;
             if let Some(mut actor) = AgentRepository::get(tx, &AgentId::from(agent_id))?
                 && actor
                     .extra
                     .get("workspaceReservationId")
                     .and_then(Value::as_str)
-                    == Some(operation_id)
+                    == Some(operation_id.as_str())
             {
                 actor.extra.remove("workspaceReservationId");
                 actor.extra.insert("workspaceOperation".into(), Value::Null);
@@ -715,29 +712,33 @@ fn release_provider_ready_reservation(
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .map_err(ApiError::stored)
 }
 
-fn persist_fork_turn(
+async fn persist_fork_turn(
     store: &RuntimeStore,
     operation_id: &str,
     fork_turn: Option<&str>,
 ) -> Result<(), ApiError> {
+    let operation_id = operation_id.to_owned();
+    let fork_turn = fork_turn.map(str::to_owned);
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                [operation_id],
+                [operation_id.as_str()],
                 |row| row.get(0),
             )?;
             let mut operation: Value = serde_json::from_str(&raw)?;
             operation["forkTurnId"] = fork_turn.map_or(Value::Null, |turn| json!(turn));
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                params![operation_id, operation.to_string()],
+                params![operation_id.as_str(), operation.to_string()],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .map_err(ApiError::stored)
 }
 
@@ -837,7 +838,11 @@ struct BranchCopy<'a> {
     operation_id: &'a str,
 }
 
-fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Value, ApiError> {
+async fn copy_branch_history(
+    store: &RuntimeStore,
+    copy: BranchCopy<'_>,
+    wake: Arc<tokio::sync::Notify>,
+) -> Result<Value, ApiError> {
     let BranchCopy {
         source,
         target,
@@ -848,16 +853,23 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
         provider,
         operation_id,
     } = copy;
-    store.transaction_with(|tx|{
-        let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id],|r|r.get(0))?;
+    let source = source.to_owned();
+    let target = target.to_owned();
+    let selected = selected.clone();
+    let message_id = message_id.to_owned();
+    let fork_turn = fork_turn.map(str::to_owned);
+    let provider = provider.clone();
+    let operation_id = operation_id.to_owned();
+    let (result, _) = store.transaction_with_post_commit(move |tx|{
+        let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id.as_str()],|r|r.get(0))?;
         let mut operation:Value=serde_json::from_str(&raw)?;
-        let current=AgentRepository::get(tx,&AgentId::from(source))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch source".into()))?;
+        let current=AgentRepository::get(tx,&AgentId::from(source.as_str()))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch source".into()))?;
         if CheckpointsRepository::workspace_source(&current.value()) != operation["source"]
-            || current.extra.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id)
+            || current.extra.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id.as_str())
         {
             return Err(studio_runtime_store::StoreError::SchemaMismatch("branch source changed before local copy".into()));
         }
-        let mut child=AgentRepository::get(tx,&AgentId::from(target))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch draft".into()))?;
+        let mut child=AgentRepository::get(tx,&AgentId::from(target.as_str()))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch draft".into()))?;
         child.extra.insert("yoloMode".into(), current.extra.get("yoloMode").cloned().unwrap_or(Value::Null));
         child.extra.insert("sandbox".into(), provider.get("sandbox").cloned().or_else(|| current.extra.get("sandbox").cloned()).unwrap_or(Value::Null));
         child.extra.insert("approvalPolicy".into(), provider.get("approvalPolicy").cloned().or_else(|| current.extra.get("approvalPolicy").cloned()).unwrap_or(Value::Null));
@@ -867,10 +879,10 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
         child.extra.insert("status".into(),json!("idle")); child.extra.insert("autoWake".into(),json!(true)); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");
         let mut stmt=tx.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created,id")?;
-        let rows=stmt.query_map([source],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let rows=stmt.query_map([source.as_str()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         drop(stmt);
         let cutoff=match fork_turn {
-            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<Value>(raw).ok().filter(|r|r["turnId"].as_str()==Some(fork_turn)).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
+            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<Value>(raw).ok().filter(|r|r["turnId"].as_str()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
             None => f64::NEG_INFINITY,
         };
         let mut assets=BTreeMap::<String,Value>::new();
@@ -892,14 +904,14 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
                     other => other.to_owned(),
                 });
             let mut item_assets = source_record.get("assets").cloned().unwrap_or_else(|| json!([]));
-            copy_asset_views(tx,source,target,&mut item_assets,&mut assets)?;
+            copy_asset_views(tx,&source,&target,&mut item_assets,&mut assets)?;
             let source_inputs = source_record.get("inputs").and_then(Value::as_array);
             let mut inputs = Vec::new();
             if let Some(source_inputs) = source_inputs {
                 let mut remaining = 20_000usize;
                 for input in source_inputs {
                     let mut input_assets = input.get("assets").cloned().unwrap_or_else(|| json!([]));
-                    copy_asset_views(tx,source,target,&mut input_assets,&mut assets)?;
+                    copy_asset_views(tx,&source,&target,&mut input_assets,&mut assets)?;
                     let input_text = input.get("text").and_then(Value::as_str).unwrap_or_default();
                     let excerpt = input_text.chars().take(remaining).collect::<String>();
                     remaining = remaining.saturating_sub(excerpt.chars().count());
@@ -933,7 +945,7 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
             TranscriptRepository::put_item_with_search_kind(
                 tx,
                 &id,
-                target,
+                &target,
                 &record,
                 copied_at,
                 text,
@@ -947,10 +959,10 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
         if before {
             let draft = branch_draft_payload(
                 tx,
-                source,
-                target,
-                selected,
-                message_id,
+                &source,
+                &target,
+                &selected,
+                &message_id,
                 &mut assets,
             )?;
             child.extra.insert("draft".into(), draft);
@@ -959,7 +971,7 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
         studio_runtime_services::agents_create::publish_agent(tx,&value)?;
         let result=value.clone();
         operation["phase"]=json!("completed"); operation["result"]=result.clone(); operation["updated"]=json!(unix_time());
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id,operation.to_string()])?;
+        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
         if let Some(mut actor)=AgentRepository::get(tx,&AgentId::from(source))? {
             actor.extra.remove("workspaceReservationId");
             actor.extra.insert("workspaceOperation".into(),Value::Null);
@@ -968,21 +980,24 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
             studio_runtime_services::agents_create::publish_agent(tx,&actor_value)?;
         }
         operation["result"] = result.clone();
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id,operation.to_string()])?;
+        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
         Ok::<_,studio_runtime_store::StoreError>(result)
-    }).map_err(ApiError::stored)
+    }, move |_| wake.notify_one()).await.map_err(ApiError::stored)?;
+    Ok(result)
 }
 
-fn ensure_branch_source(
+async fn ensure_branch_source(
     store: &RuntimeStore,
     operation_id: &str,
     agent_id: &str,
 ) -> Result<(), ApiError> {
+    let operation_id = operation_id.to_owned();
+    let agent_id = agent_id.to_owned();
     store
-        .transaction_with(|tx| {
+        .transaction_with(move |tx| {
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                [operation_id],
+                [operation_id.as_str()],
                 |row| row.get(0),
             )?;
             let operation: Value = serde_json::from_str(&raw)?;
@@ -993,7 +1008,7 @@ fn ensure_branch_source(
                     .extra
                     .get("workspaceReservationId")
                     .and_then(Value::as_str)
-                    != Some(operation_id)
+                    != Some(operation_id.as_str())
             {
                 return Err(studio_runtime_store::StoreError::SchemaMismatch(
                     "branch source changed before local copy".into(),
@@ -1001,6 +1016,7 @@ fn ensure_branch_source(
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
+        .await
         .map_err(ApiError::stored)
 }
 

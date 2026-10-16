@@ -1,4 +1,5 @@
 use crate::prepared_python_support as python_oracle;
+use futures_util::future::BoxFuture;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
@@ -57,14 +58,18 @@ pub fn fixture() -> &'static Fixture {
         Fixture { root, data }
     })
 }
-pub fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let template = fixture();
     let root = test_directory();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.root.path().join(name), root.path().join(name))
             .expect("clone prepared Python state");
     }
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open Python-written state"));
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open Python-written state"),
+    );
     (root, store)
 }
 pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
@@ -79,17 +84,19 @@ pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
 }
 pub struct Owner;
 impl OwnerLookup for Owner {
-    fn observe(
-        &self,
-        address: &str,
-        logins: &[String],
-        _origin: Option<&str>,
-    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
-        let data = &fixture().data;
-        Ok((
-            OwnerObservation::from_json(address, logins, &data["status"], &data["whois"])?,
-            None,
-        ))
+    fn observe<'a>(
+        &'a self,
+        address: &'a str,
+        logins: &'a [String],
+        _origin: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(OwnerObservation, Option<Value>), AccessError>> {
+        Box::pin(async move {
+            let data = &fixture().data;
+            Ok((
+                OwnerObservation::from_json(address, logins, &data["status"], &data["whois"])?,
+                None,
+            ))
+        })
     }
 }
 pub fn boundary() -> MultiServerBoundary {
@@ -151,25 +158,27 @@ impl CountingOwner {
     }
 }
 impl OwnerLookup for CountingOwner {
-    fn observe(
-        &self,
-        address: &str,
-        logins: &[String],
-        origin: Option<&str>,
-    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if origin.is_some() {
-            self.probes
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        Ok((
-            OwnerObservation::from_json(
-                address,
-                logins,
-                &fixture().data["status"],
-                &self.case["whois"],
-            )?,
-            self.case.get("probe").cloned(),
-        ))
+    fn observe<'a>(
+        &'a self,
+        address: &'a str,
+        logins: &'a [String],
+        origin: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(OwnerObservation, Option<Value>), AccessError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if origin.is_some() {
+                self.probes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok((
+                OwnerObservation::from_json(
+                    address,
+                    logins,
+                    &fixture().data["status"],
+                    &self.case["whois"],
+                )?,
+                self.case.get("probe").cloned(),
+            ))
+        })
     }
 }

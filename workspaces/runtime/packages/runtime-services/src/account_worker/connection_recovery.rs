@@ -1,4 +1,4 @@
-//! Synchronous manual connection recovery, owned by the live account worker.
+//! Manual connection recovery, owned by the live account worker.
 use super::{
     StoreBridge,
     retained::{RequestActor, RetainedSessionPort, consumers::HistoryPort},
@@ -10,13 +10,12 @@ use crate::{
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
     recovery_runtime::{RecoveryJob, RecoveryRuntime, RetainedRecoveryReader},
-    recovery_store::{LifecycleCompletionWriter, RecoveryMessageWriter},
+    recovery_store::LifecycleCompletionWriter,
     task_recovery_store::TaskCompletionWriter,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore};
-use tokio::runtime::Handle;
 
 pub(super) struct Command {
     pub bridge: StoreBridge,
@@ -24,7 +23,6 @@ pub(super) struct Command {
     pub scope: ConnectionScope,
     pub session: RetainedSessionPort,
     pub agent_id: String,
-    pub runtime: Handle,
 }
 
 pub(super) struct Completed {
@@ -32,9 +30,16 @@ pub(super) struct Completed {
     pub streams: Option<crate::notification_dispatch::NotificationStreamBuffer>,
 }
 
-pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
+pub(super) async fn run(command: Command) -> Result<Completed, RecoveryError> {
     let store = Arc::clone(&command.bridge.store);
-    let before = read_agent(&store, &command.agent_id)?;
+    let read_store = Arc::clone(&store);
+    let agent_id = command.agent_id.clone();
+    let before = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_connection_recovery_read",
+        move || read_agent(&read_store, &agent_id),
+    )
+    .await
+    .map_err(|_| RecoveryError::CommitFailed)??;
     if before
         .get("accountKey")
         .and_then(Value::as_str)
@@ -54,7 +59,7 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
     let snapshot =
         RecoverySnapshot::from_record(before.clone()).map_err(|_| RecoveryError::CommitFailed)?;
     let recovery_id = snapshot.connection_recovery_id();
-    let pending = begin_request(&store, &command.agent_id, &before, &recovery_id)?;
+    let pending = begin_request(&store, &command.agent_id, &before, &recovery_id).await?;
     let snapshot =
         RecoverySnapshot::from_record(pending).map_err(|_| RecoveryError::CommitFailed)?;
     let eligibility = snapshot.eligibility();
@@ -81,10 +86,10 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
     let observed_scope = command.scope.clone();
     let live_session = command.session.clone();
     let observed_value = observation.clone();
-    let observe = move |scope: &ConnectionScope| {
-        observe_live_session(&live_session, &observed_scope, &observed_value, scope)
-    };
-    let source: &crate::recovery_runtime::ObservationSource<'_> = &observe;
+    let source: Arc<crate::recovery_runtime::ObservationSource> =
+        Arc::new(move |scope: &ConnectionScope| {
+            observe_live_session(&live_session, &observed_scope, &observed_value, scope)
+        });
     let mut history = HistoryPort::new(
         command.session,
         RequestActor {
@@ -93,16 +98,21 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
                 .as_i64()
                 .ok_or(RecoveryError::CommitFailed)?,
         },
-        command.runtime,
         recovery_id.clone(),
     );
     let mut reader =
-        RetainedRecoveryReader::new(command.scope.clone(), thread, &mut history, source)
+        RetainedRecoveryReader::new(command.scope.clone(), thread, &mut history, source.as_ref())
             .map_err(|_| RecoveryError::CommitFailed)?;
-    let mut streams = super::store::restore_streams(&store, &command.account)
+    let streams = super::store::restore_streams(&store, &command.account)
+        .await
         .map_err(|_| RecoveryError::CommitFailed)?;
-    let mut write_message: &mut RecoveryMessageWriter<'_> =
-        &mut |tx, agent, account, generation, turn, item, timestamp| {
+    let streams = Arc::new(std::sync::Mutex::new(streams));
+    let message_recovery_id = recovery_id.clone();
+    let write_message: Box<crate::recovery_store::RecoveryMessageWriter> = Box::new(
+        move |tx, agent, account, generation, turn, item, timestamp| {
+            let mut streams = streams.lock().map_err(|_| {
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification
+            })?;
             let Some(next) = streams
                 .recover_agent_message_in_transaction(
                     tx, agent, account, generation, turn, item, timestamp,
@@ -113,7 +123,7 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
             else {
                 return Ok(None);
             };
-            streams = next;
+            *streams = next;
             let item_id = item["id"].as_str().ok_or(
                 crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
             )?;
@@ -121,7 +131,7 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
                 crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
             )?;
             streams.stage_recovered_notification(
-                format!("connection-recovery:{recovery_id}:{turn_id}:item:{item_id}"),
+                format!("connection-recovery:{message_recovery_id}:{turn_id}:item:{item_id}"),
                 crate::notification_dispatch::RecoveredNotificationObservation {
                     agent: agent.clone(),
                     method: "item/completed".into(),
@@ -129,31 +139,31 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
                     observed_at: timestamp,
                 },
             );
-            Ok(Some(streams.clone()))
-        };
-    let mut delivery = ProductionRecoveryDelivery { at };
-    let mut completion = LifecycleCompletionWriter {
-        at,
-        delivery: &mut delivery,
-        write_message: &mut write_message,
-        stream_update: None,
-    };
-    let mut task_completion = NoTaskCompletion;
+            Ok(Some((*streams).clone()))
+        },
+    );
+    let completion: Arc<std::sync::Mutex<Box<dyn crate::recovery_store::CompletionWriter>>> =
+        Arc::new(std::sync::Mutex::new(Box::new(LifecycleCompletionWriter {
+            at,
+            delivery: Box::new(ProductionRecoveryDelivery { at }),
+            write_message,
+        })));
+    let task_completion: Arc<dyn TaskCompletionWriter> = Arc::new(NoTaskCompletion);
     let mut runtime = RecoveryRuntime {
-        store: &store,
-        observation: source,
-        completion: &mut completion,
-        task_completion: &mut task_completion,
+        store: Arc::clone(&store),
+        observation: Arc::clone(&source),
+        completion,
+        task_completion,
     };
     let job = RecoveryJob::Connection {
         snapshot: snapshot.clone(),
         automatic: false,
     };
-    let outcome = match runtime.reconcile(&job, command.scope, &mut reader) {
+    let result = match runtime.reconcile(&job, command.scope, &mut reader).await {
         Ok(outcome) => outcome,
         Err(RecoveryError::History(error)) => {
             let receipt = json!({"status":"unconfirmed","error":error.to_string()});
-            finish_request(&store, &command.agent_id, &recovery_id, &receipt)?;
+            finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
             return Ok(Completed {
                 receipt,
                 streams: None,
@@ -161,7 +171,7 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
         }
         Err(error) => return Err(error),
     };
-    let (receipt, needs_receipt_commit) = match outcome {
+    let (receipt, needs_receipt_commit) = match result.outcome {
         RecoveryOutcome::Applied(value) => (value, false),
         RecoveryOutcome::Unconfirmed => (json!({"status":"unconfirmed"}), true),
         RecoveryOutcome::Superseded | RecoveryOutcome::Skipped => {
@@ -169,11 +179,11 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
         }
     };
     if needs_receipt_commit {
-        finish_request(&store, &command.agent_id, &recovery_id, &receipt)?;
+        finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
     }
     Ok(Completed {
         receipt,
-        streams: completion.stream_update.take(),
+        streams: result.stream_update,
     })
 }
 
@@ -184,13 +194,17 @@ fn read_agent(store: &RuntimeStore, id: &str) -> Result<Value, RecoveryError> {
     serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)
 }
 
-pub(super) fn begin_request(
+pub(super) async fn begin_request(
     store: &RuntimeStore,
     id: &str,
     expected: &Value,
     recovery_id: &str,
 ) -> Result<Value, RecoveryError> {
-    crate::scheduler::lifecycle_transaction_with(store, |tx| {
+    let id = id.to_owned();
+    let expected_epoch = expected.get("epoch").cloned();
+    let expected_thread_id = expected.get("threadId").cloned();
+    let recovery_id = recovery_id.to_owned();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(id))? else {
             return Err(RecoveryError::CommitFailed);
         };
@@ -200,16 +214,16 @@ pub(super) fn begin_request(
             .map_err(|_| RecoveryError::CommitFailed)?
             .connection_recovery_id();
         if current_id != recovery_id
-            || current.get("epoch") != expected.get("epoch")
-            || current.get("threadId") != expected.get("threadId")
+            || current.get("epoch") != expected_epoch.as_ref()
+            || current.get("threadId") != expected_thread_id.as_ref()
         {
             return Err(RecoveryError::CommitFailed);
         }
-        if current["connectionRecovery"]["requestId"] != recovery_id {
+        if current["connectionRecovery"]["requestId"] != recovery_id.as_str() {
             if !current["connectionRecovery"].is_object() {
                 current["connectionRecovery"] = json!({});
             }
-            current["connectionRecovery"]["requestId"] = json!(recovery_id);
+            current["connectionRecovery"]["requestId"] = json!(recovery_id.as_str());
             current["connectionRecovery"]["requestState"] = json!("pending");
             current["connectionRecovery"]["requestBasis"] =
                 crate::recovery_policy::connection_recovery_basis(&current);
@@ -218,27 +232,32 @@ pub(super) fn begin_request(
         }
         Ok(current)
     })
+    .await
 }
 
-pub(super) fn finish_request(
+pub(super) async fn finish_request(
     store: &RuntimeStore,
     id: &str,
     recovery_id: &str,
     receipt: &Value,
 ) -> Result<(), RecoveryError> {
-    crate::scheduler::lifecycle_transaction_with(store, |tx| {
+    let id = id.to_owned();
+    let recovery_id = recovery_id.to_owned();
+    let receipt = receipt.clone();
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         let Some(raw) = AgentRepository::get_raw(tx, &AgentId::from(id))? else {
             return Err(RecoveryError::CommitFailed);
         };
         let mut agent: Value =
             serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)?;
-        if agent["connectionRecovery"]["requestId"] == recovery_id {
+        if agent["connectionRecovery"]["requestId"] == recovery_id.as_str() {
             agent["connectionRecovery"]["requestState"] = json!("result");
             agent["connectionRecovery"]["requestReceipt"] = receipt.clone();
             put_agent(tx, agent)?;
         }
         Ok(())
     })
+    .await
 }
 
 fn put_agent(
@@ -281,16 +300,19 @@ fn observe_live_session(
 
 struct NoTaskCompletion;
 impl TaskCompletionWriter for NoTaskCompletion {
-    fn resolve_receipt(&mut self, _: &Value) -> Result<Value, RecoveryError> {
-        Err(RecoveryError::EffectsUnavailable)
+    fn resolve_receipt<'a>(
+        &'a self,
+        _: Arc<Value>,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, RecoveryError>> {
+        Box::pin(async { Err(RecoveryError::EffectsUnavailable) })
     }
-    fn complete(
-        &mut self,
-        _: &crate::task_recovery::TaskRecoverySnapshot,
-        _: &ConnectionScope,
+    fn complete<'a>(
+        &'a self,
+        _: &'a crate::task_recovery::TaskRecoverySnapshot,
+        _: &'a ConnectionScope,
         _: Value,
-    ) -> Result<bool, RecoveryError> {
-        Err(RecoveryError::EffectsUnavailable)
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, RecoveryError>> {
+        Box::pin(async { Err(RecoveryError::EffectsUnavailable) })
     }
 }
 

@@ -22,6 +22,9 @@ use studio_runtime_schema::shared_values::{
 use thiserror::Error;
 use tokio::sync::Notify;
 
+pub type AccountSessionFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, AccountSessionError>> + Send + 'a>>;
+
 #[derive(Debug, Error)]
 pub enum AccountSessionError {
     #[error("Not implemented: requires {0}")]
@@ -98,44 +101,44 @@ pub struct ProfileRequest {
 /// time without advertising success for an absent consumer.
 pub trait AccountSessionPort: Send + Sync {
     /// Ensure the account's retained worker is live before an account-scoped read.
-    fn ensure_session(&self, _account: &str) -> Result<ConnectionScope, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/account-session",
-        ))
-    }
-    /// Async callers should use this method so retained session owners can be
-    /// awaited directly instead of crossing a blocking-pool/runtime bridge.
-    fn ensure_session_async<'a>(
+    fn ensure_session<'a>(
         &'a self,
-        account: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectionScope, AccountSessionError>> + Send + 'a>>
-    {
-        Box::pin(async move { self.ensure_session(account) })
+        _account: &'a str,
+    ) -> AccountSessionFuture<'a, ConnectionScope> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/account-session",
+            ))
+        })
     }
     fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
         None
     }
-    fn provider_request(
-        &self,
+    fn provider_request<'a>(
+        &'a self,
         _request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/native-request",
-        ))
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/native-request",
+            ))
+        })
     }
     /// Durably deliver a VM provider notification through the retained account
     /// worker before the guest event cursor is acknowledged.
-    fn deliver_vm_notification(
-        &self,
-        _account: &str,
-        _agent_id: &str,
+    fn deliver_vm_notification<'a>(
+        &'a self,
+        _account: &'a str,
+        _agent_id: &'a str,
         _epoch: u64,
         _sequence: u64,
         _frame: studio_runtime_providers::Frame,
-    ) -> Result<(), AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "account-worker/vm-notification",
-        ))
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/vm-notification",
+            ))
+        })
     }
     /// Return the retained Claude control session for an account. The returned
     /// handle is bound to the live account connection and rejects stale receipts.
@@ -147,71 +150,96 @@ pub trait AccountSessionPort: Send + Sync {
             "provider-session/claude-controls",
         ))
     }
-    fn transfer_provider_request(
-        &self,
+    fn transfer_provider_request<'a>(
+        &'a self,
         _request: TransferProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "account-transfer/source-session-preflight",
-        ))
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-transfer/source-session-preflight",
+            ))
+        })
     }
-    fn callback_barrier(
-        &self,
-        _account: &str,
-        _expected_scope: &ConnectionScope,
+    fn callback_barrier<'a>(
+        &'a self,
+        _account: &'a str,
+        _expected_scope: &'a ConnectionScope,
         _deadline: std::time::Instant,
-    ) -> Result<(), AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/callback-barrier",
-        ))
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/callback-barrier",
+            ))
+        })
     }
-    fn recover_connection(
-        &self,
-        _account: &str,
-        _agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "account-worker/recovery-history",
-        ))
+    fn recover_connection<'a>(
+        &'a self,
+        _account: &'a str,
+        _agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/recovery-history",
+            ))
+        })
     }
-    fn login(&self, _request: LoginRequest) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/codex-login",
-        ))
+    fn login<'a>(&'a self, _request: LoginRequest) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/codex-login",
+            ))
+        })
     }
-    fn cancel_login(&self, _request: &str) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/codex-login",
-        ))
+    fn cancel_login<'a>(&'a self, _request: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/codex-login",
+            ))
+        })
     }
-    fn discover(&self) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/claude-discovery",
-        ))
+    /// Stop accepting and drain durable login/cancel operations before service shutdown.
+    fn shutdown_durable_operations<'a>(&'a self) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
     }
-    fn profile(&self, _request: ProfileRequest) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(
-            "provider-session/claude-profile-auth",
-        ))
+    fn discover<'a>(&'a self) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/claude-discovery",
+            ))
+        })
+    }
+    fn profile<'a>(&'a self, _request: ProfileRequest) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/claude-profile-auth",
+            ))
+        })
     }
     fn limits_snapshot(&self, _account: &str) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(LIMITS_REQUIRED))
     }
     /// Coalesce by account in the session owner. Return after enqueueing a bounded
     /// read; repeat refreshes must not create unbounded tasks or native requests.
-    fn refresh_limits(&self, _account: &str) -> Result<(), AccountSessionError> {
-        Err(AccountSessionError::Requires(LIMITS_REQUIRED))
+    fn refresh_limits<'a>(&'a self, _account: &'a str) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async { Err(AccountSessionError::Requires(LIMITS_REQUIRED)) })
     }
     /// Read only `account/rateLimits/read`, then commit telemetry and publish the
     /// fresh snapshot through the existing notification/usage-resume adapters.
-    fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires(LIMITS_REQUIRED))
+    fn read_limits<'a>(&'a self, _account: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async { Err(AccountSessionError::Requires(LIMITS_REQUIRED)) })
     }
     /// Read only when the latest account snapshot is outside its provider
     /// freshness window. Explicit callers such as reset preflight keep using
     /// `read_limits` to demand a fresh provider result.
-    fn read_limits_if_stale(&self, account: &str) -> Result<Value, AccountSessionError> {
-        self.read_limits(account)
+    fn read_limits_if_stale<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move { self.read_limits(account).await })
+    }
+    fn persist_limits<'a>(
+        &'a self,
+        _account: &'a str,
+        _value: &'a Value,
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async { Err(AccountSessionError::Requires(LIMITS_REQUIRED)) })
     }
 }
 
@@ -293,7 +321,7 @@ impl LimitsSnapshot {
 
 /// Same provider freshness window as the Python account runtime. A cold cache
 /// waits for the bounded read; stale data is returned while one refresh queues.
-pub fn limits(
+pub async fn limits(
     port: &dyn AccountSessionPort,
     account: &str,
     cached: bool,
@@ -303,12 +331,14 @@ pub fn limits(
     match snapshot.decision(cached, now) {
         LimitsDecision::Cached => Ok(snapshot.into_value()),
         LimitsDecision::Refresh => {
-            port.refresh_limits(account)?;
+            port.refresh_limits(account).await?;
             Ok(snapshot.into_value())
         }
-        LimitsDecision::Read => {
-            Ok(LimitsSnapshot::read(account, port.read_limits_if_stale(account)?)?.into_value())
-        }
+        LimitsDecision::Read => Ok(LimitsSnapshot::read(
+            account,
+            port.read_limits_if_stale(account).await?,
+        )?
+        .into_value()),
     }
 }
 
@@ -316,7 +346,10 @@ pub fn limits(
 mod limits_freshness_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{AccountSessionError, AccountSessionPort, LimitsDecision, LimitsSnapshot, limits};
+    use super::{
+        AccountSessionError, AccountSessionFuture, AccountSessionPort, LimitsDecision,
+        LimitsSnapshot, limits,
+    };
     use serde_json::{Value, json};
     use std::sync::{
         Mutex,
@@ -408,23 +441,25 @@ mod limits_freshness_tests {
             Ok(self.snapshot.lock().unwrap().clone())
         }
 
-        fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
-            self.reads.fetch_add(1, Ordering::SeqCst);
-            let now = super::timestamp().unwrap();
-            let result = snapshot(
-                json!(now),
-                json!(now),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            );
-            *self.snapshot.lock().unwrap() = result.clone();
-            Ok(result)
+        fn read_limits<'a>(&'a self, _account: &'a str) -> AccountSessionFuture<'a, Value> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                let now = super::timestamp().unwrap();
+                let result = snapshot(
+                    json!(now),
+                    json!(now),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                );
+                *self.snapshot.lock().unwrap() = result.clone();
+                Ok(result)
+            })
         }
     }
 
-    #[test]
-    fn cached_cold_fill_is_not_repeated_after_a_null_success() {
+    #[tokio::test]
+    async fn cached_cold_fill_is_not_repeated_after_a_null_success() {
         let port = ColdCachePort {
             snapshot: Mutex::new(snapshot(
                 Value::Null,
@@ -437,7 +472,7 @@ mod limits_freshness_tests {
         };
 
         for _ in 0..5 {
-            limits(&port, "default", true).unwrap();
+            limits(&port, "default", true).await.unwrap();
         }
 
         assert_eq!(port.reads.load(Ordering::SeqCst), 1);
@@ -600,83 +635,94 @@ pub struct AccountSessionRuntime {
     refreshed_limits: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Value>>>,
     pending_limit_refreshes: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     limits_read_locks:
-        Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<std::sync::Mutex<()>>>>>,
+        Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     continuation_wake: Option<Arc<Notify>>,
+    durable_operations: Arc<tokio::sync::Mutex<Option<tokio::task::JoinSet<()>>>>,
 }
 
-fn persist_limits(
-    store: &studio_runtime_store::RuntimeStore,
-    refreshed_limits: &std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
-    account: &str,
-    value: &Value,
-    continuation_wake: Option<&Notify>,
+async fn spawn_account_driver<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, AccountSessionError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| AccountSessionError::Persistence)
+}
+
+async fn persist_limits(
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    refreshed_limits: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Value>>>,
+    account: String,
+    value: Value,
+    continuation_wake: Option<Arc<Notify>>,
 ) -> Result<(), AccountSessionError> {
     use rusqlite::OptionalExtension;
     use studio_runtime_store::SyncDocumentsRepository;
-    let mut refreshed = refreshed_limits
-        .lock()
-        .map_err(|_| AccountSessionError::Persistence)?;
     let now = timestamp()?;
-    let result = store.transaction(|transaction| {
-        let raw = transaction
-            .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let mut by_account = raw
-            .map(|raw| serde_json::from_str::<Value>(&raw))
-            .transpose()
-            .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
-                scope: "workspace".into(),
-                id: "current".into(),
-            })?
-            .and_then(|entity| entity.pointer("/value/rateLimitsByAccount").cloned())
-            .unwrap_or_else(|| serde_json::json!({}));
-        let by_account = by_account
-            .as_object_mut()
-            .ok_or_else(|| studio_runtime_store::StoreError::InvalidSyncObject {
-                scope: "workspace".into(),
-                id: "current".into(),
-            })?;
-        by_account.insert(account.to_owned(), value.clone());
-        let mut patch = serde_json::json!({"rateLimitsByAccount":by_account});
-        if account == "default" {
-            patch["rateLimits"] = value.clone();
-        }
-        SyncDocumentsRepository::patch_entity(transaction, "workspace", "current", patch)
-            .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
-                scope: "workspace".into(),
-                id: "current".into(),
-            })?;
-        crate::continuation_runtime::stage_limits_changed_for_account(
-            transaction,
-            account,
-            value,
-            now,
+    let transaction_account = account.clone();
+    let transaction_value = value.clone();
+    let cache_account = account;
+    let cache_value = value;
+    store
+        .transaction_with_post_commit(
+            move |transaction| {
+                let raw = transaction
+                    .query_row(
+                        "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let mut by_account = raw
+                    .map(|raw| serde_json::from_str::<Value>(&raw))
+                    .transpose()
+                    .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                        scope: "workspace".into(),
+                        id: "current".into(),
+                    })?
+                    .and_then(|entity| entity.pointer("/value/rateLimitsByAccount").cloned())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let by_account = by_account
+                    .as_object_mut()
+                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidSyncObject {
+                        scope: "workspace".into(),
+                        id: "current".into(),
+                    })?;
+                by_account.insert(transaction_account.clone(), transaction_value.clone());
+                let mut patch = serde_json::json!({"rateLimitsByAccount":by_account});
+                if transaction_account == "default" {
+                    patch["rateLimits"] = transaction_value.clone();
+                }
+                SyncDocumentsRepository::patch_entity(transaction, "workspace", "current", patch)
+                    .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                        scope: "workspace".into(),
+                        id: "current".into(),
+                    })?;
+                crate::continuation_runtime::stage_limits_changed_for_account(
+                    transaction,
+                    &transaction_account,
+                    &transaction_value,
+                    now,
+                )
+                .map_err(|error| {
+                    studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                })
+            },
+            move |changed| {
+                refreshed_limits
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(cache_account, cache_value);
+                if *changed && let Some(wake) = continuation_wake {
+                    wake.notify_one();
+                }
+            },
         )
-        .map_err(|error| {
-            studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
-        })
-    });
-    let changed = result.map_err(|_| AccountSessionError::Persistence)?;
-    refreshed.insert(account.to_owned(), value.clone());
-    if changed && let Some(wake) = continuation_wake {
-        wake.notify_one();
-    }
+        .await
+        .map_err(|_| AccountSessionError::Persistence)?;
     Ok(())
 }
 
 impl AccountSessionRuntime {
-    fn block_on_retained<F: std::future::Future>(&self, future: F) -> F::Output {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.runtime.block_on(future))
-        } else {
-            self.runtime.block_on(future)
-        }
-    }
-
     pub fn new(
         driver: Arc<AccountDriver>,
         session: Option<Arc<dyn RetainedAccountSession>>,
@@ -700,6 +746,9 @@ impl AccountSessionRuntime {
             )),
             limits_read_locks: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             continuation_wake: None,
+            durable_operations: Arc::new(tokio::sync::Mutex::new(
+                Some(tokio::task::JoinSet::new()),
+            )),
         }
     }
     pub fn with_limits(mut self, policy: Arc<crate::account_policy::AccountPolicyState>) -> Self {
@@ -714,23 +763,62 @@ impl AccountSessionRuntime {
         self.continuation_wake = Some(wake);
         self
     }
-    fn persist_limits(&self, account: &str, value: &Value) -> Result<(), AccountSessionError> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))?;
-        persist_limits(
-            store,
-            &self.refreshed_limits,
-            account,
-            value,
-            self.continuation_wake.as_deref(),
-        )
+    async fn run_durable_operation<T: Send + 'static>(
+        &self,
+        operation: impl Future<Output = Result<T, AccountSessionError>> + Send + 'static,
+    ) -> Result<T, AccountSessionError> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        {
+            let mut owner = self.durable_operations.lock().await;
+            let tasks = owner.as_mut().ok_or(AccountSessionError::Requires(
+                "provider-session/durable-operations-shutdown",
+            ))?;
+            while let Some(result) = tasks.try_join_next() {
+                result.map_err(|_| AccountSessionError::Unknown)?;
+            }
+            tasks.spawn(async move {
+                let result = operation.await;
+                let _ignored = reply.send(result);
+            });
+        }
+        receiver.await.map_err(|_| AccountSessionError::Unknown)?
+    }
+    async fn drain_durable_operations(&self) -> Result<(), AccountSessionError> {
+        let mut owner = self.durable_operations.lock().await;
+        let Some(mut tasks) = owner.take() else {
+            return Ok(());
+        };
+        drop(owner);
+        let mut failed = false;
+        while let Some(result) = tasks.join_next().await {
+            failed |= result.is_err();
+        }
+        if failed {
+            Err(AccountSessionError::Unknown)
+        } else {
+            Ok(())
+        }
+    }
+    async fn persist_limits(
+        &self,
+        account: &str,
+        value: &Value,
+    ) -> Result<(), AccountSessionError> {
+        let store = Arc::clone(
+            self.store
+                .as_ref()
+                .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))?,
+        );
+        let refreshed_limits = Arc::clone(&self.refreshed_limits);
+        let account = account.to_owned();
+        let value = value.clone();
+        let continuation_wake = self.continuation_wake.clone();
+        persist_limits(store, refreshed_limits, account, value, continuation_wake).await
     }
     fn limits_read_lock(
         &self,
         account: &str,
-    ) -> Result<Arc<std::sync::Mutex<()>>, AccountSessionError> {
+    ) -> Result<Arc<tokio::sync::Mutex<()>>, AccountSessionError> {
         let mut locks = self
             .limits_read_locks
             .lock()
@@ -738,10 +826,10 @@ impl AccountSessionRuntime {
         Ok(Arc::clone(
             locks
                 .entry(account.to_owned())
-                .or_insert_with(|| Arc::new(std::sync::Mutex::new(()))),
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
         ))
     }
-    fn exchange(
+    async fn exchange(
         &self,
         account: &str,
         _for_login: bool,
@@ -758,7 +846,7 @@ impl AccountSessionRuntime {
         ))?;
         let deadline = Instant::now() + timeout;
         let expected_scope = session.current_scope(account);
-        let receipt = self.block_on_retained(async {
+        let receipt = {
             tokio::time::timeout_at(
                 deadline,
                 session.request(ProviderRequest {
@@ -773,7 +861,7 @@ impl AccountSessionRuntime {
                 }),
             )
             .await
-        });
+        };
         match receipt {
             Ok(Ok(receipt))
                 if provider_receipt_matches(
@@ -795,6 +883,50 @@ impl AccountSessionRuntime {
         Ok(
             serde_json::json!({"accounts":snapshot.accounts,"archivedAccounts":snapshot.archived_accounts,"defaultAccountKey":snapshot.default_account_key,"logins":snapshot.logins,"supportsDisconnect":true,"supportsDelete":true}),
         )
+    }
+    fn discover_sync(&self) -> Result<Value, AccountSessionError> {
+        self.driver.discover_codex().map_err(account_error)?;
+        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
+            let home = self.home.join(".claude");
+            let metadata = SystemProviderAuthReader.read(&AuthProfile {
+                provider: "claude".into(),
+                home: home.clone(),
+                claude_options: None,
+            });
+            self.driver
+                .discover_claude_verified(&home, &metadata)
+                .map_err(mutation_error)?;
+        }
+        self.accounts()
+    }
+    fn profile_sync(&self, request: ProfileRequest) -> Result<Value, AccountSessionError> {
+        let options = normalize_profile(request.options.unwrap_or_default(), &self.home)?;
+        if let Some(account) = request.account_key {
+            self.driver
+                .update_claude_settings(&account, Value::Object(options), request.label.as_deref())
+                .map_err(mutation_error)?;
+        } else {
+            let home = options
+                .get("configDir")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+                .unwrap_or_else(|| self.home.join(".claude"));
+            let metadata = SystemProviderAuthReader.read(&AuthProfile {
+                provider: "claude".into(),
+                home: home.clone(),
+                claude_options: Some(Value::Object(options.clone())),
+            });
+            self.driver
+                .register_claude_verified(
+                    options,
+                    request.label.as_deref().unwrap_or("Claude Code"),
+                    &home,
+                    &metadata,
+                )
+                .map_err(|_| AccountSessionError::Refused("Cannot register this Claude profile"))?;
+        }
+        self.accounts()
     }
     fn prepare_login_home(&self, request: &str) -> Result<PathBuf, AccountSessionError> {
         let accounts_root = self
@@ -900,24 +1032,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         self.session.as_ref()?.current_scope(account)
     }
 
-    fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "provider-session/account-session",
-        ))?;
-        let scope = self.block_on_retained(session.ensure_session(account.to_owned()))?;
-        if scope.account != account {
-            return Err(AccountSessionError::Refused(
-                "Provider session account mismatch",
-            ));
-        }
-        Ok(scope)
-    }
-
-    fn ensure_session_async<'a>(
-        &'a self,
-        account: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<ConnectionScope, AccountSessionError>> + Send + 'a>>
-    {
+    fn ensure_session<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, ConnectionScope> {
         Box::pin(async move {
             let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
                 "provider-session/account-session",
@@ -944,167 +1059,186 @@ impl AccountSessionPort for AccountSessionRuntime {
             .claude_control_session(account)
     }
 
-    fn recover_connection(
-        &self,
-        account: &str,
-        agent_id: &str,
-    ) -> Result<Value, AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "account-worker/recovery-history",
-        ))?;
-        let Some(expected) = session.current_scope(account) else {
-            return Ok(serde_json::json!({"status":"superseded"}));
-        };
-        self.block_on_retained(session.recover_connection(account.to_owned(), agent_id.to_owned()))
-            .and_then(|result| {
-                if session.current_scope(account).as_ref() == Some(&expected) {
-                    Ok(result)
-                } else {
-                    Err(AccountSessionError::Unknown)
-                }
-            })
-    }
-
-    fn provider_request(
-        &self,
-        request: ProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "provider-session/native-request",
-        ))?;
-        let deadline = request.deadline;
-        let operation = request.operation.clone();
-        let account = request.account.clone();
-        let expected_scope = request
-            .expected_scope
-            .clone()
-            .or_else(|| session.current_scope(&account));
-        if expected_scope
-            .as_ref()
-            .is_some_and(|scope| scope.account != account)
-        {
-            return Err(AccountSessionError::Refused(
-                "Provider scope does not belong to the account",
-            ));
-        }
-        if expected_scope
-            .as_ref()
-            .is_some_and(|scope| session.current_scope(&account).as_ref() != Some(scope))
-        {
-            // A provider connection is process-local. Python settles work tied
-            // to a disconnected connection as interrupted/unknown instead of
-            // handing it to a replacement connection.
-            return Err(AccountSessionError::Unknown);
-        }
-        let mut request = request;
-        request.expected_scope = expected_scope.clone();
-        match self.block_on_retained(async {
-            tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                session.request(request),
-            )
-            .await
-        }) {
-            Ok(Ok(receipt))
-                if provider_receipt_matches(
-                    &receipt,
-                    &account,
-                    &operation,
-                    expected_scope.as_ref(),
-                )
-                .is_ok() =>
-            {
-                Ok(receipt)
-            }
-            Ok(Err(error)) => Err(error),
-            _ => Err(AccountSessionError::Unknown),
-        }
-    }
-
-    fn deliver_vm_notification(
-        &self,
-        account: &str,
-        agent_id: &str,
-        epoch: u64,
-        sequence: u64,
-        frame: studio_runtime_providers::Frame,
-    ) -> Result<(), AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "account-worker/vm-notification",
-        ))?;
-        let scope = session
-            .current_scope(account)
-            .ok_or(AccountSessionError::Unknown)?;
-        self.block_on_retained(session.deliver_vm_notification(
-            account.to_owned(),
-            agent_id.to_owned(),
-            epoch,
-            sequence,
-            frame,
-        ))
-        .and_then(|()| {
-            if session.current_scope(account).as_ref() == Some(&scope) {
-                Ok(())
+    fn recover_connection<'a>(
+        &'a self,
+        account: &'a str,
+        agent_id: &'a str,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "account-worker/recovery-history",
+            ))?;
+            let Some(expected) = session.current_scope(account) else {
+                return Ok(serde_json::json!({"status":"superseded"}));
+            };
+            let result = session
+                .recover_connection(account.to_owned(), agent_id.to_owned())
+                .await?;
+            if session.current_scope(account).as_ref() == Some(&expected) {
+                Ok(result)
             } else {
                 Err(AccountSessionError::Unknown)
             }
         })
     }
-    fn transfer_provider_request(
-        &self,
-        request: TransferProviderRequest,
-    ) -> Result<SessionReceipt, AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "account-transfer/source-session-preflight",
-        ))?;
-        let deadline = request.deadline;
-        let operation = request.operation.clone();
-        let account = request.source_account.clone();
-        let scope = request.expected_scope.clone();
-        match self.block_on_retained(async {
-            tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                session.transfer_request(request),
-            )
-            .await
-        }) {
-            Ok(Ok(receipt))
-                if receipt.operation == operation
-                    && receipt.scope.account == account
-                    && receipt.scope == scope =>
+
+    fn provider_request<'a>(
+        &'a self,
+        request: ProviderRequest,
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "provider-session/native-request",
+            ))?;
+            let deadline = request.deadline;
+            let operation = request.operation.clone();
+            let account = request.account.clone();
+            let expected_scope = request
+                .expected_scope
+                .clone()
+                .or_else(|| session.current_scope(&account));
+            if expected_scope
+                .as_ref()
+                .is_some_and(|scope| scope.account != account)
             {
-                Ok(receipt)
+                return Err(AccountSessionError::Refused(
+                    "Provider scope does not belong to the account",
+                ));
             }
-            Ok(Err(error)) => Err(error),
-            _ => Err(AccountSessionError::Unknown),
-        }
+            if expected_scope
+                .as_ref()
+                .is_some_and(|scope| session.current_scope(&account).as_ref() != Some(scope))
+            {
+                // A provider connection is process-local. Python settles work tied
+                // to a disconnected connection as interrupted/unknown instead of
+                // handing it to a replacement connection.
+                return Err(AccountSessionError::Unknown);
+            }
+            let mut request = request;
+            request.expected_scope = expected_scope.clone();
+            match {
+                tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
+                    session.request(request),
+                )
+                .await
+            } {
+                Ok(Ok(receipt))
+                    if provider_receipt_matches(
+                        &receipt,
+                        &account,
+                        &operation,
+                        expected_scope.as_ref(),
+                    )
+                    .is_ok() =>
+                {
+                    Ok(receipt)
+                }
+                Ok(Err(error)) => Err(error),
+                _ => Err(AccountSessionError::Unknown),
+            }
+        })
     }
-    fn callback_barrier(
-        &self,
-        account: &str,
-        expected_scope: &ConnectionScope,
+
+    fn deliver_vm_notification<'a>(
+        &'a self,
+        account: &'a str,
+        agent_id: &'a str,
+        epoch: u64,
+        sequence: u64,
+        frame: studio_runtime_providers::Frame,
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "account-worker/vm-notification",
+            ))?;
+            let scope = session
+                .current_scope(account)
+                .ok_or(AccountSessionError::Unknown)?;
+            session
+                .deliver_vm_notification(
+                    account.to_owned(),
+                    agent_id.to_owned(),
+                    epoch,
+                    sequence,
+                    frame,
+                )
+                .await?;
+            {
+                if session.current_scope(account).as_ref() == Some(&scope) {
+                    Ok(())
+                } else {
+                    Err(AccountSessionError::Unknown)
+                }
+            }
+        })
+    }
+    fn transfer_provider_request<'a>(
+        &'a self,
+        request: TransferProviderRequest,
+    ) -> AccountSessionFuture<'a, SessionReceipt> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "account-transfer/source-session-preflight",
+            ))?;
+            let deadline = request.deadline;
+            let operation = request.operation.clone();
+            let account = request.source_account.clone();
+            let scope = request.expected_scope.clone();
+            match {
+                tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
+                    session.transfer_request(request),
+                )
+                .await
+            } {
+                Ok(Ok(receipt))
+                    if receipt.operation == operation
+                        && receipt.scope.account == account
+                        && receipt.scope == scope =>
+                {
+                    Ok(receipt)
+                }
+                Ok(Err(error)) => Err(error),
+                _ => Err(AccountSessionError::Unknown),
+            }
+        })
+    }
+    fn callback_barrier<'a>(
+        &'a self,
+        account: &'a str,
+        expected_scope: &'a ConnectionScope,
         deadline: std::time::Instant,
-    ) -> Result<(), AccountSessionError> {
-        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
-            "provider-session/callback-barrier",
-        ))?;
-        let wait = self.block_on_retained(async {
-            tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                session.callback_barrier(account.to_owned(), expected_scope.clone(), deadline),
-            )
-            .await
-        });
-        match wait {
-            Ok(result) => result,
-            Err(_) => Err(AccountSessionError::Unknown),
-        }
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "provider-session/callback-barrier",
+            ))?;
+            let wait = {
+                tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
+                    session.callback_barrier(account.to_owned(), expected_scope.clone(), deadline),
+                )
+                .await
+            };
+            match wait {
+                Ok(result) => result,
+                Err(_) => Err(AccountSessionError::Unknown),
+            }
+        })
     }
-    fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-        read_limits_with_freshness(self, account, false)
+    fn read_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(read_limits_with_freshness(self, account, false))
     }
-    fn read_limits_if_stale(&self, account: &str) -> Result<Value, AccountSessionError> {
-        read_limits_with_freshness(self, account, true)
+    fn read_limits_if_stale<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+        Box::pin(read_limits_with_freshness(self, account, true))
+    }
+    fn persist_limits<'a>(
+        &'a self,
+        account: &'a str,
+        value: &'a Value,
+    ) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move { self.persist_limits(account, value).await })
     }
     fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
         if let Some(value) = self
@@ -1120,238 +1254,269 @@ impl AccountSessionPort for AccountSessionRuntime {
             .map(|policy| policy.limits(account))
             .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))
     }
-    fn refresh_limits(&self, account: &str) -> Result<(), AccountSessionError> {
-        let account = account.to_owned();
-        {
-            let mut pending = self
-                .pending_limit_refreshes
-                .lock()
-                .map_err(|_| AccountSessionError::Persistence)?;
-            if !pending.insert(account.clone()) {
-                return Ok(());
-            }
-        }
-        let runtime = self.clone();
-        let pending = Arc::clone(&self.pending_limit_refreshes);
-        self.runtime.spawn(async move {
-            let refresh_account = account.clone();
-            match tokio::task::spawn_blocking(move || {
-                AccountSessionPort::read_limits_if_stale(&runtime, &refresh_account)
-            })
-            .await
+    fn refresh_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            let account = account.to_owned();
             {
-                Ok(Ok(_)) => {}
-                Ok(Err(_)) | Err(_) => {
-                    // A refresh is best-effort; this request keeps its existing
-                    // cached limits and the next read may retry after pending clears.
+                let mut pending = self
+                    .pending_limit_refreshes
+                    .lock()
+                    .map_err(|_| AccountSessionError::Persistence)?;
+                if !pending.insert(account.clone()) {
+                    return Ok(());
                 }
             }
-            if let Ok(mut pending) = pending.lock() {
-                pending.remove(&account);
-            }
-        });
-        Ok(())
-    }
-    fn login(&self, mut request: LoginRequest) -> Result<Value, AccountSessionError> {
-        request.login_id = uuid::Uuid::parse_str(&request.login_id)
-            .map_err(|_| AccountSessionError::Refused("Supply a UUID request_id"))?
-            .to_string();
-        if let Some(receipt) = self
-            .driver
-            .codex_login_receipt(&request)
-            .map_err(mutation_error)?
-        {
-            return self
-                .driver
-                .reconcile_codex_login(&request.login_id)
-                .map(|reconciled| public_login(reconciled.unwrap_or(receipt)))
-                .map_err(mutation_error);
-        }
-        if self.session.is_none() {
-            return Err(AccountSessionError::Requires(
-                "provider-session/codex-login",
-            ));
-        }
-        let home = if request.account_key.is_none() {
-            self.prepare_login_home(&request.login_id)?
-        } else {
-            self.base_home.clone()
-        };
-        let reservation = self
-            .driver
-            .reserve_codex_login(&request, &home, timestamp()?)
-            .map_err(mutation_error)?;
-        let receipt = match reservation {
-            LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
-            LoginReservation::Dispatch(receipt) => receipt,
-        };
-        let account = receipt["accountKey"]
-            .as_str()
-            .ok_or_else(|| AccountSessionError::InvalidResponse("/accountKey".into()))?;
-        let response = self.exchange(
-            account,
-            request.account_key.is_some(),
-            request.login_id.clone(),
-            "account/login/start",
-            serde_json::json!({"type":"chatgptDeviceCode"}),
-            LOGIN_TIMEOUT,
-        );
-        let (result, sent) = match response {
-            Ok(response) => (
-                if response.certainty == RequestCertainty::Written {
-                    match response.result {
-                        Some(ProviderResponse::Reply(value)) => Some(value),
-                        Some(ProviderResponse::Rejected(_)) | None => None,
+            let runtime = self.clone();
+            let pending = Arc::clone(&self.pending_limit_refreshes);
+            let handle = runtime.runtime.clone();
+            handle.spawn(async move {
+                match AccountSessionPort::read_limits_if_stale(&runtime, &account).await {
+                    Ok(_) => {}
+                    Err(_) => {
+                        // A refresh is best-effort; this request keeps its existing
+                        // cached limits and the next read may retry after pending clears.
                     }
-                } else {
-                    None
-                },
-                response.certainty != RequestCertainty::NotSent,
-            ),
-            // The durable login reservation already exists. Any adapter error
-            // after this point lacks proof that the provider never received
-            // the request, so keep the attempt uncertain.
-            Err(_) => (None, true),
-        };
-        self.driver
-            .finish_codex_login(
-                &request.login_id,
-                account,
-                result.as_ref(),
-                sent,
-                timestamp()?,
-            )
-            .map(public_login)
-            .map_err(mutation_error)
-    }
-    fn cancel_login(&self, request: &str) -> Result<Value, AccountSessionError> {
-        if let Some(receipt) = self
-            .driver
-            .reconcile_codex_login(request)
-            .map_err(mutation_error)?
-        {
-            return Ok(public_login(receipt));
-        }
-        if self.session.is_none() {
-            let receipt = self
-                .driver
-                .snapshot()
-                .map_err(account_error)?
-                .logins
-                .into_iter()
-                .find(|receipt| receipt["requestId"] == request)
-                .ok_or(AccountSessionError::Refused("Unknown sign-in request"))?;
-            if matches!(
-                receipt["status"].as_str(),
-                Some("ready" | "duplicate" | "cancelled" | "error")
-            ) || (receipt["status"] == "uncertain"
-                && receipt.get("loginId").is_some_and(|id| !id.is_null()))
-            {
-                return Ok(public_login(receipt));
-            }
-            if receipt.get("loginId").is_none_or(Value::is_null) {
-                return Err(account_error(AccountDriverError::LoginResponseUnknown));
-            }
-            return Err(AccountSessionError::Requires(
-                "provider-session/codex-login",
-            ));
-        }
-        let receipt = match self
-            .driver
-            .reserve_codex_cancel(request)
-            .map_err(mutation_error)?
-        {
-            LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
-            LoginReservation::Dispatch(receipt) => receipt,
-        };
-        let account = receipt["accountKey"]
-            .as_str()
-            .ok_or_else(|| AccountSessionError::InvalidResponse("/accountKey".into()))?;
-        let response = self.exchange(
-            account,
-            receipt.get("reauthAccountKey").is_some(),
-            format!("{request}:cancel"),
-            "account/login/cancel",
-            serde_json::json!({"loginId":receipt["loginId"]}),
-            CANCEL_TIMEOUT,
-        );
-        if response
-            .as_ref()
-            .is_ok_and(|receipt| receipt.certainty == RequestCertainty::NotSent)
-        {
-            return self
-                .driver
-                .finish_codex_cancel_not_sent(request, account)
-                .map(public_login)
-                .map_err(mutation_error);
-        }
-        let confirmed = response.ok().is_some_and(|receipt| {
-            receipt.certainty == RequestCertainty::Written
-                && matches!(
-                    receipt.result.as_ref().and_then(|result| match result {
-                        ProviderResponse::Reply(value) => value["status"].as_str(),
-                        ProviderResponse::Rejected(_) => None,
-                    }),
-                    Some("canceled" | "notFound")
-                )
-        });
-        self.driver
-            .finish_codex_cancel(request, account, confirmed)
-            .map(public_login)
-            .map_err(mutation_error)
-    }
-    fn discover(&self) -> Result<Value, AccountSessionError> {
-        self.driver.discover_codex().map_err(account_error)?;
-        if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
-            let home = self.home.join(".claude");
-            let metadata = SystemProviderAuthReader.read(&AuthProfile {
-                provider: "claude".into(),
-                home: home.clone(),
-                claude_options: None,
+                }
+                if let Ok(mut pending) = pending.lock() {
+                    pending.remove(&account);
+                }
             });
-            self.driver
-                .discover_claude_verified(&home, &metadata)
-                .map_err(mutation_error)?;
-        }
-        self.accounts()
+            Ok(())
+        })
     }
-    fn profile(&self, request: ProfileRequest) -> Result<Value, AccountSessionError> {
-        let options = normalize_profile(request.options.unwrap_or_default(), &self.home)?;
-        if let Some(account) = request.account_key {
-            self.driver
-                .update_claude_settings(&account, Value::Object(options), request.label.as_deref())
-                .map_err(mutation_error)?;
-        } else {
-            let home = options
-                .get("configDir")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-                .unwrap_or_else(|| self.home.join(".claude"));
-            let metadata = SystemProviderAuthReader.read(&AuthProfile {
-                provider: "claude".into(),
-                home: home.clone(),
-                claude_options: Some(Value::Object(options.clone())),
-            });
-            self.driver
-                .register_claude_verified(
-                    options,
-                    request.label.as_deref().unwrap_or("Claude Code"),
-                    &home,
-                    &metadata,
-                )
-                .map_err(|_| AccountSessionError::Refused("Cannot register this Claude profile"))?;
-        }
-        self.accounts()
+    fn login<'a>(&'a self, request: LoginRequest) -> AccountSessionFuture<'a, Value> {
+        let runtime = self.clone();
+        Box::pin(async move {
+            let task_runtime = runtime.clone();
+            runtime
+                .run_durable_operation(async move {
+                    let runtime = task_runtime;
+                    let mut request = request;
+                    request.login_id = uuid::Uuid::parse_str(&request.login_id)
+                        .map_err(|_| AccountSessionError::Refused("Supply a UUID request_id"))?
+                        .to_string();
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_for_receipt = request.clone();
+                    if let Some(receipt) = spawn_account_driver(move || {
+                        driver.codex_login_receipt(&request_for_receipt)
+                    })
+                    .await?
+                    .map_err(mutation_error)?
+                    {
+                        let driver = Arc::clone(&runtime.driver);
+                        let request_id = request.login_id.clone();
+                        return spawn_account_driver(move || {
+                            driver.reconcile_codex_login(&request_id)
+                        })
+                        .await?
+                        .map(|reconciled| public_login(reconciled.unwrap_or(receipt)))
+                        .map_err(mutation_error);
+                    }
+                    if runtime.session.is_none() {
+                        return Err(AccountSessionError::Requires(
+                            "provider-session/codex-login",
+                        ));
+                    }
+                    let home = if request.account_key.is_none() {
+                        let runtime = runtime.clone();
+                        let request_id = request.login_id.clone();
+                        spawn_account_driver(move || runtime.prepare_login_home(&request_id))
+                            .await??
+                    } else {
+                        runtime.base_home.clone()
+                    };
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_for_reservation = request.clone();
+                    let now = timestamp()?;
+                    let reservation = spawn_account_driver(move || {
+                        driver.reserve_codex_login(&request_for_reservation, &home, now)
+                    })
+                    .await?
+                    .map_err(mutation_error)?;
+                    let receipt = match reservation {
+                        LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
+                        LoginReservation::Dispatch(receipt) => receipt,
+                    };
+                    let account = receipt["accountKey"].as_str().ok_or_else(|| {
+                        AccountSessionError::InvalidResponse("/accountKey".into())
+                    })?;
+                    let response = runtime
+                        .exchange(
+                            account,
+                            request.account_key.is_some(),
+                            request.login_id.clone(),
+                            "account/login/start",
+                            serde_json::json!({"type":"chatgptDeviceCode"}),
+                            LOGIN_TIMEOUT,
+                        )
+                        .await;
+                    let (result, sent) = match response {
+                        Ok(response) => (
+                            if response.certainty == RequestCertainty::Written {
+                                match response.result {
+                                    Some(ProviderResponse::Reply(value)) => Some(value),
+                                    Some(ProviderResponse::Rejected(_)) | None => None,
+                                }
+                            } else {
+                                None
+                            },
+                            response.certainty != RequestCertainty::NotSent,
+                        ),
+                        // The durable login reservation already exists. Any adapter error
+                        // after this point lacks proof that the provider never received
+                        // the request, so keep the attempt uncertain.
+                        Err(_) => (None, true),
+                    };
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_id = request.login_id.clone();
+                    let account = account.to_owned();
+                    let finished_at = timestamp()?;
+                    spawn_account_driver(move || {
+                        driver.finish_codex_login(
+                            &request_id,
+                            &account,
+                            result.as_ref(),
+                            sent,
+                            finished_at,
+                        )
+                    })
+                    .await?
+                    .map(public_login)
+                    .map_err(mutation_error)
+                })
+                .await
+        })
+    }
+    fn cancel_login<'a>(&'a self, request: &'a str) -> AccountSessionFuture<'a, Value> {
+        let runtime = self.clone();
+        let request = request.to_owned();
+        Box::pin(async move {
+            let task_runtime = runtime.clone();
+            runtime
+                .run_durable_operation(async move {
+                    let runtime = task_runtime;
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_id = request.to_owned();
+                    if let Some(receipt) =
+                        spawn_account_driver(move || driver.reconcile_codex_login(&request_id))
+                            .await?
+                            .map_err(mutation_error)?
+                    {
+                        return Ok(public_login(receipt));
+                    }
+                    if runtime.session.is_none() {
+                        let driver = Arc::clone(&runtime.driver);
+                        let receipt = spawn_account_driver(move || driver.snapshot())
+                            .await?
+                            .map_err(account_error)?
+                            .logins
+                            .into_iter()
+                            .find(|receipt| receipt["requestId"] == request)
+                            .ok_or(AccountSessionError::Refused("Unknown sign-in request"))?;
+                        if matches!(
+                            receipt["status"].as_str(),
+                            Some("ready" | "duplicate" | "cancelled" | "error")
+                        ) || (receipt["status"] == "uncertain"
+                            && receipt.get("loginId").is_some_and(|id| !id.is_null()))
+                        {
+                            return Ok(public_login(receipt));
+                        }
+                        if receipt.get("loginId").is_none_or(Value::is_null) {
+                            return Err(account_error(AccountDriverError::LoginResponseUnknown));
+                        }
+                        return Err(AccountSessionError::Requires(
+                            "provider-session/codex-login",
+                        ));
+                    }
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_id = request.to_owned();
+                    let reservation =
+                        spawn_account_driver(move || driver.reserve_codex_cancel(&request_id))
+                            .await?
+                            .map_err(mutation_error)?;
+                    let receipt = match reservation {
+                        LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
+                        LoginReservation::Dispatch(receipt) => receipt,
+                    };
+                    let account = receipt["accountKey"].as_str().ok_or_else(|| {
+                        AccountSessionError::InvalidResponse("/accountKey".into())
+                    })?;
+                    let response = runtime
+                        .exchange(
+                            account,
+                            receipt.get("reauthAccountKey").is_some(),
+                            format!("{request}:cancel"),
+                            "account/login/cancel",
+                            serde_json::json!({"loginId":receipt["loginId"]}),
+                            CANCEL_TIMEOUT,
+                        )
+                        .await;
+                    if response
+                        .as_ref()
+                        .is_ok_and(|receipt| receipt.certainty == RequestCertainty::NotSent)
+                    {
+                        let driver = Arc::clone(&runtime.driver);
+                        let request_id = request.to_owned();
+                        let account = account.to_owned();
+                        return spawn_account_driver(move || {
+                            driver.finish_codex_cancel_not_sent(&request_id, &account)
+                        })
+                        .await?
+                        .map(public_login)
+                        .map_err(mutation_error);
+                    }
+                    let confirmed = response.ok().is_some_and(|receipt| {
+                        receipt.certainty == RequestCertainty::Written
+                            && matches!(
+                                receipt.result.as_ref().and_then(|result| match result {
+                                    ProviderResponse::Reply(value) => value["status"].as_str(),
+                                    ProviderResponse::Rejected(_) => None,
+                                }),
+                                Some("canceled" | "notFound")
+                            )
+                    });
+                    let driver = Arc::clone(&runtime.driver);
+                    let request_id = request.to_owned();
+                    let account = account.to_owned();
+                    spawn_account_driver(move || {
+                        driver.finish_codex_cancel(&request_id, &account, confirmed)
+                    })
+                    .await?
+                    .map(public_login)
+                    .map_err(mutation_error)
+                })
+                .await
+        })
+    }
+    fn shutdown_durable_operations<'a>(&'a self) -> AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            self.drain_durable_operations().await?;
+            Ok(())
+        })
+    }
+    fn discover<'a>(&'a self) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            let runtime = self.clone();
+            Ok(spawn_account_driver(move || runtime.discover_sync()).await??)
+        })
+    }
+    fn profile<'a>(&'a self, request: ProfileRequest) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            let runtime = self.clone();
+            Ok(spawn_account_driver(move || runtime.profile_sync(request)).await??)
+        })
     }
 }
 
-fn read_limits_with_freshness(
+async fn read_limits_with_freshness(
     runtime: &AccountSessionRuntime,
     account: &str,
     skip_if_fresh: bool,
 ) -> Result<Value, AccountSessionError> {
-    let snapshot = runtime.driver.snapshot().map_err(account_error)?;
+    let driver = Arc::clone(&runtime.driver);
+    let snapshot = spawn_account_driver(move || driver.snapshot())
+        .await?
+        .map_err(account_error)?;
     if !snapshot
         .accounts
         .iter()
@@ -1361,17 +1526,15 @@ fn read_limits_with_freshness(
         return Err(AccountSessionError::Refused("Unknown Codex account"));
     }
     let read_lock = runtime.limits_read_lock(account)?;
-    let _read_guard = read_lock
-        .lock()
-        .map_err(|_| AccountSessionError::Persistence)?;
+    let _read_guard = read_lock.lock().await;
     let before = runtime.limits_snapshot(account)?;
     let before = LimitsSnapshot::read(account, before)?;
     if skip_if_fresh && before.is_fresh_for_provider(timestamp()?) {
         return Ok(before.into_value());
     }
     let before_value = before.into_value();
-    let provider_read = (|| {
-        let scope = runtime.ensure_session(account)?;
+    let provider_read = async {
+        let scope = AccountSessionPort::ensure_session(runtime, account).await?;
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let operation = format!(
             "limits-read:{account}:{}:{}",
@@ -1381,16 +1544,20 @@ fn read_limits_with_freshness(
                 .as_nanos(),
             SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        let receipt = runtime.provider_request(ProviderRequest {
-            account: account.to_owned(),
-            operation: operation.clone(),
-            actor: None,
-            expected_scope: Some(scope.clone()),
-            deleted_actor_session: None,
-            method: Method::AccountRateLimitsRead,
-            params: serde_json::json!({}),
-            deadline: std::time::Instant::now() + Duration::from_secs(10),
-        })?;
+        let receipt = AccountSessionPort::provider_request(
+            runtime,
+            ProviderRequest {
+                account: account.to_owned(),
+                operation: operation.clone(),
+                actor: None,
+                expected_scope: Some(scope.clone()),
+                deleted_actor_session: None,
+                method: Method::AccountRateLimitsRead,
+                params: serde_json::json!({}),
+                deadline: std::time::Instant::now() + Duration::from_secs(10),
+            },
+        )
+        .await?;
         if receipt.scope != scope
             || receipt.operation != operation
             || receipt.certainty != RequestCertainty::Written
@@ -1404,7 +1571,8 @@ fn read_limits_with_freshness(
                 Err(AccountSessionError::Refused("Account limits read failed"))
             }
         }
-    })();
+    }
+    .await;
     let data = match provider_read {
         Ok(data) => data,
         Err(error) => {
@@ -1419,7 +1587,7 @@ fn read_limits_with_freshness(
             failed["error"] = Value::String(error.to_string());
             failed["checkedAt"] = serde_json::json!(timestamp()?);
             let failed = LimitsSnapshot::read(account, failed)?.into_value();
-            runtime.persist_limits(account, &failed)?;
+            runtime.persist_limits(account, &failed).await?;
             return Err(error);
         }
     };
@@ -1460,7 +1628,7 @@ fn read_limits_with_freshness(
         }
     }
     let value = LimitsSnapshot::read(account, value)?.into_value();
-    runtime.persist_limits(account, &value)?;
+    runtime.persist_limits(account, &value).await?;
     Ok(value)
 }
 
@@ -1717,7 +1885,10 @@ mod persistence_tests {
     #![allow(clippy::unwrap_used)]
     use super::{AccountSessionError, persist_limits};
     use serde_json::{Value, json};
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
     use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 
     fn stored_workspace(store: &RuntimeStore) -> Value {
@@ -1732,10 +1903,10 @@ mod persistence_tests {
         serde_json::from_str(&raw).unwrap()
     }
 
-    #[test]
-    fn refreshed_limits_persist_and_preserve_other_accounts() {
+    #[tokio::test]
+    async fn refreshed_limits_persist_and_preserve_other_accounts() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store
             .transaction(|tx| {
                 SyncDocumentsRepository::put_entity(
@@ -1747,11 +1918,20 @@ mod persistence_tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
-        let cache = Mutex::new(BTreeMap::new());
+        let cache = Arc::new(Mutex::new(BTreeMap::new()));
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
 
-        persist_limits(&store, &cache, "default", &value, None).unwrap();
+        persist_limits(
+            Arc::clone(&store),
+            Arc::clone(&cache),
+            "default".into(),
+            value.clone(),
+            None,
+        )
+        .await
+        .unwrap();
 
         let entity = stored_workspace(&store);
         assert_eq!(entity["value"]["rateLimits"], value);
@@ -1763,10 +1943,10 @@ mod persistence_tests {
         assert_eq!(cache.lock().unwrap().get("default"), Some(&value));
     }
 
-    #[test]
-    fn limits_persistence_failure_leaves_no_partial_write_or_cache_update() {
+    #[tokio::test]
+    async fn limits_persistence_failure_leaves_no_partial_write_or_cache_update() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store
             .transaction(|tx| {
                 SyncDocumentsRepository::put_entity(
@@ -1778,13 +1958,21 @@ mod persistence_tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
         let before = stored_workspace(&store);
-        let cache = Mutex::new(BTreeMap::new());
+        let cache = Arc::new(Mutex::new(BTreeMap::new()));
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
 
         assert!(matches!(
-            persist_limits(&store, &cache, "default", &value, None),
+            persist_limits(
+                Arc::clone(&store),
+                Arc::clone(&cache),
+                "default".into(),
+                value.clone(),
+                None
+            )
+            .await,
             Err(AccountSessionError::Persistence)
         ));
 
@@ -1799,8 +1987,8 @@ mod limits_runtime_tests {
 
     use super::{
         AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
-        ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture,
-        SessionFutureScope, SessionReceipt,
+        LoginRequest, ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
+        SessionFuture, SessionFutureScope, SessionReceipt,
     };
     use crate::{account_driver::AccountDriver, account_policy::AccountPolicyState};
     use serde_json::{Value, json};
@@ -1812,7 +2000,6 @@ mod limits_runtime_tests {
             atomic::{AtomicUsize, Ordering},
             mpsc,
         },
-        thread,
         time::Duration,
     };
     use studio_runtime_providers::{RequestId, RequestTicket};
@@ -1934,7 +2121,7 @@ mod limits_runtime_tests {
             "version":1,
             "defaultAccountKey":"default",
             "accounts":{"default":{
-                "id":"default","home":home,"label":"Codex","source":"Codex CLI","status":"signedOut"
+                "id":"default","home":home,"label":"Codex","source":"Codex CLI","accountId":"fixture-account","status":"signedOut"
             }},
             "logins":{},"deleteReceipts":{}
         }))
@@ -1968,7 +2155,11 @@ mod limits_runtime_tests {
         });
         let store_path = root.path().join("store");
         fs::create_dir_all(&store_path).unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(&store_path)).unwrap());
+        let store = Arc::new(
+            tokio
+                .block_on(RuntimeStore::open(Some(&store_path)))
+                .unwrap(),
+        );
         let runtime = Arc::new(
             AccountSessionRuntime::new(
                 driver,
@@ -1992,40 +2183,43 @@ mod limits_runtime_tests {
         )
     }
 
-    #[test]
-    fn concurrent_stale_cold_reads_share_one_native_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_stale_cold_reads_share_one_native_request() {
         let (fixture, entered) =
             fixture([Reply::Data(json!({"accountId":"fixture-account"}))], true);
         let gate = Arc::clone(fixture.provider.first_read_gate.as_ref().unwrap());
         let _release_on_exit = ReleaseFirstReadGate(Arc::clone(&gate));
         let runtime = Arc::clone(&fixture.runtime);
-        let first = thread::spawn(move || {
-            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
+        let first = tokio::spawn(async move {
+            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let first_entered = entered.recv_timeout(Duration::from_secs(2));
+        let entered_result =
+            tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(2))).await;
 
         let (started, started_rx) = mpsc::channel();
         let runtime = Arc::clone(&fixture.runtime);
-        let second = thread::spawn(move || {
+        let second = tokio::spawn(async move {
             started
                 .send(())
                 .expect("the concurrency test receiver remains alive until the second read starts");
-            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default")
+            AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let second_started = started_rx.recv_timeout(Duration::from_secs(2));
+        let second_started =
+            tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(2)))
+                .await;
         gate.release();
 
-        let first_result = first.join().unwrap();
-        let second_result = second.join().unwrap();
-        assert!(first_entered.is_ok());
-        assert!(second_started.is_ok());
+        let first_result = first.await.unwrap();
+        let second_result = second.await.unwrap();
+        assert!(entered_result.unwrap().is_ok());
+        assert!(second_started.unwrap().is_ok());
         first_result.unwrap();
         second_result.unwrap();
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn failed_provider_read_is_persisted_and_cooled_down_but_forced_read_runs() {
+    #[tokio::test]
+    async fn failed_provider_read_is_persisted_and_cooled_down_but_forced_read_runs() {
         let (fixture, _) = fixture(
             [
                 Reply::Rejected,
@@ -2034,20 +2228,84 @@ mod limits_runtime_tests {
             false,
         );
         assert!(
-            AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default").is_err()
+            AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default")
+                .await
+                .is_err()
         );
         let failed =
             AccountSessionPort::limits_snapshot(fixture.runtime.as_ref(), "default").unwrap();
         assert_eq!(failed["error"], "Account limits read failed");
         assert!(failed["checkedAt"].as_f64().unwrap() > 0.0);
 
-        let cooled =
-            AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default").unwrap();
+        let cooled = AccountSessionPort::read_limits_if_stale(fixture.runtime.as_ref(), "default")
+            .await
+            .unwrap();
         assert_eq!(cooled["error"], "Account limits read failed");
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
 
-        let forced = AccountSessionPort::read_limits(fixture.runtime.as_ref(), "default").unwrap();
+        let forced = AccountSessionPort::read_limits(fixture.runtime.as_ref(), "default")
+            .await
+            .unwrap();
         assert_eq!(forced["data"]["accountId"], "fixture-account");
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn caller_cancellation_does_not_abandon_reserved_login_or_resend_it() {
+        let (fixture, entered) = fixture(
+            [Reply::Data(json!({
+                "type":"chatgptDeviceCode",
+                "loginId":"provider-login",
+                "verificationUrl":"https://auth.openai.com/codex/device",
+                "userCode":"ABCD"
+            }))],
+            true,
+        );
+        let request = LoginRequest {
+            login_id: "11000000-0000-4000-8000-000000000009".into(),
+            account_key: Some("default".into()),
+            email: None,
+            label: None,
+        };
+        let runtime = Arc::clone(&fixture.runtime);
+        let caller =
+            tokio::spawn(async move { AccountSessionPort::login(runtime.as_ref(), request).await });
+        let entered =
+            tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(2)))
+                .await
+                .unwrap();
+        assert!(
+            entered.is_ok(),
+            "login reached its retained provider request"
+        );
+
+        caller.abort();
+        fixture
+            .provider
+            .first_read_gate
+            .as_ref()
+            .expect("test holds the login provider response")
+            .release();
+        let replay = AccountSessionPort::login(
+            fixture.runtime.as_ref(),
+            LoginRequest {
+                login_id: "11000000-0000-4000-8000-000000000009".into(),
+                account_key: Some("default".into()),
+                email: None,
+                label: None,
+            },
+        )
+        .await
+        .expect("a duplicate request id replays its durable receipt");
+        assert_eq!(replay["status"], "pending");
+        AccountSessionPort::shutdown_durable_operations(fixture.runtime.as_ref())
+            .await
+            .expect("shutdown joins the durable login task");
+
+        let snapshot = fixture.runtime.driver.snapshot().unwrap();
+        assert_eq!(snapshot.logins.len(), 1);
+        assert_eq!(snapshot.logins[0]["status"], "pending");
+        assert_eq!(snapshot.logins[0]["loginId"], "provider-login");
+        assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
     }
 }

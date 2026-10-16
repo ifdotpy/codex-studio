@@ -46,8 +46,8 @@ fn connecting_session() -> VoiceSession {
     .expect("valid scripted voice session")
 }
 
-#[test]
-fn provider_error_callback_stops_and_keeps_failure_terminal() {
+#[tokio::test]
+async fn provider_error_callback_stops_and_keeps_failure_terminal() {
     let session = connecting_session();
     let transition = policy::transition_session(
         &session,
@@ -60,8 +60,8 @@ fn provider_error_callback_stops_and_keeps_failure_terminal() {
     assert_eq!(transition.session.error(), Some("provider failed"));
 }
 
-#[test]
-fn session_machine_distinguishes_admitted_stop_rejection_and_disconnect() {
+#[tokio::test]
+async fn session_machine_distinguishes_admitted_stop_rejection_and_disconnect() {
     let session = connecting_session();
     let answered = policy::transition_session(
         &session,
@@ -150,8 +150,8 @@ fn session_machine_distinguishes_admitted_stop_rejection_and_disconnect() {
     assert_eq!(disconnected.session.ended(), Some(4.0));
 }
 
-#[test]
-fn realtime_error_notifications_require_stop_rpc() {
+#[tokio::test]
+async fn realtime_error_notifications_require_stop_rpc() {
     assert!(notification_requires_stop(&json!({
         "method": "thread/realtime/error",
         "params": {"threadId": "thread"}
@@ -162,7 +162,7 @@ fn realtime_error_notifications_require_stop_rpc() {
     })));
 }
 
-fn seed_callback_session(store: &RuntimeStore, id: &str, thread: &str, connection: &str) {
+async fn seed_callback_session(store: &RuntimeStore, id: &str, thread: &str, connection: &str) {
     store
         .transaction(|tx| {
             tx.execute(
@@ -172,18 +172,20 @@ fn seed_callback_session(store: &RuntimeStore, id: &str, thread: &str, connectio
             )?;
             Ok(())
         })
+        .await
         .expect("seed callback session");
 }
 
-#[test]
-fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
+    let (_root, store) = seeded_store().await;
     seed_callback_session(
         &store,
         "canonical-session",
         "canonical-thread",
         "voice-connection",
-    );
+    )
+    .await;
     let actor = VoiceCallbackActor::default();
     let started = json!({
         "method":"thread/realtime/item/started",
@@ -192,6 +194,7 @@ fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
     assert!(
         actor
             .handle_notification(&store, "account", "voice-connection", &started, 2.0)
+            .await
             .expect("canonical starts")
     );
     let delta = json!({
@@ -200,6 +203,7 @@ fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &delta, 3.0)
+        .await
         .expect("delta handled");
     let completed = json!({
         "method":"thread/realtime/item/completed",
@@ -207,6 +211,7 @@ fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &completed, 4.0)
+        .await
         .expect("canonical completes");
     let closed = json!({
         "method":"thread/realtime/closed",
@@ -214,6 +219,7 @@ fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &closed, 5.0)
+        .await
         .expect("close cleans actor state");
 
     let connection = store.read().expect("read transcript records");
@@ -227,15 +233,16 @@ fn callback_actor_prefers_canonical_transcript_over_fallback_delta() {
     assert_eq!(rows, ["canonical transcript"]);
 }
 
-#[test]
-fn callback_actor_flushes_fallback_tail_when_provider_closes() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn callback_actor_flushes_fallback_tail_when_provider_closes() {
+    let (_root, store) = seeded_store().await;
     seed_callback_session(
         &store,
         "fallback-session",
         "fallback-thread",
         "voice-connection",
-    );
+    )
+    .await;
     let actor = VoiceCallbackActor::default();
     let delta = json!({
         "method":"thread/realtime/transcript/delta",
@@ -243,6 +250,7 @@ fn callback_actor_flushes_fallback_tail_when_provider_closes() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &delta, 2.0)
+        .await
         .expect("delta buffered");
     let closed = json!({
         "method":"thread/realtime/closed",
@@ -250,6 +258,7 @@ fn callback_actor_flushes_fallback_tail_when_provider_closes() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &closed, 3.0)
+        .await
         .expect("close flushes fallback");
 
     let connection = store.read().expect("read flushed transcript");
@@ -267,15 +276,16 @@ fn callback_actor_flushes_fallback_tail_when_provider_closes() {
     );
 }
 
-#[test]
-fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
+    let (_root, store) = seeded_store().await;
     seed_callback_session(
         &store,
         "discard-session",
         "discard-thread",
         "voice-connection",
-    );
+    )
+    .await;
     let actor = VoiceCallbackActor::default();
     let delta = json!({
         "method":"thread/realtime/transcript/delta",
@@ -283,6 +293,7 @@ fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &delta, 2.0)
+        .await
         .expect("delta buffered");
     let done = json!({
         "method":"thread/realtime/transcript/done",
@@ -290,6 +301,7 @@ fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &done, 3.0)
+        .await
         .expect("empty done clears tail");
     let closed = json!({
         "method":"thread/realtime/closed",
@@ -297,6 +309,7 @@ fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
     });
     actor
         .handle_notification(&store, "account", "voice-connection", &closed, 4.0)
+        .await
         .expect("close completes");
     let connection = store.read().expect("read transcript records");
     let count: i64 = connection
@@ -309,15 +322,16 @@ fn callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty() {
     assert_eq!(count, 0);
 }
 
-#[test]
-fn callback_actor_refuses_deltas_over_the_record_text_bound() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn callback_actor_refuses_deltas_over_the_record_text_bound() {
+    let (_root, store) = seeded_store().await;
     seed_callback_session(
         &store,
         "bounded-session",
         "bounded-thread",
         "voice-connection",
-    );
+    )
+    .await;
     let actor = VoiceCallbackActor::default();
     let delta = json!({
         "method":"thread/realtime/transcript/delta",
@@ -326,19 +340,21 @@ fn callback_actor_refuses_deltas_over_the_record_text_bound() {
     assert!(
         actor
             .handle_notification(&store, "account", "voice-connection", &delta, 2.0)
+            .await
             .is_err()
     );
 }
 
-#[test]
-fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() {
+    let (_root, store) = seeded_store().await;
     seed_callback_session(
         &store,
         "disconnect-session",
         "disconnect-thread",
         "disconnect-connection",
-    );
+    )
+    .await;
     let actor = VoiceCallbackActor::default();
     let delta = json!({
         "method":"thread/realtime/transcript/delta",
@@ -346,10 +362,12 @@ fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() {
     });
     actor
         .handle_notification(&store, "account", "disconnect-connection", &delta, 2.0)
+        .await
         .expect("delta buffered");
     assert_eq!(
         actor
             .handle_disconnect(&store, "account", "disconnect-connection", 3.0)
+            .await
             .expect("disconnect closes actor"),
         1
     );
@@ -365,7 +383,7 @@ fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() {
     assert_eq!(text, "last words");
 }
 
-fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
+async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
     static TEMPLATE: OnceLock<tempfile::TempDir> = OnceLock::new();
     let template = TEMPLATE.get_or_init(|| {
         let template = fixture_directory();
@@ -392,7 +410,9 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         fs::copy(template.path().join(database), state.join(database))
             .expect("clone Python template");
     }
-    let store = RuntimeStore::open(Some(&state)).expect("open voice fixture store");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("open voice fixture store");
     store
         .transaction(|connection| {
             for agent in ["agent", "other-agent"] {
@@ -426,6 +446,7 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
             )?;
             Ok(())
         })
+        .await
         .expect("seed agent and session rows");
     (root, store)
 }
@@ -441,9 +462,9 @@ fn fixture_directory() -> tempfile::TempDir {
     }
 }
 
-#[test]
-fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
+    let (_root, store) = seeded_store().await;
     let first = store
         .transaction_with_error(|transaction| -> Result<_, voice::provider::VoiceProviderError> {
             transaction.execute(
@@ -459,6 +480,7 @@ fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
             Ok(intent)
         })
+        .await
         .expect("deletion transaction stages voice stop before deleting its rows");
     assert_eq!(first.id, "agent-delete-voice:agent:0");
     assert_eq!(first.agent_id, "agent");
@@ -473,6 +495,7 @@ fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
                 voice::provider::stage_delete_sessions(transaction, "agent")
             },
         )
+        .await
         .expect("retry reuses the committed delete intent after voice rows are gone");
     assert_eq!(replay, first);
     let connection = store.read().expect("read staged deletion receipt");
@@ -495,7 +518,7 @@ fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
 
 #[tokio::test]
 async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store
         .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
             transaction.execute(
@@ -507,6 +530,7 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
             Ok(())
         })
+        .await
         .expect("stage voice stop before removing its session row");
     let store = Arc::new(store);
     let provider = Arc::new(ReceiptProvider {
@@ -517,6 +541,7 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
 
     for _ in 0..8 {
         let intent = voice::provider::pending_delete_intents(&store)
+            .await
             .expect("load pending durable stop")
             .into_iter()
             .find(|intent| intent.id == intent_id)
@@ -534,6 +559,7 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
     }
 
     let still_pending = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reload durable retry")
         .into_iter()
         .find(|intent| intent.id == intent_id)
@@ -563,7 +589,7 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
 
 #[tokio::test]
 async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_written() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store
         .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
             transaction.execute(
@@ -575,6 +601,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
             transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
             Ok(())
         })
+        .await
         .expect("stage voice stop before removing its session row");
     let store = Arc::new(store);
     let intent_id = "agent-delete-voice:agent:0".to_owned();
@@ -583,6 +610,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         calls: Mutex::new(Vec::new()),
     });
     let pending = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("load initial delete intent")
         .into_iter()
         .find(|intent| intent.id == intent_id)
@@ -598,6 +626,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
     .expect("persist proven NotSent result");
 
     let retry = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reload safe retry")
         .into_iter()
         .find(|intent| intent.id == intent_id)
@@ -625,6 +654,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
         "voice:delete-stop:delete-retry-written-session"
     );
     let completed = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reload completed deletion")
         .into_iter()
         .find(|intent| intent.id == intent_id)
@@ -647,7 +677,7 @@ async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_wr
 
 #[tokio::test]
 async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let unknown_session = "previous-unknown-session";
     let active_session = "currently-active-session";
     store
@@ -692,9 +722,11 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
             );
             Ok(())
         })
+        .await
         .expect("stage only the session without an earlier unknown stop");
 
     let intent = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("load committed delete receipt")
         .into_iter()
         .find(|intent| intent.id == "agent-delete-voice:agent:0")
@@ -724,6 +756,7 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
     );
     drop(calls);
     let persisted = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reload held uncertainty after sending active stop")
         .into_iter()
         .find(|intent| intent.id == "agent-delete-voice:agent:0")
@@ -746,8 +779,10 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
             )?;
             Ok(())
         })
+        .await
         .expect("original stop settles successfully");
     let reconciled = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reconcile successfully completed held stop")
         .into_iter()
         .find(|intent| intent.id == "agent-delete-voice:agent:0")
@@ -762,9 +797,9 @@ async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
     assert!(reconciled.held_uncertain.is_empty());
 }
 
-#[test]
-fn held_stop_rejection_is_requeued_for_deletion() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn held_stop_rejection_is_requeued_for_deletion() {
+    let (_root, store) = seeded_store().await;
     let stop_operation = "voice:stop:rejected-prior-stop";
     let retained_prefix = format!(
         "account-worker:retained:account:{}",
@@ -803,9 +838,11 @@ fn held_stop_rejection_is_requeued_for_deletion() {
             )?;
             Ok(())
         })
+        .await
         .expect("stage held stop and settle rejection");
 
     let intent = voice::provider::pending_delete_intents(&store)
+        .await
         .expect("reconcile rejected prior stop")
         .into_iter()
         .find(|intent| intent.id == "agent-delete-voice:agent:0")
@@ -841,6 +878,7 @@ fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> se
             }
             Ok(serde_json::Value::Object(value))
         })
+        .await
         .expect("table snapshot rows")
         .collect::<Result<Vec<_>, _>>()
         .expect("table snapshot values");
@@ -956,7 +994,7 @@ impl CallbackReplyPort for LiveCallbackReplyPort {
 
 #[tokio::test]
 async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let scope = ConnectionScope {
         account: "account".into(),
         connection: "connection-7".into(),
@@ -1083,7 +1121,7 @@ async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once
 
 #[tokio::test]
 async fn account_session_voice_approval_uses_the_shared_callback_lane() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let callback_request_id = "voice-approval-request";
     let connection_id = "connection-7";
     let scope = VoiceProviderContext {
@@ -1136,6 +1174,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed callback request and live actor");
 
     let store = Arc::new(store);
@@ -1173,9 +1212,9 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
     assert!(unused_session.calls.lock().expect("calls lock").is_empty());
 }
 
-#[test]
-fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
+    let (_root, store) = seeded_store().await;
     store
         .transaction(|connection| {
             connection.execute(
@@ -1184,6 +1223,7 @@ fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed existing Python-format receipt");
 
     let replay = voice::provider::read_speech_receipt(&store, "agent", "session:one", "record")
@@ -1206,12 +1246,12 @@ fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
 
 #[tokio::test]
 async fn python_written_speech_receipt_replays_without_provider_request() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('cutover-record','agent','session:one','orchestrator','spoken before cutover','item','', '{}',1)", [])?;
         tx.execute("INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES('session:one:cutover-record','session:one','cutover-record','submitted',NULL)", [])?;
         Ok(())
-    }).expect("seed Python-written speech receipt");
+    }).await.expect("seed Python-written speech receipt");
     let provider = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
         calls: Mutex::new(Vec::new()),
@@ -1233,13 +1273,13 @@ async fn python_written_speech_receipt_replays_without_provider_request() {
 
 #[tokio::test]
 async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let store = Arc::new(store);
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-record','agent','','orchestrator','original text','item','', '{}',1)", [])?;
         Ok(())
-    }).expect("seed ready session and speech row");
+    }).await.expect("seed ready session and speech row");
     let provider = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
         calls: Mutex::new(Vec::new()),
@@ -1265,6 +1305,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
             )?;
             Ok(())
         })
+        .await
         .expect("change content under same identity");
     let changed = voice::provider::speech(
         store.clone(),
@@ -1287,9 +1328,9 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
     assert_eq!(provider.calls.lock().expect("calls").len(), 1);
 }
 
-#[test]
-fn python_approval_speech_rows_and_voice_views_match_rust() {
-    let (root, store) = seeded_store();
+#[tokio::test]
+async fn python_approval_speech_rows_and_voice_views_match_rust() {
+    let (root, store) = seeded_store().await;
     let request = json!({
         "id":"oracle-approval", "agent":"agent", "epoch":0,
         "status":"pending", "method":"item/commandExecution/requestApproval",
@@ -1303,6 +1344,7 @@ fn python_approval_speech_rows_and_voice_views_match_rust() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed Python-readable approval");
 
     let python = python_test_support::prepared_python(
@@ -1329,7 +1371,8 @@ fn python_approval_speech_rows_and_voice_views_match_rust() {
     assert_eq!(approvals, expected["approvals"]);
     let records = voice::records(&store, "agent", 0).expect("Rust records view");
     assert_eq!(records, expected["records"]);
-    let speech = voice::approval_speech(&store, "agent", "oracle-approval")
+    let speech = voice::approval_speech(std::sync::Arc::clone(&store), "agent", "oracle-approval")
+        .await
         .expect("Rust reads Python-written approval speech");
     assert_eq!(speech, expected["approval"]);
 
@@ -1360,7 +1403,7 @@ fn python_approval_speech_rows_and_voice_views_match_rust() {
 
 #[tokio::test]
 async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
-    let (root, store) = seeded_store();
+    let (root, store) = seeded_store().await;
     let python_root = root.path().join("python-lifecycle-state");
     fs::create_dir(&python_root).expect("Python lifecycle state root");
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -1389,7 +1432,7 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     store.transaction(|tx| {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('oracle-speech','agent','oracle-session','orchestrator','hello','item','', '{}',100)", [])?;
         Ok(())
-    }).expect("seed Rust speech row");
+    }).await.expect("seed Rust speech row");
     let store = Arc::new(store);
     let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
@@ -1409,7 +1452,7 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     .expect("Rust start");
     requested.await;
     voice::provider::wait_for_start_setup("agent", "oracle-session").await;
-    voice::provider::handle_notification(&store, "account", "receipt-matrix-connection", &json!({"method":"thread/realtime/sdp","params":{"threadId":"thread","realtimeSessionId":"oracle-session","sdp":"answer"}}), 100.0).expect("Rust SDP callback");
+    voice::provider::handle_notification(&store, "account", "receipt-matrix-connection", &json!({"method":"thread/realtime/sdp","params":{"threadId":"thread","realtimeSessionId":"oracle-session","sdp":"answer"}}), 100.0).await.expect("Rust SDP callback");
     voice::provider::speech(
         store.clone(),
         provider.clone(),
@@ -1516,12 +1559,13 @@ async fn start_preflight_matches_python_context_repair_and_budget_denials() {
             "UPDATE runtime_agents SET record=json_set(record,'$.tokenBudget',0) WHERE id='agent'",
         ),
     ] {
-        let (_root, store) = seeded_store();
+        let (_root, store) = seeded_store().await;
         store
             .transaction(|tx| {
                 tx.execute(patch, [])?;
                 Ok(())
             })
+            .await
             .expect("prepare denied Python-format actor");
         let provider = Arc::new(ReceiptProvider {
             certainty: VoiceWriteCertainty::Written,
@@ -1544,21 +1588,23 @@ async fn start_preflight_matches_python_context_repair_and_budget_denials() {
     }
 }
 
-#[test]
-fn audio_validation_precedes_scoped_expiry_pruning() {
-    let (_root, store) = seeded_store();
+#[tokio::test]
+async fn audio_validation_precedes_scoped_expiry_pruning() {
+    let (_root, store) = seeded_store().await;
+    let store = Arc::new(store);
     let directory = store.root().join("voice-audio");
     fs::create_dir_all(&directory).expect("voice audio directory");
     let other_session_expired = directory.join("s-another-session-c-expired");
     fs::write(&other_session_expired, b"other session data").expect("expired chunk");
     let first = voice::save_audio(
-        &store,
+        Arc::clone(&store),
         "agent",
         "session",
         "expire-me",
         "AQID",
         "audio/webm",
     )
+    .await
     .expect("first synthetic upload");
     let record_id = first["id"].as_str().expect("record id");
     let payload: String = store
@@ -1594,7 +1640,18 @@ fn audio_validation_precedes_scoped_expiry_pruning() {
             .expect("mark chunk expired");
     }
 
-    assert!(voice::save_audio(&store, "agent", "session", "bad", "%%%", "text/plain").is_err());
+    assert!(
+        voice::save_audio(
+            Arc::clone(&store),
+            "agent",
+            "session",
+            "bad",
+            "%%%",
+            "text/plain"
+        )
+        .await
+        .is_err()
+    );
     assert!(
         other_session_expired.exists(),
         "invalid upload must not prune"
@@ -1603,8 +1660,16 @@ fn audio_validation_precedes_scoped_expiry_pruning() {
         own_expired.exists(),
         "invalid upload must preserve own expired data"
     );
-    voice::save_audio(&store, "agent", "session", "valid", "AQID", "audio/webm")
-        .expect("valid synthetic upload");
+    voice::save_audio(
+        Arc::clone(&store),
+        "agent",
+        "session",
+        "valid",
+        "AQID",
+        "audio/webm",
+    )
+    .await
+    .expect("valid synthetic upload");
     assert!(
         !own_expired.exists(),
         "valid upload prunes this session's expiry"
@@ -1933,7 +1998,7 @@ impl VoiceProviderPort for BlockingProvider {
 
 #[tokio::test]
 async fn unknown_stop_receipt_is_held_without_resending() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store
         .transaction(|connection| {
             connection.execute(
@@ -1942,6 +2007,7 @@ async fn unknown_stop_receipt_is_held_without_resending() {
             )?;
             Ok(())
         })
+        .await
         .expect("persist uncertain stop state");
     let provider = Arc::new(BlockingProvider {
         start_entered: tokio::sync::Notify::new(),
@@ -1975,11 +2041,11 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
         calls: Mutex::new(Vec::new()),
     });
 
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute_batch("CREATE TRIGGER fail_start_intent BEFORE INSERT ON voice_sessions WHEN NEW.id='matrix-start-fail' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
-    }).expect("install start intent fail point");
+    }).await.expect("install start intent fail point");
     assert!(
         voice::provider::start(
             Arc::new(store),
@@ -1994,13 +2060,13 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
     );
     assert!(provider.calls.lock().expect("provider calls").is_empty());
 
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-speech-fail','agent','','orchestrator','spoken','item','', '{}',1)", [])?;
         tx.execute_batch("CREATE TRIGGER fail_speech_intent BEFORE INSERT ON voice_speech_requests BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
-    }).expect("install speech intent fail point");
+    }).await.expect("install speech intent fail point");
     assert!(
         voice::provider::speech(
             Arc::new(store),
@@ -2015,7 +2081,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
     );
     assert!(provider.calls.lock().expect("provider calls").is_empty());
 
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         let actor: String = tx.query_row("SELECT record FROM runtime_agents WHERE id='agent'", [], |row| row.get(0))?;
         let mut actor: serde_json::Value = serde_json::from_str(&actor).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
@@ -2031,7 +2097,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-approve-fail-transcript','agent','matrix-approve-fail','user','разрешаю','','','{}',3)", [])?;
         tx.execute_batch("CREATE TRIGGER fail_approval_intent BEFORE INSERT ON voice_approvals BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
-    }).expect("install approval intent fail point");
+    }).await.expect("install approval intent fail point");
     assert!(
         voice::provider::approve(
             Arc::new(store),
@@ -2047,12 +2113,12 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
     );
     assert!(provider.calls.lock().expect("provider calls").is_empty());
 
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
         tx.execute_batch("CREATE TRIGGER fail_end_intent BEFORE UPDATE ON voice_sessions WHEN OLD.id='session' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
         Ok(())
-    }).expect("install end intent fail point");
+    }).await.expect("install end intent fail point");
     assert!(
         voice::provider::end(
             Arc::new(store),
@@ -2069,7 +2135,7 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
 
 #[tokio::test]
 async fn approval_from_another_connection_generation_is_refused_without_writes() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store.transaction(|tx| {
         let actor: String = tx.query_row("SELECT record FROM runtime_agents WHERE id='agent'", [], |row| row.get(0))?;
         let mut actor: serde_json::Value = serde_json::from_str(&actor)
@@ -2089,7 +2155,7 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('connection-bound-playback','agent','connection-bound-approval','playback','played','','',?1,2)", [json!({"record_id":"connection-bound-speech"}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('connection-bound-transcript','agent','connection-bound-approval','user','разрешаю','','','{}',3)", [])?;
         Ok(())
-    }).expect("seed an approval tied to another connection generation");
+    }).await.expect("seed an approval tied to another connection generation");
     let provider = Arc::new(ReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
         calls: Mutex::new(Vec::new()),
@@ -2133,7 +2199,7 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
 
 #[tokio::test]
 async fn voice_start_returns_connecting_before_provider_setup_and_replays_once() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let store = Arc::new(store);
     let provider = Arc::new(DelayedPrepareProvider {
         prepare_entered: tokio::sync::Notify::new(),
@@ -2187,7 +2253,7 @@ async fn voice_start_returns_connecting_before_provider_setup_and_replays_once()
 
 #[tokio::test]
 async fn voice_start_without_provider_commits_then_records_setup_failure() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     store
         .transaction(|tx| {
             tx.execute(
@@ -2196,6 +2262,7 @@ async fn voice_start_without_provider_commits_then_records_setup_failure() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed an actor without a thread, as Python permits at admission");
     let store = Arc::new(store);
     let accepted = voice::provider::start_admitted(
@@ -2238,7 +2305,7 @@ async fn voice_start_without_provider_commits_then_records_setup_failure() {
 
 #[tokio::test]
 async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let store = Arc::new(store);
     let provider = Arc::new(PrepareNotSentProvider {
         prepare_entered: tokio::sync::Notify::new(),
@@ -2302,7 +2369,7 @@ async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing
 
 #[tokio::test]
 async fn unknown_provider_receipts_survive_restart_without_resending() {
-    let (root, store) = seeded_store();
+    let (root, store) = seeded_store().await;
     let mut store = Arc::new(store);
     let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Unknown,
@@ -2340,7 +2407,9 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
     assert_eq!(replay_before_restart["state"], "unknown");
     drop(store);
     store = Arc::new(
-        RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after start"),
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after start"),
     );
     let replay = voice::provider::start(
         store.clone(),
@@ -2392,7 +2461,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-transcript','agent','matrix-approve','user','разрешаю','','','{}',3)", [])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('matrix-end','agent',1,'thread','account','receipt-matrix-connection','ready')", [])?;
         Ok(())
-    }).expect("seed speech, approval, and stop witness rows");
+    }).await.expect("seed speech, approval, and stop witness rows");
 
     assert!(matches!(
         voice::provider::speech(
@@ -2408,7 +2477,9 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
     ));
     drop(store);
     store = Arc::new(
-        RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after speech"),
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after speech"),
     );
     let receipt = voice::provider::read_speech_receipt(&store, "agent", "session", "matrix-speech")
         .expect("speech receipt read")
@@ -2422,6 +2493,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
             )?;
             Ok(())
         })
+        .await
         .expect("change speech content under its existing identity");
     let before_changed =
         voice::provider::read_speech_receipt(&store, "agent", "session", "matrix-speech")
@@ -2467,7 +2539,9 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
     );
     drop(store);
     store = Arc::new(
-        RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after approve"),
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after approve"),
     );
     assert!(matches!(
         voice::provider::approve(
@@ -2491,6 +2565,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
             )?;
             Ok(())
         })
+        .await
         .expect("change approval transcript under its existing identity");
     assert!(matches!(
         voice::provider::approve(
@@ -2519,8 +2594,11 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         Err(voice::provider::VoiceProviderError::Unknown)
     ));
     drop(store);
-    store =
-        Arc::new(RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after stop"));
+    store = Arc::new(
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after stop"),
+    );
     let ended = voice::provider::end(
         store.clone(),
         provider.clone(),
@@ -2536,7 +2614,7 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
 
 #[tokio::test]
 async fn written_provider_effects_survive_restart_and_replay_once() {
-    let (root, store) = seeded_store();
+    let (root, store) = seeded_store().await;
     let mut store = Arc::new(store);
     let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
@@ -2572,7 +2650,9 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     assert_eq!(before_restart["state"], "connecting");
     drop(store);
     store = Arc::new(
-        RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after written start"),
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after written start"),
     );
     let start_replay = voice::provider::start(
         store.clone(),
@@ -2605,7 +2685,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
         tx.execute_batch("CREATE TRIGGER fail_approval_finalize BEFORE UPDATE ON voice_approvals WHEN OLD.id='written-request' BEGIN SELECT RAISE(ABORT,'crash after provider Written'); END;")?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('written-end','agent',1,'thread','account','receipt-matrix-connection','ready')", [])?;
         Ok(())
-    }).expect("seed written-effect failpoints");
+    }).await.expect("seed written-effect failpoints");
 
     assert!(
         voice::provider::speech(
@@ -2622,6 +2702,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     drop(store);
     store = Arc::new(
         RuntimeStore::open(Some(&root.path().join("state")))
+            .await
             .expect("restart after speech finalization failure"),
     );
     assert_eq!(
@@ -2657,6 +2738,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     drop(store);
     store = Arc::new(
         RuntimeStore::open(Some(&root.path().join("state")))
+            .await
             .expect("restart after approval finalization failure"),
     );
     assert!(
@@ -2686,7 +2768,9 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 4);
     drop(store);
     store = Arc::new(
-        RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after written end"),
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("restart after written end"),
     );
     let end_replay = voice::provider::end(
         store,
@@ -2703,7 +2787,7 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
 
 #[tokio::test]
 async fn start_admission_finishes_before_end_dispatches_stop() {
-    let (_root, store) = seeded_store();
+    let (_root, store) = seeded_store().await;
     let provider = Arc::new(BlockingProvider {
         start_entered: tokio::sync::Notify::new(),
         release_start: tokio::sync::Notify::new(),

@@ -10,8 +10,8 @@ use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Mutex;
 use studio_runtime_store::RuntimeStore;
+use tokio::sync::Mutex;
 
 const OUTPUT_LOCKS: usize = 64;
 
@@ -21,13 +21,13 @@ pub struct MonitorOutput {
 impl Default for MonitorOutput {
     fn default() -> Self {
         Self {
-            locks: std::array::from_fn(|_| Mutex::new(())),
+            locks: std::array::from_fn(|_| Mutex::const_new(())),
         }
     }
 }
 impl MonitorOutput {
     /// Offset belongs to the exact native stream receipt, never to a retry's local counter.
-    pub fn append(
+    pub async fn append(
         &self,
         store: &RuntimeStore,
         id: &str,
@@ -43,8 +43,11 @@ impl MonitorOutput {
         id.hash(&mut hasher);
         let _guard = self.locks[hasher.finish() as usize % OUTPUT_LOCKS]
             .lock()
-            .map_err(|_| MonitorError::Refused("Monitor output lock failed"))?;
-        let (before, _) = store.transaction_with(|tx| monitor_runtime::snapshot(tx, id))?;
+            .await;
+        let id_owned = id.to_owned();
+        let (before, _) = store
+            .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_owned))
+            .await?;
         let count = before
             .record()
             .get("bytes")
@@ -158,15 +161,20 @@ impl MonitorOutput {
         file.write_all(&bytes[existing..])?;
         file.sync_all()?;
         File::open(&root)?.sync_all()?;
-        store.transaction_with(|tx| {
-            let (current, actor) = monitor_runtime::snapshot(tx, id)?;
-            if current.record() != before.record() {
-                return Err(MonitorError::Refused(
-                    "Monitor changed during log delivery; reconcile exact receipt",
-                ));
-            }
-            let decision = monitor_policy::output(&current, operation, bytes, now)?;
-            monitor_runtime::apply(tx, &current, &actor, &decision, now)
-        })
+        let id = id.to_owned();
+        let operation = operation.clone();
+        let bytes = bytes.to_vec();
+        store
+            .transaction_with(move |tx| {
+                let (current, actor) = monitor_runtime::snapshot(tx, &id)?;
+                if current.record() != before.record() {
+                    return Err(MonitorError::Refused(
+                        "Monitor changed during log delivery; reconcile exact receipt",
+                    ));
+                }
+                let decision = monitor_policy::output(&current, &operation, &bytes, now)?;
+                monitor_runtime::apply(tx, &current, &actor, &decision, now)
+            })
+            .await
     }
 }

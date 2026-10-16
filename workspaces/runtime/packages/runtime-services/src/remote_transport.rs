@@ -692,58 +692,179 @@ pub struct MultiServerExchangeInput<'a> {
 }
 
 /// Reserve, send at most once, verify and durably complete one multi-server exchange.
-pub fn exchange_multi_server(
-    store: &RuntimeStore,
+pub async fn exchange_multi_server(
+    store: std::sync::Arc<RuntimeStore>,
     identity: &RemoteIdentity,
     input: &MultiServerExchangeInput<'_>,
     now: i64,
 ) -> RemoteTransportResult<Value> {
-    #[cfg(unix)]
-    let peer_link = PeerLinkClient::new(store.root());
-    #[cfg(unix)]
-    let mut response_advert = None;
-    let result = exchange_multi_server_with(
-        store,
-        identity,
-        input,
-        now,
-        |method, url, headers, body, timeout, limit| {
-            let response = exchange_paired_request(
-                store,
-                PairedRequest {
-                    server_id: input.server_id,
-                    public_key: input.expected_public_key,
-                    method,
-                    url,
-                    headers,
-                    body,
-                    timeout,
-                    response_limit: limit,
-                },
-            )?;
-            #[cfg(unix)]
-            if (200..300).contains(&response.status) {
-                response_advert = Some(
-                    response
-                        .headers
-                        .iter()
-                        .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
-                        .map(|(_, value)| value.clone()),
-                );
-            }
-            Ok(response)
-        },
+    validate_multi_server_nonce(input.nonce, input.timestamp, now)?;
+    validate_identifier(input.server_id)?;
+    validate_identifier(input.request_id)?;
+    ed25519_public_key(input.expected_public_key)?;
+    let method = input.method.to_ascii_uppercase();
+    validate_exchange_arguments(
+        &method,
+        input.url,
+        input.body,
+        input.timeout,
+        MAX_RESPONSE_BYTES,
+    )?;
+    let target = canonical_request_target(input.url)?;
+    let fingerprint = multi_server_request_fingerprint_normalized(&method, input.url, input.body)?;
+    let invitation_response = method == "POST"
+        && target == "/api/multi-server"
+        && serde_json::from_slice::<Value>(input.body)
+            .ok()
+            .and_then(|body| {
+                body.get("action")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("create_invite");
+    let server_id = input.server_id.to_owned();
+    let request_id = input.request_id.to_owned();
+    let fingerprint_for_reservation = fingerprint.clone();
+    let reserved = store
+        .transaction_with(move |transaction| {
+            RemoteTransportRepository::reserve_multi_server_request(
+                transaction,
+                &server_id,
+                &request_id,
+                &fingerprint_for_reservation,
+                now as f64,
+            )
+            .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+        })
+        .await?;
+    let replay_redacted = matches!(
+        &reserved,
+        studio_runtime_store::OutboundReservation::Redacted
     );
-    #[cfg(unix)]
-    if result.is_ok()
-        && let Some(advert) = response_advert
-    {
-        peer_link.learn(input.server_id, advert.as_deref());
+    match reserved {
+        studio_runtime_store::OutboundReservation::Complete(value) => {
+            let bytes =
+                serde_json::to_vec(&value).map_err(|_| RemoteTransportError::InvalidResponse)?;
+            return verify_multi_server_response(
+                &bytes,
+                input.server_id,
+                input.expected_public_key,
+            )
+            .map_err(|_| RemoteTransportError::InvalidStoredObject {
+                table: "runtime_access_outbound",
+                key: format!("{}/{}", input.server_id, input.request_id),
+            });
+        }
+        studio_runtime_store::OutboundReservation::Redacted if invitation_response => {}
+        studio_runtime_store::OutboundReservation::Redacted => {
+            return Ok(serde_json::json!({"outcome":"redacted"}));
+        }
+        studio_runtime_store::OutboundReservation::Unknown => {
+            return Err(RemoteTransportError::ExchangeUnknown);
+        }
+        studio_runtime_store::OutboundReservation::New => {}
     }
-    result
+
+    let request = MultiServerRequest {
+        server_id: input.server_id,
+        method: &method,
+        url: input.url,
+        request_id: input.request_id,
+        timestamp: input.timestamp,
+        nonce: input.nonce,
+        body: input.body,
+    };
+    let headers = multi_server_signed_headers_normalized(identity, &request, &method, now)?;
+    let mut owned_headers = headers;
+    owned_headers.push(("Accept-Encoding".to_owned(), "identity".to_owned()));
+    if !input.body.is_empty() {
+        owned_headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
+    }
+    let server_id = input.server_id.to_owned();
+    let public_key = input.expected_public_key.to_owned();
+    let url = input.url.to_owned();
+    let body = input.body.to_vec();
+    let timeout = input.timeout;
+    let store_for_transport = std::sync::Arc::clone(&store);
+    let response = tokio::task::spawn_blocking(move || {
+        let headers = owned_headers
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        exchange_paired_request(
+            &store_for_transport,
+            PairedRequest {
+                server_id: &server_id,
+                public_key: &public_key,
+                method: &method,
+                url: &url,
+                headers: &headers,
+                body: &body,
+                timeout,
+                response_limit: MAX_RESPONSE_BYTES,
+            },
+        )
+    })
+    .await
+    .map_err(|_| RemoteTransportError::ExchangeUnknown)??;
+    if (300..400).contains(&response.status) {
+        return Err(RemoteTransportError::InvalidResponse);
+    }
+    if !(200..300).contains(&response.status) {
+        return Err(RemoteTransportError::PeerRejected);
+    }
+    #[cfg(unix)]
+    {
+        let advert = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+            .map(|(_, value)| value.clone());
+        PeerLinkClient::new(store.root()).learn(input.server_id, advert.as_deref());
+    }
+    let value =
+        verify_multi_server_response(&response.body, input.server_id, input.expected_public_key)?;
+    if matches!(
+        value.get("outcome").and_then(Value::as_str),
+        Some("pending" | "unknown")
+    ) {
+        return Ok(value);
+    }
+    if !replay_redacted {
+        let server_id = input.server_id.to_owned();
+        let request_id = input.request_id.to_owned();
+        let fingerprint = fingerprint.clone();
+        let value_for_commit = value.clone();
+        store
+            .transaction_with(move |transaction| {
+                let result = if invitation_response {
+                    RemoteTransportRepository::redact_multi_server_request(
+                        transaction,
+                        &server_id,
+                        &request_id,
+                        &fingerprint,
+                        now as f64,
+                    )
+                } else {
+                    RemoteTransportRepository::complete_multi_server_request(
+                        transaction,
+                        &server_id,
+                        &request_id,
+                        &fingerprint,
+                        &value_for_commit,
+                        now as f64,
+                    )
+                };
+                result.map_err(|error| map_outbound_error(error, &server_id, &request_id))
+            })
+            .await?;
+    }
+    Ok(value)
 }
 
-fn exchange_multi_server_with(
+#[cfg(test)]
+async fn exchange_multi_server_with(
     store: &RuntimeStore,
     identity: &RemoteIdentity,
     input: &MultiServerExchangeInput<'_>,
@@ -782,16 +903,21 @@ fn exchange_multi_server_with(
             })
             .as_deref()
             == Some("create_invite");
-    let reserved = store.transaction_with(|transaction| {
-        RemoteTransportRepository::reserve_multi_server_request(
-            transaction,
-            input.server_id,
-            input.request_id,
-            &fingerprint,
-            now as f64,
-        )
-        .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
-    })?;
+    let server_id = input.server_id.to_owned();
+    let request_id = input.request_id.to_owned();
+    let fingerprint_for_reservation = fingerprint.clone();
+    let reserved = store
+        .transaction_with(move |transaction| {
+            RemoteTransportRepository::reserve_multi_server_request(
+                transaction,
+                &server_id,
+                &request_id,
+                &fingerprint_for_reservation,
+                now as f64,
+            )
+            .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+        })
+        .await?;
     let replay_redacted = matches!(
         &reserved,
         studio_runtime_store::OutboundReservation::Redacted
@@ -862,27 +988,33 @@ fn exchange_multi_server_with(
     }
 
     if !replay_redacted {
-        store.transaction_with(|transaction| {
-            if invitation_response {
-                RemoteTransportRepository::redact_multi_server_request(
-                    transaction,
-                    input.server_id,
-                    input.request_id,
-                    &fingerprint,
-                    now as f64,
-                )
-            } else {
-                RemoteTransportRepository::complete_multi_server_request(
-                    transaction,
-                    input.server_id,
-                    input.request_id,
-                    &fingerprint,
-                    &value,
-                    now as f64,
-                )
-            }
-            .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
-        })?;
+        let server_id = input.server_id.to_owned();
+        let request_id = input.request_id.to_owned();
+        let fingerprint = fingerprint.clone();
+        let value = value.clone();
+        store
+            .transaction_with(move |transaction| {
+                if invitation_response {
+                    RemoteTransportRepository::redact_multi_server_request(
+                        transaction,
+                        &server_id,
+                        &request_id,
+                        &fingerprint,
+                        now as f64,
+                    )
+                } else {
+                    RemoteTransportRepository::complete_multi_server_request(
+                        transaction,
+                        &server_id,
+                        &request_id,
+                        &fingerprint,
+                        &value,
+                        now as f64,
+                    )
+                }
+                .map_err(|error| map_outbound_error(error, &server_id, &request_id))
+            })
+            .await?;
     }
     Ok(value)
 }
@@ -954,7 +1086,7 @@ pub fn new_nonce() -> RemoteTransportResult<String> {
     Ok(URL_SAFE_NO_PAD.encode(random))
 }
 
-pub fn consume_federation_nonce(
+pub async fn consume_federation_nonce(
     store: &RuntimeStore,
     peer_id: &str,
     nonce: &str,
@@ -962,20 +1094,24 @@ pub fn consume_federation_nonce(
     now: i64,
 ) -> RemoteTransportResult<()> {
     validate_federation_nonce(nonce, timestamp, now)?;
-    store.transaction_with(|transaction| {
-        let accepted = RemoteTransportRepository::consume_federation_nonce(
-            transaction,
-            peer_id,
-            nonce,
-            timestamp,
-            now,
-        )?;
-        if accepted {
-            Ok(())
-        } else {
-            Err(RemoteTransportError::Replay)
-        }
-    })
+    let peer_id = peer_id.to_owned();
+    let nonce = nonce.to_owned();
+    store
+        .transaction_with(move |transaction| {
+            let accepted = RemoteTransportRepository::consume_federation_nonce(
+                transaction,
+                &peer_id,
+                &nonce,
+                timestamp,
+                now,
+            )?;
+            if accepted {
+                Ok(())
+            } else {
+                Err(RemoteTransportError::Replay)
+            }
+        })
+        .await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -986,7 +1122,7 @@ pub enum MultiServerPairingContext {
     Recovery,
 }
 
-pub fn consume_multi_server_nonce(
+pub async fn consume_multi_server_nonce(
     store: &RuntimeStore,
     client_id: &str,
     nonce: &str,
@@ -995,23 +1131,27 @@ pub fn consume_multi_server_nonce(
     pairing: MultiServerPairingContext,
 ) -> RemoteTransportResult<()> {
     validate_multi_server_nonce(nonce, timestamp, now)?;
-    store.transaction_with(|transaction| {
-        let accepted = RemoteTransportRepository::consume_access_nonce(
-            transaction,
-            client_id,
-            nonce,
-            now,
-            matches!(
-                pairing,
-                MultiServerPairingContext::Pairing | MultiServerPairingContext::AutoPairing
-            ),
-        )?;
-        if accepted {
-            Ok(())
-        } else {
-            Err(RemoteTransportError::Replay)
-        }
-    })
+    let client_id = client_id.to_owned();
+    let nonce = nonce.to_owned();
+    store
+        .transaction_with(move |transaction| {
+            let accepted = RemoteTransportRepository::consume_access_nonce(
+                transaction,
+                &client_id,
+                &nonce,
+                now,
+                matches!(
+                    pairing,
+                    MultiServerPairingContext::Pairing | MultiServerPairingContext::AutoPairing
+                ),
+            )?;
+            if accepted {
+                Ok(())
+            } else {
+                Err(RemoteTransportError::Replay)
+            }
+        })
+        .await
 }
 
 pub struct HttpResponse {
@@ -1595,7 +1735,7 @@ pub(crate) mod tests {
         .expect("fixed RFC Ed25519 fixture loads")
     }
 
-    pub(crate) fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
+    pub(crate) async fn runtime_store_fixture() -> (PathBuf, Arc<RuntimeStore>) {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1651,8 +1791,10 @@ pub(crate) mod tests {
                 }
             }
         }
-        let store = RuntimeStore::open(Some(&root)).expect("schema fixture opens");
-        (root, store)
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("schema fixture opens");
+        (root, Arc::new(store))
     }
 
     #[test]
@@ -1968,9 +2110,9 @@ pub(crate) mod tests {
         assert!(super::validate_identifier("-server").is_err());
     }
 
-    #[test]
-    fn refusal_rolls_back_nonce_cleanup_through_the_service_transaction() {
-        let (root, store) = runtime_store_fixture();
+    #[tokio::test]
+    async fn refusal_rolls_back_nonce_cleanup_through_the_service_transaction() {
+        let (root, store) = runtime_store_fixture().await;
         let now = 1_700_000_000_i64;
         store
             .transaction(|transaction| {
@@ -1986,6 +2128,7 @@ pub(crate) mod tests {
                 }
                 Ok(())
             })
+            .await
             .expect("fixture rows commit");
         assert!(matches!(
             super::consume_federation_nonce(
@@ -1994,7 +2137,8 @@ pub(crate) mod tests {
                 "incoming-federation-nonce",
                 now,
                 now,
-            ),
+            )
+            .await,
             Err(super::RemoteTransportError::Replay)
         ));
         let connection = store.read().expect("read transaction opens");
@@ -2022,6 +2166,7 @@ pub(crate) mod tests {
                 }
                 Ok(())
             })
+            .await
             .expect("unpaired cap fixture rows commit");
         assert!(matches!(
             super::consume_multi_server_nonce(
@@ -2031,7 +2176,8 @@ pub(crate) mod tests {
                 now,
                 now,
                 super::MultiServerPairingContext::Pairing,
-            ),
+            )
+            .await,
             Err(super::RemoteTransportError::Replay)
         ));
         let connection = store.read().expect("multi-server stale row reads");
@@ -2048,9 +2194,9 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
-    #[test]
-    fn invalid_stored_federation_identity_names_its_table_and_primary_key() {
-        let (root, store) = runtime_store_fixture();
+    #[tokio::test]
+    async fn invalid_stored_federation_identity_names_its_table_and_primary_key() {
+        let (root, store) = runtime_store_fixture().await;
         store
             .transaction(|transaction| {
                 transaction.execute(
@@ -2059,6 +2205,7 @@ pub(crate) mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("malformed identity fixture commits");
         let error = super::load_federation_identity(&store).expect_err("malformed key is refused");
         assert!(matches!(
@@ -2072,9 +2219,9 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
-    #[test]
-    fn exchange_service_replays_saved_receipt_and_never_sends_unknown_after_restart() {
-        let (root, store) = runtime_store_fixture();
+    #[tokio::test]
+    async fn exchange_service_replays_saved_receipt_and_never_sends_unknown_after_restart() {
+        let (root, store) = runtime_store_fixture().await;
         let identity = identity();
         let public_key = spki_pem();
         let body = br#"{"action":"rename_server","label":"fixture"}"#;
@@ -2114,10 +2261,13 @@ pub(crate) mod tests {
                 })
             },
         )
+        .await
         .expect("new exchange verifies and completes");
         drop(store);
 
-        let store = RuntimeStore::open(Some(&root)).expect("saved receipt opens after restart");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("saved receipt opens after restart");
         let replay = super::exchange_multi_server_with(
             &store,
             &identity,
@@ -2128,13 +2278,15 @@ pub(crate) mod tests {
                 Err(super::RemoteTransportError::ExchangeUnknown)
             },
         )
+        .await
         .expect("saved result is replayed without transport");
         assert_eq!(first, replay);
         assert_eq!(sends, 1);
         drop(store);
 
-        let store =
-            RuntimeStore::open(Some(&root)).expect("unknown reservation opens after restart");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("unknown reservation opens after restart");
         let fingerprint =
             super::multi_server_request_fingerprint("POST", input.url, br#"{"other":"body"}"#)
                 .expect("unknown fixture fingerprint computes");
@@ -2149,9 +2301,12 @@ pub(crate) mod tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("unknown reservation commits");
         drop(store);
-        let store = RuntimeStore::open(Some(&root)).expect("unknown receipt reopens");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("unknown receipt reopens");
         let unknown_input = MultiServerExchangeInput {
             request_id: "unknown-request",
             body: br#"{"other":"body"}"#,
@@ -2166,7 +2321,8 @@ pub(crate) mod tests {
                 sends += 1;
                 Err(super::RemoteTransportError::ExchangeUnknown)
             },
-        );
+        )
+        .await;
         assert!(matches!(
             result,
             Err(super::RemoteTransportError::ExchangeUnknown)
@@ -2176,9 +2332,9 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
-    #[test]
-    fn redacted_invitation_retry_reuses_the_same_request_and_recovers_its_secret() {
-        let (root, store) = runtime_store_fixture();
+    #[tokio::test]
+    async fn redacted_invitation_retry_reuses_the_same_request_and_recovers_its_secret() {
+        let (root, store) = runtime_store_fixture().await;
         let identity = identity();
         let public_key = spki_pem();
         let body = br#"{"action":"create_invite","requestId":"invite-request"}"#;
@@ -2219,10 +2375,13 @@ pub(crate) mod tests {
                 })
             },
         )
+        .await
         .expect("first invitation response is saved redacted");
         drop(store);
 
-        let store = RuntimeStore::open(Some(&root)).expect("redacted request survives restart");
+        let store = RuntimeStore::open(Some(&root))
+            .await
+            .expect("redacted request survives restart");
         let retry_input = MultiServerExchangeInput {
             nonce: "0123456789abcdefghijklmnopqrstuv",
             ..first_input
@@ -2245,6 +2404,7 @@ pub(crate) mod tests {
                 })
             },
         )
+        .await
         .expect("same logical invitation retrieves its receiver-saved response");
         assert_eq!(retry, first);
         assert_eq!(retry["invitation"]["token"], "fixture-secret");

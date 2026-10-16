@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 use studio_runtime_schema::shared_values::SYNC_STREAM_BYTE_LIMIT;
 use studio_runtime_schema::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION};
 use studio_runtime_services::sync_documents::{self, DraftWrite};
@@ -113,23 +114,41 @@ pub(crate) async fn pull(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let state_dir = state.state_dir.clone();
+    if let Some(agent) = scope.strip_prefix("transcript:") {
+        let mut response = transcript::pull_scope(store.clone(), &scope, agent, after)
+            .await
+            .map_err(super::transcript::map_transcript_error)?;
+        // Python samples generation after transcript maintenance commits.
+        let generation_store = store.clone();
+        response["generation"] = json!(
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/sync_documents/transcript-generation",
+                move || generation_store
+                    .generation()
+                    .map_err(|_| ApiError::internal()),
+            )
+            .await
+            .map_err(|_| ApiError::internal())??
+        );
+        if !validators.validate_stored("SyncPullResponse", &response) {
+            return Err(invalid_entity("sync_entities", "transcript-pull-response").into());
+        }
+        return Ok(Json(SyncPullResponseBody::Page(super::generated_json::<
+            crate::generated::SyncPullResponse,
+        >(response)?)));
+    }
+    let worker_store = store.clone();
+    let worker_validators = validators.clone();
+    let worker_state_dir = state_dir.clone();
+    let worker_priority_id = priority_id.clone();
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/sync_documents",
-        move || -> Result<SyncPullResponseBody, ApiError> {
+        move || -> Result<EntityPullResult, ApiError> {
+            let store = worker_store;
+            let validators = worker_validators;
+            let state_dir = worker_state_dir;
+            let priority_id = worker_priority_id;
             let generation = store.generation().map_err(|_| ApiError::internal())?;
-            if let Some(agent) = scope.strip_prefix("transcript:") {
-                let mut response = transcript::pull_scope(&store, &scope, agent, after)
-                    .map_err(super::transcript::map_transcript_error)?;
-                // Python samples generation after transcript maintenance commits.
-                response["generation"] =
-                    json!(store.generation().map_err(|_| ApiError::internal())?);
-                if !validators.validate_stored("SyncPullResponse", &response) {
-                    return Err(invalid_entity("sync_entities", "transcript-pull-response").into());
-                }
-                return Ok(SyncPullResponseBody::Page(super::generated_json::<
-                    crate::generated::SyncPullResponse,
-                >(response)?));
-            }
             if scope == "drafts" {
                 let connection = store.read().map_err(|_| ApiError::internal())?;
                 let workspace_id = SyncDocumentsRepository::workspace_id(&connection)
@@ -169,7 +188,9 @@ pub(crate) async fn pull(
                 if !validate_generated("SyncPullResponse", &response, &validators) {
                     return Err(invalid_stored_draft("page"));
                 }
-                return Ok(SyncPullResponseBody::Page(response));
+                return Ok(EntityPullResult::Response(SyncPullResponseBody::Page(
+                    response,
+                )));
             }
             let generation_before_vault_read = store.committed_change_generation();
             let (_, vault_snapshot) = capture_project_vault_snapshot(&store, &state_dir)?;
@@ -181,18 +202,7 @@ pub(crate) async fn pull(
                     .entity_projections_need_maintenance(&vault_signature)
                     .map_err(map_sync_store_error)?
             {
-                return pull_with_maintenance(
-                    &store,
-                    &state_dir,
-                    &validators,
-                    after,
-                    limit,
-                    fresh,
-                    initial_high,
-                    reset_support,
-                    priority_id.as_deref(),
-                    generation,
-                );
+                return Ok(EntityPullResult::NeedsMaintenance(generation));
             }
             let read_result = store.read_transaction(|transaction| {
                 pull_entities(
@@ -214,34 +224,98 @@ pub(crate) async fn pull(
             });
             match read_result {
                 Ok(response) if store.committed_change_generation() == observed_generation => {
-                    Ok(response)
+                    Ok(EntityPullResult::Response(response))
                 }
-                Ok(_) => pull_with_maintenance(
-                    &store,
-                    &state_dir,
-                    &validators,
-                    after,
-                    limit,
-                    fresh,
-                    initial_high,
-                    reset_support,
-                    priority_id.as_deref(),
-                    generation,
-                ),
+                Ok(_) => Ok(EntityPullResult::NeedsMaintenance(generation)),
                 Err(StoreError::Sqlite(studio_runtime_store::SqliteError::SqliteFailure(
                     error,
                     _,
                 ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
-                    let (response, _) = store
-                        .transaction_with_commit_generation(|transaction| {
-                            if store.committed_change_generation() != observed_generation
-                                || store.entity_projections_need_maintenance(&vault_signature)?
-                            {
-                                return Ok(None);
-                            }
+                    let _ = observed_generation;
+                    let _ = vault_signature;
+                    Ok(EntityPullResult::NeedsMaintenance(generation))
+                }
+                Err(error) => Err(map_sync_store_error(error)),
+            }
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    let result = match result {
+        EntityPullResult::Response(response) => response,
+        EntityPullResult::NeedsMaintenance(generation) => {
+            pull_with_maintenance(
+                store,
+                state_dir,
+                validators,
+                after,
+                limit,
+                fresh,
+                initial_high,
+                reset_support,
+                priority_id,
+                generation,
+                || {},
+            )
+            .await?
+        }
+    };
+    Ok(Json(result))
+}
+
+enum EntityMaintenancePreparation {
+    Retry,
+    Response(SyncPullResponseBody),
+    Apply {
+        rooms: studio_runtime_services::sync_entity_context::RoomDirectory,
+        vault_snapshot: sync_policy::ProjectVaultSnapshot,
+        vault_signature: String,
+        project_server_id: Option<String>,
+    },
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pull_with_maintenance(
+    store: Arc<RuntimeStore>,
+    state_dir: String,
+    validators: crate::validation::Registry,
+    after: i64,
+    limit: i64,
+    fresh: bool,
+    initial_high: i64,
+    reset_support: bool,
+    priority_id: Option<String>,
+    generation: i64,
+    mut before_room_recheck: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send,
+) -> Result<SyncPullResponseBody, ApiError> {
+    let _maintenance_guard = store
+        .lock_entity_projection_maintenance()
+        .await
+        .map_err(map_sync_store_error)?;
+    for _ in 0..ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS {
+        let prepare_store = store.clone();
+        let prepare_state_dir = state_dir.clone();
+        let prepare_validators = validators.clone();
+        let prepare_priority_id = priority_id.clone();
+        let preparation = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/sync_documents/entity-maintenance-preparation",
+            move || -> Result<EntityMaintenancePreparation, ApiError> {
+                let generation_before_vault_read = prepare_store.committed_change_generation();
+                let (reader, vault_snapshot) =
+                    capture_project_vault_snapshot(&prepare_store, &prepare_state_dir)?;
+                let vault_signature = vault_snapshot.signature();
+                let observed_generation = prepare_store.committed_change_generation();
+                let needs_maintenance = generation_before_vault_read != observed_generation
+                    || prepare_store
+                        .entity_projections_need_maintenance(&vault_signature)
+                        .map_err(map_sync_store_error)?;
+                if !needs_maintenance {
+                    drop(reader);
+                    let response = prepare_store
+                        .read_transaction(|transaction| {
                             pull_entities(
                                 transaction,
-                                &state_dir,
+                                &prepare_state_dir,
                                 false,
                                 None,
                                 None,
@@ -251,172 +325,99 @@ pub(crate) async fn pull(
                                 fresh,
                                 initial_high,
                                 reset_support,
-                                priority_id.as_deref(),
+                                prepare_priority_id.as_deref(),
                                 generation,
-                                &validators,
+                                &prepare_validators,
                             )
-                            .map(Some)
                         })
                         .map_err(map_sync_store_error)?;
-                    match response {
-                        Some(response) => Ok(response),
-                        None => pull_with_maintenance(
-                            &store,
-                            &state_dir,
-                            &validators,
-                            after,
-                            limit,
-                            fresh,
-                            initial_high,
-                            reset_support,
-                            priority_id.as_deref(),
-                            generation,
-                        ),
-                    }
+                    return if prepare_store.committed_change_generation() == observed_generation {
+                        Ok(EntityMaintenancePreparation::Response(response))
+                    } else {
+                        Ok(EntityMaintenancePreparation::Retry)
+                    };
                 }
-                Err(error) => Err(map_sync_store_error(error)),
-            }
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
-    Ok(Json(result))
-}
 
-#[allow(clippy::too_many_arguments)]
-fn pull_with_maintenance(
-    store: &RuntimeStore,
-    state_dir: &str,
-    validators: &crate::validation::Registry,
-    after: i64,
-    limit: i64,
-    fresh: bool,
-    initial_high: i64,
-    reset_support: bool,
-    priority_id: Option<&str>,
-    generation: i64,
-) -> Result<SyncPullResponseBody, ApiError> {
-    pull_with_maintenance_interleaved(
-        store,
-        state_dir,
-        validators,
-        after,
-        limit,
-        fresh,
-        initial_high,
-        reset_support,
-        priority_id,
-        generation,
-        &mut || {},
-    )
-}
+                if generation_before_vault_read == observed_generation
+                    && sync_policy::has_complete_entity_seed(&reader)
+                        .map_err(map_sync_store_error)?
+                    && vault_snapshot
+                        .matches_entity_projections(&reader)
+                        .map_err(map_sync_store_error)?
+                {
+                    drop(reader);
+                    prepare_store
+                        .mark_entity_projections_maintained(observed_generation, vault_signature)
+                        .map_err(map_sync_store_error)?;
+                    let response = prepare_store
+                        .read_transaction(|transaction| {
+                            pull_entities(
+                                transaction,
+                                &prepare_state_dir,
+                                false,
+                                None,
+                                None,
+                                None,
+                                after,
+                                limit,
+                                fresh,
+                                initial_high,
+                                reset_support,
+                                prepare_priority_id.as_deref(),
+                                generation,
+                                &prepare_validators,
+                            )
+                        })
+                        .map_err(map_sync_store_error)?;
+                    return if prepare_store.committed_change_generation() == observed_generation {
+                        Ok(EntityMaintenancePreparation::Response(response))
+                    } else {
+                        Ok(EntityMaintenancePreparation::Retry)
+                    };
+                }
 
-#[allow(clippy::too_many_arguments)]
-fn pull_with_maintenance_interleaved(
-    store: &RuntimeStore,
-    state_dir: &str,
-    validators: &crate::validation::Registry,
-    after: i64,
-    limit: i64,
-    fresh: bool,
-    initial_high: i64,
-    reset_support: bool,
-    priority_id: Option<&str>,
-    generation: i64,
-    before_room_recheck: &mut dyn FnMut(),
-) -> Result<SyncPullResponseBody, ApiError> {
-    for _ in 0..ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS {
-        let maintenance_lock = store
-            .lock_entity_projection_maintenance()
-            .map_err(map_sync_store_error)?;
-        let generation_before_vault_read = store.committed_change_generation();
-        let (reader, vault_snapshot) = capture_project_vault_snapshot(store, state_dir)?;
-        let vault_signature = vault_snapshot.signature();
-        let observed_generation = store.committed_change_generation();
-        if generation_before_vault_read == observed_generation
-            && !store
-                .entity_projections_need_maintenance(&vault_signature)
-                .map_err(map_sync_store_error)?
-        {
-            drop(reader);
-            let response = store
-                .read_transaction(|transaction| {
-                    pull_entities(
-                        transaction,
-                        state_dir,
-                        false,
-                        None,
-                        None,
-                        None,
-                        after,
-                        limit,
-                        fresh,
-                        initial_high,
-                        reset_support,
-                        priority_id,
-                        generation,
-                        validators,
+                let project_server_id = prepare_store
+                    .local_server_id()
+                    .map_err(map_sync_store_error)?;
+                let rooms =
+                    studio_runtime_services::sync_entity_context::RoomDirectory::prepare_for_sync(
+                        &reader,
                     )
+                    .map_err(map_sync_store_error)?;
+                drop(reader);
+                Ok(EntityMaintenancePreparation::Apply {
+                    rooms,
+                    vault_snapshot,
+                    vault_signature,
+                    project_server_id,
                 })
-                .map_err(map_sync_store_error)?;
-            drop(maintenance_lock);
-            if store.committed_change_generation() == observed_generation {
-                return Ok(response);
-            }
-            continue;
-        }
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
 
-        if generation_before_vault_read == observed_generation
-            && sync_policy::has_complete_entity_seed(&reader).map_err(map_sync_store_error)?
-            && vault_snapshot
-                .matches_entity_projections(&reader)
-                .map_err(map_sync_store_error)?
-        {
-            drop(reader);
-            store
-                .mark_entity_projections_maintained(observed_generation, vault_signature)
-                .map_err(map_sync_store_error)?;
-            let response = store
-                .read_transaction(|transaction| {
-                    pull_entities(
-                        transaction,
-                        state_dir,
-                        false,
-                        None,
-                        None,
-                        None,
-                        after,
-                        limit,
-                        fresh,
-                        initial_high,
-                        reset_support,
-                        priority_id,
-                        generation,
-                        validators,
-                    )
-                })
-                .map_err(map_sync_store_error)?;
-            drop(maintenance_lock);
-            if store.committed_change_generation() == observed_generation {
-                return Ok(response);
-            }
-            continue;
-        }
-
-        let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
-        let rooms =
-            studio_runtime_services::sync_entity_context::RoomDirectory::prepare_for_sync(&reader)
-                .map_err(map_sync_store_error)?;
-        drop(reader);
-        before_room_recheck();
+        let (rooms, vault_snapshot, vault_signature, project_server_id) = match preparation {
+            EntityMaintenancePreparation::Retry => continue,
+            EntityMaintenancePreparation::Response(response) => return Ok(response),
+            EntityMaintenancePreparation::Apply {
+                rooms,
+                vault_snapshot,
+                vault_signature,
+                project_server_id,
+            } => (rooms, vault_snapshot, vault_signature, project_server_id),
+        };
+        before_room_recheck().await;
+        let transaction_state_dir = state_dir.clone();
+        let transaction_validators = validators.clone();
+        let transaction_priority_id = priority_id.clone();
         let (response, committed_generation) = store
-            .transaction_with_commit_generation(|transaction| {
+            .transaction_with_commit_generation(move |transaction| {
                 if !rooms.matches_for_sync(transaction)? {
                     return Ok(None);
                 }
                 pull_entities(
                     transaction,
-                    state_dir,
+                    &transaction_state_dir,
                     true,
                     project_server_id.as_deref(),
                     Some(&vault_snapshot),
@@ -426,21 +427,20 @@ fn pull_with_maintenance_interleaved(
                     fresh,
                     initial_high,
                     reset_support,
-                    priority_id,
+                    transaction_priority_id.as_deref(),
                     generation,
-                    validators,
+                    &transaction_validators,
                 )
                 .map(Some)
             })
+            .await
             .map_err(map_sync_store_error)?;
         let Some(response) = response else {
-            drop(maintenance_lock);
             continue;
         };
         store
             .mark_entity_projections_maintained(committed_generation, vault_signature)
             .map_err(map_sync_store_error)?;
-        drop(maintenance_lock);
         return Ok(response);
     }
 
@@ -474,6 +474,11 @@ fn capture_project_vault_snapshot(
 pub(crate) enum SyncPullResponseBody {
     Reset(crate::generated::SyncPullResetResponse),
     Page(crate::generated::SyncPullResponse),
+}
+
+enum EntityPullResult {
+    Response(SyncPullResponseBody),
+    NeedsMaintenance(i64),
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,28 +541,25 @@ pub(crate) async fn push_drafts(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
     let validators = validators.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_documents",
-        move || {
-            let result = sync_documents::push_drafts(&store, &writes, |payload| {
-                validators.validate_stored("DraftPayload", payload)
-            })
-            .map_err(|error| match error {
-                sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
-                sync_documents::DraftPushError::Store(_) => ApiError::internal(),
-            })?;
-            if result.changed {
-                wake.notify_one();
-            }
-            Ok::<_, ApiError>(result.conflicts)
-        },
+    let result = sync_documents::push_drafts(
+        &store,
+        writes,
+        move |payload| validators.validate_stored("DraftPayload", payload),
+        move || wake.notify_one(),
     )
     .await
-    .map_err(|_| ApiError::internal())??;
+    .map_err(|error| match error {
+        sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
+        sync_documents::DraftPushError::Store(_) => ApiError::internal(),
+    })?;
     Ok(Json(super::generated_json::<
         Vec<crate::generated::SyncDocument>,
     >(Value::Array(
-        result.iter().map(|document| document.response()).collect(),
+        result
+            .conflicts
+            .iter()
+            .map(|document| document.response())
+            .collect(),
     ))?))
 }
 
@@ -574,16 +576,10 @@ pub(crate) async fn push_preferences(
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    let merged = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_documents",
-        move || {
-            sync_policy::push_preferences(&store, scope, &fields, move |field| {
-                validators.validate_preference_field(field)
-            })
-        },
-    )
+    let merged = sync_policy::push_preferences(&store, scope, fields, move |field| {
+        validators.validate_preference_field(field)
+    })
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(|error| match error {
         SyncPolicyError::InvalidPreferences => {
             ApiError::validation(vec![Value::String("body".to_owned())])
@@ -839,11 +835,11 @@ mod vault_maintenance_tests {
     use super::sync_policy;
     use super::{
         ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS, SyncPullResponseBody,
-        capture_project_vault_snapshot, pull_with_maintenance, pull_with_maintenance_interleaved,
-        validate_entity_envelope,
+        capture_project_vault_snapshot, pull_with_maintenance, validate_entity_envelope,
     };
     use axum::response::IntoResponse;
     use serde_json::{Value, json};
+    use std::sync::Arc;
     use studio_runtime_store::{ProjectsRepository, RuntimeStore, SyncDocumentsRepository};
 
     fn response_value(response: &SyncPullResponseBody) -> Value {
@@ -946,15 +942,19 @@ mod vault_maintenance_tests {
         );
     }
 
-    fn maintenance_fixture() -> (
+    async fn maintenance_fixture() -> (
         tempfile::TempDir,
-        RuntimeStore,
+        Arc<RuntimeStore>,
         Value,
         crate::validation::Registry,
         String,
     ) {
         let directory = tempfile::tempdir().expect("isolated state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let project_path = directory
             .path()
             .join("Project")
@@ -968,12 +968,14 @@ mod vault_maintenance_tests {
         });
         store
             .transaction(|transaction| ProjectsRepository::put_project(transaction, &project))
+            .await
             .expect("project source is stored");
         store
             .transaction(|transaction| {
                 transaction.execute("DELETE FROM sync_entity_meta WHERE key='seeded'", [])?;
                 Ok(())
             })
+            .await
             .expect("force entity projections through maintenance path");
         let validators = crate::validation::Registry::compile(&[(
             "GET".to_owned(),
@@ -987,30 +989,39 @@ mod vault_maintenance_tests {
         (directory, store, project, validators, state_dir)
     }
 
-    #[test]
-    fn stale_room_snapshot_retries_after_an_injected_interleaving() {
-        let (_directory, store, project, validators, state_dir) = maintenance_fixture();
-        let mut interleavings = 0;
-        let mut before_recheck = || {
-            interleavings += 1;
-            if interleavings == 1 {
-                let mut updated = project.clone();
-                updated["path"] = json!(format!(
-                    "{}/changed-during-filesystem-preparation",
-                    project["path"].as_str().expect("project path is a string")
-                ));
-                store
-                    .transaction(|transaction| {
-                        ProjectsRepository::put_project(transaction, &updated)
-                    })
-                    .expect("injected project update commits");
+    #[tokio::test]
+    async fn stale_room_snapshot_retries_after_an_injected_interleaving() {
+        let (_directory, store, project, validators, state_dir) = maintenance_fixture().await;
+        let interleavings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let before_recheck = {
+            let interleavings = interleavings.clone();
+            let store = store.clone();
+            let project = project.clone();
+            move || {
+                let interleavings = interleavings.clone();
+                let store = store.clone();
+                let project = project.clone();
+                Box::pin(async move {
+                    let current = interleavings.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if current == 1 {
+                        let mut updated = project.clone();
+                        updated["path"] = json!(format!(
+                            "{}/changed-during-filesystem-preparation",
+                            project["path"].as_str().expect("project path is a string")
+                        ));
+                        store
+                            .transaction(|transaction| ProjectsRepository::put_project(transaction, &updated))
+                            .await
+                            .expect("injected project update commits");
+                    }
+                })
             }
         };
 
-        let response = pull_with_maintenance_interleaved(
-            &store,
-            &state_dir,
-            &validators,
+        let response = pull_with_maintenance(
+            store.clone(),
+            state_dir.clone(),
+            validators.clone(),
             0,
             100,
             false,
@@ -1018,34 +1029,46 @@ mod vault_maintenance_tests {
             false,
             None,
             0,
-            &mut before_recheck,
+            before_recheck,
         )
+        .await
         .expect("pull retries against the updated room snapshot");
 
         assert!(response_value(&response)["documents"].is_array());
-        assert_eq!(interleavings, 2, "the stale preparation is retried once");
+        assert_eq!(interleavings.load(std::sync::atomic::Ordering::Relaxed), 2, "the stale preparation is retried once");
     }
 
     #[tokio::test]
     async fn repeated_room_snapshot_interleavings_return_conflict_after_bounded_retries() {
-        let (_directory, store, project, validators, state_dir) = maintenance_fixture();
-        let mut interleavings = 0;
-        let mut before_recheck = || {
-            interleavings += 1;
-            let mut updated = project.clone();
-            updated["path"] = json!(format!(
-                "{}/concurrent-{interleavings}",
-                project["path"].as_str().expect("project path is a string")
-            ));
-            store
-                .transaction(|transaction| ProjectsRepository::put_project(transaction, &updated))
-                .expect("injected project update commits");
+        let (_directory, store, project, validators, state_dir) = maintenance_fixture().await;
+        let interleavings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let before_recheck = {
+            let interleavings = interleavings.clone();
+            let store = store.clone();
+            let project = project.clone();
+            move || {
+                let interleavings = interleavings.clone();
+                let store = store.clone();
+                let project = project.clone();
+                Box::pin(async move {
+                    let current = interleavings.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let mut updated = project.clone();
+                    updated["path"] = json!(format!(
+                        "{}/concurrent-{current}",
+                        project["path"].as_str().expect("project path is a string")
+                    ));
+                    store
+                        .transaction(|transaction| ProjectsRepository::put_project(transaction, &updated))
+                        .await
+                        .expect("injected project update commits");
+                })
+            }
         };
 
-        let error = match pull_with_maintenance_interleaved(
-            &store,
-            &state_dir,
-            &validators,
+        let error = match pull_with_maintenance(
+            store.clone(),
+            state_dir.clone(),
+            validators.clone(),
             0,
             100,
             false,
@@ -1053,8 +1076,10 @@ mod vault_maintenance_tests {
             false,
             None,
             0,
-            &mut before_recheck,
-        ) {
+            before_recheck,
+        )
+        .await
+        {
             Err(error) => error,
             Ok(_) => panic!("persistent room updates exhaust the retry budget"),
         };
@@ -1066,13 +1091,14 @@ mod vault_maintenance_tests {
             .expect("conflict response body is readable");
         let body: Value = serde_json::from_slice(&body).expect("conflict response is JSON");
         assert_eq!(body["error"], super::ENTITY_PROJECTION_PREPARATION_CONFLICT);
-        assert_eq!(interleavings, ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS);
+        assert_eq!(interleavings.load(std::sync::atomic::Ordering::Relaxed), ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS);
     }
 
-    #[test]
-    fn entity_pull_reprojects_when_cached_vault_changes_without_a_store_write() {
+    #[tokio::test]
+    async fn entity_pull_reprojects_when_cached_vault_changes_without_a_store_write() {
         let directory = tempfile::tempdir().expect("isolated state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
         let source = "/workspace/Project One";
         let project_id = studio_runtime_store::sha256_hex(source.as_bytes());
         let project = json!({
@@ -1132,9 +1158,9 @@ mod vault_maintenance_tests {
         let state_dir = store.root().to_string_lossy().into_owned();
         let pull = || {
             pull_with_maintenance(
-                &store,
-                &state_dir,
-                &validators,
+                store.clone(),
+                state_dir.clone(),
+                validators.clone(),
                 0,
                 100,
                 false,
@@ -1142,10 +1168,10 @@ mod vault_maintenance_tests {
                 false,
                 None,
                 0,
+                || Box::pin(async {}),
             )
-            .expect("entity pull succeeds")
         };
-        let first_pull = pull();
+        let first_pull = pull().await.expect("entity pull succeeds");
         assert!(response_value(&first_pull)["documents"].is_array());
         let first_payload: String = store
             .read()
@@ -1167,7 +1193,7 @@ mod vault_maintenance_tests {
             br#"{"site":"https://after.example/"}"#,
         )
         .expect("cached vault changes without a SQLite write");
-        let second_pull = pull();
+        let second_pull = pull().await.expect("entity pull succeeds");
         assert!(response_value(&second_pull)["documents"].is_array());
         let second_payload: String = store
             .read()
@@ -1186,11 +1212,12 @@ mod vault_maintenance_tests {
         assert_ne!(first_payload, second_payload);
     }
 
-    #[test]
-    fn cold_entity_pull_reuses_complete_seed_without_scanning_source_rows() {
+    #[tokio::test]
+    async fn cold_entity_pull_reuses_complete_seed_without_scanning_source_rows() {
         const ENTITY_COUNT: usize = 2_000;
         let directory = tempfile::tempdir().expect("isolated state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
         store
             .transaction(|transaction| {
                 for index in 0..ENTITY_COUNT {
@@ -1233,9 +1260,9 @@ mod vault_maintenance_tests {
         let state_dir = store.root().to_string_lossy().into_owned();
         let started = std::time::Instant::now();
         let response = pull_with_maintenance(
-            &store,
-            &state_dir,
-            &validators,
+            store.clone(),
+            state_dir.clone(),
+            validators.clone(),
             0,
             100,
             false,
@@ -1243,7 +1270,9 @@ mod vault_maintenance_tests {
             false,
             None,
             0,
+            || {},
         )
+        .await
         .expect("cold pull succeeds");
         let cold_elapsed = started.elapsed();
         let response = response_value(&response);
@@ -1261,9 +1290,9 @@ mod vault_maintenance_tests {
         );
         let warm_started = std::time::Instant::now();
         let warm_response = pull_with_maintenance(
-            &store,
-            &state_dir,
-            &validators,
+            store.clone(),
+            state_dir.clone(),
+            validators.clone(),
             0,
             100,
             false,
@@ -1271,7 +1300,9 @@ mod vault_maintenance_tests {
             false,
             None,
             0,
+            || {},
         )
+        .await
         .expect("warm pull succeeds");
         let warm_elapsed = warm_started.elapsed();
         let warm_response = response_value(&warm_response);

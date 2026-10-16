@@ -5,6 +5,7 @@ use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
@@ -39,6 +40,23 @@ pub enum ProjectsError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error("project preparation worker failed")]
+    PreparationWorker,
+}
+
+pub(crate) async fn prepare_path(
+    store: Arc<RuntimeStore>,
+    path: Option<Value>,
+    require_directory: bool,
+) -> Result<(PreparedHost, String), ProjectsError> {
+    studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/projects", move || {
+        let path = project_key(path.as_ref(), require_directory)?;
+        let prepared = PreparedHost::load(&store)?;
+        prepared.recheck_paths()?;
+        Ok::<_, ProjectsError>((prepared, path))
+    })
+    .await
+    .map_err(|_| ProjectsError::PreparationWorker)?
 }
 
 pub fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
@@ -349,8 +367,8 @@ pub fn peer_location_matches(
 mod peer_location_tests {
     use super::*;
 
-    #[test]
-    fn peer_location_reads_return_only_bounded_metadata_and_matches() {
+    #[tokio::test]
+    async fn peer_location_reads_return_only_bounded_metadata_and_matches() {
         let root = tempfile::tempdir().expect("temporary project root");
         let repo = root.path().join("repo");
         std::fs::create_dir_all(&repo).expect("temporary repository directory");
@@ -371,7 +389,9 @@ mod peer_location_tests {
             .expect("configure local Git fixture origin");
         assert!(configured.success(), "configure local Git fixture origin");
         let store_dir = tempfile::tempdir().expect("temporary store root");
-        let store = RuntimeStore::open(Some(store_dir.path())).expect("open isolated store");
+        let store = RuntimeStore::open(Some(store_dir.path()))
+            .await
+            .expect("open isolated store");
         let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
             .expect("read peer location");
         assert_eq!(info["gitOrigin"], "example.invalid/team/repo");
@@ -408,162 +428,169 @@ pub fn write_dependency(body: &Value) -> Option<&'static str> {
     }
 }
 
-pub fn write(
-    store: &RuntimeStore,
-    body: &Value,
-    default_account: &str,
-    known_accounts: &[Value],
+pub async fn write(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)
-        .unwrap_or("register");
-    if let Some(dependency) = write_dependency(body) {
+        .unwrap_or("register")
+        .to_owned();
+    if let Some(dependency) = write_dependency(&body) {
         return Err(ProjectsError::Requires(dependency));
     }
     if action == "set_accounts" {
-        return set_accounts(store, body, default_account, known_accounts);
+        return set_accounts(store, body, default_account, known_accounts).await;
     }
     if action == "set_worker_environment" {
-        return set_worker_environment(store, body, default_account, known_accounts);
+        return set_worker_environment(store, body, default_account, known_accounts).await;
     }
     if action == "reorder" {
-        return reorder(store, body);
+        return reorder(&store, body).await;
     }
     if matches!(
-        action,
+        action.as_str(),
         "rename" | "add_folder" | "rename_folder" | "remove_folder"
     ) {
-        return organize(store, body, default_account, known_accounts);
+        return organize(store, body, default_account, known_accounts).await;
     }
     if !matches!(
-        action,
+        action.as_str(),
         "register" | "remove" | "set_account" | "set_worker_base"
     ) {
         return Err(ProjectsError::Invalid("unknown project action"));
     }
-    let path = project_key(body.get("path"), action == "register")?;
+    let path_value = body.get("path").cloned();
     let revision = body.get("expected_revision").and_then(Value::as_u64);
-    let account = body.get("account_key").and_then(Value::as_str);
+    let account = body
+        .get("account_key")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let base = body
         .get("base_ref")
         .and_then(Value::as_str)
         .map(python_strip)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     if action == "set_account"
         && !known_accounts
             .iter()
-            .any(|row| row.get("id").and_then(Value::as_str) == account)
+            .any(|row| row.get("id").and_then(Value::as_str) == account.as_deref())
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|tx| {
-        prepared.recheck(tx)?;
-        let mut project = load_project(tx, &path)?;
-        if path.starts_with("project:") && project.is_none() {
-            return Err(ProjectsError::Invalid("select an existing project"));
-        }
-        if action == "remove" {
-            let removed = ProjectsRepository::remove(tx, &path)?;
-            return Ok(json!({"id":path,"removed":removed}));
-        }
-        if action == "register"
-            && let Some(project) = project
-        {
-            return Ok(project);
-        }
-        let account_revision = revision_of(project.as_ref(), "accountRevision", &path)?;
-        let base_revision = revision_of(project.as_ref(), "workerBaseRevision", &path)?;
-        if action == "set_account" {
-            if let Some(project) = &project
-                && project.get("accountKey").and_then(Value::as_str) == account
-                && revision.is_some_and(|value| {
-                    value == account_revision || value.saturating_add(1) == account_revision
-                })
+    let (prepared, path) = prepare_path(store.clone(), path_value, action == "register").await?;
+    let transaction_body = body;
+    let transaction_default_account = default_account;
+    store
+        .transaction_with(move |tx| {
+            prepared.recheck(tx)?;
+            let mut project = load_project(tx, &path)?;
+            if path.starts_with("project:") && project.is_none() {
+                return Err(ProjectsError::Invalid("select an existing project"));
+            }
+            if action == "remove" {
+                let removed = ProjectsRepository::remove(tx, &path)?;
+                return Ok(json!({"id":path,"removed":removed}));
+            }
+            if action == "register"
+                && let Some(project) = project
             {
-                return Ok(project.clone());
+                return Ok(project);
             }
-            if revision != Some(account_revision) {
-                return Err(ProjectsError::Conflict(
-                    "Project account changed. Reload it before saving",
-                ));
-            }
-            if known_accounts.iter().any(|row| {
-                row.get("id").and_then(Value::as_str) == account
-                    && row.get("disconnected").and_then(Value::as_bool) == Some(true)
-            }) {
-                return Err(ProjectsError::Invalid(
-                    "reconnect this account before selecting it",
-                ));
-            }
-        }
-        if action == "set_worker_base" {
-            if project
-                .as_ref()
-                .is_some_and(|row| row.get("workerBaseRef").and_then(Value::as_str) == base)
-                && revision.is_some_and(|value| {
-                    value == base_revision || value.saturating_add(1) == base_revision
-                })
-            {
-                return Ok(project.clone().unwrap_or(Value::Null));
-            }
-            if revision != Some(base_revision) {
-                return Err(ProjectsError::Conflict(
-                    "Worker base changed. Reload it before saving",
-                ));
-            }
-        }
-        if project.is_none() {
-            let name = project_name(body.get("name"), &path)?;
-            let chosen = account.map(str::to_owned).unwrap_or(project_account(
-                &prepared,
-                tx,
-                &path,
-                default_account,
-            )?);
-            project = Some(new_project(
-                &prepared,
-                &path,
-                &name,
-                &chosen,
-                known_accounts,
-            )?);
-        }
-        let project = project
-            .as_mut()
-            .ok_or(ProjectsError::Invalid("project is unavailable"))?;
-        if action == "set_worker_base" {
-            project["workerBaseRef"] = base.map_or(Value::Null, |value| json!(value));
-            project["workerBaseRevision"] = json!(base_revision + 1);
-        } else {
-            let selected = account
-                .or_else(|| project["accountKey"].as_str())
-                .unwrap_or(default_account)
-                .to_owned();
-            project["accountKey"] = json!(selected);
-            project["accountRevision"] = json!(account_revision + 1);
-            if let Some(keys) = project
-                .get("accountKeys")
-                .and_then(Value::as_array)
-                .filter(|v| !v.is_empty())
-            {
-                let mut keys = keys
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                if !keys.iter().any(|key| key == &selected) {
-                    keys.push(selected.to_owned());
-                    keys.sort();
+            let account_revision = revision_of(project.as_ref(), "accountRevision", &path)?;
+            let base_revision = revision_of(project.as_ref(), "workerBaseRevision", &path)?;
+            if action == "set_account" {
+                if let Some(project) = &project
+                    && project.get("accountKey").and_then(Value::as_str) == account.as_deref()
+                    && revision.is_some_and(|value| {
+                        value == account_revision || value.saturating_add(1) == account_revision
+                    })
+                {
+                    return Ok(project.clone());
                 }
-                project["accountKeys"] = json!(keys);
+                if revision != Some(account_revision) {
+                    return Err(ProjectsError::Conflict(
+                        "Project account changed. Reload it before saving",
+                    ));
+                }
+                if known_accounts.iter().any(|row| {
+                    row.get("id").and_then(Value::as_str) == account.as_deref()
+                        && row.get("disconnected").and_then(Value::as_bool) == Some(true)
+                }) {
+                    return Err(ProjectsError::Invalid(
+                        "reconnect this account before selecting it",
+                    ));
+                }
             }
-        }
-        ProjectsRepository::put_project(tx, project)?;
-        Ok(project.clone())
-    })
+            if action == "set_worker_base" {
+                if project.as_ref().is_some_and(|row| {
+                    row.get("workerBaseRef").and_then(Value::as_str) == base.as_deref()
+                }) && revision.is_some_and(|value| {
+                    value == base_revision || value.saturating_add(1) == base_revision
+                }) {
+                    return Ok(project.clone().unwrap_or(Value::Null));
+                }
+                if revision != Some(base_revision) {
+                    return Err(ProjectsError::Conflict(
+                        "Worker base changed. Reload it before saving",
+                    ));
+                }
+            }
+            if project.is_none() {
+                let name = project_name(transaction_body.get("name"), &path)?;
+                let chosen = account.clone().unwrap_or(project_account(
+                    &prepared,
+                    tx,
+                    &path,
+                    &transaction_default_account,
+                )?);
+                project = Some(new_project(
+                    &prepared,
+                    &path,
+                    &name,
+                    &chosen,
+                    &known_accounts,
+                )?);
+            }
+            let project = project
+                .as_mut()
+                .ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            if action == "set_worker_base" {
+                project["workerBaseRef"] = base.map_or(Value::Null, |value| json!(value));
+                project["workerBaseRevision"] = json!(base_revision + 1);
+            } else {
+                let selected = account
+                    .as_deref()
+                    .or_else(|| project["accountKey"].as_str())
+                    .unwrap_or(&transaction_default_account)
+                    .to_owned();
+                project["accountKey"] = json!(selected);
+                project["accountRevision"] = json!(account_revision + 1);
+                if let Some(keys) = project
+                    .get("accountKeys")
+                    .and_then(Value::as_array)
+                    .filter(|v| !v.is_empty())
+                {
+                    let mut keys = keys
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    if !keys.iter().any(|key| key == &selected) {
+                        keys.push(selected.to_owned());
+                        keys.sort();
+                    }
+                    project["accountKeys"] = json!(keys);
+                }
+            }
+            ProjectsRepository::put_project(tx, project)?;
+            Ok(project.clone())
+        })
+        .await
 }
 
 fn check_id(value: &Value, table: &'static str, id: &str) -> Result<(), ProjectsError> {
@@ -701,13 +728,13 @@ fn project_account(
         .unwrap_or_else(|| fallback.to_owned()))
 }
 
-fn set_accounts(
-    store: &RuntimeStore,
-    body: &Value,
-    _default_account: &str,
-    known_accounts: &[Value],
+async fn set_accounts(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    _default_account: String,
+    known_accounts: Vec<Value>,
 ) -> Result<Value, ProjectsError> {
-    let path = project_key(body.get("path"), true)?;
+    let path_value = body.get("path").cloned();
     let keys_value = body
         .get("account_keys")
         .and_then(Value::as_array)
@@ -725,8 +752,9 @@ fn set_accounts(
     let default = body
         .get("account_key")
         .and_then(Value::as_str)
-        .ok_or(ProjectsError::Invalid("select a default project account"))?;
-    if !keys.iter().any(|key| key == default) {
+        .ok_or(ProjectsError::Invalid("select a default project account"))?
+        .to_owned();
+    if !keys.iter().any(|key| key == &default) {
         return Err(ProjectsError::Invalid(
             "the default must be a selected project account",
         ));
@@ -755,29 +783,32 @@ fn set_accounts(
         .ok_or(ProjectsError::Invalid(
             "project account revision is invalid",
         ))?;
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|tx| -> Result<Value, ProjectsError> {
+    let (prepared, path) = prepare_path(store.clone(), path_value, true).await?;
+    store.transaction_with(move |tx| -> Result<Value, ProjectsError> {
         prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() { return Err(ProjectsError::Invalid("select an existing project")); }
         let current = revision_of(project.as_ref(), "accountRevision", &path)?;
         let current_keys = project.as_ref().and_then(|row| row.get("accountKeys")).and_then(Value::as_array).cloned().unwrap_or_default();
         let existing_keys = if current_keys.is_empty() { project.as_ref().and_then(|row| row.get("accountKey")).cloned().into_iter().collect() } else { current_keys };
-        if project.as_ref().is_some_and(|row| row.get("accountKey").and_then(Value::as_str) == Some(default)
+        if project.as_ref().is_some_and(|row| row.get("accountKey").and_then(Value::as_str) == Some(default.as_str())
             && row.get("accountKeys").and_then(Value::as_array) == Some(&keys.iter().cloned().map(Value::String).collect::<Vec<_>>())
             && (expected == current || expected.saturating_add(1) == current)) { return Ok(project.clone().unwrap_or(Value::Null)); }
-        for (key, account) in &selected {
+        for key in &keys {
+            let account = known_accounts
+                .iter()
+                .find(|row| row.get("id").and_then(Value::as_str) == Some(key.as_str()))
+                .ok_or(ProjectsError::Invalid("select existing project accounts"))?;
             if account.get("deleted").and_then(Value::as_bool) == Some(true) { return Err(ProjectsError::Invalid("deleted accounts cannot be added to a project")); }
             if account.get("disconnected").and_then(Value::as_bool) == Some(true)
-                && (*key == default || !existing_keys.iter().any(|value| value.as_str() == Some(key))) {
+                && (key == &default || !existing_keys.iter().any(|value| value.as_str() == Some(key.as_str()))) {
                 return Err(ProjectsError::Invalid("reconnect this account before adding it to a project or selecting it as the default"));
             }
         }
         if expected != current { return Err(ProjectsError::Conflict("Project accounts changed. Reload before saving")); }
         if project.is_none() {
             let name = project_name(None, &path)?;
-            project = Some(new_project(&prepared, &path, &name, default, known_accounts)?);
+            project = Some(new_project(&prepared, &path, &name, &default, &known_accounts)?);
         }
         let project = project.as_mut().ok_or(ProjectsError::Invalid("project is unavailable"))?;
         project["accountKey"] = json!(default);
@@ -785,85 +816,88 @@ fn set_accounts(
         project["accountRevision"] = json!(current.saturating_add(1));
         ProjectsRepository::put_project(tx, project)?;
         Ok(project.clone())
-    })
+    }).await
 }
 
-fn set_worker_environment(
-    store: &RuntimeStore,
-    body: &Value,
-    default_account: &str,
-    known_accounts: &[Value],
+async fn set_worker_environment(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
 ) -> Result<Value, ProjectsError> {
     let environment = body
         .get("environment")
         .and_then(Value::as_str)
         .filter(|environment| matches!(*environment, "host" | "linux"))
+        .map(str::to_owned)
         .ok_or(ProjectsError::Invalid("worker environment is invalid"))?;
     if environment == "linux" {
         return Err(ProjectsError::BadRequest(
             "Choose a layr chat to run agents in the VM",
         ));
     }
-    let path = project_key(body.get("path"), true)?;
+    let path_value = body.get("path").cloned();
     let expected = body
         .get("expected_revision")
         .and_then(Value::as_u64)
         .ok_or(ProjectsError::Invalid(
             "worker environment revision is invalid",
         ))?;
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|tx| -> Result<Value, ProjectsError> {
-        prepared.recheck(tx)?;
-        let mut project = load_project(tx, &path)?;
-        if path.starts_with("project:") && project.is_none() {
-            return Err(ProjectsError::Invalid("select an existing project"));
-        }
-        let current = revision_of(project.as_ref(), "workerEnvironmentRevision", &path)?;
-        if project.as_ref().is_some_and(|row| {
-            row.get("workerEnvironment")
-                .and_then(Value::as_str)
-                .unwrap_or("host")
-                == environment
-                && (expected == current || expected.saturating_add(1) == current)
-        }) {
-            return Ok(project.clone().unwrap_or(Value::Null));
-        }
-        if current != expected {
-            return Err(ProjectsError::Conflict(
-                "Worker environment changed. Reload it before saving",
-            ));
-        }
-        if project.is_none() {
-            let account = project_account(&prepared, tx, &path, default_account)?;
-            project = Some(new_project(
-                &prepared,
-                &path,
-                &project_name(None, &path)?,
-                &account,
-                known_accounts,
-            )?);
-        }
-        let project = project.ok_or(ProjectsError::Invalid("project is unavailable"))?;
-        let mut project = project;
-        project["workerEnvironment"] = json!(environment);
-        project["workerEnvironmentRevision"] = json!(current + 1);
-        ProjectsRepository::put_project(tx, &project)?;
-        Ok(project)
-    })
+    let (prepared, path) = prepare_path(store.clone(), path_value, true).await?;
+    store
+        .transaction_with(move |tx| -> Result<Value, ProjectsError> {
+            prepared.recheck(tx)?;
+            let mut project = load_project(tx, &path)?;
+            if path.starts_with("project:") && project.is_none() {
+                return Err(ProjectsError::Invalid("select an existing project"));
+            }
+            let current = revision_of(project.as_ref(), "workerEnvironmentRevision", &path)?;
+            if project.as_ref().is_some_and(|row| {
+                row.get("workerEnvironment")
+                    .and_then(Value::as_str)
+                    .unwrap_or("host")
+                    == environment
+                    && (expected == current || expected.saturating_add(1) == current)
+            }) {
+                return Ok(project.clone().unwrap_or(Value::Null));
+            }
+            if current != expected {
+                return Err(ProjectsError::Conflict(
+                    "Worker environment changed. Reload it before saving",
+                ));
+            }
+            if project.is_none() {
+                let account = project_account(&prepared, tx, &path, &default_account)?;
+                project = Some(new_project(
+                    &prepared,
+                    &path,
+                    &project_name(None, &path)?,
+                    &account,
+                    &known_accounts,
+                )?);
+            }
+            let project = project.ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            let mut project = project;
+            project["workerEnvironment"] = json!(environment);
+            project["workerEnvironmentRevision"] = json!(current + 1);
+            ProjectsRepository::put_project(tx, &project)?;
+            Ok(project)
+        })
+        .await
 }
 
-fn organize(
-    store: &RuntimeStore,
-    body: &Value,
-    default_account: &str,
-    accounts: &[Value],
+async fn organize(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    accounts: Vec<Value>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    let path = project_key(body.get("path"), false)?;
+        .unwrap_or_default()
+        .to_owned();
+    let path_value = body.get("path").cloned();
     let expected = body
         .get("expected_revision")
         .and_then(Value::as_u64)
@@ -891,16 +925,19 @@ fn organize(
                 .to_string(),
         )
     };
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|tx| {
+    let parent_id = body
+        .get("parent_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let (prepared, path) = prepare_path(store.clone(), path_value, false).await?;
+    store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
             None => {
-                let account = project_account(&prepared, tx, &path, default_account)?;
-                let project = new_project(&prepared, &path, &project_name(None, &path)?, &account, accounts)?;
+                let account = project_account(&prepared, tx, &path, &default_account)?;
+                let project = new_project(&prepared, &path, &project_name(None, &path)?, &account, &accounts)?;
                 ProjectsRepository::put_project(tx, &project)?;
                 project
             }
@@ -912,19 +949,19 @@ fn organize(
         if action == "add_folder" && let Some(index) = folder {
             let item = &folders[index];
             if item.get("name").and_then(Value::as_str) == name.as_deref()
-                && item.get("parentId").and_then(Value::as_str) == body.get("parent_id").and_then(Value::as_str) { return Ok(project); }
+                && item.get("parentId").and_then(Value::as_str) == parent_id.as_deref() { return Ok(project); }
             return Err(ProjectsError::Invalid("this folder ID has different settings"));
         }
         if action == "rename_folder" && folder.is_some_and(|i| folders[i].get("name").and_then(Value::as_str) == name.as_deref()) { return Ok(project); }
         if action == "remove_folder" && folder.is_none() { return Ok(project); }
         if expected != revision { return Err(ProjectsError::Conflict("Project changed. Reload it before saving")); }
-        match action {
+        match action.as_str() {
             "rename" => project["name"] = json!(name),
             "add_folder" | "rename_folder" => {
                 let id = folder_id.as_deref().ok_or(ProjectsError::Invalid("supply a folder ID"))?;
                 if action == "rename_folder" && folder.is_none() { return Err(ProjectsError::Invalid("this folder no longer exists")); }
                 let parent = if action == "add_folder" {
-                    let parent = body.get("parent_id").and_then(Value::as_str);
+                    let parent = parent_id.as_deref();
                     if parent.is_some_and(|parent| !folders.iter().any(|item| item.get("id").and_then(Value::as_str) == Some(parent))) {
                         return Err(ProjectsError::Invalid("this folder is not in the selected project"));
                     }
@@ -957,7 +994,7 @@ fn organize(
         project["updated"] = json!(now_seconds());
         ProjectsRepository::put_project(tx, &project)?;
         Ok(project)
-    })
+    }).await
 }
 
 pub(crate) fn project_key(

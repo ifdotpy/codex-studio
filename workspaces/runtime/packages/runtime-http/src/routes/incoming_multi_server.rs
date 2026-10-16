@@ -5,8 +5,8 @@ use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{net::SocketAddr, sync::Arc};
 use studio_runtime_services::multi_server_auth::{self, AccessError, SignedRequest};
 
 use crate::error::error_response;
@@ -143,18 +143,12 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             .iter()
             .filter_map(|v| v.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
-        return match studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/incoming_multi_server",
-            move || boundary.discovery_identity(&store, &address, &logins),
-        )
-        .await
-        {
-            Ok(Ok(v)) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
+        return match boundary.discovery_identity(store, &address, &logins).await {
+            Ok(v) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
                 Ok(v) => Json(v).into_response(),
                 Err(e) => e.into_response(),
             },
-            Ok(Err(e)) => failure(e),
-            Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Err(e) => failure(e),
         };
     }
     let supported = matches!(
@@ -199,6 +193,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         );
     }
     let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
     let target = request
         .uri()
         .path_and_query()
@@ -266,104 +261,174 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         || is_name
         || is_management_invite;
     let request_id = request.request_id().to_owned();
+    let is_mutation = method == "POST";
     let notifications = state.resource_notifications.clone();
     let driver = state.orchestration_driver.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/incoming_multi_server",
-        move || {
-            let result = if is_orchestration {
-                let principal = boundary
-                    .authorize_operation_incoming(&store, &request, &address, &logins, now)?;
-                let driver = driver.ok_or_else(|| {
+    let prepared_server = if method == "POST"
+        && (is_orchestration || is_name || is_management_invite)
+    {
+        match boundary
+            .prepare_server_request_incoming(Arc::clone(&store), &request, &address, &logins, now)
+            .await
+        {
+            Ok(prepared) => Some(prepared),
+            Err(error) => return failure(error),
+        }
+    } else {
+        None
+    };
+    let prepared_access =
+        if method == "POST" && !is_orchestration && !is_name && !is_management_invite {
+            match boundary
+                .prepare_incoming(Arc::clone(&store), &request, &address, &logins, now)
+                .await
+            {
+                Ok(prepared) => Some(prepared),
+                Err(error) => return failure(error),
+            }
+        } else {
+            None
+        };
+    let publish_notifications = Arc::clone(&notifications);
+    let effect_request_id = request_id.clone();
+    let tracked_route = format!("{method} {path}");
+    let tracked_request_id = Some(request_id.clone());
+    let effect = async move {
+        if is_orchestration {
+            let prepared = prepared_server.as_ref().ok_or_else(|| {
+                multi_server_auth::refused(400, "invalid_request", "Invalid signed request")
+            })?;
+            let principal = boundary
+                .commit_prepared_server_request(&store, prepared)
+                .await?;
+            let driver = driver.ok_or_else(|| {
+                multi_server_auth::refused(
+                    501,
+                    "orchestration_unavailable",
+                    "The cross-server orchestration receiver is unavailable",
+                )
+            })?;
+            let outcome = driver
+                .receive(&principal, request.body(), now as i64)
+                .await?;
+            Ok(outcome.to_value(&request_id))
+        } else if is_name {
+            let principal = boundary
+                .commit_prepared_server_request(
+                    &store,
+                    prepared_server.as_ref().ok_or_else(|| {
+                        multi_server_auth::refused(400, "invalid_request", "Invalid signed request")
+                    })?,
+                )
+                .await?;
+            let label = request
+                .body()
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            credentials
+                .rename_with_notification(
+                    Arc::clone(&store),
+                    "local",
+                    &label,
+                    &request_id,
+                    &principal,
+                    |request_id| {
+                        super::multi_server::publish_resource_change(&notifications, request_id)
+                    },
+                )
+                .await
+                .map_err(credential_error)?;
+            credentials
+                .identity(Arc::clone(&store), public_origin.as_deref())
+                .await
+                .map_err(credential_error)
+        } else if is_management_invite {
+            let actor = boundary
+                .commit_prepared_server_request(
+                    &store,
+                    prepared_server.as_ref().ok_or_else(|| {
+                        multi_server_auth::refused(400, "invalid_request", "Invalid signed request")
+                    })?,
+                )
+                .await?;
+            let identity = credentials
+                .identity(Arc::clone(&store), public_origin.as_deref())
+                .await
+                .map_err(credential_error)?;
+            let owner_value = match whoami {
+                Some(probe) => probe().await,
+                None => None,
+            };
+            let owner = owner_value
+                .as_ref()
+                .and_then(super::multi_server::tailscale_login)
+                .ok_or_else(|| {
                     multi_server_auth::refused(
-                        501,
-                        "orchestration_unavailable",
-                        "The cross-server orchestration receiver is unavailable",
+                        503,
+                        "identity_unavailable",
+                        "The Tailscale owner identity is unavailable",
                     )
                 })?;
-                let outcome = driver.receive(&principal, request.body(), now as i64)?;
-                Ok(outcome.to_value(&request_id))
-            } else if is_name {
-                let principal = boundary
-                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
-                let label = request
-                    .body()
-                    .get("label")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                credentials
-                    .rename_with_notification(
-                        &store,
-                        "local",
-                        &label,
-                        &request_id,
-                        &principal,
-                        |request_id| {
-                            super::multi_server::publish_resource_change(&notifications, request_id)
-                        },
-                    )
-                    .map_err(credential_error)?;
-                credentials
-                    .identity(&store, public_origin.as_deref())
-                    .map_err(credential_error)
-            } else if is_management_invite {
-                let actor = boundary
-                    .authorize_server_request_incoming(&store, &request, &address, &logins, now)?;
-                let identity = credentials
-                    .identity(&store, public_origin.as_deref())
-                    .map_err(credential_error)?;
-                let owner = whoami
-                    .and_then(|probe| probe())
-                    .and_then(|value| super::multi_server::tailscale_login(&value))
-                    .ok_or_else(|| {
-                        multi_server_auth::refused(
-                            503,
-                            "identity_unavailable",
-                            "The Tailscale owner identity is unavailable",
-                        )
-                    })?;
-                studio_runtime_services::multi_server::create_invite(
-                    &store,
-                    &identity,
-                    request.body(),
-                    &actor,
-                    Some(&owner),
-                )
-                .map_err(map_invite_error)
-            } else {
-                boundary.handle_incoming(&store, &request, &address, &logins, now)
-            };
-            if updates_snapshot && result.is_ok() {
-                // Publish before returning from the blocking task. If the HTTP
-                // future is canceled after commit, the durable write still has
-                // its targeted wake. Stable IDs deduplicate exact retries.
-                super::multi_server::publish_resource_change(&notifications, &request_id);
+            studio_runtime_services::multi_server::create_invite(
+                Arc::clone(&store),
+                &identity,
+                request.body(),
+                &actor,
+                Some(&owner),
+            )
+            .await
+            .map_err(map_invite_error)
+        } else {
+            match prepared_access.as_ref() {
+                Some(prepared) => boundary.apply_prepared_incoming(&store, prepared).await,
+                None => {
+                    boundary
+                        .handle_incoming(Arc::clone(&store), &request, &address, &logins, now)
+                        .await
+                }
             }
-            result
-        },
-    )
-    .await;
-    match result {
-        Ok(Ok(value)) if is_orchestration => {
-            let mut response = Json(value).into_response();
-            if advertise_link {
-                add_link_advert(&mut response, peer_link_advert.as_deref());
-            }
-            response
         }
-        Ok(Ok(value)) => match validate_response(&method, is_name, is_management_invite, value) {
-            Ok(v) => {
-                let mut response = Json(v).into_response();
+    };
+    let peer_link_advert = peer_link_advert.clone();
+    let finish = move |result: Result<serde_json::Value, AccessError>| {
+        if updates_snapshot && result.is_ok() {
+            // Publish after the durable write succeeds. Stable request IDs deduplicate retries.
+            super::multi_server::publish_resource_change(
+                &publish_notifications,
+                &effect_request_id,
+            );
+        }
+        match result {
+            Ok(value) if is_orchestration => {
+                let mut response = Json(value).into_response();
                 if advertise_link {
                     add_link_advert(&mut response, peer_link_advert.as_deref());
                 }
                 response
             }
-            Err(e) => e.into_response(),
-        },
-        Ok(Err(e)) => failure(e),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Ok(value) => match validate_response(&method, is_name, is_management_invite, value) {
+                Ok(v) => {
+                    let mut response = Json(v).into_response();
+                    if advertise_link {
+                        add_link_advert(&mut response, peer_link_advert.as_deref());
+                    }
+                    response
+                }
+                Err(e) => e.into_response(),
+            },
+            Err(e) => failure(e),
+        }
+    };
+    if is_mutation {
+        state
+            .run_tracked_mutation(tracked_route, tracked_request_id, async move {
+                finish(effect.await)
+            })
+            .await
+    } else {
+        finish(effect.await)
     }
 }
 

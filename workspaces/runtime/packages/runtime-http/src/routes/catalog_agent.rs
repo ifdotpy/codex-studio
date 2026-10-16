@@ -105,22 +105,16 @@ async fn account_provider_exchange(
         let session = session.ok_or(CatalogReadError::ProviderExchangeFailed)?;
         let account_key = account.key;
         session
-            .ensure_session_async(&account_key)
+            .ensure_session(&account_key)
             .await
             .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
-        return studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/catalog_agent",
-            move || {
-                studio_runtime_services::catalog_reads::account_session_exchange(
-                    session.as_ref(),
-                    &account_key,
-                    requests,
-                    timeout,
-                )
-            },
+        return studio_runtime_services::catalog_reads::account_session_exchange(
+            session.as_ref(),
+            &account_key,
+            requests,
+            timeout,
         )
-        .await
-        .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+        .await;
     }
     if account.provider == "codex" {
         return studio_runtime_services::catalog_reads::provider_exchange(
@@ -292,44 +286,74 @@ async fn native_command(
                 ApiError::new(StatusCode::BAD_REQUEST, "Command input must be text")
             })?;
             let admission_override = state.message_admission.clone();
+            let admission_for_read = admission_override.clone();
+            let store_for_read = std::sync::Arc::clone(&store);
             let task_id = body.id;
-            let result = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/catalog_agent",
-                move || {
-                    let connection = store.read().map_err(ApiError::stored)?;
-                    let task = WorkspaceViewsRepository::task(&connection, &task_id)
-                        .map_err(ApiError::stored)?
-                        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown task"))?;
-                    let agent_id = task.get("agent").and_then(Value::as_str)
-                        .ok_or_else(invalid_stored_task)?.to_owned();
-                    let agent = WorkspaceViewsRepository::agent(&connection, &agent_id)
-                        .map_err(ApiError::stored)?
-                        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-                    let snapshot = studio_runtime_services::native_actions::CommandSnapshot::from_records(task, agent.value())
-                        .map_err(native_command_error)?;
-                    let prepared;
-                    let admission: &dyn studio_runtime_services::message_admission::MessageAdmission =
-                        if let Some(admission) = admission_override.as_deref() {
-                            admission
-                        } else {
-                            prepared = studio_runtime_services::message_admission::PreparedAdmission::load(&connection, &agent_id)
-                                .map_err(|_| ApiError::internal())?;
-                            &prepared
-                        };
-                    drop(connection);
-                    let mut wake = false;
-                    let result = store.transaction_with_error(|tx| {
-                        let enqueue = NativeCommandEnqueue { room: &agent_id, admission };
-                        let result = studio_runtime_services::native_actions::command_input(
-                            tx, &request_id, &snapshot, &text, &enqueue,
-                        ).map_err(native_command_error)?;
-                        wake = true;
-                        Ok::<_, ApiError>(result)
-                    })?;
-                    if wake { state.event_wake_handle().notify_one(); }
-                    Ok::<_, ApiError>(result)
-                },
-            ).await.map_err(|_| ApiError::internal())??;
+            let (agent_id, snapshot, prepared) =
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/catalog_agent",
+                    move || {
+                        let connection = store_for_read.read().map_err(ApiError::stored)?;
+                        let task = WorkspaceViewsRepository::task(&connection, &task_id)
+                            .map_err(ApiError::stored)?
+                            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown task"))?;
+                        let agent_id = task
+                            .get("agent")
+                            .and_then(Value::as_str)
+                            .ok_or_else(invalid_stored_task)?
+                            .to_owned();
+                        let agent = WorkspaceViewsRepository::agent(&connection, &agent_id)
+                            .map_err(ApiError::stored)?
+                            .ok_or_else(|| {
+                                ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
+                            })?;
+                        let snapshot =
+                            studio_runtime_services::native_actions::CommandSnapshot::from_records(
+                                task,
+                                agent.value(),
+                            )
+                            .map_err(native_command_error)?;
+                        let prepared = admission_for_read
+                            .is_none()
+                            .then(|| {
+                                studio_runtime_services::message_admission::PreparedAdmission::load(
+                                    &connection,
+                                    &agent_id,
+                                )
+                            })
+                            .transpose()
+                            .map_err(|_| ApiError::internal())?;
+                        drop(connection);
+                        Ok::<_, ApiError>((agent_id, snapshot, prepared))
+                    },
+                )
+                .await
+                .map_err(|_| ApiError::internal())??;
+            let admission: std::sync::Arc<
+                dyn studio_runtime_services::message_admission::MessageAdmission,
+            > = match admission_override {
+                Some(admission) => admission,
+                None => std::sync::Arc::new(prepared.ok_or_else(ApiError::internal)?),
+            };
+            let posted = store
+                .transaction_with_error(move |tx| {
+                    let enqueue = NativeCommandEnqueue {
+                        room: &agent_id,
+                        admission: admission.as_ref(),
+                    };
+                    studio_runtime_services::native_actions::command_input(
+                        tx,
+                        &request_id,
+                        &snapshot,
+                        &text,
+                        &enqueue,
+                    )
+                    .map_err(native_command_error)
+                })
+                .await
+                .map_err(|_| ApiError::internal())?;
+            state.event_wake_handle().notify_one();
+            let result = posted;
             Ok(Json(result))
         }
         NativeCommandAction::Cancel => native_command_cancel(state, body.id, request_id)
@@ -380,7 +404,7 @@ async fn native_command_cancel(
         .clone()
         .ok_or_else(|| ApiError::dependency("provider-session/native-request"))?;
     let scope = port
-        .ensure_session_async(&account)
+        .ensure_session(&account)
         .await
         .map_err(|_| ApiError::dependency("provider-session/account-session"))?;
     if scope.account != account {
@@ -468,22 +492,18 @@ async fn native_command_cancel(
         delivery: studio_runtime_services::native_actions::Delivery::Written(listed),
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let claim = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/catalog_agent",
-        move || {
-            store.transaction_with(|tx| {
-                studio_runtime_services::native_actions::command_cancel_claim(
-                    tx,
-                    &snapshot,
-                    &ticket,
-                    &list_receipt,
-                )
-                .map_err(native_command_error)
-            })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let claim = store
+        .transaction_with(move |tx| {
+            studio_runtime_services::native_actions::command_cancel_claim(
+                tx,
+                &snapshot,
+                &ticket,
+                &list_receipt,
+            )
+            .map_err(native_command_error)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
     let request = match claim {
         studio_runtime_services::native_actions::CommandCancelClaim::Replay(result) => {
             return Ok(result);
@@ -510,17 +530,13 @@ async fn native_command_cancel(
         delivery: studio_runtime_services::native_actions::Delivery::Written(result),
     };
     let store = state.store.ok_or_else(ApiError::internal)?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/catalog_agent",
-        move || {
-            store.transaction_with(|tx| {
-                studio_runtime_services::native_actions::command_cancel_settle(tx, &receipt)
-                    .map_err(native_command_error)
-            })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
+    Ok(store
+        .transaction_with(move |tx| {
+            studio_runtime_services::native_actions::command_cancel_settle(tx, &receipt)
+                .map_err(native_command_error)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?)
 }
 
 async fn provider_call(
@@ -549,36 +565,30 @@ async fn provider_call(
     let account = ticket.account.clone();
     let operation = operation.to_owned();
     let expected_operation = operation.clone();
-    let expected_scope_for_request = expected_scope.clone();
-    let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/catalog_agent",
-        move || {
-            port.provider_request(ProviderRequest {
-                account,
-                operation: operation.clone(),
-                actor: Some(actor),
-                expected_scope: Some(expected_scope_for_request),
-                deleted_actor_session: None,
-                method: method_value,
-                params,
-                deadline: StdInstant::now() + Duration::from_secs(20),
-            })
-            .map_err(|error| match error {
-                studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
-                    name,
-                ) => ApiError::dependency(name),
-                studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
-                    message,
-                ) => ApiError::new(StatusCode::BAD_REQUEST, message),
-                _ => ApiError::new(
-                    StatusCode::CONFLICT,
-                    "Native request outcome is unknown; inspect its receipt before retrying",
-                ),
-            })
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let receipt = port
+        .provider_request(ProviderRequest {
+            account,
+            operation: operation.clone(),
+            actor: Some(actor),
+            expected_scope: Some(expected_scope.clone()),
+            deleted_actor_session: None,
+            method: method_value,
+            params,
+            deadline: StdInstant::now() + Duration::from_secs(20),
+        })
+        .await
+        .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                name,
+            ) => ApiError::dependency(name),
+            studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                message,
+            ) => ApiError::new(StatusCode::BAD_REQUEST, message),
+            _ => ApiError::new(
+                StatusCode::CONFLICT,
+                "Native request outcome is unknown; inspect its receipt before retrying",
+            ),
+        })?;
     if receipt.operation != expected_operation
         || receipt.scope != expected_scope
         || receipt.ticket.as_ref().is_some_and(|issued| {

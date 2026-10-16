@@ -39,16 +39,20 @@ pub fn after_preparation(agent: &str) {
     }
 }
 
-pub fn start_late_operation(
-    store: &RuntimeStore,
+pub async fn start_late_operation(
+    store: Arc<RuntimeStore>,
     ready: mpsc::Receiver<()>,
     release: mpsc::SyncSender<()>,
 ) {
-    ready
-        .recv_timeout(DEADLINE)
-        .expect("caller completed preparation");
+    tokio::task::spawn_blocking(move || {
+        ready
+            .recv_timeout(DEADLINE)
+            .expect("caller completed preparation");
+    })
+    .await
+    .expect("gate observer task");
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let mut other = AgentRepository::get(tx, &"other".into())?.expect("idle other");
             assert!(
                 other
@@ -61,8 +65,25 @@ pub fn start_late_operation(
                 .insert("workspaceOperation".into(), json!("restore"));
             AgentRepository::put(tx, &other)
         })
+        .await
         .expect("unrelated operation commits while request is gated");
     release.send(()).expect("release caller");
+}
+
+pub async fn read<T, F>(store: Arc<RuntimeStore>, operation: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> T + Send + 'static,
+{
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/wave7_p03_gate_tests",
+        move || {
+            let connection = store.read().expect("test store reader");
+            operation(&connection)
+        },
+    )
+    .await
+    .expect("test store read task")
 }
 
 pub struct Fixture {
@@ -71,7 +92,7 @@ pub struct Fixture {
     root: PathBuf,
 }
 impl Fixture {
-    pub fn new(label: &str, prepared_python: fn(&Path) -> PathBuf) -> Self {
+    pub async fn new(label: &str, prepared_python: fn(&Path) -> PathBuf) -> Self {
         let root =
             std::env::temp_dir().join(format!("cs-w7-p03-gate-{label}-{}", std::process::id()));
         std::fs::create_dir(&root).expect("unique tmpfs fixture");
@@ -108,18 +129,20 @@ impl Fixture {
             .expect("seed response");
         let response: serde_json::Value = serde_json::from_str(&line).expect("seed JSON");
         assert!(response.get("oracleError").is_none(), "{response}");
-        let store = Arc::new(RuntimeStore::open(Some(&state)).expect("store"));
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+        let cwd = root.to_string_lossy().into_owned();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 let mut agent = AgentRepository::get(tx, &"agent".into())?.expect("Python agent");
                 agent.id = "late-operation-recipient".into();
                 agent.root_id = agent.id.clone();
                 AgentRepository::put(tx, &agent)?;
                 agent.id = "other".into();
                 agent.root_id = agent.id.clone();
-                agent.extra.insert("cwd".into(), json!(root));
+                agent.extra.insert("cwd".into(), json!(cwd));
                 AgentRepository::put(tx, &agent)
             })
+            .await
             .expect("recipient and idle unrelated workspace");
         Self { store, child, root }
     }

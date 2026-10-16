@@ -262,7 +262,7 @@ impl HostRuntime {
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
                 store.clone(),
-                session_broker.callback_reply_port(tokio::runtime::Handle::current()),
+                session_broker.callback_reply_port(),
             ),
         );
         *state = install_host_voice_port(state.clone(), store.clone(), callback_runtime.clone())
@@ -494,19 +494,13 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
             let claude_bridge_dir = self.claude_bridge_dir.clone();
             let request_for_resolution = request.clone();
             let (provider, profile, launch, credential_path, credential_document, bootstrap) =
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-server/vm-provider-launch",
-                    move || {
-                        resolve_vm_launch_inputs(
-                            &accounts,
-                            account_session.as_deref(),
-                            &claude_bridge_dir,
-                            request_for_resolution,
-                        )
-                    },
+                resolve_vm_launch_inputs(
+                    Arc::clone(&accounts),
+                    account_session.as_deref(),
+                    &claude_bridge_dir,
+                    request_for_resolution,
                 )
-                .await
-                .map_err(|_| WorkerError::TaskFailed)??;
+                .await?;
             if provider != request.provider {
                 return Err(WorkerError::PreparationRefused(
                     "vm-agent/provider-changed".into(),
@@ -555,25 +549,19 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         let account_session = self.account_session.clone();
         let store = Arc::clone(&self.store);
         Box::pin(async move {
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-server/vm-codex-refresh",
-                move || {
-                    refresh_vm_codex_token(
-                        &accounts,
-                        account_session.as_deref(),
-                        &store,
-                        VmCodexRefreshIdentity {
-                            account_key: &account_key,
-                            previous_account_id: &previous_account_id,
-                            actor_id: &actor_id,
-                            actor_epoch,
-                            generation,
-                        },
-                    )
+            refresh_vm_codex_token(
+                Arc::clone(&accounts),
+                account_session.as_deref(),
+                Arc::clone(&store),
+                VmCodexRefreshIdentity {
+                    account_key: &account_key,
+                    previous_account_id: &previous_account_id,
+                    actor_id: &actor_id,
+                    actor_epoch,
+                    generation,
                 },
             )
             .await
-            .map_err(|_| WorkerError::TaskFailed)?
         })
     }
 
@@ -600,16 +588,19 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
             let account_session = self.account_session.clone();
             let claude_bridge_dir = self.claude_bridge_dir.clone();
             let actors_for_resolution = actors.clone();
+            let (_, _, _, credential_path, credential_document, _) = resolve_vm_launch_inputs(
+                Arc::clone(&accounts),
+                account_session.as_deref(),
+                &claude_bridge_dir,
+                first,
+            )
+            .await?;
             let (credential_path, credential_document, active_actors) =
                 studio_runtime_process::blocking_pool::spawn_blocking(
                     "runtime-server/vm-claude-refresh",
                     move || {
-                        let (_, _, _, path, document, _) = resolve_vm_launch_inputs(
-                            &accounts,
-                            account_session.as_deref(),
-                            &claude_bridge_dir,
-                            first,
-                        )?;
+                        let path = credential_path;
+                        let document = credential_document;
                         let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
                         let mut active = Vec::new();
                         for actor in actors_for_resolution {
@@ -725,17 +716,22 @@ async fn validate_vm_actor_scope(
 /// This follows Python's `codex_linux_workspaces.py:83-104`: provider comes
 /// from the selected account; only guest-specific variables enter the launch.
 /// Credential files mirror `codex_linux_vm_credentials.py:22-64`.
-fn resolve_vm_launch_inputs(
-    accounts: &AccountDriver,
+async fn resolve_vm_launch_inputs(
+    accounts: Arc<AccountDriver>,
     account_session: Option<
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
     claude_bridge_dir: &Path,
     request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
 ) -> Result<VmLaunchInputs, WorkerError> {
-    let snapshot = accounts
-        .snapshot()
-        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let account_driver = Arc::clone(&accounts);
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/vm-account-snapshot",
+        move || account_driver.snapshot(),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+    .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     let account = snapshot
         .accounts
         .iter()
@@ -825,18 +821,30 @@ fn resolve_vm_launch_inputs(
                 .ok_or_else(|| {
                     WorkerError::PreparationRefused("vm-credentials/account-identity".into())
                 })?;
-            let credential_document = read_vm_claude_credentials(
-                accounts,
-                ClaudeCredentialRequest {
-                    path: &credential_file,
-                    host_config: &host_config,
-                    email,
-                    account_key: &request.account_key,
-                    original_account: account,
-                    claude_bridge_dir,
-                    explicit_host_config,
+            let account_driver = Arc::clone(&accounts);
+            let account_key = request.account_key.clone();
+            let email = email.to_owned();
+            let original_account = account.clone();
+            let bridge_dir = claude_bridge_dir.to_path_buf();
+            let credential_document = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/vm-claude-credential-file",
+                move || {
+                    read_vm_claude_credentials(
+                        &account_driver,
+                        ClaudeCredentialRequest {
+                            path: &credential_file,
+                            host_config: &host_config,
+                            email: &email,
+                            account_key: &account_key,
+                            original_account: &original_account,
+                            claude_bridge_dir: &bridge_dir,
+                            explicit_host_config,
+                        },
+                    )
                 },
-            )?;
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
             let environment = BTreeMap::from([
                 ("CLAUDE_CONFIG_DIR".into(), guest_profile),
                 ("STUDIO_CLAUDE_BIN".into(), "claude".into()),
@@ -866,12 +874,13 @@ fn resolve_vm_launch_inputs(
             // external auth through the retained provider session.
             let credential_path = format!("{profile_relative}/auth.json");
             let bootstrap = read_vm_codex_bootstrap(
-                accounts,
+                Arc::clone(&accounts),
                 account_session,
                 &request.account_key,
                 account,
                 false,
-            )?;
+            )
+            .await?;
             (
                 vec![
                     "codex".into(),
@@ -901,99 +910,117 @@ fn resolve_vm_launch_inputs(
 /// Python's `codex_linux_vm_auth.codex_access` refreshes through the retained
 /// host account session when the access token enters its 315-second window,
 /// then `bootstrap_codex` sends this payload as `account/login/start`.
-fn read_vm_codex_bootstrap(
-    accounts: &AccountDriver,
+async fn read_vm_codex_bootstrap(
+    accounts: Arc<AccountDriver>,
     session: Option<&dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     account_key: &str,
     account: &Value,
     force_refresh: bool,
 ) -> Result<Value, WorkerError> {
     use base64::Engine as _;
-    let read = || -> Result<(Value, Option<f64>), WorkerError> {
-        let home = account
-            .get("home")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|path| path.join(".codex"))
-            })
-            .ok_or_else(|| {
-                WorkerError::PreparationRefused("provider-session/codex-profile-home".into())
-            })?;
-        let bytes = std::fs::read(home.join("auth.json")).map_err(|_| {
-            WorkerError::PreparationRefused("provider-session/codex-auth-unavailable".into())
-        })?;
-        if bytes.len() > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES {
-            return Err(WorkerError::PreparationRefused(
-                "provider-session/codex-auth-invalid".into(),
-            ));
-        }
-        let auth: Value = serde_json::from_slice(&bytes).map_err(|_| {
-            WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-        })?;
-        if let Some(key) = auth
-            .get("OPENAI_API_KEY")
-            .and_then(Value::as_str)
-            .filter(|key| !key.is_empty())
-        {
-            let expected = account.get("_credentialIdentity").and_then(Value::as_str);
-            let observed = format!(
-                "api:{}",
-                data_encoding::HEXLOWER.encode(&Sha256::digest(key.as_bytes()))
-            );
-            if expected.is_some_and(|value| value != observed) {
-                return Err(WorkerError::PreparationRefused(
-                    "provider-session/codex-account-changed".into(),
-                ));
-            }
-            return Ok((serde_json::json!({"type":"apiKey","apiKey":key}), None));
-        }
-        let tokens = auth.get("tokens").ok_or_else(|| {
-            WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-        })?;
-        let access = tokens
-            .get("access_token")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-            })?;
-        let mut parts = access.split('.');
-        let _header = parts.next();
-        let claims = parts
-            .next()
-            .and_then(|part| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(part)
-                    .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
-                    .ok()
-            })
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .ok_or_else(|| {
-                WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-            })?;
-        let identity = tokens
-            .get("account_id")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                claims
-                    .pointer("/https://api.openai.com/auth/chatgpt_account_id")
+    let read = || {
+        let account = account.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/vm-codex-auth-file",
+            move || -> Result<(Value, Option<f64>), WorkerError> {
+                let home = account
+                    .get("home")
                     .and_then(Value::as_str)
-            });
-        if identity.is_none() || identity != account.get("accountId").and_then(Value::as_str) {
-            return Err(WorkerError::PreparationRefused(
-                "provider-session/codex-account-changed".into(),
-            ));
-        }
-        let expires = claims.get("exp").and_then(Value::as_f64).ok_or_else(|| {
-            WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-        })?;
-        let payload = serde_json::json!({"type":"chatgptAuthTokens","accessToken":access,"chatgptAccountId":identity});
-        Ok((payload, Some(expires)))
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(PathBuf::from)
+                            .map(|path| path.join(".codex"))
+                    })
+                    .ok_or_else(|| {
+                        WorkerError::PreparationRefused(
+                            "provider-session/codex-profile-home".into(),
+                        )
+                    })?;
+                let bytes = std::fs::read(home.join("auth.json")).map_err(|_| {
+                    WorkerError::PreparationRefused(
+                        "provider-session/codex-auth-unavailable".into(),
+                    )
+                })?;
+                if bytes.len()
+                    > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES
+                {
+                    return Err(WorkerError::PreparationRefused(
+                        "provider-session/codex-auth-invalid".into(),
+                    ));
+                }
+                let auth: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+                })?;
+                if let Some(key) = auth
+                    .get("OPENAI_API_KEY")
+                    .and_then(Value::as_str)
+                    .filter(|key| !key.is_empty())
+                {
+                    let expected = account.get("_credentialIdentity").and_then(Value::as_str);
+                    let observed = format!(
+                        "api:{}",
+                        data_encoding::HEXLOWER.encode(&Sha256::digest(key.as_bytes()))
+                    );
+                    if expected.is_some_and(|value| value != observed) {
+                        return Err(WorkerError::PreparationRefused(
+                            "provider-session/codex-account-changed".into(),
+                        ));
+                    }
+                    return Ok((serde_json::json!({"type":"apiKey","apiKey":key}), None));
+                }
+                let tokens = auth.get("tokens").ok_or_else(|| {
+                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+                })?;
+                let access = tokens
+                    .get("access_token")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        WorkerError::PreparationRefused(
+                            "provider-session/codex-auth-invalid".into(),
+                        )
+                    })?;
+                let mut parts = access.split('.');
+                let _header = parts.next();
+                let claims = parts
+                    .next()
+                    .and_then(|part| {
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(part)
+                            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
+                            .ok()
+                    })
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .ok_or_else(|| {
+                        WorkerError::PreparationRefused(
+                            "provider-session/codex-auth-invalid".into(),
+                        )
+                    })?;
+                let identity = tokens
+                    .get("account_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        claims
+                            .pointer("/https://api.openai.com/auth/chatgpt_account_id")
+                            .and_then(Value::as_str)
+                    });
+                if identity.is_none()
+                    || identity != account.get("accountId").and_then(Value::as_str)
+                {
+                    return Err(WorkerError::PreparationRefused(
+                        "provider-session/codex-account-changed".into(),
+                    ));
+                }
+                let expires = claims.get("exp").and_then(Value::as_f64).ok_or_else(|| {
+                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+                })?;
+                let payload = serde_json::json!({"type":"chatgptAuthTokens","accessToken":access,"chatgptAccountId":identity});
+                Ok((payload, Some(expires)))
+            },
+        )
     };
-    let (mut payload, expires) = read()?;
+    let (mut payload, expires) = read().await.map_err(|_| WorkerError::TaskFailed)??;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| WorkerError::TaskFailed)?
@@ -1004,7 +1031,7 @@ fn read_vm_codex_bootstrap(
         let port = session.ok_or_else(|| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
-        let scope = port.ensure_session(account_key).map_err(|_| {
+        let scope = port.ensure_session(account_key).await.map_err(|_| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
         let source_token = payload
@@ -1035,6 +1062,7 @@ fn read_vm_codex_bootstrap(
                     deadline: std::time::Instant::now() + std::time::Duration::from_secs(45),
                 },
             )
+            .await
             .map_err(|_| WorkerError::PreparationPending("provider-session/account-read".into()))?;
         if receipt.certainty
             != studio_runtime_services::account_session_runtime::RequestCertainty::Written
@@ -1051,7 +1079,7 @@ fn read_vm_codex_bootstrap(
                 "provider-session/account-read-unresolved".into(),
             ));
         }
-        (payload, _) = read()?;
+        (payload, _) = read().await.map_err(|_| WorkerError::TaskFailed)??;
         let refreshed = payload
             .pointer("/accessToken")
             .and_then(Value::as_str)
@@ -1068,9 +1096,14 @@ fn read_vm_codex_bootstrap(
                 "provider-session/account-read-refresh".into(),
             ));
         }
-        let current = accounts
-            .snapshot()
-            .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
+        let account_driver = Arc::clone(&accounts);
+        let current = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/vm-account-refresh-snapshot",
+            move || account_driver.snapshot(),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
+        .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
         let still_same = current.accounts.iter().any(|row| {
             row.get("id").and_then(Value::as_str) == Some(account_key)
                 && row.get("accountId") == account.get("accountId")
@@ -1088,12 +1121,12 @@ fn read_vm_codex_bootstrap(
     Ok(payload)
 }
 
-fn refresh_vm_codex_token(
-    accounts: &AccountDriver,
+async fn refresh_vm_codex_token(
+    accounts: Arc<AccountDriver>,
     account_session: Option<
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
-    store: &RuntimeStore,
+    store: Arc<RuntimeStore>,
     identity: VmCodexRefreshIdentity<'_>,
 ) -> Result<Value, WorkerError> {
     let VmCodexRefreshIdentity {
@@ -1108,25 +1141,42 @@ fn refresh_vm_codex_token(
             .and_then(|session| session.current_scope(account_key))
             .is_some_and(|scope| scope.generation == generation)
     };
-    let actor_is_current = || -> Result<bool, WorkerError> {
-        let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
-        studio_runtime_services::linux_vm_provider::vm_actor_matches(
-            &connection,
-            actor_id,
-            actor_epoch,
-            account_key,
-            Some("codex"),
-        )
-        .map_err(|_| WorkerError::TaskFailed)
+    let actor_is_current = || {
+        let store = Arc::clone(&store);
+        let actor_id = actor_id.to_owned();
+        let account_key = account_key.to_owned();
+        async move {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/vm-actor-refresh-fence",
+                move || {
+                    let connection = store.read().map_err(|_| WorkerError::TaskFailed)?;
+                    studio_runtime_services::linux_vm_provider::vm_actor_matches(
+                        &connection,
+                        &actor_id,
+                        actor_epoch,
+                        &account_key,
+                        Some("codex"),
+                    )
+                    .map_err(|_| WorkerError::TaskFailed)
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)?
+        }
     };
-    if !scope_is_current() || !actor_is_current()? {
+    if !scope_is_current() || !actor_is_current().await? {
         return Err(WorkerError::PreparationRefused(
             "vm-auth/actor-changed".into(),
         ));
     }
-    let snapshot = accounts
-        .snapshot()
-        .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
+    let account_driver = Arc::clone(&accounts);
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/vm-auth-account-snapshot",
+        move || account_driver.snapshot(),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+    .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
     let account = snapshot
         .accounts
         .iter()
@@ -1140,7 +1190,14 @@ fn refresh_vm_codex_token(
             "vm-auth/account-changed".into(),
         ));
     }
-    let payload = read_vm_codex_bootstrap(accounts, account_session, account_key, account, true)?;
+    let payload = read_vm_codex_bootstrap(
+        Arc::clone(&accounts),
+        account_session,
+        account_key,
+        account,
+        true,
+    )
+    .await?;
     if payload.get("type").and_then(Value::as_str) != Some("chatgptAuthTokens")
         || payload.get("chatgptAccountId").and_then(Value::as_str) != Some(previous_account_id)
         || payload
@@ -1152,7 +1209,7 @@ fn refresh_vm_codex_token(
             "vm-auth/account-changed".into(),
         ));
     }
-    if !scope_is_current() || !actor_is_current()? {
+    if !scope_is_current() || !actor_is_current().await? {
         return Err(WorkerError::PreparationRefused(
             "vm-auth/actor-changed".into(),
         ));
@@ -1885,7 +1942,7 @@ impl AccountLauncher for HostLauncher {
                 let generation = prepared.generation();
                 (Arc::new(prepared), generation)
             } else {
-                let generation = next_direct_generation(&self.store, &account)?;
+                let generation = next_direct_generation(&self.store, &account).await?;
                 let prepared = DirectProviderTaskFactory::new(self.child_priority)
                     .prepare(
                         handle.clone(),
@@ -2077,7 +2134,11 @@ mod install_root_tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let root = tempfile::tempdir().expect("isolated runtime state creates");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store opens"));
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let registry_path = root.path().join("accounts/registry.json");
         fs::create_dir_all(registry_path.parent().expect("registry parent"))
             .expect("account registry directory creates");
@@ -2321,14 +2382,16 @@ mod voice_composition_tests {
             false
         }
 
-        fn deliver(
-            &self,
-            _reply: &Reply,
+        fn deliver<'a>(
+            &'a self,
+            _reply: &'a Reply,
             _deadline: std::time::Duration,
-        ) -> Result<ReplyReceipt, CallbackError> {
-            Err(CallbackError::Dependency(
-                "test callback reply lane is unused",
-            ))
+        ) -> studio_runtime_services::callback_runtime::CallbackReplyFuture<'a> {
+            Box::pin(async {
+                Err(CallbackError::Dependency(
+                    "test callback reply lane is unused",
+                ))
+            })
         }
     }
 
@@ -2536,7 +2599,7 @@ mod voice_composition_tests {
     #[tokio::test]
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         let agent_record = json!({
             "id":"voice-composed-agent", "rootId":"voice-composed-agent", "epoch":3,
             "status":"idle", "isLead":true, "threadId":"voice-thread", "accountKey":"voice-account"
@@ -2550,6 +2613,7 @@ mod voice_composition_tests {
                 )?;
                 Ok(())
             })
+            .await
             .unwrap();
 
         let factory = Arc::new(VoiceFactory {
@@ -2631,6 +2695,7 @@ mod voice_composition_tests {
                 )?;
                 Ok(intent)
             })
+            .await
             .unwrap();
         assert_eq!(delete_intent.sessions.len(), 2);
 
@@ -2690,8 +2755,12 @@ mod voice_composition_tests {
     }
 }
 
-fn next_direct_generation(store: &RuntimeStore, account: &str) -> Result<Generation, WorkerError> {
-    store.transaction_with(|tx| {
+async fn next_direct_generation(
+    store: &RuntimeStore,
+    account: &str,
+) -> Result<Generation, WorkerError> {
+    let account = account.to_owned();
+    store.transaction_with(move |tx| {
         let invalid = || {
             WorkerError::PreparationRefused("account-worker/direct-generation".into())
         };
@@ -2747,6 +2816,7 @@ fn next_direct_generation(store: &RuntimeStore, account: &str) -> Result<Generat
         )?;
         Ok(Generation(next))
     })
+    .await
 }
 
 pub(crate) fn account_home<R: ProviderAuthReader>(

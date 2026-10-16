@@ -26,9 +26,11 @@ impl ProviderAuthReader for NoProbe {
 }
 pub struct Chats(pub AtomicUsize);
 impl LoginChats for Chats {
-    fn refresh(&self, _: &str) -> Result<(), LoginError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+    fn refresh<'a>(&'a self, _: &'a str) -> FutureResult<'a, ()> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
     }
 }
 pub struct Receipts {

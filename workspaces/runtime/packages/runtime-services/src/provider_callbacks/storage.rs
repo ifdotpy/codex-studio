@@ -128,47 +128,51 @@ fn response_body(saved: &Value, key: &str) -> Result<ResponseBody, CallbackError
 /// before transport admission. No I/O occurs in this read.
 /// Recheck a prepared/submitted reply's durable identity and actor/card eligibility
 /// immediately before the lifecycle-gated Submitted transition and provider handoff.
-pub fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<bool, CallbackError> {
-    store.transaction_with(|tx| {
-        let identity = &reply.identity;
-        let saved = read(tx, &identity.key())?.ok_or(CallbackError::Unknown)?;
-        if saved["identity"] != serde_json::to_value(identity)? {
-            return Err(CallbackError::Stale);
-        }
-        if read(tx, &format!("{}:resolved", identity.key()))?.is_some()
-            || matches!(
-                saved["delivery"].as_str(),
-                Some("resolved" | "written" | "retired")
-            )
-        {
-            return Ok(false);
-        }
-        if !matches!(saved["delivery"].as_str(), Some("prepared" | "submitted")) {
-            return Err(CallbackError::Unknown);
-        }
-        if response_body(&saved, &identity.key())? != reply.body {
-            return Err(CallbackError::Conflict);
-        }
-        if saved.get("card").is_some() || saved.get("toolRequest").is_some() {
-            let actor = snapshot(tx, &identity.context)?;
-            actor.active()?;
-            if !matches!(
-                actor.actor()["status"].as_str(),
-                Some("approval" | "running")
-            ) {
+pub async fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<bool, CallbackError> {
+    let reply = reply.clone();
+    store
+        .transaction_with(move |tx| {
+            let identity = &reply.identity;
+            let saved = read(tx, &identity.key())?.ok_or(CallbackError::Unknown)?;
+            if saved["identity"] != serde_json::to_value(identity)? {
                 return Err(CallbackError::Stale);
             }
-            if let Some(id) = saved["card"].as_str() {
-                let card = records::get(tx, "runtime_requests", id)?.ok_or(CallbackError::Stale)?;
-                if card["status"] != "answering"
-                    || studio_runtime_store::truthy(card.get("deletedAt"))
-                {
-                    return Ok(false);
+            if read(tx, &format!("{}:resolved", identity.key()))?.is_some()
+                || matches!(
+                    saved["delivery"].as_str(),
+                    Some("resolved" | "written" | "retired")
+                )
+            {
+                return Ok(false);
+            }
+            if !matches!(saved["delivery"].as_str(), Some("prepared" | "submitted")) {
+                return Err(CallbackError::Unknown);
+            }
+            if response_body(&saved, &identity.key())? != reply.body {
+                return Err(CallbackError::Conflict);
+            }
+            if saved.get("card").is_some() || saved.get("toolRequest").is_some() {
+                let actor = snapshot(tx, &identity.context)?;
+                actor.active()?;
+                if !matches!(
+                    actor.actor()["status"].as_str(),
+                    Some("approval" | "running")
+                ) {
+                    return Err(CallbackError::Stale);
+                }
+                if let Some(id) = saved["card"].as_str() {
+                    let card =
+                        records::get(tx, "runtime_requests", id)?.ok_or(CallbackError::Stale)?;
+                    if card["status"] != "answering"
+                        || studio_runtime_store::truthy(card.get("deletedAt"))
+                    {
+                        return Ok(false);
+                    }
                 }
             }
-        }
-        Ok(true)
-    })
+            Ok(true)
+        })
+        .await
 }
 #[derive(Clone, Copy, Debug)]
 pub enum DeliveryOutcome {
@@ -180,15 +184,16 @@ pub enum DeliveryOutcome {
 /// Returns false for a previously written answer: ACK its journal cursor without
 /// sending again. Submitted must commit before the caller writes any bytes.
 /// A typed transport NotSent permits a replacement attempt, never reuse of the old reply.
-pub fn delivery(
+pub async fn delivery(
     store: &RuntimeStore,
     identity: &ReplyIdentity,
     outcome: DeliveryOutcome,
 ) -> Result<bool, CallbackError> {
-    store.transaction_with(|tx| {
+    let identity = identity.clone();
+    store.transaction_with(move |tx| {
         let key = identity.key();
         let mut saved = read(tx, &key)?.ok_or(CallbackError::Invalid("Unknown callback reply"))?;
-        if saved["identity"] != serde_json::to_value(identity)? {
+        if saved["identity"] != serde_json::to_value(&identity)? {
             return Err(CallbackError::Stale);
         }
         if matches!(saved["delivery"].as_str(), Some("written" | "retired")) {
@@ -260,12 +265,12 @@ pub fn delivery(
             update(tx, &key, &saved)?;
         }
         Ok(true)
-    })
+    }).await
 }
 
 /// Bind the exact prepared attempt (or durable pending admission) to its source
 /// cursor. Do this before settling a Pending journal entry or sending an Answer.
-pub fn bind_journal(
+pub async fn bind_journal(
     store: &RuntimeStore,
     decision: &CallbackDecision,
     context: &CallbackContext,
@@ -284,46 +289,51 @@ pub fn bind_journal(
     if identity.context != *context || identity.rpc_id != *rpc_id {
         return Err(CallbackError::Stale);
     }
-    store.transaction_with(|tx| {
-        let pending =
-            matches!(decision, CallbackDecision::Pending(_)) || identity.attempt.is_empty();
-        let key = if matches!(decision, CallbackDecision::Settled(_)) && identity.attempt.is_empty()
-        {
-            format!("{}:resolved", identity.key())
-        } else if pending {
-            format!("{}:card", identity.key())
-        } else {
-            identity.key()
-        };
-        let mut saved = read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-        if saved["identity"] != serde_json::to_value(identity)? {
-            return Err(CallbackError::Stale);
-        }
-        // A replay at a later cursor keeps its first durable admission binding.
-        if let CallbackDecision::Pending(card) = decision
-            && saved["card"] != *card
-        {
-            return Err(CallbackError::Stale);
-        }
-        if saved.get("journalCursor").is_none() {
-            saved["journalCursor"] = json!(cursor);
-            update(tx, &key, &saved)?;
-        }
-        // HTTP may commit an answer between admission and the worker binding.
-        // Carry the first cursor onto that exact answer without rebinding it.
-        if pending && let Some(mut reply) = read(tx, &identity.key())? {
-            if reply["identity"]["context"] != saved["identity"]["context"]
-                || reply["identity"]["rpc_id"] != saved["identity"]["rpc_id"]
+    let decision = decision.clone();
+    let identity = identity.clone();
+    store
+        .transaction_with(move |tx| {
+            let pending =
+                matches!(decision, CallbackDecision::Pending(_)) || identity.attempt.is_empty();
+            let key = if matches!(decision, CallbackDecision::Settled(_))
+                && identity.attempt.is_empty()
+            {
+                format!("{}:resolved", identity.key())
+            } else if pending {
+                format!("{}:card", identity.key())
+            } else {
+                identity.key()
+            };
+            let mut saved = read(tx, &key)?.ok_or(CallbackError::Unknown)?;
+            if saved["identity"] != serde_json::to_value(&identity)? {
+                return Err(CallbackError::Stale);
+            }
+            // A replay at a later cursor keeps its first durable admission binding.
+            if let CallbackDecision::Pending(card) = &decision
+                && saved["card"] != *card
             {
                 return Err(CallbackError::Stale);
             }
-            if reply.get("journalCursor").is_none() {
-                reply["journalCursor"] = saved["journalCursor"].clone();
-                update(tx, &identity.key(), &reply)?;
+            if saved.get("journalCursor").is_none() {
+                saved["journalCursor"] = json!(cursor);
+                update(tx, &key, &saved)?;
             }
-        }
-        Ok(())
-    })
+            // HTTP may commit an answer between admission and the worker binding.
+            // Carry the first cursor onto that exact answer without rebinding it.
+            if pending && let Some(mut reply) = read(tx, &identity.key())? {
+                if reply["identity"]["context"] != saved["identity"]["context"]
+                    || reply["identity"]["rpc_id"] != saved["identity"]["rpc_id"]
+                {
+                    return Err(CallbackError::Stale);
+                }
+                if reply.get("journalCursor").is_none() {
+                    reply["journalCursor"] = saved["journalCursor"].clone();
+                    update(tx, &identity.key(), &reply)?;
+                }
+            }
+            Ok(())
+        })
+        .await
 }
 
 /// Run in the worker's checkpoint transaction AFTER advancing its durable ACK.
@@ -514,12 +524,13 @@ pub(super) fn saved_decision(
 
 /// On a surviving session, drain only Prepared replies. Submitted/Unknown rows
 /// never enter this queue. Connection loss uses recover_connection instead.
-pub fn prepared_replies(
+pub async fn prepared_replies(
     store: &RuntimeStore,
     context: &CallbackContext,
 ) -> Result<Vec<Reply>, CallbackError> {
-    store.transaction_with(|tx| {
-        snapshot(tx, context)?.active()?;
+    let context = context.clone();
+    store.transaction_with(move |tx| {
+        snapshot(tx, &context)?.active()?;
         let mut stmt = tx.prepare_cached("SELECT id,result FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.identity.context.agent')=?1 LIMIT 129")?;
         let rows = stmt.query_map([&context.agent], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
         if rows.len() > MAX_PENDING { return Err(CallbackError::Invalid("Too many prepared provider replies")); }
@@ -527,11 +538,11 @@ pub fn prepared_replies(
         for (id,raw) in rows {
             let saved: Value = serde_json::from_str(&raw).map_err(|_| CallbackError::Stored(id.clone()))?;
             let identity: ReplyIdentity = serde_json::from_value(saved["identity"].clone()).map_err(|_| CallbackError::Stored(id.clone()))?;
-            if identity.context != *context { continue; }
+            if identity.context != context { continue; }
             if identity.key() != id || identity.attempt.is_empty() { return Err(CallbackError::Stored(id)); }
             let body = response_body(&saved, &id)?;
             replies.push(Reply { identity, body });
         }
         Ok(replies)
-    })
+    }).await
 }

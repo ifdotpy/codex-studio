@@ -3,7 +3,12 @@
 use crate::agent_management::{Action, ManagementError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use studio_runtime_store::{RuntimeStore, Transaction};
+
+pub type LifecycleCommitFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ManagementError>> + Send + 'a>>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,7 +114,7 @@ pub trait LifecyclePorts: Send + Sync {
 
     /// Wake the retained owners to drain their committed effects. This is not
     /// another Stop command and must not increment epochs or resend Unknown IO.
-    fn committed(&self) -> Result<(), ManagementError>;
+    fn committed(&self) -> LifecycleCommitFuture<'_>;
 }
 
 pub struct UnavailableLifecyclePorts;
@@ -117,39 +122,40 @@ impl LifecyclePorts for UnavailableLifecyclePorts {
     fn stage(&self, _: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
         Err(ManagementError::Unavailable(effect.kind.dependency()))
     }
-    fn committed(&self) -> Result<(), ManagementError> {
-        Ok(())
+    fn committed(&self) -> LifecycleCommitFuture<'_> {
+        Box::pin(async { Ok(()) })
     }
 }
 
 /// HTTP and managed tools share this consumer. Provider calls are deliberately
 /// absent; a successful return means the state and durable effects committed.
-pub fn execute(
-    store: &RuntimeStore,
+pub async fn execute(
+    store: std::sync::Arc<RuntimeStore>,
     action: &Action,
     now: f64,
-    ports: &dyn LifecyclePorts,
+    ports: std::sync::Arc<dyn LifecyclePorts>,
 ) -> Result<Value, ManagementError> {
-    execute_with_prepared_hook(store, action, now, ports, || {})
+    execute_with_prepared_hook(store, action, now, ports, || {}).await
 }
 
-fn execute_with_prepared_hook(
-    store: &RuntimeStore,
+async fn execute_with_prepared_hook(
+    store: std::sync::Arc<RuntimeStore>,
     action: &Action,
     now: f64,
-    ports: &dyn LifecyclePorts,
-    on_attempt_boundary: impl FnMut(),
+    ports: std::sync::Arc<dyn LifecyclePorts>,
+    on_attempt_boundary: impl FnMut() + Send,
 ) -> Result<Value, ManagementError> {
     let result = crate::agent_management_store::execute_prepared(
         store,
         action,
         now,
-        Some(ports),
+        Some(ports.clone()),
         on_attempt_boundary,
-    )?;
+    )
+    .await?;
     // A lost wake cannot roll back the committed intent. Restart drains the same
     // effect; report an internal failure, never a no-write capability refusal.
-    ports.committed().map_err(|_| {
+    ports.committed().await.map_err(|_| {
         studio_runtime_store::StoreError::RecordContract(
             "Lifecycle committed; effect delivery remains pending",
         )
@@ -159,14 +165,14 @@ fn execute_with_prepared_hook(
 
 /// Actor-bound managed interrupt. Authorization against the sender epoch and
 /// descendant tree occurs inside the same transaction that stages the stop.
-pub fn stop_by_agent(
-    store: &RuntimeStore,
+pub async fn stop_by_agent(
+    store: std::sync::Arc<RuntimeStore>,
     sender: &str,
     sender_epoch: i64,
     target: &str,
     descendants: bool,
     now: f64,
-    ports: &dyn LifecyclePorts,
+    ports: std::sync::Arc<dyn LifecyclePorts>,
 ) -> Result<Value, ManagementError> {
     execute(
         store,
@@ -180,6 +186,7 @@ pub fn stop_by_agent(
         now,
         ports,
     )
+    .await
 }
 
 /// Reserved worker integration calls this instead of its local epoch mutation.
@@ -210,8 +217,8 @@ mod preparation_retry_tests {
             Ok(())
         }
 
-        fn committed(&self) -> Result<(), ManagementError> {
-            Ok(())
+        fn committed(&self) -> LifecycleCommitFuture<'_> {
+            Box::pin(async { Ok(()) })
         }
     }
 

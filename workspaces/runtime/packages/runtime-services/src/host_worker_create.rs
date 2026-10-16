@@ -125,7 +125,7 @@ pub struct ExecutionSettings {
 
 /// The P18 adapter resolves only a fresh, account-bound catalog snapshot.
 /// Implementations must not fall back to stale data for admission.
-pub trait CreationCatalog {
+pub trait CreationCatalog: Send + Sync {
     fn resolve(
         &self,
         account_key: &str,

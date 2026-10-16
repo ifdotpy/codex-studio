@@ -280,8 +280,8 @@ fn collect_differences(path: &str, left: &Value, right: &Value, out: &mut Vec<St
     }
 }
 
-#[test]
-fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projections() {
+#[tokio::test]
+async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projections() {
     let root = state_root();
     let python_state = root.path().join("python");
     let rust_state = root.path().join("rust");
@@ -290,9 +290,15 @@ fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projec
     copy_state(&python_state, &rust_state);
     let python = oracle(&python_state, "recover");
 
-    let store = RuntimeStore::open(Some(&rust_state)).expect("open Python-written state");
-    monitor_runtime::recover_on_startup(&store, NOW).expect("Rust startup recovery");
-    scheduler::recover_on_startup(&store).expect("existing account-worker startup recovery");
+    let store = RuntimeStore::open(Some(&rust_state))
+        .await
+        .expect("open Python-written state");
+    monitor_runtime::recover_on_startup(&store, NOW)
+        .await
+        .expect("Rust startup recovery");
+    scheduler::recover_on_startup(&store)
+        .await
+        .expect("existing account-worker startup recovery");
     let mut rust = rust_snapshot(&store);
     let mut python = python;
     let deviations_path =

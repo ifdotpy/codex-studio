@@ -124,25 +124,21 @@ async fn read_account_session_catalog(
             "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
         );
-        let request = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/model_catalog",
-            move || {
-                use crate::account_session_runtime::{
-                    ProviderRequest, ProviderResponse, RequestCertainty,
-                };
-                use std::time::Instant;
-                let receipt = session_clone
-                    .provider_request(ProviderRequest {
-                        account: account_clone,
-                        operation: operation.clone(),
-                        actor: None,
-                        deleted_actor_session: None,
-                        expected_scope: Some(current_scope.clone()),
-                        method: studio_runtime_providers::Method::ModelList,
-                        params,
-                        deadline: Instant::now() + CATALOG_TIMEOUT,
-                    })
-                    .map_err(|_| ())?;
+        use crate::account_session_runtime::{ProviderRequest, ProviderResponse, RequestCertainty};
+        let request = session_clone.provider_request(ProviderRequest {
+            account: account_clone,
+            operation: operation.clone(),
+            actor: None,
+            deleted_actor_session: None,
+            expected_scope: Some(current_scope.clone()),
+            method: studio_runtime_providers::Method::ModelList,
+            params,
+            deadline: std::time::Instant::now() + CATALOG_TIMEOUT,
+        });
+        let response = tokio::select! {
+            _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
+            result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
+                let receipt = result.map_err(|_| ())?.map_err(|_| ())?;
                 if receipt.scope != current_scope
                     || receipt.operation != operation
                     || receipt.certainty != RequestCertainty::Written
@@ -151,15 +147,9 @@ async fn read_account_session_catalog(
                     return Err(());
                 }
                 match receipt.result {
-                    Some(ProviderResponse::Reply(value)) => Ok(value),
-                    Some(ProviderResponse::Rejected(_)) | None => Err(()),
+                    Some(ProviderResponse::Reply(value)) => value,
+                    Some(ProviderResponse::Rejected(_)) | None => return Err(()),
                 }
-            },
-        );
-        let response = tokio::select! {
-            _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
-            result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
-                result.map_err(|_| ())?.map_err(|_| ())??
             },
         };
         let bytes = serde_json::to_vec(&response).map_err(|_| ())?.len();
@@ -1071,44 +1061,45 @@ pub(crate) mod tests {
             })
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: crate::account_session_runtime::ProviderRequest,
-        ) -> Result<
+        ) -> crate::account_session_runtime::AccountSessionFuture<
+            'a,
             crate::account_session_runtime::SessionReceipt,
-            crate::account_session_runtime::AccountSessionError,
         > {
-            use crate::account_session_runtime::{
-                ProviderResponse, RequestCertainty, SessionReceipt,
-            };
-            self.params.lock().expect("params").push(request.params);
-            self.operations
-                .lock()
-                .expect("operations")
-                .push(request.operation.clone());
-            if self.pages.lock().expect("pages").is_empty() {
-                return Err(
-                    crate::account_session_runtime::AccountSessionError::InvalidResponse(
-                        "/".into(),
-                    ),
-                );
-            }
-            let scope = self.current_scope(&request.account).expect("test scope");
-            Ok(SessionReceipt {
-                scope,
-                operation: request.operation,
-                ticket: Some(studio_runtime_providers::RequestTicket {
-                    id: studio_runtime_providers::RequestId::String("catalog-test".into()),
-                    generation: 4,
-                    method: studio_runtime_providers::Method::ModelList,
-                }),
-                certainty: RequestCertainty::Written,
-                result: Some(ProviderResponse::Reply(
-                    self.pages.lock().expect("pages").remove(0),
-                )),
-                not_sent_reason: None,
-
-                replayed: false,
+            Box::pin(async move {
+                use crate::account_session_runtime::{
+                    ProviderResponse, RequestCertainty, SessionReceipt,
+                };
+                self.params.lock().expect("params").push(request.params);
+                self.operations
+                    .lock()
+                    .expect("operations")
+                    .push(request.operation.clone());
+                if self.pages.lock().expect("pages").is_empty() {
+                    return Err(
+                        crate::account_session_runtime::AccountSessionError::InvalidResponse(
+                            "/".into(),
+                        ),
+                    );
+                }
+                let scope = self.current_scope(&request.account).expect("test scope");
+                Ok(SessionReceipt {
+                    scope,
+                    operation: request.operation,
+                    ticket: Some(studio_runtime_providers::RequestTicket {
+                        id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                        generation: 4,
+                        method: studio_runtime_providers::Method::ModelList,
+                    }),
+                    certainty: RequestCertainty::Written,
+                    result: Some(ProviderResponse::Reply(
+                        self.pages.lock().expect("pages").remove(0),
+                    )),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }

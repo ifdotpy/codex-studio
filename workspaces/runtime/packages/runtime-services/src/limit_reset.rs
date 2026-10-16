@@ -5,7 +5,6 @@ use crate::account_session_runtime::{
 };
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
 use studio_runtime_store::{RuntimeStore, StoreError};
@@ -15,7 +14,7 @@ use uuid::Uuid;
 const RESET_OPERATION_PREFIX: &str = "limit-reset:";
 const RESET_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const INITIAL_TRANSPORT_ATTEMPTS: u64 = 0;
-static RESET_REQUEST_LOCK: Mutex<()> = Mutex::new(());
+static RESET_REQUEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Error)]
 pub enum ResetError {
@@ -75,59 +74,64 @@ fn from_record(value: Value) -> Result<Attempt, ResetError> {
         .map_err(|_| ResetError::Invalid("The reset attempt record is invalid"))
 }
 
-fn read_attempts(
+async fn read_attempts(
     store: &RuntimeStore,
     request_id: &str,
     account: &str,
     credit: &str,
 ) -> Result<Option<Attempt>, ResetError> {
-    store.transaction_with(|tx| {
-        let alias = tx
-            .query_row(
-                "SELECT attempt_id FROM runtime_limit_reset_requests WHERE id=?1",
-                [request_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let mut statement = tx.prepare("SELECT record FROM runtime_limit_reset_attempts")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut attempts = Vec::new();
-        for row in rows {
-            attempts.push(from_record(serde_json::from_str(&row?)?)?);
-        }
-        if let Some(alias) = alias
-            && let Some(attempt) = attempts.iter().find(|attempt| attempt.id == alias)
-        {
-            if attempt.account_id != account || attempt.credit_id != credit {
-                return Err(ResetError::Invalid(
-                    "This reset request belongs to a different account or credit",
-                ));
+    let request_id = request_id.to_owned();
+    let account = account.to_owned();
+    let credit = credit.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let alias = tx
+                .query_row(
+                    "SELECT attempt_id FROM runtime_limit_reset_requests WHERE id=?1",
+                    [request_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let mut statement = tx.prepare("SELECT record FROM runtime_limit_reset_attempts")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut attempts = Vec::new();
+            for row in rows {
+                attempts.push(from_record(serde_json::from_str(&row?)?)?);
             }
-            return Ok(Some(attempt.clone()));
-        }
-        let attempt = attempts.into_iter().rev().find(|attempt| {
-            attempt.account_id == account
-                && attempt.credit_id == credit
-                && (matches!(attempt.status.as_str(), "pending" | "uncertain")
-                    || matches!(
-                        attempt.outcome.as_deref(),
-                        Some("reset" | "alreadyRedeemed")
-                    ))
-        });
-        if let Some(attempt) = attempt {
-            // A public request id is permanently bound even when it reuses an
-            // existing account/credit attempt. This prevents later rebinding.
-            tx.execute(
+            if let Some(alias) = alias
+                && let Some(attempt) = attempts.iter().find(|attempt| attempt.id == alias)
+            {
+                if attempt.account_id != account || attempt.credit_id != credit {
+                    return Err(ResetError::Invalid(
+                        "This reset request belongs to a different account or credit",
+                    ));
+                }
+                return Ok(Some(attempt.clone()));
+            }
+            let attempt = attempts.into_iter().rev().find(|attempt| {
+                attempt.account_id == account
+                    && attempt.credit_id == credit
+                    && (matches!(attempt.status.as_str(), "pending" | "uncertain")
+                        || matches!(
+                            attempt.outcome.as_deref(),
+                            Some("reset" | "alreadyRedeemed")
+                        ))
+            });
+            if let Some(attempt) = attempt {
+                // A public request id is permanently bound even when it reuses an
+                // existing account/credit attempt. This prevents later rebinding.
+                tx.execute(
                 "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
                 (request_id, &attempt.id),
             )?;
-            return Ok(Some(attempt));
-        }
-        Ok(None)
-    })
+                return Ok(Some(attempt));
+            }
+            Ok(None)
+        })
+        .await
 }
 
-fn save_attempt(
+async fn save_attempt(
     store: &RuntimeStore,
     attempt: &Attempt,
     request_id: &str,
@@ -136,7 +140,8 @@ fn save_attempt(
     attempt.updated = Some(now()?);
     let record = serde_json::to_string(&attempt)
         .map_err(|_| ResetError::Invalid("The reset attempt record is invalid"))?;
-    store.transaction_with(|tx| {
+    let request_id = request_id.to_owned();
+    store.transaction_with(move |tx| {
         tx.execute(
             "INSERT INTO runtime_limit_reset_attempts (id,record) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             (&attempt.id, record),
@@ -146,70 +151,73 @@ fn save_attempt(
             (request_id, &attempt.id),
         )?;
         Ok(())
-    })
+    }).await
 }
 
 /// Atomically bind a new public request to the one attempt for this account and credit.
 /// The store serializes this check and insert; provider I/O happens after commit.
-fn reserve_attempt(
+async fn reserve_attempt(
     store: &RuntimeStore,
     candidate: Attempt,
     request_id: &str,
 ) -> Result<Attempt, ResetError> {
-    store.transaction_with(|tx| {
-        let alias = tx
-            .query_row(
-                "SELECT attempt_id FROM runtime_limit_reset_requests WHERE id=?1",
-                [request_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let mut statement = tx.prepare("SELECT record FROM runtime_limit_reset_attempts")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut attempts = Vec::new();
-        for row in rows {
-            attempts.push(from_record(serde_json::from_str(&row?)?)?);
-        }
-        if let Some(alias) = alias {
-            let attempt = attempts
-                .into_iter()
-                .find(|attempt| attempt.id == alias)
-                .ok_or(ResetError::Invalid("The reset request receipt is invalid"))?;
-            if attempt.account_id != candidate.account_id
-                || attempt.credit_id != candidate.credit_id
-            {
-                return Err(ResetError::Invalid(
-                    "This reset request belongs to a different account or credit",
-                ));
+    let request_id = request_id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let alias = tx
+                .query_row(
+                    "SELECT attempt_id FROM runtime_limit_reset_requests WHERE id=?1",
+                    [request_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let mut statement = tx.prepare("SELECT record FROM runtime_limit_reset_attempts")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut attempts = Vec::new();
+            for row in rows {
+                attempts.push(from_record(serde_json::from_str(&row?)?)?);
             }
-            return Ok(attempt);
-        }
-        if let Some(attempt) = attempts.into_iter().rev().find(|attempt| {
-            attempt.account_id == candidate.account_id
-                && attempt.credit_id == candidate.credit_id
-                && (matches!(attempt.status.as_str(), "pending" | "uncertain")
-                    || matches!(
-                        attempt.outcome.as_deref(),
-                        Some("reset" | "alreadyRedeemed")
-                    ))
-        }) {
-            tx.execute(
+            if let Some(alias) = alias {
+                let attempt = attempts
+                    .into_iter()
+                    .find(|attempt| attempt.id == alias)
+                    .ok_or(ResetError::Invalid("The reset request receipt is invalid"))?;
+                if attempt.account_id != candidate.account_id
+                    || attempt.credit_id != candidate.credit_id
+                {
+                    return Err(ResetError::Invalid(
+                        "This reset request belongs to a different account or credit",
+                    ));
+                }
+                return Ok(attempt);
+            }
+            if let Some(attempt) = attempts.into_iter().rev().find(|attempt| {
+                attempt.account_id == candidate.account_id
+                    && attempt.credit_id == candidate.credit_id
+                    && (matches!(attempt.status.as_str(), "pending" | "uncertain")
+                        || matches!(
+                            attempt.outcome.as_deref(),
+                            Some("reset" | "alreadyRedeemed")
+                        ))
+            }) {
+                tx.execute(
                 "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
                 (request_id, &attempt.id),
             )?;
-            return Ok(attempt);
-        }
-        let record = serde_json::to_string(&candidate)?;
-        tx.execute(
-            "INSERT INTO runtime_limit_reset_attempts (id,record) VALUES (?1,?2)",
-            (&candidate.id, record),
-        )?;
-        tx.execute(
-            "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
-            (request_id, &candidate.id),
-        )?;
-        Ok(candidate)
-    })
+                return Ok(attempt);
+            }
+            let record = serde_json::to_string(&candidate)?;
+            tx.execute(
+                "INSERT INTO runtime_limit_reset_attempts (id,record) VALUES (?1,?2)",
+                (&candidate.id, record),
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO runtime_limit_reset_requests (id,attempt_id) VALUES (?1,?2)",
+                (request_id, &candidate.id),
+            )?;
+            Ok(candidate)
+        })
+        .await
 }
 
 fn account_id(limits: &Value) -> Option<&str> {
@@ -248,7 +256,7 @@ fn response(attempt: &Attempt, limits: Value) -> Value {
 
 /// Persist the provider charge identity before dispatch. Retries of pending or uncertain
 /// attempts retain that key while advancing the durable retained-worker transport sequence.
-pub fn consume_reset(
+pub async fn consume_reset(
     store: &RuntimeStore,
     session: &dyn AccountSessionPort,
     data: &Value,
@@ -262,9 +270,7 @@ pub fn consume_reset(
     }
     // Python codex_limit_resets.py serializes limit refresh and redemption. Keep
     // concurrent retries from racing their durable outcome transitions.
-    let _guard = RESET_REQUEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = RESET_REQUEST_LOCK.lock().await;
     let account = required(
         data,
         "account_id",
@@ -277,9 +283,10 @@ pub fn consume_reset(
             .to_string(),
         None => Uuid::new_v4().to_string(),
     };
-    let mut attempt = read_attempts(store, &request_id, &account, &credit)?;
+    let mut attempt = read_attempts(store, &request_id, &account, &credit).await?;
     let limits = session
         .read_limits(account_key)
+        .await
         .map_err(|error| ResetError::Provider(error.to_string()))?;
     if account_id(&limits) != Some(account.as_str()) {
         return Err(ResetError::Invalid(
@@ -294,37 +301,40 @@ pub fn consume_reset(
     }
     let mut attempt = match attempt.take() {
         Some(attempt) => attempt,
-        None => reserve_attempt(
-            store,
-            Attempt {
-                id: request_id.clone(),
-                account_id: account.clone(),
-                account_key: account_key.to_owned(),
-                credit_id: credit.clone(),
-                idempotency_key: Uuid::new_v4().to_string(),
-                transport_attempts: INITIAL_TRANSPORT_ATTEMPTS,
-                status: "pending".to_owned(),
-                certainty: None,
-                outcome: None,
-                error: None,
-                created: Some(current_time),
-                updated: None,
-            },
-            &request_id,
-        )?,
+        None => {
+            reserve_attempt(
+                store,
+                Attempt {
+                    id: request_id.clone(),
+                    account_id: account.clone(),
+                    account_key: account_key.to_owned(),
+                    credit_id: credit.clone(),
+                    idempotency_key: Uuid::new_v4().to_string(),
+                    transport_attempts: INITIAL_TRANSPORT_ATTEMPTS,
+                    status: "pending".to_owned(),
+                    certainty: None,
+                    outcome: None,
+                    error: None,
+                    created: Some(current_time),
+                    updated: None,
+                },
+                &request_id,
+            )
+            .await?
+        }
     };
     if attempt.status == "completed" {
         return Ok(response(&attempt, limits));
     }
     attempt.certainty = None;
-    save_attempt(store, &attempt, &request_id)?;
-    let scope = match session.ensure_session(account_key) {
+    save_attempt(store, &attempt, &request_id).await?;
+    let scope = match session.ensure_session(account_key).await {
         Ok(scope) => scope,
         Err(error) => {
             attempt.status = "pending".to_owned();
             attempt.certainty = Some("not_sent".to_owned());
             attempt.error = Some(error.to_string());
-            save_attempt(store, &attempt, &request_id)?;
+            save_attempt(store, &attempt, &request_id).await?;
             return Err(ResetError::Provider(error.to_string()));
         }
     };
@@ -338,21 +348,23 @@ pub fn consume_reset(
             .ok_or(ResetError::Invalid(
                 "The reset transport attempt limit was reached",
             ))?;
-    save_attempt(store, &attempt, &request_id)?;
+    save_attempt(store, &attempt, &request_id).await?;
     let operation = format!(
         "{RESET_OPERATION_PREFIX}{}:{}",
         attempt.idempotency_key, attempt.transport_attempts
     );
-    let receipt = session.provider_request(ProviderRequest {
-        account: account_key.to_owned(),
-        operation: operation.clone(),
-        actor: None,
-        expected_scope: Some(scope.clone()),
-        deleted_actor_session: None,
-        method: Method::AccountRateLimitResetCreditConsume,
-        params: json!({"creditId":credit,"idempotencyKey":attempt.idempotency_key}),
-        deadline: std::time::Instant::now() + RESET_REQUEST_TIMEOUT,
-    });
+    let receipt = session
+        .provider_request(ProviderRequest {
+            account: account_key.to_owned(),
+            operation: operation.clone(),
+            actor: None,
+            expected_scope: Some(scope.clone()),
+            deleted_actor_session: None,
+            method: Method::AccountRateLimitResetCreditConsume,
+            params: json!({"creditId":credit,"idempotencyKey":attempt.idempotency_key}),
+            deadline: std::time::Instant::now() + RESET_REQUEST_TIMEOUT,
+        })
+        .await;
     match receipt {
         Ok(receipt)
             if receipt.operation == operation
@@ -410,8 +422,8 @@ pub fn consume_reset(
             attempt.error = Some(error.to_string());
         }
     }
-    save_attempt(store, &attempt, &request_id)?;
-    let limits = session.read_limits(account_key).unwrap_or_else(|_| {
+    save_attempt(store, &attempt, &request_id).await?;
+    let limits = session.read_limits(account_key).await.unwrap_or_else(|_| {
         session.limits_snapshot(account_key).unwrap_or_else(|_| json!({"accountKey":account_key,"data":null,"error":"Account limits are unavailable"}))
     });
     Ok(response(&attempt, limits))
@@ -421,15 +433,16 @@ pub fn consume_reset(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        Attempt, RESET_OPERATION_PREFIX, RESET_REQUEST_LOCK, consume_reset, read_attempts,
-        save_attempt,
+        Attempt, RESET_OPERATION_PREFIX, RESET_REQUEST_LOCK, consume_reset as consume_reset_async,
+        read_attempts as read_attempts_async, save_attempt as save_attempt_async,
     };
     use crate::account_session_runtime::{
-        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty, SessionReceipt,
+        AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
+        ProviderRequest, ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use serde_json::{Value, json};
     use std::collections::VecDeque;
+    use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
@@ -476,74 +489,116 @@ mod tests {
         }
     }
 
+    fn run_async<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime builds")
+            .block_on(future)
+    }
+
     impl AccountSessionPort for FakeProvider {
-        fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
-            assert_eq!(account, "default");
-            Ok(self.scope.clone())
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> AccountSessionFuture<'a, ConnectionScope> {
+            Box::pin(async move {
+                assert_eq!(account, "default");
+                Ok(self.scope.clone())
+            })
         }
 
-        fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
-            assert_eq!(account, "default");
-            *self.reads.lock().unwrap() += 1;
-            Ok(self.limits.clone())
+        fn read_limits<'a>(&'a self, account: &'a str) -> AccountSessionFuture<'a, Value> {
+            Box::pin(async move {
+                assert_eq!(account, "default");
+                *self.reads.lock().unwrap() += 1;
+                Ok(self.limits.clone())
+            })
         }
 
-        fn provider_request(
-            &self,
+        fn provider_request<'a>(
+            &'a self,
             request: ProviderRequest,
-        ) -> Result<SessionReceipt, AccountSessionError> {
-            assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
-            let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
-            if self.assert_reset_lock {
-                assert!(
-                    RESET_REQUEST_LOCK.try_lock().is_err(),
-                    "the reset serialization lock must cover provider I/O"
-                );
-            }
-            self.requests
-                .lock()
-                .unwrap()
-                .push((request.operation.clone(), request.params.clone()));
-            let reply = self
-                .replies
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Reply::Unknown);
-            let (certainty, result, ticket) = match reply {
-                Reply::NotSent => (RequestCertainty::NotSent, None, None),
-                Reply::Unknown => {
-                    self.in_flight.fetch_sub(1, Ordering::SeqCst);
-                    return Err(AccountSessionError::Unknown);
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                assert_eq!(request.method, Method::AccountRateLimitResetCreditConsume);
+                let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+                if self.assert_reset_lock {
+                    assert!(
+                        RESET_REQUEST_LOCK.try_lock().is_err(),
+                        "the reset serialization lock must cover provider I/O"
+                    );
                 }
-                Reply::Outcome(outcome) => (
-                    RequestCertainty::Written,
-                    Some(ProviderResponse::Reply(json!({"outcome":outcome}))),
-                    Some(RequestTicket {
-                        generation: self.scope.generation,
-                        id: RequestId::String(request.operation.clone()),
-                        method: request.method,
-                    }),
-                ),
-            };
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            Ok(SessionReceipt {
-                scope: self.scope.clone(),
-                operation: request.operation,
-                ticket,
-                certainty,
-                result,
-                not_sent_reason: None,
-                replayed: false,
+                self.requests
+                    .lock()
+                    .unwrap()
+                    .push((request.operation.clone(), request.params.clone()));
+                let reply = self
+                    .replies
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(Reply::Unknown);
+                let (certainty, result, ticket) = match reply {
+                    Reply::NotSent => (RequestCertainty::NotSent, None, None),
+                    Reply::Unknown => {
+                        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                        return Err(AccountSessionError::Unknown);
+                    }
+                    Reply::Outcome(outcome) => (
+                        RequestCertainty::Written,
+                        Some(ProviderResponse::Reply(json!({"outcome":outcome}))),
+                        Some(RequestTicket {
+                            generation: self.scope.generation,
+                            id: RequestId::String(request.operation.clone()),
+                            method: request.method,
+                        }),
+                    ),
+                };
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok(SessionReceipt {
+                    scope: self.scope.clone(),
+                    operation: request.operation,
+                    ticket,
+                    certainty,
+                    result,
+                    not_sent_reason: None,
+                    replayed: false,
+                })
             })
         }
     }
 
     fn store() -> (tempfile::TempDir, RuntimeStore) {
         let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let store = run_async(RuntimeStore::open(Some(root.path()))).unwrap();
         (root, store)
+    }
+
+    fn consume_reset(
+        store: &RuntimeStore,
+        session: &dyn AccountSessionPort,
+        data: &Value,
+    ) -> Result<Value, super::ResetError> {
+        run_async(consume_reset_async(store, session, data))
+    }
+
+    fn read_attempts(
+        store: &RuntimeStore,
+        request_id: &str,
+        account: &str,
+        credit: &str,
+    ) -> Result<Option<Attempt>, super::ResetError> {
+        run_async(read_attempts_async(store, request_id, account, credit))
+    }
+
+    fn save_attempt(
+        store: &RuntimeStore,
+        attempt: &Attempt,
+        request_id: &str,
+    ) -> Result<(), super::ResetError> {
+        run_async(save_attempt_async(store, attempt, request_id))
     }
 
     fn request(request_id: &str) -> Value {

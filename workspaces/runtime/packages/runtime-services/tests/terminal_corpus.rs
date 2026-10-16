@@ -78,7 +78,7 @@ fn assert_python_rows(store: &RuntimeStore, expected: &Value) {
     }
 }
 
-fn run_corpus(full: bool) {
+async fn run_corpus(full: bool) {
     let temp_root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
@@ -87,8 +87,15 @@ fn run_corpus(full: bool) {
         .prefix("terminal-corpus-")
         .tempdir_in(&temp_root)
         .expect("Python-written terminal state");
-    let oracle = run_python_oracle(root.path(), full);
-    let store = RuntimeStore::open(Some(root.path())).expect("Rust opens Python-written state");
+    let oracle_root = root.path().to_path_buf();
+    let oracle = tokio::task::spawn_blocking(move || run_python_oracle(&oracle_root, full))
+        .await
+        .expect("Python terminal oracle task");
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("Rust opens Python-written state"),
+    );
 
     assert_eq!(listing(&store).expect("Rust listing"), oracle["listing"]);
     for case in oracle["output"].as_array().expect("Python output cases") {
@@ -107,11 +114,12 @@ fn run_corpus(full: bool) {
     for case in oracle["history"].as_array().expect("Python history cases") {
         assert_eq!(
             history_output(
-                &store,
+                std::sync::Arc::clone(&store),
                 "terminal-corpus",
                 case["offset"].as_i64().expect("history offset"),
                 case["limit"].as_i64().expect("history limit")
             )
+            .await
             .expect("Rust history output"),
             case["value"],
             "complete history return differs for case {case}"
@@ -176,15 +184,15 @@ fn run_corpus(full: bool) {
     }
 }
 
-#[test]
-fn python_written_terminal_corpus_matches_fast_rust_reads_and_rows() {
-    run_corpus(false);
+#[tokio::test]
+async fn python_written_terminal_corpus_matches_fast_rust_reads_and_rows() {
+    run_corpus(false).await;
 }
 
-#[test]
-fn python_written_terminal_corpus_matches_full_bounds_and_paging() {
+#[tokio::test]
+async fn python_written_terminal_corpus_matches_full_bounds_and_paging() {
     if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() != Ok("1") {
         return;
     }
-    run_corpus(true);
+    run_corpus(true).await;
 }

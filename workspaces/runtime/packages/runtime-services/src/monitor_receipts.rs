@@ -119,23 +119,26 @@ fn read(path: &Path, id: Option<&str>) -> Result<ResultReceipt, MonitorError> {
     Ok(receipt)
 }
 
-pub fn finish(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
+pub async fn finish(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
     let saved = persist(store.root(), receipt)?;
-    restore(store, &saved)?;
+    restore(store, &saved).await?;
     acknowledge(store.root(), &saved.key)
 }
 
-fn restore(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
-    store.transaction_with(|tx| {
-        crate::monitor_runtime::finish_in_transaction(
-            tx,
-            &receipt.key,
-            receipt.operation.as_ref(),
-            receipt.code,
-            receipt.error.as_deref(),
-            receipt.finished,
-        )
-    })
+async fn restore(store: &RuntimeStore, receipt: &ResultReceipt) -> Result<(), MonitorError> {
+    let receipt = receipt.clone();
+    store
+        .transaction_with(move |tx| {
+            crate::monitor_runtime::finish_in_transaction(
+                tx,
+                &receipt.key,
+                receipt.operation.as_ref(),
+                receipt.code,
+                receipt.error.as_deref(),
+                receipt.finished,
+            )
+        })
+        .await
 }
 
 fn acknowledge(root: &Path, id: &str) -> Result<(), MonitorError> {
@@ -149,22 +152,28 @@ fn acknowledge(root: &Path, id: &str) -> Result<(), MonitorError> {
 }
 
 /// Reconcile selected identities in bounded batches; corrupt/foreign receipts remain for diagnosis.
-pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(), MonitorError>)> {
-    keys.iter()
-        .take(64)
-        .map(|id| {
-            let result = read(&path(store.root(), id), Some(id))
-                .and_then(|receipt| restore(store, &receipt))
-                .and_then(|()| acknowledge(store.root(), id));
-            (id.clone(), result)
-        })
-        .collect()
+pub async fn recover(
+    store: &RuntimeStore,
+    keys: &[String],
+) -> Vec<(String, Result<(), MonitorError>)> {
+    let mut results = Vec::new();
+    for id in keys.iter().take(64) {
+        let result = match read(&path(store.root(), id), Some(id)) {
+            Ok(receipt) => match restore(store, &receipt).await {
+                Ok(()) => acknowledge(store.root(), id),
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        results.push((id.clone(), result));
+    }
+    results
 }
 
 /// Recover at most `limit` valid receipts, scanning past invalid entries so they
 /// cannot starve later receipts. Invalid or unreadable files remain in place and
 /// are reported; successful batches can be drained by the caller until short.
-pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
+pub async fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
     if limit == 0 {
         return Ok(0);
     }
@@ -215,7 +224,7 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
             report_recovery_warning(&entry.path(), "invalid identity");
             continue;
         }
-        if let Err(error) = restore(store, &receipt) {
+        if let Err(error) = restore(store, &receipt).await {
             if crate::monitor_runtime::startup_store_failure(&error) {
                 return Err(error);
             }

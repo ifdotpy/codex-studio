@@ -57,25 +57,28 @@ pub struct DriverHooks<'a> {
 }
 /// This adapter has no turn driver. Claim intents and worker holds fail atomically with a
 /// named dependency until the integrator installs those consumers. No partial writes escape.
-pub fn drive(
+pub async fn drive(
     store: &RuntimeStore,
     agent: &str,
     table: ContinuationTable,
     record: Option<&str>,
     now: f64,
-    decide: impl FnOnce(&Snapshot) -> Result<Decision>,
+    decide: impl FnOnce(&Snapshot) -> Result<Decision> + Send + 'static,
 ) -> Result<Decision> {
-    drive_with_fault(store, agent, table, record, now, decide, &mut NoFault)
+    drive_with_fault(store, agent, table, record, now, decide, NoFault).await
 }
-pub fn drive_with_fault(
+pub async fn drive_with_fault<F>(
     store: &RuntimeStore,
     agent: &str,
     table: ContinuationTable,
     record: Option<&str>,
     now: f64,
-    decide: impl FnOnce(&Snapshot) -> Result<Decision>,
-    fault: &mut impl Fault,
-) -> Result<Decision> {
+    decide: impl FnOnce(&Snapshot) -> Result<Decision> + Send + 'static,
+    fault: F,
+) -> Result<Decision>
+where
+    F: Fault + Send + 'static,
+{
     drive_with_hooks(
         store,
         agent,
@@ -83,34 +86,47 @@ pub fn drive_with_fault(
         record,
         now,
         decide,
-        &mut DriverHooks {
-            fault,
-            capacity_admission: &mut MissingCapacityAdmission,
-        },
+        fault,
+        MissingCapacityAdmission,
     )
+    .await
 }
 /// A successful capacity claim is returned only after its record and agent commit together.
 /// The caller may consume its CapacityStart effect after commit; recovery uses the saved attempt.
-pub fn drive_with_hooks(
+pub async fn drive_with_hooks<F, C>(
     store: &RuntimeStore,
     agent: &str,
     table: ContinuationTable,
     record: Option<&str>,
     now: f64,
-    decide: impl FnOnce(&Snapshot) -> Result<Decision>,
-    hooks: &mut DriverHooks<'_>,
-) -> Result<Decision> {
-    let decision = store.transaction_with(|tx| {
-        hooks.fault.at(Boundary::BeforeSnapshot)?;
-        let raw = ContinuationRepository::snapshot(tx, agent, table, record)?;
-        let snapshot = Snapshot::from_records(raw)?;
-        hooks.fault.at(Boundary::AfterSnapshot)?;
-        let d = decide(&snapshot)?;
-        apply(tx, &snapshot, table, &d, now, hooks)?;
-        hooks.fault.at(Boundary::BeforeCommit)?;
-        Ok::<_, ContinuationError>(d)
-    })?;
-    hooks.fault.at(Boundary::AfterCommit)?;
+    decide: impl FnOnce(&Snapshot) -> Result<Decision> + Send + 'static,
+    mut fault: F,
+    mut capacity_admission: C,
+) -> Result<Decision>
+where
+    F: Fault + Send + 'static,
+    C: CapacityAdmission + Send + 'static,
+{
+    let agent = agent.to_owned();
+    let record = record.map(str::to_owned);
+    let (decision, mut fault) = store
+        .transaction_with(move |tx| {
+            let mut hooks = DriverHooks {
+                fault: &mut fault,
+                capacity_admission: &mut capacity_admission,
+            };
+            hooks.fault.at(Boundary::BeforeSnapshot)?;
+            let raw = ContinuationRepository::snapshot(tx, &agent, table, record.as_deref())?;
+            let snapshot = Snapshot::from_records(raw)?;
+            hooks.fault.at(Boundary::AfterSnapshot)?;
+            let d = decide(&snapshot)?;
+            apply(tx, &snapshot, table, &d, now, &mut hooks)?;
+            hooks.fault.at(Boundary::BeforeCommit)?;
+            drop(hooks);
+            Ok::<_, ContinuationError>((d, fault))
+        })
+        .await?;
+    fault.at(Boundary::AfterCommit)?;
     Ok(decision)
 }
 pub(crate) fn apply_in_transaction(

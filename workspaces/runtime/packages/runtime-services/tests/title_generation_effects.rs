@@ -236,16 +236,18 @@ fn persisted_snapshot(store: &RuntimeStore) -> Value {
     json!({"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events,"projection":projection,"receipts":receipts})
 }
 
-#[test]
-fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
+#[tokio::test]
+async fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
     let (_root, store) = fixture();
     let before = persisted_snapshot(&store);
-    let (pending, start) =
-        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("admit title");
+    let (pending, start) = admit_python_request(&store, "title-agent", "catalog-unavailable")
+        .await
+        .expect("admit title");
     assert!(start);
     assert_eq!(pending["status"], "pending");
 
     settle_catalog_failure(&store, "title-agent", "catalog-unavailable")
+        .await
         .expect("settle unavailable catalog");
     let connection = store.read().expect("read settled title");
     let result: String = connection
@@ -264,8 +266,9 @@ fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
     assert_eq!(after["agent"], before["agent"]);
     assert_eq!(after["events"], before["events"]);
     assert_eq!(after["projection"], before["projection"]);
-    let (replayed, retry) =
-        admit_python_request(&store, "title-agent", "catalog-unavailable").expect("replay");
+    let (replayed, retry) = admit_python_request(&store, "title-agent", "catalog-unavailable")
+        .await
+        .expect("replay");
     assert!(!retry);
     assert_eq!(replayed["status"], "failed");
     assert_eq!(persisted_snapshot(&store), after);
@@ -321,6 +324,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
     assert!(written_effect["fingerprint"].as_str().is_some());
 
     settle_catalog_failure(&store, "title-agent", "written-before-catalog-failure")
+        .await
         .expect("settle catalog failure without losing written result");
     let (public_result, effect_after_settlement) = {
         let connection = store.read().expect("read title receipts after settlement");
@@ -354,6 +358,7 @@ async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recove
         .expect("remove deterministic failure");
     let (retry_receipt, should_finish) =
         admit_python_request(&store, "title-agent", "written-before-catalog-failure")
+            .await
             .expect("same-identity HTTP retry admission");
     assert!(
         should_finish,
@@ -390,8 +395,9 @@ async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_
         outcome: WriteOutcome::Written,
         title: Some("Generated once".into()),
     }]);
-    let (pending, start) =
-        admit_python_request(&store, "title-agent", "admitted-replay").expect("durable admission");
+    let (pending, start) = admit_python_request(&store, "title-agent", "admitted-replay")
+        .await
+        .expect("durable admission");
     assert!(start);
     assert_eq!(pending["status"], "pending");
     assert_eq!(
@@ -410,6 +416,7 @@ async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_
         }
     );
     let (replayed, retry) = admit_python_request(&store, "title-agent", "admitted-replay")
+        .await
         .expect("poll completed title receipt");
     assert!(!retry);
     assert_eq!(replayed["id"], "title-agent");
@@ -455,6 +462,7 @@ async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_res
     );
     assert_eq!(port.calls.load(Ordering::SeqCst), 0);
     let (replayed, start) = admit_python_request(&store, "title-agent", "legacy-pending")
+        .await
         .expect("replay Python pending receipt");
     assert!(!start);
     assert_eq!(replayed["status"], "pending");

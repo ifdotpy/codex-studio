@@ -77,51 +77,78 @@ pub struct AsyncQuestionAnswerInput<'a, V> {
     pub validate: V,
 }
 
-pub fn answer_async_question_in_store(
-    store: &RuntimeStore,
+pub async fn answer_async_question_in_store(
+    store: std::sync::Arc<RuntimeStore>,
     id: &str,
     data: &Value,
     now: f64,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&Value) -> bool + Send + Sync + 'static,
 ) -> Result<Option<AsyncQuestionAnswerResult>, QuestionsWriteError> {
-    let raw = store
-        .read_transaction_with_error(|transaction| {
-            QuestionsWriteRepository::request(transaction, id)
-        })?
-        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
-    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
-        return Err(invalid_stored("runtime_requests", id));
-    }
-    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+    let id = id.to_owned();
+    let data = data.clone();
+    let validate: std::sync::Arc<dyn Fn(&Value) -> bool + Send + Sync> =
+        std::sync::Arc::new(validate);
+    let validate_for_preparation = std::sync::Arc::clone(&validate);
+    let store_for_preparation = std::sync::Arc::clone(&store);
+    let id_for_preparation = id.clone();
+    let data_for_preparation = data.clone();
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/questions_write",
+        move || {
+            let raw = store_for_preparation
+                .read_transaction_with_error(|transaction| {
+                    QuestionsWriteRepository::request(transaction, &id_for_preparation)
+                })?
+                .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+            let record: Value = serde_json::from_str(&raw)
+                .map_err(|_| invalid_stored("runtime_requests", &id_for_preparation))?;
+            if record.get("id").and_then(Value::as_str) != Some(id_for_preparation.as_str())
+                || !validate_for_preparation(&record)
+            {
+                return Err(invalid_stored("runtime_requests", &id_for_preparation));
+            }
+            if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+                return Ok(None);
+            }
+            let agent_id = record
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?
+                .to_owned();
+            let text = async_answer_text(&record, &data_for_preparation)?;
+            let connection = store_for_preparation.read()?;
+            let admission = crate::message_admission::MessageIngressAdmission::load(
+                std::sync::Arc::clone(&store_for_preparation),
+                &connection,
+                &agent_id,
+            )?;
+            drop(connection);
+            let prepared = PreparedHost::load(&store_for_preparation)?;
+            Ok(Some((agent_id, text, admission, prepared)))
+        },
+    )
+    .await
+    .map_err(|_| QuestionsWriteError::Projects(ProjectsError::PreparationWorker))??;
+    let Some((_agent_id, text, admission, prepared)) = prepared else {
         return Ok(None);
-    }
-    let agent_id = record
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?
-        .to_owned();
-    let text = async_answer_text(&record, data)?;
-    let connection = store.read()?;
-    let admission =
-        crate::message_admission::MessageIngressAdmission::load(store, &connection, &agent_id)?;
-    drop(connection);
-    let prepared = PreparedHost::load(store)?;
-    let result = store.transaction_with_error(|transaction| {
-        answer_async_question(
-            transaction,
-            AsyncQuestionAnswerInput {
-                id,
-                data,
-                text: &text,
-                admission: &admission,
-                prepared: &prepared,
-                now,
-                validate: &validate,
-            },
-        )
-    })?;
+    };
+    let validate_for_transaction = std::sync::Arc::clone(&validate);
+    let result = store
+        .transaction_with_error(move |transaction| {
+            answer_async_question(
+                transaction,
+                AsyncQuestionAnswerInput {
+                    id: &id,
+                    data: &data,
+                    text: &text,
+                    admission: &admission,
+                    prepared: &prepared,
+                    now,
+                    validate: move |record: &Value| validate_for_transaction(record),
+                },
+            )
+        })
+        .await?;
     Ok(Some(result))
 }
 

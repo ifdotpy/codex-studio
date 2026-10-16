@@ -309,35 +309,47 @@ fn native_turn_params(
     Ok(params)
 }
 
-pub(crate) fn admit(
-    store: &RuntimeStore,
+pub(crate) async fn admit(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<Admission, WorkerError> {
-    admit_for_purpose(store, resources, intent, false)
+    admit_for_purpose(store, resources, intent, false).await
 }
-fn admit_for_purpose(
-    store: &RuntimeStore,
+async fn admit_for_purpose(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     allow_paused_start: bool,
 ) -> Result<Admission, WorkerError> {
-    let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
-    let prepared_host = if intent.radio_authorized {
-        let prepared = crate::host_project_runtime::PreparedHost::load(store)
-            .map_err(|error| refusal(error.to_string()))?;
-        prepared
-            .recheck_paths()
-            .map_err(|error| refusal(error.to_string()))?;
-        Some(prepared)
-    } else {
-        None
-    };
+    let preparation_store = store.clone();
+    let agent_id = intent.agent_id.clone();
+    let radio_authorized = intent.radio_authorized;
+    let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_admission_snapshot",
+        move || {
+            let filesystem = FilesystemSnapshot::capture(&preparation_store, &agent_id)?;
+            let prepared_host = if radio_authorized {
+                let prepared = crate::host_project_runtime::PreparedHost::load(&preparation_store)
+                    .map_err(|error| refusal(error.to_string()))?;
+                prepared
+                    .recheck_paths()
+                    .map_err(|error| refusal(error.to_string()))?;
+                Some(prepared)
+            } else {
+                None
+            };
+            Ok::<_, WorkerError>((filesystem, prepared_host))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let (identity, observation) = catalog(resources, intent)?;
-    scheduler::lifecycle_transaction_with(store, |tx| {
+    let intent = intent.clone();
+    scheduler::lifecycle_transaction_with(&store, move |tx| {
         let record = preconditions_for_purpose(
             tx,
-            intent,
+            &intent,
             &filesystem,
             allow_paused_start,
             prepared_host.as_ref(),
@@ -362,26 +374,34 @@ fn admit_for_purpose(
             selection: selected,
         })
     })
+    .await
 }
-pub(crate) fn workspace(
-    store: &RuntimeStore,
+pub(crate) async fn workspace(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
-    workspace_with_vm_action(store, resources, intent, false)
+    workspace_with_vm_action(store, resources, intent, false).await
 }
 
-fn workspace_with_vm_action(
-    store: &RuntimeStore,
+async fn workspace_with_vm_action(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     allow_vm_native_action: bool,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
-    let record = {
-        let read = store.read()?;
-        AgentRepository::get(&read, &AgentId::from(intent.agent_id.as_str()))?
-            .ok_or_else(|| invalid(&intent.agent_id))?
-    };
+    let read_store = Arc::clone(&store);
+    let agent_id = intent.agent_id.clone();
+    let record = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_workspace_agent",
+        move || {
+            let read = read_store.read()?;
+            AgentRepository::get(&read, &AgentId::from(agent_id.as_str()))?
+                .ok_or_else(|| invalid(&agent_id))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     if record.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
         if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
@@ -399,30 +419,40 @@ fn workspace_with_vm_action(
             let epoch = u64::try_from(record.epoch)
                 .map_err(|_| refusal("workspace-state/vm-epoch".into()))?;
             #[cfg(unix)]
-            let fallback_guest =
-                crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.state_dir());
-            #[cfg(unix)]
-            let guest = resources.guest_rpc.as_deref().unwrap_or(&fallback_guest);
+            let guest: Arc<dyn crate::linux_vm_guest::GuestRpc> =
+                resources.guest_rpc.clone().unwrap_or_else(|| {
+                    Arc::new(crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                        store.state_dir(),
+                    ))
+                });
             #[cfg(not(unix))]
-            let guest = resources.guest_rpc.as_deref().ok_or_else(|| {
+            let guest = resources.guest_rpc.clone().ok_or_else(|| {
                 WorkerError::PreparationPending("workspace-readiness/vm-guest-unavailable".into())
             })?;
             // Python's `codex_runtime.py:6405-6413` calls VM preparation from
             // `prepare_locked` before connecting the provider for every VM turn.
-            let prepare = if record.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
-                crate::vm_preparation::prepare_lead
+            let prepared = if record.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+                crate::vm_preparation::prepare_lead(
+                    &store,
+                    Arc::clone(&guest),
+                    &intent.agent_id,
+                    attempt_id,
+                    &action_request_id,
+                    epoch,
+                )
+                .await
             } else {
-                crate::vm_preparation::prepare_child
+                crate::vm_preparation::prepare_child(
+                    &store,
+                    Arc::clone(&guest),
+                    &intent.agent_id,
+                    attempt_id,
+                    &action_request_id,
+                    epoch,
+                )
+                .await
             };
-            prepare(
-                store,
-                guest,
-                &intent.agent_id,
-                attempt_id,
-                &action_request_id,
-                epoch,
-            )
-            .map_err(|error| match error {
+            prepared.map_err(|error| match error {
                 error @ (crate::native_actions::NativeError::Unknown
                 | crate::native_actions::NativeError::Unavailable(_)) => {
                     WorkerError::PreparationPending(format!("workspace-readiness/{error}"))
@@ -430,9 +460,18 @@ fn workspace_with_vm_action(
                 error => refusal(error.to_string()),
             })?;
         }
-        let connection = store.read()?;
-        let ready = AgentRepository::get(&connection, &AgentId::from(intent.agent_id.as_str()))?
-            .ok_or_else(|| invalid(&intent.agent_id))?;
+        let read_store = Arc::clone(&store);
+        let agent_id = intent.agent_id.clone();
+        let ready = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_workspace_agent",
+            move || {
+                let connection = read_store.read()?;
+                AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))?
+                    .ok_or_else(|| invalid(&agent_id))
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             return Err(WorkerError::PreparationPending(
                 "workspace-readiness/vm-not-ready".into(),
@@ -461,39 +500,55 @@ fn workspace_with_vm_action(
         ));
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
-    match crate::workspace_ready_git::prepare(store, &intent.agent_id)
+    match crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone())
+        .await
         .map_err(|e| refusal(e.to_string()))?
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => {
-            let record =
-                AgentRepository::get(&*store.read()?, &AgentId::from(intent.agent_id.as_str()))?
-                    .ok_or_else(|| invalid(&intent.agent_id))?;
-            if record.extra.get("isLead") == Some(&json!(true)) {
-                if intent.agent_id.is_empty()
-                    || intent.agent_id.len() > 200
-                    || !intent
-                        .agent_id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                {
-                    return Err(invalid("progress agent"));
-                }
-                for path in [
-                    store.root().join("progress"),
-                    store.root().join("progress").join(&intent.agent_id),
-                ] {
-                    match std::fs::create_dir(&path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(_) => {
-                            return Err(refusal("workspace-readiness/progress-directory".into()));
+            let read_store = Arc::clone(&store);
+            let agent_id = intent.agent_id.clone();
+            let root = store.root().to_path_buf();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/account_worker_workspace_progress",
+                move || {
+                    let record = AgentRepository::get(
+                        &*read_store.read()?,
+                        &AgentId::from(agent_id.as_str()),
+                    )?
+                    .ok_or_else(|| invalid(&agent_id))?;
+                    if record.extra.get("isLead") == Some(&json!(true)) {
+                        if agent_id.is_empty()
+                            || agent_id.len() > 200
+                            || !agent_id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                        {
+                            return Err(invalid("progress agent"));
+                        }
+                        for path in [root.join("progress"), root.join("progress").join(&agent_id)] {
+                            match std::fs::create_dir(&path) {
+                                Ok(()) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                                Err(_) => {
+                                    return Err(refusal(
+                                        "workspace-readiness/progress-directory".into(),
+                                    ));
+                                }
+                            }
+                            if std::fs::canonicalize(&path).ok().as_ref() != Some(&path)
+                                || !path.is_dir()
+                            {
+                                return Err(refusal(
+                                    "workspace-readiness/progress-directory".into(),
+                                ));
+                            }
                         }
                     }
-                    if std::fs::canonicalize(&path).ok().as_ref() != Some(&path) || !path.is_dir() {
-                        return Err(refusal("workspace-readiness/progress-directory".into()));
-                    }
-                }
-            }
+                    Ok::<_, WorkerError>(())
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
             Ok(token)
         }
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
@@ -503,19 +558,19 @@ fn workspace_with_vm_action(
     }
 }
 
-pub(crate) fn prepare(
-    store: &RuntimeStore,
+pub(crate) async fn prepare(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     method: Method,
     generation: u64,
 ) -> Result<RequestPreparation, WorkerError> {
     let connection_id = uuid::Uuid::new_v4().to_string();
-    prepare_with_connection_id(store, resources, intent, method, generation, &connection_id)
+    prepare_with_connection_id(store, resources, intent, method, generation, &connection_id).await
 }
 
-pub(crate) fn prepare_with_connection_id(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_with_connection_id(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     method: Method,
@@ -527,11 +582,11 @@ pub(crate) fn prepare_with_connection_id(
             "native-action/preparation-requires-action-entry".into(),
         ));
     }
-    let selection = admit(store, resources, intent)?;
-    let token = workspace(store, resources, intent)?;
+    let selection = admit(Arc::clone(&store), resources, intent).await?;
+    let token = workspace(Arc::clone(&store), resources, intent).await?;
     prepare_ready(
         store,
-        resources,
+        &resources,
         intent,
         method,
         generation,
@@ -539,21 +594,29 @@ pub(crate) fn prepare_with_connection_id(
         selection,
         token,
     )
+    .await
 }
 
 /// Build the same immutable thread/settings snapshot used by turn preparation,
 /// without compiling or submitting user input. Native settings are handed to
 /// the native-action owner for its separately receipted provider request.
-pub(crate) fn prepare_native_action(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_native_action(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
     let mut snapshot = prepare_native_snapshot(
-        store, resources, agent_id, attempt_id, generation, false, None,
-    )?;
+        Arc::clone(&store),
+        resources,
+        agent_id,
+        attempt_id,
+        generation,
+        false,
+        None,
+    )
+    .await?;
     let program = daybreak_program(resources, &snapshot)?;
     let settings = native_turn_params(
         &mut snapshot,
@@ -576,8 +639,8 @@ pub(crate) fn prepare_native_action(
 
 /// Python's `Runtime.new_thread_params` counterpart. Reuses the exact checked
 /// snapshot and thread planner used by normal startup, but forces a fresh start.
-pub(crate) fn prepare_native_thread(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_native_thread(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
@@ -586,12 +649,13 @@ pub(crate) fn prepare_native_thread(
     prepare_native_thread_for_transfer_owner(
         store, resources, agent_id, attempt_id, generation, None,
     )
+    .await
 }
 
 /// Prepare a fresh destination thread only for the active durable transfer
 /// that owns this member. The owner is rechecked in the snapshot transaction.
-pub(crate) fn prepare_account_transfer_native_thread(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_account_transfer_native_thread(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     transfer_id: &str,
@@ -606,10 +670,11 @@ pub(crate) fn prepare_account_transfer_native_thread(
         generation,
         Some(transfer_id),
     )
+    .await
 }
 
-fn prepare_native_thread_for_transfer_owner(
-    store: &RuntimeStore,
+async fn prepare_native_thread_for_transfer_owner(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
@@ -624,7 +689,8 @@ fn prepare_native_thread_for_transfer_owner(
         generation,
         true,
         transfer_owner,
-    )?;
+    )
+    .await?;
     if snapshot.actor.native_teleport_tool.is_none() && snapshot.actor.thread_id.is_some() {
         snapshot.actor.native_teleport_tool = Some(thread::SessionTool::Move);
     }
@@ -652,8 +718,8 @@ fn prepare_native_thread_for_transfer_owner(
 /// Prepare the permission portion of Python's monitor command path. Monitor
 /// ownership is checked by the monitor service; this snapshot only rechecks
 /// the actor epoch/deletion state and intentionally has no startAttempt gate.
-pub(crate) fn prepare_monitor_command(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_monitor_command(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     epoch: u64,
@@ -661,21 +727,46 @@ pub(crate) fn prepare_monitor_command(
     if agent_id.is_empty() || agent_id.len() > 200 {
         return Err(refusal("monitor-preparation/agent-id-invalid".into()));
     }
-    let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
-    let observed = AgentRepository::get(&*store.read()?, &AgentId::from(agent_id))?
-        .ok_or_else(|| invalid(agent_id))?
-        .value();
+    let snapshot_store = Arc::clone(&store);
+    let snapshot_agent_id = agent_id.to_owned();
+    let (filesystem, observed) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_monitor_snapshot",
+        move || {
+            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent_id)?;
+            let observed = AgentRepository::get(
+                &*snapshot_store.read()?,
+                &AgentId::from(snapshot_agent_id.as_str()),
+            )?
+            .ok_or_else(|| invalid(snapshot_agent_id.as_str()))?
+            .value();
+            Ok::<_, WorkerError>((filesystem, observed))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     validate_monitor_actor(&observed, epoch)?;
     let image_temp = if observed["imageWorkspace"] == true
         && observed["imageWorkspaceReady"] != true
         && observed["provider"] != "claude"
     {
-        Some(ensure_image_workspace_temp(store, agent_id)?)
+        let store = Arc::clone(&store);
+        let agent_id = agent_id.to_owned();
+        Some(
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/account_worker_monitor_image_temp",
+                move || ensure_image_workspace_temp(&store, &agent_id),
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??,
+        )
     } else {
         None
     };
-    scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = agent(tx, agent_id)?.value();
+    let agent_id = agent_id.to_owned();
+    let resources_for_snapshot = resources.clone();
+    let state_root = store.root().to_path_buf();
+    scheduler::lifecycle_transaction_with(&store, move |tx| {
+        let current = agent(tx, &agent_id)?.value();
         validate_monitor_actor(&current, epoch)?;
         let connection = current["startAttempt"]["connectionId"]
             .as_str()
@@ -683,10 +774,10 @@ pub(crate) fn prepare_monitor_command(
             .unwrap_or("monitor-preparation");
         let snapshot = thread_snapshot(
             tx,
-            resources,
+            &resources_for_snapshot,
             &current,
             connection,
-            store.root(),
+            &state_root,
             filesystem.progress_directory.clone(),
             None,
         )?;
@@ -715,6 +806,7 @@ pub(crate) fn prepare_monitor_command(
             settings,
         })
     })
+    .await
 }
 
 fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError> {
@@ -872,8 +964,8 @@ fn ensure_private_directory(path: &std::path::Path) -> Result<(), WorkerError> {
     Ok(())
 }
 
-fn prepare_native_snapshot(
-    store: &RuntimeStore,
+async fn prepare_native_snapshot(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
@@ -881,9 +973,18 @@ fn prepare_native_snapshot(
     allow_paused_start: bool,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
-    let record = AgentRepository::get(&*store.read()?, &AgentId::from(agent_id))?
-        .ok_or_else(|| invalid("agent"))?
-        .value();
+    let read_store = Arc::clone(&store);
+    let read_agent_id = agent_id.to_owned();
+    let record = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_native_snapshot_agent",
+        move || {
+            AgentRepository::get(&*read_store.read()?, &AgentId::from(read_agent_id.as_str()))?
+                .map(|record| record.value())
+                .ok_or_else(|| invalid("agent"))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let intent = TurnIntent {
         agent_id: agent_id.into(),
         epoch: decode(record["epoch"].clone(), "agent/epoch")?,
@@ -910,11 +1011,12 @@ fn prepare_native_snapshot(
         events: Vec::new(),
         radio_authorized: false,
     };
-    let admission = admit_for_purpose(store, resources, &intent, allow_paused_start)?;
+    let admission =
+        admit_for_purpose(Arc::clone(&store), resources, &intent, allow_paused_start).await?;
     let token = if allow_paused_start {
         None
     } else {
-        Some(workspace_with_vm_action(store, resources, &intent, true)?)
+        Some(workspace_with_vm_action(Arc::clone(&store), resources, &intent, true).await?)
     };
     let restore_cwd = if allow_paused_start {
         let cwd = intent
@@ -922,16 +1024,37 @@ fn prepare_native_snapshot(
             .as_ref()
             .map(PathBuf::from)
             .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
-        if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
-            return Err(refusal("workspace-readiness/cwd-unavailable".into()));
-        }
-        Some(cwd)
+        Some(
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/account_worker_native_snapshot_cwd",
+                move || {
+                    if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
+                        return Err(refusal("workspace-readiness/cwd-unavailable".into()));
+                    }
+                    Ok::<_, WorkerError>(cwd)
+                },
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??,
+        )
     } else {
         None
     };
-    let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
+    let filesystem_store = Arc::clone(&store);
+    let filesystem_agent_id = agent_id.to_owned();
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_native_snapshot_filesystem",
+        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let (identity, _) = catalog(resources, &intent)?;
-    scheduler::lifecycle_transaction_with(store, |tx| {
+    let state_root = store.root().to_path_buf();
+    let intent = intent.clone();
+    let resources_for_snapshot = resources.clone();
+    let generation = generation.to_string();
+    let transfer_owner = account_transfer_owner.map(str::to_owned);
+    scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current =
             preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start, None)?;
         let frozen = admission
@@ -952,22 +1075,23 @@ fn prepare_native_snapshot(
         frozen["cwd"] = json!(cwd);
         thread_snapshot(
             tx,
-            resources,
+            &resources_for_snapshot,
             &frozen,
-            &generation.to_string(),
-            store.root(),
+            &generation,
+            &state_root,
             filesystem.progress_directory.clone(),
-            account_transfer_owner,
+            transfer_owner.as_deref(),
         )
     })
+    .await
 }
 
 /// Prepare the safety retry's thread fork and turn start from the same checked
 /// thread snapshot and permission builders used by ordinary turn preparation.
 /// The safety operation owns durable intent and provider receipts; this helper
 /// only returns immutable request maps.
-pub(crate) fn prepare_safety_retry(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_safety_retry(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     request: &super::SafetyRetryPreparation,
 ) -> Result<super::PreparedSafetyRetry, WorkerError> {
@@ -980,9 +1104,18 @@ pub(crate) fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/identity-invalid".into()));
     }
-    let record = AgentRepository::get(&*store.read()?, &AgentId::from(request.agent_id.as_str()))?
-        .ok_or_else(|| invalid("agent"))?
-        .value();
+    let read_store = Arc::clone(&store);
+    let agent_id = request.agent_id.clone();
+    let record = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_safety_retry_agent",
+        move || {
+            AgentRepository::get(&*read_store.read()?, &AgentId::from(agent_id.as_str()))?
+                .map(|record| record.value())
+                .ok_or_else(|| invalid("agent"))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
         || record
             .get("deletedAt")
@@ -990,29 +1123,42 @@ pub(crate) fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/agent-changed".into()));
     }
-    let filesystem = FilesystemSnapshot::capture(store, &request.agent_id)?;
+    let filesystem_store = Arc::clone(&store);
+    let filesystem_agent_id = request.agent_id.clone();
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_safety_retry_filesystem",
+        move || FilesystemSnapshot::capture(&filesystem_store, &filesystem_agent_id),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let connection_id = record
         .get("startAttempt")
         .and_then(|value| value.get("connectionId"))
         .and_then(Value::as_str)
-        .unwrap_or("safety-retry-preparation");
-    let mut snapshot = scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = agent(tx, &request.agent_id)?.value();
-        if current.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
+        .unwrap_or("safety-retry-preparation")
+        .to_owned();
+    let snapshot_request = request.clone();
+    let resources_for_snapshot = resources.clone();
+    let state_root = store.root().to_path_buf();
+    let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
+        let current = agent(tx, &snapshot_request.agent_id)?.value();
+        if current.get("threadId").and_then(Value::as_str)
+            != Some(&snapshot_request.source_thread_id)
             || current.get("epoch") != record.get("epoch")
         {
             return Err(refusal("safety-retry/agent-changed".into()));
         }
         thread_snapshot(
             tx,
-            resources,
+            &resources_for_snapshot,
             &current,
-            connection_id,
-            store.root(),
+            &connection_id,
+            &state_root,
             filesystem.progress_directory.clone(),
             None,
         )
-    })?;
+    })
+    .await?;
     // Python's safety retry explicitly starts at low effort, retaining the
     // existing account's fast-mode service tier and permission profile.
     snapshot.settings.model = Some(request.model.clone());
@@ -1083,8 +1229,8 @@ pub(crate) fn prepare_safety_retry(
     })
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_ready(
-    store: &RuntimeStore,
+pub(crate) async fn prepare_ready(
+    store: Arc<RuntimeStore>,
     resources: &PreparationResources,
     intent: &TurnIntent,
     method: Method,
@@ -1097,58 +1243,94 @@ pub(crate) fn prepare_ready(
     // Workspace provisioning can update stored agent/project paths as well as
     // create the progress directory. Capture all filesystem observations after
     // that work, before the transaction rechecks the current records.
-    let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
-    let prepared_host = if intent.radio_authorized {
-        let prepared = crate::host_project_runtime::PreparedHost::load(store)
-            .map_err(|error| refusal(error.to_string()))?;
-        prepared
-            .recheck_paths()
-            .map_err(|error| refusal(error.to_string()))?;
-        Some(prepared)
-    } else {
-        None
-    };
+    let snapshot_store = Arc::clone(&store);
+    let snapshot_agent = intent.agent_id.clone();
+    let radio_authorized = intent.radio_authorized;
+    let (filesystem, prepared_host) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker_ready_snapshot",
+        move || {
+            let filesystem = FilesystemSnapshot::capture(&snapshot_store, &snapshot_agent)?;
+            let prepared_host = if radio_authorized {
+                let host = crate::host_project_runtime::PreparedHost::load(&snapshot_store)
+                    .map_err(|error| refusal(error.to_string()))?;
+                host.recheck_paths()
+                    .map_err(|error| refusal(error.to_string()))?;
+                Some(host)
+            } else {
+                None
+            };
+            Ok::<_, WorkerError>((filesystem, prepared_host))
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
     let (identity, _) = catalog(resources, intent)?;
-    let (mut snapshot, mut turn_snapshot, events, mut prepared_intent, vm_reviewer) =
-        scheduler::lifecycle_transaction_with(store, |tx| {
-            let record = preconditions(tx, intent, &filesystem, prepared_host.as_ref())?;
-            let mut frozen = selection
-                .freeze_record(&record, &identity, Instant::now())
-                .map_err(|e| refusal(e.to_string()))?;
-            let cwd = token
-                .validate(tx)?
-                .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
-            let vm_reviewer = frozen["executionMode"] == "vm" && frozen["role"] == "reviewer";
-            if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
-                frozen["cwd"] = json!(execution_cwd);
-            }
-            if frozen.get("nativeEffort").is_none() {
-                frozen["effort"] = json!(selection.settings.effort);
-                frozen["nativeEffort"] = json!(selection.settings.native_effort);
-            }
-            let snapshot = thread_snapshot(
-                tx,
-                resources,
-                &frozen,
-                &generation.to_string(),
-                store.root(),
-                filesystem.progress_directory.clone(),
-                None,
-            )?;
-            let (turn_snapshot, events) =
-                submission_snapshot(tx, resources, &frozen, intent, store.root())?;
-            let mut prepared_intent = intent.clone();
-            prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
-            prepared_intent.model = snapshot.settings.model.clone();
-            prepared_intent.thread_id = snapshot.actor.thread_id.clone();
-            Ok::<_, WorkerError>((
-                snapshot,
-                turn_snapshot,
-                events,
-                prepared_intent,
-                vm_reviewer,
-            ))
-        })?;
+    let intent_for_snapshot = intent.clone();
+    let selection_for_snapshot = selection.clone();
+    let token_for_snapshot = token.clone();
+    let generation = generation.to_string();
+    let state_root = store.root().to_path_buf();
+    let resources_for_snapshot = resources.clone();
+    let (
+        mut snapshot,
+        mut turn_snapshot,
+        events,
+        mut prepared_intent,
+        vm_reviewer,
+        filesystem,
+        prepared_host,
+    ) = scheduler::lifecycle_transaction_with(&store, move |tx| {
+        let record = preconditions(
+            tx,
+            &intent_for_snapshot,
+            &filesystem,
+            prepared_host.as_ref(),
+        )?;
+        let mut frozen = selection_for_snapshot
+            .freeze_record(&record, &identity, Instant::now())
+            .map_err(|e| refusal(e.to_string()))?;
+        let cwd = token_for_snapshot
+            .validate(tx)?
+            .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+        let vm_reviewer = frozen["executionMode"] == "vm" && frozen["role"] == "reviewer";
+        if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
+            frozen["cwd"] = json!(execution_cwd);
+        }
+        if frozen.get("nativeEffort").is_none() {
+            frozen["effort"] = json!(selection_for_snapshot.settings.effort);
+            frozen["nativeEffort"] = json!(selection_for_snapshot.settings.native_effort);
+        }
+        let snapshot = thread_snapshot(
+            tx,
+            &resources_for_snapshot,
+            &frozen,
+            &generation,
+            &state_root,
+            filesystem.progress_directory.clone(),
+            None,
+        )?;
+        let (turn_snapshot, events) = submission_snapshot(
+            tx,
+            &resources_for_snapshot,
+            &frozen,
+            &intent_for_snapshot,
+            &state_root,
+        )?;
+        let mut prepared_intent = intent_for_snapshot.clone();
+        prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
+        prepared_intent.model = snapshot.settings.model.clone();
+        prepared_intent.thread_id = snapshot.actor.thread_id.clone();
+        Ok::<_, WorkerError>((
+            snapshot,
+            turn_snapshot,
+            events,
+            prepared_intent,
+            vm_reviewer,
+            filesystem,
+            prepared_host,
+        ))
+    })
+    .await?;
     let mut guard = CommitGuard {
         native_params: None,
         selection,
@@ -1182,11 +1364,15 @@ pub(crate) fn prepare_ready(
         };
         for artifact in &attempt.artifacts {
             let thread::ArtifactIntent::RememberRole { version, text } = artifact;
-            materialize(
-                store.root(),
-                &format!("context-snapshots/{version}.txt"),
-                text,
-            )?;
+            let state_root = store.root().to_path_buf();
+            let relative_path = format!("context-snapshots/{version}.txt");
+            let text = text.clone();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/account_worker_ready_materialize_context",
+                move || materialize(&state_root, &relative_path, &text),
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)??;
         }
         return Ok(RequestPreparation {
             intent: prepared_intent,
@@ -1211,7 +1397,15 @@ pub(crate) fn prepare_ready(
         Ok(compiled) => compiled,
         Err(turn::PrepareError::ArtifactsRequired(artifacts)) => {
             for artifact in artifacts {
-                let path = materialize(store.root(), &artifact.relative_path, &artifact.body)?;
+                let state_root = store.root().to_path_buf();
+                let relative_path = artifact.relative_path.clone();
+                let body = artifact.body.clone();
+                let path = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/account_worker_ready_materialize_artifact",
+                    move || materialize(&state_root, &relative_path, &body),
+                )
+                .await
+                .map_err(|_| WorkerError::TaskFailed)??;
                 turn_snapshot.artifact_paths.insert(artifact.event_id, path);
             }
             turn::compile(&turn_snapshot, &events).map_err(|e| refusal(e.to_string()))?
@@ -1263,16 +1457,23 @@ pub(crate) fn prepare_ready(
         radio_authorized: intent.radio_authorized,
     };
     if intent.provider == "claude" {
-        let prepared = scheduler::lifecycle_transaction_with(store, |tx| {
+        let agent_id = intent.agent_id.clone();
+        let attempt_id = intent.attempt_id.clone();
+        let account_key = intent.account_key.clone();
+        let connection_id = connection_id.to_owned();
+        let prepared_params = Value::Object(params.clone());
+        let submission_text = submission.text.clone();
+        let prepared = scheduler::lifecycle_transaction_with(&store, move |tx| {
             Ok::<_, WorkerError>(crate::claude_input_recovery::runtime::start_input(
                 tx,
-                &intent.agent_id,
-                &intent.attempt_id,
-                claude_transport(&intent.account_key, connection_id)?,
-                Value::Object(params.clone()),
-                submission.text.clone(),
+                &agent_id,
+                &attempt_id,
+                claude_transport(&account_key, &connection_id)?,
+                prepared_params,
+                submission_text,
             )?)
-        })?;
+        })
+        .await?;
         params = prepared
             .params
             .as_object()

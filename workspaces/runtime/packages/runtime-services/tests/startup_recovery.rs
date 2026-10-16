@@ -63,19 +63,20 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
     json!({"monitor": monitor, "requests": requests, "events": events})
 }
 
-#[test]
-fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() {
+#[tokio::test]
+async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "startup");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "startup").await;
+    fixtures::seed(&store, &case).await;
     let actor = case["actor"].clone();
+    let monitor_id = case["before"]["id"].clone();
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             add_request(
                 tx,
-                json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":case["before"]["id"]}}),
+                json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":monitor_id}}),
             );
             add_request(
                 tx,
@@ -93,10 +94,12 @@ fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() {
             add_event(tx, "reserved-without-attempt", "orphan-agent", "reserved", 0);
             AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
             Ok(())
-        })
+        }).await
         .expect("seed startup records");
 
-    let first = monitor_runtime::recover_on_startup(&store, 2000.0).expect("startup recovery");
+    let first = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("startup recovery");
     assert_eq!(first.requests, 3);
     assert_eq!(first.events, 2);
     assert_eq!(first.monitors, 1);
@@ -155,20 +158,22 @@ fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() {
     drop(connection);
 
     let after_first = complete_rows(&store, monitor_id);
-    let second = monitor_runtime::recover_on_startup(&store, 3000.0).expect("repeat startup");
+    let second = monitor_runtime::recover_on_startup(&store, 3000.0)
+        .await
+        .expect("repeat startup");
     assert_eq!(second.requests, 0);
     assert_eq!(second.events, 0);
     assert_eq!(second.monitors, 0);
     assert_eq!(complete_rows(&store, monitor_id), after_first);
 }
 
-#[test]
-fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_lost() {
+#[tokio::test]
+async fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_lost() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "result-first");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "result-first").await;
+    fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     monitor_receipts::persist(
         store.root(),
@@ -183,7 +188,9 @@ fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_lost()
     )
     .expect("persist native result");
 
-    let report = monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover startup");
+    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("recover startup");
     assert_eq!(report.receipts, 1);
     assert_eq!(report.monitors, 0);
     let connection = store.read().expect("read recovered result");
@@ -202,13 +209,13 @@ fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_lost()
     );
 }
 
-#[test]
-fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
+#[tokio::test]
+async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "unreadable-receipt");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "unreadable-receipt").await;
+    fixtures::seed(&store, &case).await;
     let lost_id = "unreadable-result-monitor";
     let completed_id = case["before"]["id"]
         .as_str()
@@ -217,11 +224,12 @@ fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     let mut lost_monitor = case["before"].clone();
     lost_monitor["id"] = json!(lost_id);
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(
                 lost_monitor,
             )?)
         })
+        .await
         .expect("seed monitor whose result file is unreadable");
     monitor_receipts::persist(
         store.root(),
@@ -242,6 +250,7 @@ fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     std::fs::write(&corrupt_path, b"{").expect("write corrupt receipt witness");
 
     let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
         .expect("skip corrupt receipt and continue startup");
 
     assert_eq!(report.receipts, 1);
@@ -268,30 +277,37 @@ fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     );
 }
 
-#[test]
-fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
+#[tokio::test]
+async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     for table in ["runtime_requests", "runtime_events", "runtime_monitors"] {
-        let store = fixtures::store(root.path(), table);
-        fixtures::seed(&store, &case);
-        let id = case["before"]["id"].as_str().expect("monitor id");
+        let store = fixtures::store(root.path(), table).await;
+        fixtures::seed(&store, &case).await;
+        let id = case["before"]["id"]
+            .as_str()
+            .expect("monitor id")
+            .to_owned();
+        let id_for_insert = id.clone();
+        let table_name = table.to_owned();
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 add_request(
                     tx,
-                    json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id}}),
+                    json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id_for_insert}}),
                 );
                 add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
                 tx.execute_batch(&format!(
-                    "CREATE TRIGGER injected BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"
+                    "CREATE TRIGGER injected BEFORE UPDATE ON {table_name} BEGIN SELECT RAISE(ABORT,'injected'); END"
                 ))?;
                 Ok(())
-            })
+            }).await
             .expect("install recovery failpoint");
         assert!(
-            monitor_runtime::recover_on_startup(&store, 2000.0).is_err(),
+            monitor_runtime::recover_on_startup(&store, 2000.0)
+                .await
+                .is_err(),
             "{table}"
         );
         assert_eq!(
@@ -303,26 +319,31 @@ fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
             "{table}"
         );
         store
-            .transaction(|tx| {
+            .transaction(move |tx| {
                 tx.execute_batch("DROP TRIGGER injected")?;
                 Ok(())
             })
+            .await
             .expect("remove recovery failpoint");
-        monitor_runtime::recover_on_startup(&store, 2000.0).expect("restart recovery");
-        monitor_runtime::recover_on_startup(&store, 3000.0).expect("idempotent restart");
+        monitor_runtime::recover_on_startup(&store, 2000.0)
+            .await
+            .expect("restart recovery");
+        monitor_runtime::recover_on_startup(&store, 3000.0)
+            .await
+            .expect("idempotent restart");
         assert_eq!(complete_rows(&store, id)["monitor"]["status"], "lost");
     }
 }
 
-#[test]
-fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
+#[tokio::test]
+async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = fixtures::store(root.path(), "scheduler-owned");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "scheduler-owned").await;
+    fixtures::seed(&store, &case).await;
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             let agent = AgentRecord::from_value(json!({
                 "id":"starting-agent","rootId":"starting-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
@@ -331,9 +352,11 @@ fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
             AgentRepository::put(tx, &agent)?;
             add_event(tx, "reserved-batch", "starting-agent", "reserved", 0);
             Ok(())
-        })
+        }).await
         .expect("seed scheduler-owned batch");
-    let report = monitor_runtime::recover_on_startup(&store, 2000.0).expect("startup recovery");
+    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("startup recovery");
     assert_eq!(report.events, 0);
     assert_eq!(
         QueueEventRepository::get(
@@ -347,8 +370,8 @@ fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     );
 }
 
-#[test]
-fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
+#[tokio::test]
+async fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
@@ -357,10 +380,12 @@ fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
         .as_str()
         .expect("monitor id")
         .to_owned();
-    let store = fixtures::store(root.path(), "rule-monitor-startup");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "rule-monitor-startup").await;
+    fixtures::seed(&store, &case).await;
 
-    monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover rule monitor");
+    monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("recover rule monitor");
 
     let connection = store.read().expect("read recovered rule monitor");
     assert_eq!(
@@ -377,8 +402,8 @@ fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
     );
 }
 
-#[test]
-fn startup_remote_owned_monitor_is_recovered_without_aborting() {
+#[tokio::test]
+async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
@@ -387,10 +412,12 @@ fn startup_remote_owned_monitor_is_recovered_without_aborting() {
         .as_str()
         .expect("monitor id")
         .to_owned();
-    let store = fixtures::store(root.path(), "remote-monitor-startup");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "remote-monitor-startup").await;
+    fixtures::seed(&store, &case).await;
 
-    monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover remote monitor");
+    monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .expect("recover remote monitor");
 
     let connection = store.read().expect("read recovered remote monitor");
     assert_eq!(
@@ -407,8 +434,8 @@ fn startup_remote_owned_monitor_is_recovered_without_aborting() {
     );
 }
 
-#[test]
-fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
+#[tokio::test]
+async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -416,10 +443,10 @@ fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
         .as_str()
         .expect("monitor id")
         .to_owned();
-    let store = fixtures::store(root.path(), "malformed-monitor-startup");
-    fixtures::seed(&store, &case);
+    let store = fixtures::store(root.path(), "malformed-monitor-startup").await;
+    fixtures::seed(&store, &case).await;
     store
-        .transaction(|tx| {
+        .transaction(move |tx| {
             // The production expression index rejects malformed JSON on insert;
             // remove it in this isolated fixture to witness row-level isolation.
             tx.execute_batch(
@@ -433,9 +460,11 @@ fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
             )?;
             Ok(())
         })
+        .await
         .expect("seed malformed monitor row");
 
     let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
         .expect("skip one invalid row and continue startup");
 
     assert_eq!(report.monitors, 1);
@@ -457,8 +486,8 @@ fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
     assert_eq!(unexpected, "{");
 }
 
-#[test]
-fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attempts_are_uncertain() {
+#[tokio::test]
+async fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attempts_are_uncertain() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -466,9 +495,9 @@ fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attempts_are
         ("partial", json!(["partial-event", "missing-event"]), false),
         ("submitted", json!(["submitted-event"]), true),
     ] {
-        let store = fixtures::store(root.path(), name);
-        fixtures::seed(&store, &case);
-        store.transaction(|tx| {
+        let store = fixtures::store(root.path(), name).await;
+        fixtures::seed(&store, &case).await;
+        store.transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({
                 "id":"claimed-agent","rootId":"claimed-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
@@ -476,8 +505,10 @@ fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attempts_are
             }))?)?;
             add_event(tx, if submitted {"submitted-event"} else {"partial-event"}, "claimed-agent", "reserved", 0);
             Ok(())
-        }).expect("seed reservation");
-        monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover startup events");
+        }).await.expect("seed reservation");
+        monitor_runtime::recover_on_startup(&store, 2000.0)
+            .await
+            .expect("recover startup events");
         let connection = store.read().expect("read uncertain event");
         let event_id = if submitted {
             "submitted-event"

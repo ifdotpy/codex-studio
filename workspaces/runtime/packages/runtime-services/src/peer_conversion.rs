@@ -10,6 +10,7 @@ use crate::projects::{ProjectsError, project_key};
 use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, SyncDocumentsRepository, system_reads as records,
 };
@@ -24,7 +25,7 @@ const MOVE_FIELDS: &[(&str, &[&str])] = &[
 ];
 
 /// Called only by the authenticated user HTTP route, never by model tools.
-pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsError> {
+pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
     let allowed = [
         "action",
         "path",
@@ -39,13 +40,14 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
     {
         return Err(ProjectsError::Invalid("Unknown chat conversion field"));
     }
-    let path = project_key(body.get("path"), false)?;
+    let path_input = body.get("path").cloned();
     let source = field(body, "member")?;
     let target = field(body, "target")?;
     if source == target {
         return Err(ProjectsError::Invalid("Select two different chats"));
     }
     let request = field(body, "request_id")?;
+    let request_id = request.to_owned();
     let revision = body["expected_revision"]
         .as_u64()
         .ok_or(ProjectsError::Invalid(
@@ -54,43 +56,61 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
     let key = format!("peer-convert:{request}");
     let signature =
         event_write::request_signature(&json!({"operation":"peer-convert","body":body}));
-    if let Some(result) =
-        store.transaction_with(|db| replay(db, &key, &signature, "peer conversion"))?
+    let replay_key = key.clone();
+    let replay_signature = signature.clone();
+    if let Some(result) = store
+        .transaction_with(move |db| replay(db, &replay_key, &replay_signature, "peer conversion"))
+        .await?
     {
         return Ok(result);
     }
     let next_revision = revision
         .checked_add(1)
         .ok_or(ProjectsError::Invalid("peer team revision exhausted"))?;
-    let prepared = PreparedHost::load(store)?;
-    prepared.recheck_paths()?;
-    store.transaction_with(|db| {
+    let store_for_prepare = Arc::clone(&store);
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/peer-conversion",
+        move || {
+            let path = project_key(path_input.as_ref(), false)?;
+            let prepared = PreparedHost::load(&store_for_prepare)?;
+            prepared.recheck_paths()?;
+            Ok::<_, ProjectsError>((path, prepared))
+        },
+    )
+    .await
+    .map_err(|_| ProjectsError::PreparationWorker)??;
+    let (path, prepared) = prepared;
+    let key = key.clone();
+    let signature = signature.clone();
+    let source = source.to_owned();
+    let target = target.to_owned();
+    store.transaction_with(move |db| {
         if let Some(result)=replay(db,&key,&signature,"peer conversion")? { return Ok(result); }
         prepared.recheck(db)?;
         let all=project_agents(db)?;
-        let src=all.get(source).ok_or(ProjectsError::Invalid("source chat missing"))?;
-        let dst=all.get(target).ok_or(ProjectsError::Invalid("destination chat missing"))?;
+        let src=all.get(&source).ok_or(ProjectsError::Invalid("source chat missing"))?;
+        let dst=all.get(&target).ok_or(ProjectsError::Invalid("destination chat missing"))?;
         for a in [src,dst] {
             if !is_project_lead(a,&path,&prepared) || truthy(a.get("sharedRoomId")) || truthy(a.get("archived")) { return Err(ProjectsError::Invalid("Select two live lead chats from this project only")); }
             if ["remote", "remoteWorker", "remoteAnchor"].iter().any(|field|truthy(a.get(*field))) { return Err(ProjectsError::Requires("cross-server-driver/peer-team-transport")); }
         }
-        let actor=event_write::checked_agent(db,target).map_err(event_error)?;
+        let actor=event_write::checked_agent(db,&target).map_err(event_error)?;
         event_write::assert_delegation(&actor).map_err(event_error)?;
         let mut project=ProjectsRepository::get(db,&path)?.ok_or(ProjectsError::Invalid("select an existing project"))?.1;
         if project.get("peerTeamsRevision").map_or(Some(0),Value::as_u64)!=Some(revision) { return Err(ProjectsError::Invalid("Peer teams changed. Reload before moving")); }
         let teams=live_teams(project["peerTeams"].as_array().map(Vec::as_slice).unwrap_or_default(),&all,&path,&prepared)?;
         if !teams.iter().any(|t|t["members"].as_array().is_some_and(|m|m.contains(&json!(source)))) { return Err(ProjectsError::Invalid("The source chat must belong to a peer team")); }
-        let tree=records::all(db,"runtime_agents")?.into_iter().filter(|a|[Some(source),Some(target)].contains(&a["rootId"].as_str())).collect::<Vec<_>>();
+        let tree=records::all(db,"runtime_agents")?.into_iter().filter(|a|matches!(a["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str())).collect::<Vec<_>>();
         idle(db,&tree)?;
         let moving=tree.iter().filter(|a|a["rootId"]==source).collect::<Vec<_>>();
         let moving_ids=moving.iter().filter_map(|a|a["id"].as_str()).collect::<Vec<_>>();
-        let affected=records::all(db,"runtime_rooms")?.into_iter().filter(|r| [Some(source),Some(target)].contains(&r["rootId"].as_str()) || r["members"].as_array().is_some_and(|m|m.iter().any(|id|moving_ids.contains(&id.as_str().unwrap_or_default()) || teams.iter().any(|t|t["members"].as_array().is_some_and(|members|members.contains(id)))))).collect::<Vec<_>>();
+        let affected=records::all(db,"runtime_rooms")?.into_iter().filter(|r| matches!(r["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str()) || r["members"].as_array().is_some_and(|m|m.iter().any(|id|moving_ids.contains(&id.as_str().unwrap_or_default()) || teams.iter().any(|t|t["members"].as_array().is_some_and(|members|members.contains(id)))))).collect::<Vec<_>>();
         let now=crate::projects::now_seconds();
         let mut next_teams=Vec::new();
         for team in &teams {
             let mut team=team.clone();
             let members=team["members"].as_array_mut().ok_or(ProjectsError::Invalid("stored members invalid"))?;
-            members.retain(|m|m!=source);
+            members.retain(|m|m.as_str()!=Some(source.as_str()));
             if members.len()>=2 { next_teams.push(team); }
         }
         project["peerTeams"]=json!(next_teams); project["peerTeamsRevision"]=json!(next_revision); project["updated"]=json!(now);
@@ -105,7 +125,7 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
                 for field in ["subagentConcurrencyVersion","maxAgentsExplicit","agentMode","agentModeRevision","agentModeSupported","projectFolder","pinned"] {object.remove(field);}
                 agent["isLead"]=json!(false); agent["parentId"]=json!(target); agent["role"]=json!("implementer"); agent["status"]=json!("paused"); agent["autoWake"]=json!(false); agent["worktree"]=json!(false);
                 agent["epoch"]=json!(original["epoch"].as_u64().unwrap_or(0).checked_add(1).ok_or(ProjectsError::Invalid("agent epoch exhausted"))?);
-                agent["convertedFromLead"]=json!({"requestId":request,"by":"user","at":now,"oldRootId":source,"rootId":target});
+                agent["convertedFromLead"]=json!({"requestId":request_id.clone(),"by":"user","at":now,"oldRootId":source,"rootId":target});
             }
             put(db,"runtime_agents",&agent)?;
             let context=crate::sync_entity_context::agent_view_context(db,&agent,prepared.server().ok())?;
@@ -124,7 +144,7 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
         for mut room in affected {
             if room["rootId"]==source {
                 room["rootId"]=json!(target); room["updated"]=json!(now);
-                if room["kind"]=="broadcast" {room["kind"]=json!("private");room["members"]=json!(moving.iter().filter(|a|!truthy(a.get("deletedAt"))).map(|a|a["id"].clone()).collect::<Vec<_>>());room["customName"]=json!(format!("{} (previous broadcast)",src["name"].as_str().filter(|v|!v.is_empty()).unwrap_or(source)));}
+                if room["kind"]=="broadcast" {room["kind"]=json!("private");room["members"]=json!(moving.iter().filter(|a|!truthy(a.get("deletedAt"))).map(|a|a["id"].clone()).collect::<Vec<_>>());room["customName"]=json!(format!("{} (previous broadcast)",src["name"].as_str().filter(|v|!v.is_empty()).unwrap_or(source.as_str())));}
                 put(db,"runtime_rooms",&room)?;
             }
             crate::radio_runtime::publish_room(db,&room,&prepared)?;
@@ -138,7 +158,7 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
         let result=json!({"id":source,"parentId":target,"rootId":target,"movedAgents":moving_ids,"peerTeamsRevision":next_revision});
         save_operation_receipt(db,&key,&signature,&result)?;
         Ok(result)
-    })
+    }).await
 }
 fn field<'a>(body: &'a Value, field: &str) -> Result<&'a str, ProjectsError> {
     body[field]

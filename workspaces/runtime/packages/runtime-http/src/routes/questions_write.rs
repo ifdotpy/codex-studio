@@ -46,7 +46,6 @@ async fn answer(
     let async_store = store.clone();
     let browser_store = store.clone();
     let browser_id = id.clone();
-    let browser_data = data.clone();
     let validators = state.validators.clone();
     let local_window = super::browser::local_window(&headers, peer);
     let vm_state_dir = state.vm_state_dir.clone();
@@ -54,7 +53,7 @@ async fn answer(
     let browser_host_guest = state.browser_answer_host_guest.clone();
     let browser_local_forwarder = state.browser_local_forwarder.clone();
     let browser_host_local_forwarder = state.browser_host_local_forwarder.clone();
-    if let Some(answer) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let browser_context = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/questions_write",
         move || {
             let host_source = studio_runtime_services::browser_answer::is_host_source(
@@ -87,56 +86,54 @@ async fn answer(
                     browser_local_forwarder,
                 )
             };
-            studio_runtime_services::browser_answer::answer(
-                &browser_store,
-                &browser_id,
-                &browser_data,
-                studio_runtime_services::browser_answer::BrowserAnswerContext {
-                    local_window,
-                    guest: guest.as_ref(),
-                    local_forwarder: forwarder.as_deref(),
-                    now: callback_clock().map_err(|_| {
-                        studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
-                            "The system clock is unavailable",
-                        )
-                    })?,
-                    validate: |record: &serde_json::Value| {
-                        validators.validate_table_record("runtime_requests", record)
-                    },
-                },
-            )
+            let now = callback_clock().map_err(|_| {
+                studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
+                    "The system clock is unavailable",
+                )
+            })?;
+            Ok::<_, studio_runtime_services::browser_answer::BrowserAnswerError>((
+                guest,
+                forwarder,
+                now,
+                validators,
+            ))
         },
     )
     .await
     .map_err(|_| ApiError::internal())?
-    .map_err(browser_answer_error)?
-    {
+    .map_err(browser_answer_error)?;
+    let (guest, forwarder, now, validators) = browser_context;
+    let browser_answer = studio_runtime_services::browser_answer::answer(
+        &store,
+        &id,
+        &data,
+        studio_runtime_services::browser_answer::BrowserAnswerContext {
+            local_window,
+            guest,
+            local_forwarder: forwarder,
+            now,
+            validate: move |record: &serde_json::Value| {
+                validators.validate_table_record("runtime_requests", record)
+            },
+        },
+    )
+    .await
+    .map_err(browser_answer_error)?;
+    if let Some(answer) = browser_answer {
         state.event_wake.notify_one();
         return Ok(Json(
             super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
         ));
     }
-    let id_for_async = id.clone();
-    let data_for_async = data.clone();
     let validators = state.validators.clone();
-    if let Some(answer) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/questions_write",
-        move || {
-            questions_write::answer_async_question_in_store(
-                &async_store,
-                &id_for_async,
-                &data_for_async,
-                callback_clock().map_err(|_| {
-                    questions_write::QuestionsWriteError::InvalidRequest(
-                        "The system clock is unavailable",
-                    )
-                })?,
-                |record| validators.validate_table_record("runtime_requests", record),
-            )
-        },
+    if let Some(answer) = questions_write::answer_async_question_in_store(
+        async_store,
+        &id,
+        &data,
+        callback_clock().map_err(|_| ApiError::internal())?,
+        move |record| validators.validate_table_record("runtime_requests", record),
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(async_question_error)?
     {
         state.event_wake.notify_one();
@@ -145,26 +142,14 @@ async fn answer(
         ));
     }
     let monitor_available = monitor.is_some();
-    let monitor_id = id.clone();
-    let monitor_data = data.clone();
-    if let Some(answer) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/questions_write",
-        move || {
-            studio_runtime_services::monitor_runtime::answer_approval(
-                &store,
-                &monitor_id,
-                &monitor_data,
-                callback_clock().map_err(|_| {
-                    studio_runtime_services::monitor_policy::MonitorError::Refused(
-                        "The system clock is unavailable",
-                    )
-                })?,
-                monitor_available,
-            )
-        },
+    if let Some(answer) = studio_runtime_services::monitor_runtime::answer_approval(
+        &store,
+        &id,
+        &data,
+        callback_clock().map_err(|_| ApiError::internal())?,
+        monitor_available,
     )
     .await
-    .map_err(|_| ApiError::internal())?
     .map_err(monitor_approval_error)?
     {
         if answer.accepted {
@@ -185,13 +170,14 @@ async fn answer(
     let Some(runtime) = state.callback_runtime.clone() else {
         return Err(answer_unavailable());
     };
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/questions_write",
-        move || runtime.answer(&id, &data, callback_clock()?),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(answer_callback_error)?;
+    let value = runtime
+        .answer(
+            &id,
+            &data,
+            callback_clock().map_err(|_| ApiError::internal())?,
+        )
+        .await
+        .map_err(answer_callback_error)?;
     state.event_wake.notify_one();
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
@@ -339,13 +325,10 @@ async fn delete_question(
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
     let result = if let Some(runtime) = state.callback_runtime.clone() {
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/questions_write",
-            move || runtime.delete_question(&id, callback_clock()?),
-        )
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(callback_error)?
+        runtime
+            .delete_question(&id, callback_clock().map_err(|_| ApiError::internal())?)
+            .await
+            .map_err(callback_error)?
     } else {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let validators = state.validators.clone();

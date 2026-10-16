@@ -169,18 +169,20 @@ impl CompletionSnapshot {
 
 /// Authenticated paired-delivery caller supplies the exact saved envelope. No network I/O.
 /// Completion, project revision, sync projection and receipts share one store commit.
-pub fn complete(
+pub async fn complete(
     store: &RuntimeStore,
-    key: &str,
-    server: &str,
-    envelope: &Value,
-    receipt: &Value,
-    local_server: &str,
+    key: String,
+    server: String,
+    envelope: Value,
+    receipt: Value,
+    local_server: String,
     now: f64,
 ) -> Result<Value, LocationError> {
-    store.transaction_with(|tx| {
-        complete_in_transaction(tx, key, server, envelope, receipt, local_server, now)
-    })
+    store
+        .transaction_with(move |tx| {
+            complete_in_transaction(tx, &key, &server, &envelope, &receipt, &local_server, now)
+        })
+        .await
 }
 pub fn complete_in_transaction(
     tx: &Transaction<'_>,

@@ -44,6 +44,8 @@ pub enum TurnStart {
 pub enum SchedulerError {
     #[error("scheduler attempt timestamp is not finite")]
     InvalidAttemptTimestamp,
+    #[error("scheduler startup recovery blocking task failed")]
+    PreparationWorker,
     #[error("{0}")]
     PolicyRefused(String),
     #[error(transparent)]
@@ -187,19 +189,32 @@ pub(crate) fn settle_user_message_receipt_in_transaction(
 /// Lifecycle writes and canonical renderer publication share the writer transaction.
 /// The existing agent change journal supplies exactly the changed IDs, so replay
 /// neither republishes an agent nor scans unrelated stored payloads.
-pub fn lifecycle_transaction<T>(
+pub async fn lifecycle_transaction<T>(
     store: &RuntimeStore,
-    change: impl FnOnce(&rusqlite::Transaction<'_>) -> studio_runtime_store::StoreResult<T>,
-) -> studio_runtime_store::StoreResult<T> {
-    lifecycle_transaction_with(store, change)
+    change: impl for<'transaction> FnOnce(
+        &rusqlite::Transaction<'transaction>,
+    ) -> studio_runtime_store::StoreResult<T>
+    + Send
+    + 'static,
+) -> studio_runtime_store::StoreResult<T>
+where
+    T: Send + 'static,
+{
+    lifecycle_transaction_with(store, change).await
 }
 
-pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
+pub(crate) async fn lifecycle_transaction_with<T, E>(
     store: &RuntimeStore,
-    change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, E>,
-) -> Result<T, E> {
+    change: impl for<'transaction> FnOnce(&rusqlite::Transaction<'transaction>) -> Result<T, E>
+    + Send
+    + 'static,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: From<StoreError> + Send + 'static,
+{
     let server_id = store.local_server_id()?;
-    store.transaction_with(|tx| {
+    store.transaction_with(move |tx| {
         let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0)).map_err(StoreError::from)?;
         let result = change(tx)?;
         let mut statement = tx.prepare_cached("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id").map_err(StoreError::from)?;
@@ -237,16 +252,24 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
             studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"agent",&row_id,projection,crate::event_write::truthy(agent.get("deletedAt")))?;
         }
         Ok(result)
-    })
+    }).await
 }
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
-pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
-    let account_registry = std::fs::read(store.root().join("accounts/registry.json"))
-        .ok()
-        .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
-        .map(|(value, _)| value);
-    Ok(lifecycle_transaction(store, |transaction| {
+pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
+    let registry_path = store.root().join("accounts/registry.json");
+    let account_registry = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/scheduler",
+        move || {
+            std::fs::read(registry_path)
+                .ok()
+                .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
+                .map(|(value, _)| value)
+        },
+    )
+    .await
+    .map_err(|_| SchedulerError::PreparationWorker)?;
+    Ok(lifecycle_transaction(store, move |transaction| {
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
@@ -288,7 +311,8 @@ pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError>
             );
         }
         Ok(unsubmitted + submitted)
-    })?)
+    })
+    .await?)
 }
 
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
@@ -467,7 +491,7 @@ fn preparation_settings(agent: &Value) -> Value {
     Value::Object(settings)
 }
 
-pub fn settle_started_provider(
+pub async fn settle_started_provider(
     store: &RuntimeStore,
     intent: &TurnIntent,
     request_id: &str,
@@ -477,22 +501,30 @@ pub fn settle_started_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(None);
     };
-    Ok(lifecycle_transaction(store, |transaction| {
+    let agent_id = intent.agent_id.clone();
+    let epoch = intent.epoch;
+    let attempt_id = intent.attempt_id.clone();
+    let account_key = intent.account_key.clone();
+    let request_id = request_id.to_owned();
+    let thread_id = thread_id.to_owned();
+    let turn_id = turn_id.to_owned();
+    Ok(lifecycle_transaction(store, move |transaction| {
         SchedulerRepository::settle_started_provider(
             transaction,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-            request_id,
-            &intent.account_key,
+            &agent_id,
+            epoch,
+            &attempt_id,
+            &request_id,
+            &account_key,
             generation,
-            thread_id,
-            turn_id,
+            &thread_id,
+            &turn_id,
         )
-    })?)
+    })
+    .await?)
 }
 
-pub fn settle_start_rejected_provider(
+pub async fn settle_start_rejected_provider(
     store: &RuntimeStore,
     intent: &TurnIntent,
     request_id: &str,
@@ -502,29 +534,39 @@ pub fn settle_start_rejected_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(lifecycle_transaction(store, |transaction| {
+    let agent_id = intent.agent_id.clone();
+    let epoch = intent.epoch;
+    let attempt_id = intent.attempt_id.clone();
+    let account_key = intent.account_key.clone();
+    let request_id = request_id.to_owned();
+    let thread_id = thread_id.to_owned();
+    Ok(lifecycle_transaction(store, move |transaction| {
         SchedulerRepository::settle_start_rejected_provider(
             transaction,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-            request_id,
-            &intent.account_key,
+            &agent_id,
+            epoch,
+            &attempt_id,
+            &request_id,
+            &account_key,
             generation,
-            thread_id,
+            &thread_id,
             error,
         )
-    })?)
+    })
+    .await?)
 }
 
-pub fn settle_terminal_attempt(
+pub async fn settle_terminal_attempt(
     store: &RuntimeStore,
     identity: &TurnAttemptIdentity,
     params: &Value,
 ) -> Result<bool, SchedulerError> {
-    Ok(lifecycle_transaction(store, |tx| {
-        settle_terminal_in_transaction(tx, identity, params)
-    })?)
+    let identity = identity.clone();
+    let params = params.clone();
+    Ok(lifecycle_transaction(store, move |tx| {
+        settle_terminal_in_transaction(tx, &identity, &params)
+    })
+    .await?)
 }
 
 pub(crate) fn settle_terminal_in_transaction(
@@ -639,7 +681,7 @@ fn terminal_outcome<'a>(
 }
 
 /// The durable result can replay true; only the first successful application authorizes transport.
-pub fn authorize_submission(
+pub async fn authorize_submission(
     store: &RuntimeStore,
     intent: &TurnIntent,
     request_id: &str,
@@ -649,25 +691,33 @@ pub fn authorize_submission(
     let Some(thread) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(lifecycle_transaction(store, |tx| {
-        let replay = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
+    let agent_id = intent.agent_id.clone();
+    let epoch = intent.epoch;
+    let attempt_id = intent.attempt_id.clone();
+    let account_key = intent.account_key.clone();
+    let request_id = request_id.to_owned();
+    let connection_id = connection_id.to_owned();
+    let thread = thread.to_owned();
+    Ok(lifecycle_transaction(store, move |tx| {
+        let replay = ExecutionHistoryRepository::attempt(tx, &attempt_id)?
             .is_some_and(|a| a["receipts"]["submission"].is_object());
         let result = SchedulerRepository::mark_submitted_identity(
             tx,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-            request_id,
-            &intent.account_key,
+            &agent_id,
+            epoch,
+            &attempt_id,
+            &request_id,
+            &account_key,
             generation,
-            connection_id,
-            thread,
+            &connection_id,
+            &thread,
         )?;
         Ok(result && !replay)
-    })?)
+    })
+    .await?)
 }
 
-pub fn mark_submitted_for_provider(
+pub async fn mark_submitted_for_provider(
     store: &RuntimeStore,
     intent: &TurnIntent,
     request_id: &str,
@@ -677,23 +727,31 @@ pub fn mark_submitted_for_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(lifecycle_transaction(store, |transaction| {
+    let agent_id = intent.agent_id.clone();
+    let epoch = intent.epoch;
+    let attempt_id = intent.attempt_id.clone();
+    let account_key = intent.account_key.clone();
+    let request_id = request_id.to_owned();
+    let connection_id = connection_id.to_owned();
+    let thread_id = thread_id.to_owned();
+    Ok(lifecycle_transaction(store, move |transaction| {
         SchedulerRepository::mark_submitted_identity(
             transaction,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-            request_id,
-            &intent.account_key,
+            &agent_id,
+            epoch,
+            &attempt_id,
+            &request_id,
+            &account_key,
             generation,
-            connection_id,
-            thread_id,
+            &connection_id,
+            &thread_id,
         )
-    })?)
+    })
+    .await?)
 }
 
 /// The account worker claims and settles its own input; the scheduler only queues wakes.
-pub fn claim_intent(
+pub async fn claim_intent(
     store: &RuntimeStore,
     agent_id: &str,
     epoch: i64,
@@ -703,9 +761,12 @@ pub fn claim_intent(
     if !attempt_created.is_finite() {
         return Err(SchedulerError::InvalidAttemptTimestamp);
     }
-    lifecycle_transaction_with(store, |tx| {
-        claim_intent_in_transaction(tx, agent_id, epoch, attempt_id, attempt_created)
+    let agent_id = agent_id.to_owned();
+    let attempt_id = attempt_id.to_owned();
+    lifecycle_transaction_with(store, move |tx| {
+        claim_intent_in_transaction(tx, &agent_id, epoch, &attempt_id, attempt_created)
     })
+    .await
 }
 
 pub(crate) fn claim_intent_in_transaction(
@@ -869,26 +930,25 @@ impl TurnIntent {
 }
 
 /// Persist definite pre-submission failures or uncertainty once, in the account worker.
-pub fn settle_start_outcome(
+pub async fn settle_start_outcome(
     store: &RuntimeStore,
     intent: &TurnIntent,
     outcome: TurnStart,
 ) -> Result<(), SchedulerError> {
-    Ok(lifecycle_transaction(store, |transaction| {
-        SchedulerRepository::settle_start_outcome(
-            transaction,
-            &intent.identity(),
-            match &outcome {
-                TurnStart::Unknown => "uncertain",
-                TurnStart::Blocked { .. } => "held",
-                TurnStart::NotSubmitted => "pending",
-            },
-            match &outcome {
-                TurnStart::Blocked { reason } => Some(reason.as_str()),
-                _ => None,
-            },
-        )
-    })?)
+    let identity = intent.identity();
+    let status = match &outcome {
+        TurnStart::Unknown => "uncertain",
+        TurnStart::Blocked { .. } => "held",
+        TurnStart::NotSubmitted => "pending",
+    };
+    let reason = match outcome {
+        TurnStart::Blocked { reason } => Some(reason),
+        _ => None,
+    };
+    Ok(lifecycle_transaction(store, move |transaction| {
+        SchedulerRepository::settle_start_outcome(transaction, &identity, status, reason.as_deref())
+    })
+    .await?)
 }
 
 #[cfg(test)]
@@ -916,10 +976,12 @@ mod terminal_policy_tests {
 mod invalid_record_recovery_tests {
     use super::*;
 
-    #[test]
-    fn startup_recovery_skips_invalid_field_agent_rows_without_blocking_startup() {
+    #[tokio::test]
+    async fn startup_recovery_skips_invalid_field_agent_rows_without_blocking_startup() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
         store
             .transaction(|tx| {
                 tx.execute(
@@ -938,6 +1000,7 @@ mod invalid_record_recovery_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed malformed reserved row");
 
         store
@@ -954,9 +1017,12 @@ mod invalid_record_recovery_tests {
                 )?;
                 Ok(())
             })
+            .await
             .expect("seed healthy neighboring agent");
 
-        let recovered = recover_on_startup(&store).expect("startup tolerates invalid field");
+        let recovered = recover_on_startup(&store)
+            .await
+            .expect("startup tolerates invalid field");
 
         assert_eq!(recovered, 0);
         let connection = store.read().expect("state reader opens");

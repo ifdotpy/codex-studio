@@ -28,6 +28,7 @@ const NATIVE_ACTION_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_NOT_SENT_RETRIES: usize = 1;
 pub type Result<T> = std::result::Result<T, NativeError>;
 pub type NativeFuture<'a> = Pin<Box<dyn Future<Output = Result<TransportReceipt>> + Send + 'a>>;
+pub type PreparationFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
 #[derive(Debug, Error)]
 pub enum NativeError {
@@ -174,7 +175,7 @@ impl Snapshot {
 
 /// The owner checks workspace, budget, pending settings and review capacity in
 /// this transaction. No provider, filesystem work or publication is permitted.
-pub trait Admission {
+pub trait Admission: Send + Sync + 'static {
     fn check(&self, tx: &Transaction<'_>, agent: &Value, action: Action) -> Result<()>;
 }
 
@@ -183,7 +184,7 @@ pub fn reserve(
     request: &Request,
     attempt: &str,
     now: f64,
-    gate: &impl Admission,
+    gate: &dyn Admission,
 ) -> Result<Snapshot> {
     let signature = request.signature()?;
     if let Some((saved, receipt, outcome)) = row(tx, &request.request_id)? {
@@ -393,7 +394,7 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
 
 /// Persist result and provider-owned lifecycle effects atomically. The effect
 /// writer is the existing account-worker acceptance path, never a second actor.
-pub trait Acceptance {
+pub trait Acceptance: Send + Sync + 'static {
     fn apply(
         &self,
         tx: &Transaction<'_>,
@@ -408,44 +409,44 @@ pub trait Preparation {
     /// Cross-owner repair must finish before the action receipt captures its
     /// account/thread identity. The default is suitable for already prepared
     /// native callers; HTTP adapters may repair through a durable private port.
-    fn before_reserve(
-        &self,
-        _store: &RuntimeStore,
-        _provider: &dyn AccountSessionPort,
-        _request: &Request,
-        _scope: &crate::account_session_runtime::ConnectionScope,
-    ) -> Result<()> {
-        Ok(())
+    fn before_reserve<'a>(
+        &'a self,
+        _store: &'a RuntimeStore,
+        _provider: &'a dyn AccountSessionPort,
+        _request: &'a Request,
+        _scope: &'a crate::account_session_runtime::ConnectionScope,
+    ) -> PreparationFuture<'a> {
+        Box::pin(async { Ok(()) })
     }
 
-    fn prepare(
-        &self,
-        store: &RuntimeStore,
-        provider: &dyn AccountSessionPort,
-        request: &Request,
-        ticket: &ProviderTicket,
-        scope: &crate::account_session_runtime::ConnectionScope,
-    ) -> Result<()>;
+    fn prepare<'a>(
+        &'a self,
+        store: &'a RuntimeStore,
+        provider: &'a dyn AccountSessionPort,
+        request: &'a Request,
+        ticket: &'a ProviderTicket,
+        scope: &'a crate::account_session_runtime::ConnectionScope,
+    ) -> PreparationFuture<'a>;
 }
 
 struct NoopPreparation;
 impl Preparation for NoopPreparation {
-    fn prepare(
-        &self,
-        _store: &RuntimeStore,
-        _provider: &dyn AccountSessionPort,
-        _request: &Request,
-        _ticket: &ProviderTicket,
-        _scope: &crate::account_session_runtime::ConnectionScope,
-    ) -> Result<()> {
-        Ok(())
+    fn prepare<'a>(
+        &'a self,
+        _store: &'a RuntimeStore,
+        _provider: &'a dyn AccountSessionPort,
+        _request: &'a Request,
+        _ticket: &'a ProviderTicket,
+        _scope: &'a crate::account_session_runtime::ConnectionScope,
+    ) -> PreparationFuture<'a> {
+        Box::pin(async { Ok(()) })
     }
 }
 pub fn settle(
     tx: &Transaction<'_>,
     id: &str,
     receipt: &TransportReceipt,
-    effects: &impl Acceptance,
+    effects: &dyn Acceptance,
 ) -> Result<Outcome> {
     let snapshot = load(tx, id)?;
     snapshot.current()?;
@@ -551,24 +552,24 @@ fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt)
 /// Execute one admitted action through the retained account broker. Every
 /// provider call follows a committed claim and is bound to the scope observed
 /// before that claim; only a broker-proven NotSent can claim again.
-pub fn execute_provider(
+pub async fn execute_provider(
     store: &RuntimeStore,
     port: &dyn AccountSessionPort,
     request: &Request,
     now: f64,
-    gate: &impl Admission,
-    effects: &impl Acceptance,
+    gate: Arc<dyn Admission>,
+    effects: Arc<dyn Acceptance>,
 ) -> Result<Value> {
-    execute_provider_prepared(store, port, request, now, gate, effects, &NoopPreparation)
+    execute_provider_prepared(store, port, request, now, gate, effects, &NoopPreparation).await
 }
 
-pub fn execute_provider_prepared(
+pub async fn execute_provider_prepared(
     store: &RuntimeStore,
     port: &dyn AccountSessionPort,
     request: &Request,
     now: f64,
-    gate: &impl Admission,
-    effects: &impl Acceptance,
+    gate: Arc<dyn Admission>,
+    effects: Arc<dyn Acceptance>,
     preparation: &impl Preparation,
 ) -> Result<Value> {
     let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
@@ -598,65 +599,80 @@ pub fn execute_provider_prepared(
             return Err(NativeError::Changed);
         }
         if should_repair_before_reserve(resume_reserved) {
-            preparation.before_reserve(store, port, request, &scope)?;
+            preparation
+                .before_reserve(store, port, request, &scope)
+                .await?;
         }
         if port.current_scope(&account).as_ref() != Some(&scope) {
             return Err(NativeError::Changed);
         }
-        let claim_store = store;
+        let claim_store = Arc::clone(&gate);
         let action = request.clone();
         let attempt_id = attempt.clone();
         let scope_for_claim = scope.clone();
-        let reserved = claim_store.transaction_with(|tx| {
-            let snapshot = reserve(tx, &action, &attempt_id, now, gate)?;
-            let receipt = snapshot.receipt();
-            if receipt.account_key != scope_for_claim.account {
-                return Err(NativeError::Changed);
-            }
-            let ticket = ProviderTicket {
-                operation: receipt.attempt_id.clone(),
-                agent: receipt.agent_id.clone(),
-                epoch: u64::try_from(receipt.epoch).map_err(|_| NativeError::Changed)?,
-                account: receipt.account_key.clone(),
-                thread: Some(receipt.thread_id.clone()),
-                connection: scope_for_claim.connection.clone(),
-                generation: scope_for_claim.generation,
-                request: receipt.request_id.clone(),
-            };
-            Ok((receipt.clone(), ticket))
-        })?;
+        let reserved = store
+            .transaction_with(move |tx| {
+                let snapshot = reserve(tx, &action, &attempt_id, now, claim_store.as_ref())?;
+                let receipt = snapshot.receipt();
+                if receipt.account_key != scope_for_claim.account {
+                    return Err(NativeError::Changed);
+                }
+                let ticket = ProviderTicket {
+                    operation: receipt.attempt_id.clone(),
+                    agent: receipt.agent_id.clone(),
+                    epoch: u64::try_from(receipt.epoch).map_err(|_| NativeError::Changed)?,
+                    account: receipt.account_key.clone(),
+                    thread: Some(receipt.thread_id.clone()),
+                    connection: scope_for_claim.connection.clone(),
+                    generation: scope_for_claim.generation,
+                    request: receipt.request_id.clone(),
+                };
+                Ok((receipt.clone(), ticket))
+            })
+            .await?;
         let (receipt, ticket) = reserved;
-        preparation.prepare(store, port, request, &ticket, &scope)?;
+        preparation
+            .prepare(store, port, request, &ticket, &scope)
+            .await?;
         if port.current_scope(&account).as_ref() != Some(&scope) {
             return Err(NativeError::Changed);
         }
-        let native_request =
-            store.transaction_with(|tx| claim(tx, &receipt.request_id, &ticket))?;
+        let claim_id = receipt.request_id.clone();
+        let claim_ticket = ticket.clone();
+        let native_request = store
+            .transaction_with(move |tx| claim(tx, &claim_id, &claim_ticket))
+            .await?;
         let method =
             Method::from_wire(&native_request.method).ok_or(NativeError::Invalid("method"))?;
-        let provider = port.provider_request(ProviderRequest {
-            account: account.clone(),
-            operation: ticket.operation.clone(),
-            actor: Some(RequestActor {
-                agent: ticket.agent.clone(),
-                epoch: i64::try_from(ticket.epoch).map_err(|_| NativeError::Changed)?,
-            }),
-            deleted_actor_session: None,
-            expected_scope: Some(scope.clone()),
-            method,
-            params: native_request.params.clone(),
-            deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
-        });
+        let provider = port
+            .provider_request(ProviderRequest {
+                account: account.clone(),
+                operation: ticket.operation.clone(),
+                actor: Some(RequestActor {
+                    agent: ticket.agent.clone(),
+                    epoch: i64::try_from(ticket.epoch).map_err(|_| NativeError::Changed)?,
+                }),
+                deleted_actor_session: None,
+                expected_scope: Some(scope.clone()),
+                method,
+                params: native_request.params.clone(),
+                deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
+            })
+            .await;
         let retryable = matches!(
-            provider,
+            &provider,
             Ok(SessionReceipt {
                 certainty: RequestCertainty::NotSent,
                 ..
             })
         );
         let id = request.request_id.clone();
-        let settled =
-            store.transaction_with(|tx| settle_provider(tx, &id, ticket, provider, effects))?;
+        let settle_effects = Arc::clone(&effects);
+        let settled = store
+            .transaction_with(move |tx| {
+                settle_provider(tx, &id, ticket, provider, settle_effects.as_ref())
+            })
+            .await?;
         let snapshot = store.read_transaction_with_error(|tx| load(tx, &request.request_id))?;
         if retryable && retry < MAX_NOT_SENT_RETRIES {
             continue;
@@ -772,7 +788,7 @@ pub fn settle_provider(
     id: &str,
     ticket: ProviderTicket,
     provider: std::result::Result<SessionReceipt, AccountSessionError>,
-    effects: &impl Acceptance,
+    effects: &dyn Acceptance,
 ) -> Result<Outcome> {
     let delivery = match &provider {
         Ok(receipt) => {
@@ -803,7 +819,7 @@ pub fn settle_provider(
 
 /// Apply native-action model settings through a separately persisted provider
 /// intent. A restart can retry only an exact broker receipt proving NotSent.
-pub fn update_action_settings(
+pub async fn update_action_settings(
     store: &RuntimeStore,
     port: &dyn AccountSessionPort,
     request: &Request,
@@ -818,75 +834,86 @@ pub fn update_action_settings(
     };
     for retry in 0..=MAX_NOT_SENT_RETRIES {
         let action_id = request.request_id.clone();
+        let request_agent = request.agent.clone();
+        let request_id = request.request_id.clone();
+        let ticket_for_tx = ticket.clone();
+        let operation_for_tx = operation.clone();
+        let request_id_for_record = action_id.clone();
+        let request_agent_for_error = request.agent.clone();
         let scope_snapshot = scope.clone();
         let params_snapshot = params.clone();
-        let should_send = store.transaction_with(|tx| {
-            let mut agent = agent(tx, &request.agent)?;
-            if agent["startAttempt"]["id"] != ticket.operation
-                || agent["startAttempt"]["actionRequestId"] != request.request_id
-                || agent["epoch"].as_u64() != Some(ticket.epoch)
-                || agent
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
-                    != ticket.account
-                || agent["threadId"].as_str() != ticket.thread.as_deref()
-            {
-                return Err(NativeError::Changed);
-            }
-            let saved = agent["startAttempt"].get("modelSettings").cloned();
-            if let Some(saved) = saved {
-                if saved["operation"] != operation
-                    || saved["requestId"] != action_id
-                    || saved["scope"] != json!(scope_snapshot)
-                    || saved["params"] != params_snapshot
+        let should_send = store
+            .transaction_with(move |tx| {
+                let mut agent = agent(tx, &request_agent)?;
+                if agent["startAttempt"]["id"] != ticket_for_tx.operation
+                    || agent["startAttempt"]["actionRequestId"] != request_id
+                    || agent["epoch"].as_u64() != Some(ticket_for_tx.epoch)
+                    || agent
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        != ticket_for_tx.account
+                    || agent["threadId"].as_str() != ticket_for_tx.thread.as_deref()
                 {
-                    return Err(NativeError::Conflict);
+                    return Err(NativeError::Changed);
                 }
-                match saved["status"].as_str() {
-                    Some("acknowledged") => return Ok(false),
-                    Some("not_sent") => {}
-                    Some("submitted" | "unknown") => return Err(NativeError::Unknown),
-                    Some("rejected") => return Err(NativeError::Invalid("settings/rejected")),
-                    _ => {
-                        return Err(NativeError::InvalidStored {
-                            table: "runtime_agents",
-                            id: request.agent.clone(),
-                            location: "startAttempt.modelSettings.status".into(),
-                        });
+                let saved = agent["startAttempt"].get("modelSettings").cloned();
+                if let Some(saved) = saved {
+                    if saved["operation"] != operation_for_tx
+                        || saved["requestId"] != request_id_for_record
+                        || saved["scope"] != json!(scope_snapshot)
+                        || saved["params"] != params_snapshot
+                    {
+                        return Err(NativeError::Conflict);
+                    }
+                    match saved["status"].as_str() {
+                        Some("acknowledged") => return Ok(false),
+                        Some("not_sent") => {}
+                        Some("submitted" | "unknown") => return Err(NativeError::Unknown),
+                        Some("rejected") => return Err(NativeError::Invalid("settings/rejected")),
+                        _ => {
+                            return Err(NativeError::InvalidStored {
+                                table: "runtime_agents",
+                                id: request_agent_for_error,
+                                location: "startAttempt.modelSettings.status".into(),
+                            });
+                        }
                     }
                 }
-            }
-            agent["startAttempt"]["modelSettings"] = json!({
-                "operation": operation,
-                "requestId": action_id,
-                "scope": scope_snapshot,
-                "method": "thread/settings/update",
-                "params": params_snapshot,
-                "status": "submitted",
-            });
-            AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
-            Ok(true)
-        })?;
+                agent["startAttempt"]["modelSettings"] = json!({
+                    "operation": operation_for_tx,
+                    "requestId": request_id_for_record,
+                    "scope": scope_snapshot,
+                    "method": "thread/settings/update",
+                    "params": params_snapshot,
+                    "status": "submitted",
+                });
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                Ok(true)
+            })
+            .await?;
         if !should_send {
             return Ok(());
         }
 
         let method =
             Method::from_wire("thread/settings/update").ok_or(NativeError::Invalid("method"))?;
-        let provider = port.provider_request(ProviderRequest {
-            account: settings_ticket.account.clone(),
-            operation: operation.clone(),
-            actor: Some(RequestActor {
-                agent: settings_ticket.agent.clone(),
-                epoch: i64::try_from(settings_ticket.epoch).map_err(|_| NativeError::Changed)?,
-            }),
-            deleted_actor_session: None,
-            expected_scope: Some(scope.clone()),
-            method,
-            params: params.clone(),
-            deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
-        });
+        let provider = port
+            .provider_request(ProviderRequest {
+                account: settings_ticket.account.clone(),
+                operation: operation.clone(),
+                actor: Some(RequestActor {
+                    agent: settings_ticket.agent.clone(),
+                    epoch: i64::try_from(settings_ticket.epoch)
+                        .map_err(|_| NativeError::Changed)?,
+                }),
+                deleted_actor_session: None,
+                expected_scope: Some(scope.clone()),
+                method,
+                params: params.clone(),
+                deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
+            })
+            .await;
         let expected = NativeRequest {
             ticket: settings_ticket.clone(),
             method: "thread/settings/update".into(),
@@ -905,18 +932,22 @@ pub fn update_action_settings(
             Err(_) => "unknown",
         };
         let action_id = request.request_id.clone();
-        store.transaction_with(|tx| {
-            let mut agent = agent(tx, &request.agent)?;
-            if agent["startAttempt"]["modelSettings"]["operation"] != operation
-                || agent["startAttempt"]["modelSettings"]["requestId"] != action_id
-                || agent["startAttempt"]["modelSettings"]["status"] != "submitted"
-            {
-                return Err(NativeError::Changed);
-            }
-            agent["startAttempt"]["modelSettings"]["status"] = json!(status);
-            AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
-            Ok(())
-        })?;
+        let request_agent = request.agent.clone();
+        let operation_for_tx = operation.clone();
+        store
+            .transaction_with(move |tx| {
+                let mut agent = agent(tx, &request_agent)?;
+                if agent["startAttempt"]["modelSettings"]["operation"] != operation_for_tx
+                    || agent["startAttempt"]["modelSettings"]["requestId"] != action_id
+                    || agent["startAttempt"]["modelSettings"]["status"] != "submitted"
+                {
+                    return Err(NativeError::Changed);
+                }
+                agent["startAttempt"]["modelSettings"]["status"] = json!(status);
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                Ok(())
+            })
+            .await?;
         match status {
             "acknowledged" => return Ok(()),
             "not_sent" if retry < MAX_NOT_SENT_RETRIES => continue,
@@ -986,21 +1017,15 @@ pub async fn execute(
     effects: Arc<impl Acceptance + Send + Sync + 'static>,
     deadline: tokio::time::Instant,
 ) -> Result<Outcome> {
-    let claim_store = store.clone();
     let claim_id = id.clone();
-    let request = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/native_actions",
-        move || claim_store.transaction_with(|tx| claim(tx, &claim_id, &ticket)),
-    )
-    .await
-    .map_err(|_| NativeError::Unknown)??;
+    let claim_ticket = ticket.clone();
+    let request = store
+        .transaction_with(move |tx| claim(tx, &claim_id, &claim_ticket))
+        .await?;
     let receipt = send(session, &request, deadline).await?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/native_actions",
-        move || store.transaction_with(|tx| settle(tx, &id, &receipt, effects.as_ref())),
-    )
-    .await
-    .map_err(|_| NativeError::Unknown)?
+    store
+        .transaction_with(move |tx| settle(tx, &id, &receipt, effects.as_ref()))
+        .await
 }
 
 fn agent(tx: &Transaction<'_>, id: &str) -> Result<Value> {

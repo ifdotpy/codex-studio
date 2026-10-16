@@ -122,20 +122,11 @@ pub async fn execute(
     session: &impl RetainedSession,
     deadline: tokio::time::Instant,
 ) -> Result<Value> {
-    let claiming = store.clone();
-    let request = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/thread_fork_runtime",
-        move || claiming.transaction_with(|tx| claim(tx, &ticket, params)),
-    )
-    .await
-    .map_err(|_| NativeError::Unknown)??;
+    let request = store
+        .transaction_with(move |tx| claim(tx, &ticket, params))
+        .await?;
     let receipt = send(session, &request, deadline).await?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/thread_fork_runtime",
-        move || store.transaction_with(|tx| settle(tx, &receipt)),
-    )
-    .await
-    .map_err(|_| NativeError::Unknown)?
+    store.transaction_with(move |tx| settle(tx, &receipt)).await
 }
 
 /// Dispatch a fork whose durable intent is owned by another workflow (for
@@ -156,8 +147,8 @@ pub async fn dispatch_reserved(
 /// Submit a reserved fork through HttpState's shared retained-account broker.
 /// The caller persists the exact NativeRequest before calling this function;
 /// the broker commits its provider intent and checks the connection scope.
-/// Call from a blocking worker because AccountSessionPort is synchronous.
-pub fn dispatch_reserved_via_broker(
+/// Await the retained session owner directly; it commits its own request receipt.
+pub async fn dispatch_reserved_via_broker(
     request: &NativeRequest,
     port: &dyn crate::account_session_runtime::AccountSessionPort,
     deadline: std::time::Instant,
@@ -188,6 +179,7 @@ pub fn dispatch_reserved_via_broker(
             params: request.params.clone(),
             deadline,
         })
+        .await
         .map_err(|error| match error {
             AccountSessionError::Requires(name) => NativeError::Unavailable(name),
             AccountSessionError::Refused(_) => NativeError::Changed,
