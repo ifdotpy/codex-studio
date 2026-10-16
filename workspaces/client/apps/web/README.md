@@ -11,8 +11,9 @@ app's configuration and [`package.json`](package.json). Focused check:
 completion, use `pnpm --filter codex-agents-web run test:skill-autocomplete`.
 
 React and TypeScript components, built with Vite. Mantine provides controls,
-menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
-SQLite, message delivery, and command monitors.
+menus, dialogs, drawers, and the shared theme. Lucide provides icons. The
+selected runtime server owns agents, SQLite, message delivery, and command
+monitors.
 
 ## Run
 
@@ -23,20 +24,20 @@ Run package commands from this directory:
 pnpm run build
 ```
 
-From the repository root, start the installed backend with `codex-canvas`
-and open <http://127.0.0.1:4620>. The server serves this app's `dist/`.
+From the repository root, start the selected backend and open
+<http://127.0.0.1:4620>. The Python and Rust servers serve this app's `dist/`.
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
 ## Develop
 
-Keep the Python server on port 4620. Start Vite in another terminal:
+Keep the selected runtime server on port 4620. Start Vite in another terminal:
 
 ```bash
 pnpm run dev
 ```
 
-Vite proxies `/api` to the local Python server. `pnpm run build` checks TypeScript
+Vite proxies `/api` to the local runtime server. `pnpm run build` checks TypeScript
 and creates the production bundle. `pnpm test` builds that bundle and checks it in
 a separate headless Chrome process against an isolated server and database.
 Set `CHROME_BIN` if Chrome uses another executable path.

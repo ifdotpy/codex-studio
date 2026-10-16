@@ -17,6 +17,7 @@ mod peer_link;
 mod provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
+mod web_assets;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
@@ -675,6 +676,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             return Err(error);
         }
     };
+    let app = app.merge(web_assets::router(web_assets::WebAssets::discover()));
     startup_trace("http-router-completed");
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,

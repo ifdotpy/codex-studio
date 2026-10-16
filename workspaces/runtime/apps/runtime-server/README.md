@@ -3,8 +3,8 @@
 ## Change Contract
 
 - **Responsibility:** own runtime-server process startup, loopback listener,
-  backend URL announcement, bounded provider-history import scheduling, and
-  graceful signal shutdown.
+  backend URL announcement, built web asset serving, bounded provider-history
+  import scheduling, and graceful signal shutdown.
 - **Public interface:** `studio-runtime-server --port <port>`; port `0` requests
   an ephemeral loopback port for the existing HTTP harness. The maintainer
   diagnostic `studio-runtime-server state-check <state-dir>` validates typed
@@ -17,11 +17,15 @@
   directory; history import resolves provider profiles through AccountDriver.
 - **Focused check:** `cargo nextest run -p studio-runtime-server`.
 
-The binary owns process configuration and signal handling. Route behavior lives
-in `studio-runtime-http`; Rust store, process, and provider crates are composed
-by the application. Provider history collection uses the bounded service in
-`studio-runtime-services::analytics_history`; runtime-server owns its Tokio
-task and supplies account profile resolution and durable budget capture.
+The binary owns process configuration and signal handling. API route behavior
+lives in `studio-runtime-http`; `web_assets` serves the built renderer from the
+repository's `workspaces/client/apps/web/dist` directory or the packaged
+workspace's `web/dist` directory. Build the renderer with
+`pnpm --filter codex-agents-web run build`. Rust store, process, and provider
+crates are composed by the application. Provider history collection uses the
+bounded service in `studio-runtime-services::analytics_history`;
+runtime-server owns its Tokio task and supplies account profile resolution and
+durable budget capture.
 
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the

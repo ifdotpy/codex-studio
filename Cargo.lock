@@ -2302,6 +2302,7 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "getrandom 0.3.4",
+ "mime_guess",
  "nix 0.31.3",
  "notify",
  "process-wrap",
