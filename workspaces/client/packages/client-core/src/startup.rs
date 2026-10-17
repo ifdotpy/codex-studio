@@ -476,7 +476,13 @@ threading.Timer(15, lambda: os._exit(0)).start()
 server.serve_forever()
 "#).unwrap();
         let mut environment: Environment = env::vars_os().collect();
-        let python = executable("python3", "STUDIO_FIXTURE_PYTHON", &environment).unwrap();
+        let python_key = if environment.contains_key(std::ffi::OsStr::new("STUDIO_FIXTURE_PYTHON"))
+        {
+            "STUDIO_FIXTURE_PYTHON"
+        } else {
+            "CODEX_AGENTS_PYTHON"
+        };
+        let python = executable("python3", python_key, &environment).unwrap();
         environment.insert("CODEX_AGENTS_PYTHON".into(), python.into_os_string());
         environment.insert("CODEX_BIN".into(), "/usr/bin/true".into());
         environment.insert("CODEX_NODE".into(), "/usr/bin/true".into());

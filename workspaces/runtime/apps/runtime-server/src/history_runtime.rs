@@ -1160,7 +1160,10 @@ mod tests {
         std::fs::create_dir_all(&sessions).expect("fixture sessions");
         std::fs::create_dir_all(&state).expect("fixture state");
 
-        let account_path = root.path().join("accounts.json");
+        // Use the production registry path so the watcher observes accounts,
+        // rather than falling back to the parent containing SQLite WAL files.
+        let account_path = state.join("accounts/registry.json");
+        std::fs::create_dir_all(account_path.parent().unwrap()).expect("fixture account directory");
         std::fs::write(
             &account_path,
             json!({
