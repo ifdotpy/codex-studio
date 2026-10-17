@@ -150,11 +150,21 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                             (alias, callbacks, tool_requests)
                         })
                         .collect::<Vec<_>>();
-                    Ok::<_, AccountSessionError>((active, queues))
+                    let idle_limit_seconds = store
+                        .read()
+                        .ok()
+                        .and_then(|connection| {
+                            studio_runtime_store::OrchestrationSettingsRepository::idle_session_unload(
+                                &connection,
+                            )
+                            .ok()
+                        })
+                        .map_or(0, |delay| delay.map_or(0, |delay| delay.as_secs()));
+                    Ok::<_, AccountSessionError>((active, queues, idle_limit_seconds))
                 },
             )
             .await;
-            let Ok(Ok((active, local_queues))) = local else {
+            let Ok(Ok((active, local_queues, idle_limit_seconds))) = local else {
                 return ProviderDiagnosticsSnapshot {
                     native_accounts: json!({}),
                     studio_loaded_threads: 0,
@@ -188,6 +198,8 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         if let Some(fields) = value.as_object() {
                             row.extend(fields.clone());
                         }
+                        // The server's idle sweep closes idle sessions; 0 never closes them.
+                        row.insert("idleLimitSeconds".to_owned(), json!(idle_limit_seconds));
                         native_accounts.insert(alias.clone(), Value::Object(row));
                     }
                     Some(value) => {

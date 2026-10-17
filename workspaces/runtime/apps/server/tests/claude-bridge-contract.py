@@ -289,7 +289,7 @@ class Bridge(unittest.TestCase):
         self.proc = subprocess.Popen([node_executable(), str(root / 'bridge.mjs'), str(root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test',
-                 'STUDIO_CLAUDE_IDLE_SECONDS':'1', 'CLAUDE_CONFIG_DIR': str(root / 'native-config')})
+                 'CLAUDE_CONFIG_DIR': str(root / 'native-config')})
         self.addCleanup(self.close)
         self.rows = queue.Queue()
         threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
@@ -553,21 +553,20 @@ class Bridge(unittest.TestCase):
         self.assertNotIn('PRIVATE_SIGNATURE',json.dumps(history))
         self.assertTrue(any(x.get('method')=='item/agentMessage/delta' for x in self.notifications))
 
-    def test_idle_query_closes_and_next_turn_resumes_native_history(self):
+    def test_unsubscribed_idle_query_closes_and_next_turn_resumes_native_history(self):
         self.turn('hello', 'first')
         self.assertEqual(self.completed()['status'], 'completed')
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 1)
-
-        def idle_query_evicted():
-            state = self.call('claude/diagnostics', {})
-            return state if (state['liveQueries'] == 0
-                             and state['sessionCache']['cachedSessions'] == 0) else None
-
-        wait_for_condition(
-            idle_query_evicted,
-            'idle Claude query and session-cache cleanup',
-        )
-        self.assertEqual(self.call('claude/diagnostics', {})['sessionCache']['cachedSessions'], 0)
+        self.assertEqual(self.call('thread/loaded/list', {'limit': 100}),
+                         {'data': [self.thread], 'nextCursor': None})
+        # The server's idle sweep closes the session; the bridge keeps no timer.
+        self.assertEqual(self.call('thread/unsubscribe', {'threadId': self.thread}),
+                         {'status': 'unsubscribed'})
+        state = self.call('claude/diagnostics', {})
+        self.assertEqual((state['liveQueries'], state['sessionCache']['cachedSessions']), (0, 0))
+        self.assertEqual(self.call('thread/loaded/list', {'limit': 100})['data'], [])
+        self.assertEqual(self.call('thread/unsubscribe', {'threadId': self.thread}),
+                         {'status': 'notLoaded'})
         self.turn('hello', 'second')
         self.assertEqual(self.completed()['status'], 'completed')
         starts = [json.loads(line) for line in (self.root / '.queries').read_text().splitlines()]
@@ -604,14 +603,17 @@ class Bridge(unittest.TestCase):
     def test_background_task_keeps_query_until_task_finishes(self):
         self.turn('background-hold', 'background-hold')
         self.assertEqual(self.completed()['status'], 'completed')
-        time.sleep(1.5)
         state = self.call('claude/diagnostics', {})
         self.assertEqual((state['liveQueries'], state['backgroundQueries']), (1, 1))
+        with self.assertRaisesRegex(ValueError, 'Pause the Claude turn'):
+            self.call('thread/unsubscribe', {'threadId': self.thread})
         (self.root / '.release-background').write_text('done')
         wait_for_condition(
-            lambda: self.call('claude/diagnostics', {})['liveQueries'] == 0,
-            'released Claude background query cleanup',
+            lambda: self.call('claude/diagnostics', {})['backgroundQueries'] == 0,
+            'released Claude background task',
         )
+        self.assertEqual(self.call('thread/unsubscribe', {'threadId': self.thread}),
+                         {'status': 'unsubscribed'})
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
 
     def test_resume_keeps_the_current_turn_and_delivers_one_steer(self):
@@ -1287,10 +1289,9 @@ class Bridge(unittest.TestCase):
         (self.root / 'state' / 'release-persist').touch()
         reply = self.persist_reply(pending)
         self.assertEqual(reply['error']['data']['turnStartOutcome'], 'not_applied')
-        deadline = time.monotonic() + 4
-        while (self.call('claude/diagnostics', {})['liveQueries']
-               and time.monotonic() < deadline):
-            time.sleep(.1)
+        # The server's idle sweep closes the idle query.
+        self.assertEqual(self.call('thread/unsubscribe', {'threadId': self.thread}),
+                         {'status': 'unsubscribed'})
         state = self.call('claude/diagnostics', {})
         self.assertEqual(state['liveQueries'], 0)
         self.assertEqual(state['sessionCache']['cachedSessions'], 0)

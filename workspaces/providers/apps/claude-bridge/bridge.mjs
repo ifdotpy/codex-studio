@@ -171,37 +171,18 @@ const sessionStore = createSessionStore(root, {
   isPinned: (id) => queries.has(id),
 });
 const sessions = sessionStore.sessions;
-const configuredIdle = Number(process.env.STUDIO_CLAUDE_IDLE_SECONDS);
-const idleSeconds =
-  Number.isFinite(configuredIdle) && configuredIdle > 0
-    ? Math.max(1, configuredIdle)
-    : 15 * 60;
-const querySweep = setInterval(
-  () => {
-    const now = Date.now();
-    for (const [id, active] of queries) {
-      if (
-        active.turn ||
-        active.tasks.size ||
-        active.pendingSteers.size ||
-        active.reservingInput ||
-        active.idleSince == null ||
-        operations.get(id) ||
-        now - active.idleSince < idleSeconds * 1000
-      )
-        continue;
-      active.input.close();
-      active.q?.close();
-      if (queries.get(id) === active) {
-        queries.delete(id);
-        catalogCache.activityChanged();
-        void sessionStore.evict(id);
-      }
-    }
-  },
-  Math.min(30000, idleSeconds * 500),
-);
-querySweep.unref();
+// The server closes idle sessions with thread/unsubscribe after its
+// idleSessionUnloadMinutes setting. A session with a turn, background task,
+// pending input, or serialized operation refuses to close.
+const queryBusy = (id, active) =>
+  Boolean(
+    active.turn ||
+    active.tasks.size ||
+    active.pendingSteers.size ||
+    active.reservingInput ||
+    active.input.values.length ||
+    operations.get(id),
+  );
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
@@ -1006,7 +987,6 @@ async function finishTurn(s, active, result, error) {
   await persist(s);
   active.turn = null;
   catalogCache.activityChanged();
-  if (!active.tasks.size) active.idleSince = Date.now();
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
   active.responseUsages.clear();
@@ -1204,8 +1184,6 @@ async function startSession(s, active, p) {
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
         active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
         catalogCache.activityChanged();
-        if (!active.turn)
-          active.idleSince = active.tasks.size ? null : Date.now();
         continue;
       }
       if (m.type === "user" && m.isReplay) {
@@ -1333,8 +1311,6 @@ async function startSession(s, active, p) {
           )
             active.tasks.delete(id);
           else active.tasks.set(id, task);
-          if (!active.turn)
-            active.idleSince = active.tasks.size ? null : Date.now();
           const taskTurn = turn || s.turns.at(-1);
           if (taskTurn)
             finishItem(s, taskTurn, {
@@ -1645,7 +1621,6 @@ function newActive(turn) {
     reportedUsage: 0,
     reportedOutput: 0,
     reportedTurnOutput: 0,
-    idleSince: null,
     lastUsage: null,
   };
   active.ready = new Promise((resolve, reject) => {
@@ -1901,7 +1876,6 @@ async function handle(method, p) {
       backgroundQueries: values.filter((active) => active.tasks.size).length,
       idleQueries: values.filter((active) => !active.turn && !active.tasks.size)
         .length,
-      idleLimitSeconds: idleSeconds,
       sessionCache: sessionStore.stats(),
     };
   }
@@ -2056,15 +2030,17 @@ async function handle(method, p) {
   }
   if (method === "thread/unsubscribe") {
     const active = queries.get(p.threadId);
-    if (active?.turn || active?.tasks.size)
+    if (active && queryBusy(p.threadId, active))
       throw new Error("Pause the Claude turn before detaching");
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
     catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
-    return {};
+    return { status: active ? "unsubscribed" : "notLoaded" };
   }
+  if (method === "thread/loaded/list")
+    return { data: [...queries.keys()], nextCursor: null };
   if (method === "thread/fork") {
     const old = await session(p.threadId);
     if (queries.get(old.id)?.turn || queries.get(old.id)?.tasks.size)
@@ -2235,7 +2211,6 @@ async function handle(method, p) {
         );
       active.turn = turn;
       active.reportedTurnOutput = 0;
-      active.idleSince = null;
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
@@ -2380,7 +2355,6 @@ async function handle(method, p) {
       // that reservation so the queued background work and query stay open.
       active.turn = null;
       active.reservingInput = false;
-      active.idleSince = active.tasks.size ? null : Date.now();
       catalogCache.activityChanged();
     }
     if (p.stopBackgroundTasks !== false && active.tasks.size) {

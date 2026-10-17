@@ -90,7 +90,6 @@ async function startBridge() {
       env: {
         ...process.env,
         STUDIO_CLAUDE_ACCOUNT: "test@example.test",
-        STUDIO_CLAUDE_IDLE_SECONDS: "60",
         CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
       },
     },
@@ -303,4 +302,26 @@ test("an echo after its turn ended still acknowledges the steer for that turn", 
   const delivered = await bridge.note((n) => ack(bridge, "event-7") === n);
   assert.equal(delivered.params.turnId, turn);
   assert.ok(bridge.notes.indexOf(done) < bridge.notes.indexOf(delivered));
+});
+
+test("only the server's unsubscribe closes a session, never a busy one", async () => {
+  const bridge = await startBridge();
+  const loaded = async () =>
+    (await bridge.call("thread/loaded/list", { limit: 100 })).data;
+  const unsubscribe = () =>
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread });
+  assert.deepEqual(await loaded(), []);
+  const turn = await running(bridge, "hold");
+  assert.deepEqual(await loaded(), [bridge.thread]);
+  await assert.rejects(unsubscribe(), /Pause the Claude turn/);
+  await end(bridge);
+  await completed(bridge, turn);
+  assert.deepEqual(
+    await loaded(),
+    [bridge.thread],
+    "no bridge timer closes it",
+  );
+  assert.deepEqual(await unsubscribe(), { status: "unsubscribed" });
+  assert.deepEqual(await loaded(), []);
+  assert.deepEqual(await unsubscribe(), { status: "notLoaded" });
 });

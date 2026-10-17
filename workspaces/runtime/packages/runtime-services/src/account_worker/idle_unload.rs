@@ -98,7 +98,10 @@ fn empty_page(page: &Value) -> bool {
 impl Worker {
     pub(super) async fn idle_sweep(&mut self, now: Instant) -> Result<(), WorkerError> {
         self.idle_sweep_at = tokio::time::Instant::now() + IDLE_SWEEP_INTERVAL;
+        // A request in flight may be starting a turn; the next sweep decides.
         if self.closing
+            || !self.pending.is_empty()
+            || !self.retained_requests.is_empty()
             || self.session.status.borrow().initialization != InitializationStatus::Ready
         {
             return Ok(());

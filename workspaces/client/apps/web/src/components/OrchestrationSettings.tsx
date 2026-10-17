@@ -5,43 +5,80 @@ import { errorText, type GetResult } from "../api";
 import {
   CHILD_RESULT_COALESCE_MAX_SECONDS,
   CHILD_RESULT_COALESCE_MIN_SECONDS,
+  IDLE_SESSION_UNLOAD_MAX_MINUTES,
+  IDLE_SESSION_UNLOAD_MIN_MINUTES,
 } from "../generated/sharedValues";
 import { SettingsRow } from "./ui/primitives";
 
 type Configuration = GetResult<"/api/orchestration/settings">;
+type Settings = Configuration["settings"];
 
-export const childResultHoldTooltip =
-  "When a lead has several subagents running, a finished subagent's result is held " +
-  "for up to this many seconds so results that arrive close together are delivered " +
-  "to the lead in one turn. The lead is woken immediately when all its subagents " +
-  "have finished or when any other message arrives. 0 delivers every result immediately.";
+/** One whole-number orchestration setting and its generated bounds. */
+export interface OrchestrationSettingSpec {
+  field: keyof Settings;
+  label: string;
+  help: string;
+  ariaLabel: string;
+  tooltip: string;
+  min: number;
+  max: number;
+}
 
-export function ChildResultHoldSetting({
-  seconds,
+export const childResultHoldSpec: OrchestrationSettingSpec = {
+  field: "childResultCoalesceSeconds",
+  label: "Subagent result hold (seconds)",
+  help: "Deliver results that finish close together in one lead turn.",
+  ariaLabel: "Subagent result hold in seconds",
+  tooltip:
+    "When a lead has several subagents running, a finished subagent's result is held " +
+    "for up to this many seconds so results that arrive close together are delivered " +
+    "to the lead in one turn. The lead is woken immediately when all its subagents " +
+    "have finished or when any other message arrives. 0 delivers every result immediately.",
+  min: CHILD_RESULT_COALESCE_MIN_SECONDS,
+  max: CHILD_RESULT_COALESCE_MAX_SECONDS,
+};
+
+export const idleSessionUnloadSpec: OrchestrationSettingSpec = {
+  field: "idleSessionUnloadMinutes",
+  label: "Unload idle sessions after (minutes)",
+  help: "Free the memory of agents that have nothing to do.",
+  ariaLabel: "Unload idle sessions after minutes",
+  tooltip:
+    "Idle Codex threads and Claude sessions are unloaded after this many minutes " +
+    "without a running turn, pending input, or active monitor. They are resumed " +
+    "automatically on the next message, which takes a few extra seconds. Lower " +
+    "values save memory. 0 never unloads.",
+  min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
+  max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
+};
+
+const SPECS = [childResultHoldSpec, idleSessionUnloadSpec];
+
+export function OrchestrationNumberSetting({
+  spec,
+  value,
   disabled,
   onChange,
 }: {
-  seconds: number;
+  spec: OrchestrationSettingSpec;
+  value: number;
   disabled: boolean;
-  onChange: (seconds: number) => void;
+  onChange: (value: number) => void;
 }) {
   return (
-    <SettingsRow
-      label="Subagent result hold (seconds)"
-      help="Deliver results that finish close together in one lead turn."
-    >
+    <SettingsRow label={spec.label} help={spec.help}>
       <NumberInput
-        aria-label="Subagent result hold in seconds"
-        title={childResultHoldTooltip}
-        min={CHILD_RESULT_COALESCE_MIN_SECONDS}
-        max={CHILD_RESULT_COALESCE_MAX_SECONDS}
+        aria-label={spec.ariaLabel}
+        title={spec.tooltip}
+        min={spec.min}
+        max={spec.max}
         allowDecimal={false}
         allowNegative={false}
         clampBehavior="strict"
-        value={seconds}
+        value={value}
         disabled={disabled}
-        onChange={(value) => {
-          if (typeof value === "number") onChange(value);
+        onChange={(next) => {
+          if (typeof next === "number") onChange(next);
         }}
       />
     </SettingsRow>
@@ -79,16 +116,20 @@ export function OrchestrationSettings({ active }: { active: boolean }) {
       <h2>Agent orchestration</h2>
       {configuration && (
         <>
-          <ChildResultHoldSetting
-            seconds={configuration.settings.childResultCoalesceSeconds}
-            disabled={busy}
-            onChange={(childResultCoalesceSeconds) =>
-              setConfiguration({
-                ...configuration,
-                settings: { childResultCoalesceSeconds },
-              })
-            }
-          />
+          {SPECS.map((spec) => (
+            <OrchestrationNumberSetting
+              key={spec.field}
+              spec={spec}
+              value={configuration.settings[spec.field]}
+              disabled={busy}
+              onChange={(value) =>
+                setConfiguration({
+                  ...configuration,
+                  settings: { ...configuration.settings, [spec.field]: value },
+                })
+              }
+            />
+          ))}
           <Button
             mt="md"
             loading={busy}

@@ -100,13 +100,19 @@ async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() 
     sweep(&worker, base + BEYOND_ANY_DELAY * 4).await;
     loaded(&mut peer).await;
     idle_checks(&mut peer).await;
-    answer(
-        &mut peer,
-        "thread/unsubscribe",
-        json!({"threadId": THREAD}),
-        json!({"status": "unsubscribed"}),
-    )
-    .await;
+    let unsubscribe = peer.write("thread/unsubscribe").await;
+    assert_eq!(unsubscribe["params"], json!({"threadId": THREAD}));
+    // The provider reports the unload; an idle thread's unload is no failure.
+    for notification in [
+        json!({"method": "thread/status/changed",
+            "params": {"threadId": THREAD, "status": {"type": "notLoaded"}}}),
+        json!({"method": "thread/closed", "params": {"threadId": THREAD}}),
+    ] {
+        let cursor = peer.frame(notification).await;
+        peer.acknowledged(cursor).await;
+    }
+    peer.reply(&unsubscribe, json!({"status": "unsubscribed"}))
+        .await;
     // With no loaded thread left in use, the worker closes its session.
     worker.completion().await.unwrap();
 
