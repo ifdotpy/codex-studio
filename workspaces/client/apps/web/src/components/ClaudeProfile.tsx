@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack, Textarea, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
-import { errorText, post, type PostBody, type PostResult } from "../api";
+import { errorText, type PostBody, type PostResult } from "../api";
 import type { Account } from "./Accounts";
 
 type ClaudeProfileOptions = PostBody<"/api/claude/profiles">["options"];
@@ -15,6 +16,8 @@ export default function ClaudeProfile({
   onSaved: (state: ClaudeProfileResult) => void;
   expanded?: boolean;
 }) {
+  const { post } = useServerApi();
+
   const initial = account?.claudeOptions || {};
   const [label, setLabel] = useState(account?.label || "Claude Code");
   const [binaryPath, setBinaryPath] = useState(initial.binaryPath || "");

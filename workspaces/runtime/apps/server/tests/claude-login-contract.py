@@ -138,16 +138,25 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
             next(i for i, row in enumerate(self.agents) if row['id'] == record['id']), record)
         self.login = LoginManager(self.rt, deadline=30)
         self.ids = []
+        original_run = self.login._run
+
+        def tracked_run(job, env):
+            try:
+                return original_run(job, env)
+            finally:
+                job['testWorkerFinished'] = True
+
+        self.login._run = tracked_run
 
     def tearDown(self):
         for rid in self.ids:
             self.login.cancel(rid)
         wait_for_condition(
             lambda: not any(
-                job.get('process') and job['process'].poll() is None
+                'lease' in job and not job.get('testWorkerFinished')
                 for job in self.login.jobs.values()
             ),
-            'Claude login child cleanup',
+            'Claude login worker cleanup',
         )
         self.temp.cleanup()
         self.installed.stop()

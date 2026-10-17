@@ -119,7 +119,9 @@ class PythonResolutionTests(unittest.TestCase):
             timeout=60,
         )
         self.assertTrue(python.is_symlink())
-        self.assertEqual(python.resolve(), Path(sys.executable).resolve())
+        base_executable = getattr(sys, "_base_executable", sys.executable)
+        assert isinstance(base_executable, str)
+        self.assertEqual(python.resolve(), Path(base_executable).resolve())
         site_packages = subprocess.run(
             [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
             check=True,

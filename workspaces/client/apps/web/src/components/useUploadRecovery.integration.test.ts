@@ -29,6 +29,19 @@ vi.mock("../sync/uploads", () => ({
     return () => mocks.uploadListeners.delete(listener);
   },
 }));
+vi.mock("../servers/ServerServicesContext", () => ({
+  useServerUploads: () => ({
+    pendingUploads: mocks.pendingUploads,
+    deliverUpload: mocks.deliverUpload,
+    finishUpload: mocks.finishUpload,
+    removeUpload: mocks.removeUpload,
+    uploadCancelled: mocks.uploadCancelled,
+    onUploadsChanged: (listener: () => void) => {
+      mocks.uploadListeners.add(listener);
+      return () => mocks.uploadListeners.delete(listener);
+    },
+  }),
+}));
 vi.mock("../sync/resume", () => ({
   onResume: (listener: () => void) => {
     mocks.resumeListeners.add(listener);

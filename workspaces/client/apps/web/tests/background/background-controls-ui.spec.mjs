@@ -1,8 +1,10 @@
 import {
   handleEntitySyncFixtureRequest,
   readFixtureSyncContract,
+  readApiSchemaHash,
   syncIdentityFixture,
   stubEntityState,
+  expect,
   test,
   updateEntitySyncFixture,
 } from "../playwright.mjs";
@@ -12,8 +14,8 @@ import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-test("Background controls", async ({ context }) => {
-  test.setTimeout(60000);
+test("Background controls", async ({ context }, testInfo) => {
+  test.setTimeout(180000);
   const testRepo = fileURLToPath(
     new URL("../../../../../../", import.meta.url),
   );
@@ -21,6 +23,7 @@ test("Background controls", async ({ context }) => {
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
   let syncFixture;
+  const streamListeners = new Set();
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -33,6 +36,17 @@ test("Background controls", async ({ context }) => {
         const syncEntities = updateEntitySyncFixture(state);
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify({ ...monitor, _syncEntities: syncEntities }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/sync/notify") {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const notification = JSON.parse(body);
+        for (const publish of streamListeners) publish([{ kind: "state" }]);
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({ accepted: true, requestId: notification.requestId }),
+        );
         return;
       }
       if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
@@ -62,6 +76,11 @@ test("Background controls", async ({ context }) => {
     isLead: true,
     source: "managed",
     status: "idle",
+    inFlight: true,
+    accountKey: "default",
+    epoch: 4,
+    threadId: "thread-fixture",
+    turnId: "turn-fixture",
     name: "Release lead",
     model: "gpt-5.6-sol",
     created: Date.now() / 1000 - 30,
@@ -77,6 +96,30 @@ test("Background controls", async ({ context }) => {
     status: "running",
     created: Date.now() / 1000 - 20,
     tail: "Waiting for input",
+  };
+  const responseTarget = {
+    agent: "lead",
+    accountKey: "default",
+    epoch: 4,
+    connectionId: "connection-fixture",
+    threadId: "thread-fixture",
+    turnId: "turn-fixture",
+  };
+  const claudeTask = {
+    id: "lead:task:background-1",
+    agent: "lead",
+    accountKey: "default",
+    epoch: 4,
+    source: "claude_task",
+    status: "running",
+    created: Date.now() / 1000 - 10,
+    name: "Claude background task",
+    capabilities: {
+      readOutput: false,
+      sendInput: false,
+      resize: false,
+      stop: true,
+    },
   };
   const monitor = {
     id: "6f2ed4dd-f6ab-4d46-94a5-8a774333876a",
@@ -110,13 +153,42 @@ test("Background controls", async ({ context }) => {
   syncFixture = {
     snapshot: state,
     workspaceId,
+    onStreamReady: (publish) => streamListeners.add(publish),
   };
   const writes = [];
+  const processReceipts = new Map();
+  let selectedStopDispatches = 0;
+  let dropNextSelectedStopReply = false;
+  let rejectNextResponseStop = false;
+  let emptyProcessList = false;
+  let rejectNextReceiptLookup = false;
+  let receiptLookupCount = 0;
   let failInput = false;
   let page;
   try {
     page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 980 });
+    await page.addInitScript(() => {
+      window.__schemaHandshakeEvents = [];
+      const add = EventSource.prototype.addEventListener;
+      EventSource.prototype.addEventListener = function (
+        type,
+        listener,
+        options,
+      ) {
+        if (type !== "api-schema")
+          return add.call(this, type, listener, options);
+        return add.call(
+          this,
+          type,
+          (event) => {
+            window.__schemaHandshakeEvents.push(event.data);
+            return listener.call(this, event);
+          },
+          options,
+        );
+      };
+    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/api/**", async (route) => {
@@ -129,6 +201,7 @@ test("Background controls", async ({ context }) => {
         writes.push({ path, body });
       }
       let value = {};
+      if (path.startsWith("/api/sync/")) return route.continue();
       if (path === "/api/session") value = { token: "fixture-token" };
       else if (path === "/api/accounts")
         value = { accounts: [], defaultAccountKey: "default" };
@@ -144,7 +217,114 @@ test("Background controls", async ({ context }) => {
         };
       else if (path === "/api/workspace")
         value = { tasks: [native], monitors: [monitor] };
-      else if (path === "/api/task") value = native;
+      else if (path === "/api/processes" && req.method() === "GET")
+        value = {
+          responseTarget,
+          processes: emptyProcessList
+            ? []
+            : [
+                {
+                  id: monitor.id,
+                  key: "monitor-key",
+                  generation: "monitor-generation",
+                  agent: "lead",
+                  accountKey: "default",
+                  epoch: 4,
+                  source: "monitor",
+                  status: "running",
+                  cancelRequested: !!monitor.cancelRequested,
+                  created: monitor.created,
+                  name: monitor.command,
+                  command: monitor.command,
+                  output: monitor.tail,
+                  error: monitor.error,
+                  log: monitor.log,
+                  capabilities: {
+                    readOutput: true,
+                    sendInput: true,
+                    resize: true,
+                    stop: true,
+                  },
+                },
+                {
+                  ...claudeTask,
+                  key: "claude-task-key",
+                  generation: "claude-task-generation",
+                  output: "",
+                },
+                {
+                  id: native.id,
+                  key: "native-key",
+                  generation: "native-generation",
+                  agent: "lead",
+                  accountKey: "default",
+                  epoch: 4,
+                  source: "codex_task",
+                  status: "running",
+                  cancelRequested: false,
+                  created: native.created,
+                  name: native.name,
+                  command: native.command,
+                  output: native.tail,
+                  capabilities: {
+                    readOutput: true,
+                    sendInput: true,
+                    resize: false,
+                    stop: true,
+                  },
+                },
+              ],
+        };
+      else if (path === "/api/processes/action") {
+        if (req.method() === "GET") {
+          receiptLookupCount++;
+          if (rejectNextReceiptLookup) {
+            rejectNextReceiptLookup = false;
+            return route.fulfill({
+              status: 400,
+              json: { error: "Receipt lookup query rejected" },
+            });
+          }
+          const requestId = new URL(req.url()).searchParams.get("requestId");
+          const result = processReceipts.get(requestId);
+          return route.fulfill({
+            json: { found: !!result, result: result || null },
+          });
+        }
+        if (body.action === "stop_response" && rejectNextResponseStop) {
+          rejectNextResponseStop = false;
+          return route.fulfill({
+            status: 400,
+            json: { error: "Response changed. Refresh the process list" },
+          });
+        }
+        value = processReceipts.get(body.requestId);
+        if (!value) {
+          if (body.action === "stop_selected") {
+            selectedStopDispatches++;
+            monitor.cancelRequested = true;
+          }
+          value = {
+            requestId: body.requestId,
+            status: "completed",
+            processes:
+              body.action === "stop_selected"
+                ? [
+                    {
+                      key: body.process.key,
+                      agent: body.process.agent,
+                      status: "requested",
+                    },
+                  ]
+                : [],
+          };
+          processReceipts.set(body.requestId, value);
+          if (body.action === "stop_selected" && dropNextSelectedStopReply) {
+            dropNextSelectedStopReply = false;
+            return route.abort();
+          }
+        }
+      } else if (path === "/api/task") value = native;
       else if (path === "/api/transcript") value = { items: [], agent };
       else if (path === "/api/transcript/stream")
         return route.fulfill({ status: 503, body: "fixture polling" });
@@ -194,13 +374,91 @@ test("Background controls", async ({ context }) => {
       await route.fulfill({ json: value });
     });
     const origin = `http://127.0.0.1:${server.address().port}`;
-    await stubEntityState(page, state, await readFixtureSyncContract(origin));
-    await page.goto(origin);
+    const entityState = await stubEntityState(
+      page,
+      state,
+      await readFixtureSyncContract(origin),
+    );
+    await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await page.waitForFunction(
+      () => window.__schemaHandshakeEvents?.length > 0,
+      undefined,
+      { timeout: 5000 },
+    );
+    const handshakes = await page.evaluate(() =>
+      window.__schemaHandshakeEvents.map((data) => JSON.parse(data)),
+    );
+    assert.equal(handshakes[0].hash, readApiSchemaHash());
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
     await page.locator("#tasks-toggle").click();
     const drawer = page.getByRole("dialog", { name: /Current activity/ });
+    assert.equal(
+      await page
+        .getByRole("alertdialog", { name: "Studio update required" })
+        .isVisible(),
+      false,
+      "the fixture identity and stream use the generated schema",
+    );
+    rejectNextResponseStop = true;
+    await drawer
+      .getByRole("button", { name: "Stop response", exact: true })
+      .click();
+    assert.equal(writes.at(-1).path, "/api/processes/action");
+    assert.equal(writes.at(-1).body.action, "stop_response");
+    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    await page
+      .getByText("Response changed. Refresh the process list", { exact: true })
+      .waitFor();
+    await drawer
+      .getByRole("button", { name: "Stop response", exact: true })
+      .click();
+    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    assert.equal(
+      monitor.status,
+      "running",
+      "response stop leaves the monitor running",
+    );
+    const unchangedMonitors = state.runtime.monitors;
+    const unchangedTasks = state.runtime.tasks;
+    Object.assign(agent, { inFlight: false, turnId: null, status: "idle" });
+    await entityState.update(state, { origin, token: "fixture-token" });
+    await expect(
+      drawer.getByRole("button", { name: "Stop response", exact: true }),
+    ).toBeDisabled();
+    Object.assign(agent, {
+      inFlight: true,
+      turnId: "turn-next",
+      status: "running",
+    });
+    responseTarget.turnId = "turn-next";
+    await entityState.update(state, { origin, token: "fixture-token" });
+    await drawer
+      .getByRole("button", { name: "Stop response", exact: true })
+      .waitFor({ state: "visible" });
+    await expect(
+      drawer.getByRole("button", { name: "Stop response", exact: true }),
+    ).toBeEnabled();
+    await drawer
+      .getByRole("button", { name: "Stop response", exact: true })
+      .click();
+    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    assert.equal(state.runtime.monitors, unchangedMonitors);
+    assert.equal(state.runtime.tasks, unchangedTasks);
+    await drawer
+      .getByRole("button", { name: "Stop owned processes", exact: true })
+      .click();
+    assert.equal(writes.at(-1).body.action, "stop_owned");
+    assert.equal(writes.at(-1).body.includeDescendants, false);
+    assert.deepEqual(
+      writes.at(-1).body.processes.map((process) => process.key),
+      ["monitor-key", "claude-task-key", "native-key"],
+    );
+    await drawer
+      .getByRole("heading", { name: "Background tasks", exact: true })
+      .waitFor();
+    await drawer.locator('[data-task="lead:task:background-1"]').waitFor();
     assert.equal(
       await drawer
         .getByRole("button", { name: /^(New monitor|Start monitor)$/ })
@@ -289,24 +547,52 @@ test("Background controls", async ({ context }) => {
       .waitFor();
     assert.equal(writes.at(-1).body.closeStdin, true);
     assert.equal(await input.isDisabled(), true);
+    dropNextSelectedStopReply = true;
     await drawer
-      .getByRole("button", { name: "Cancel monitor", exact: true })
+      .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    const stopRequested = drawer.getByRole("button", {
-      name: "Stop requested",
-      exact: true,
-    });
-    await stopRequested.waitFor();
-    assert.equal(await stopRequested.isDisabled(), true);
-    assert.equal(
-      await drawer.getByText("Waiting for exit", { exact: true }).count(),
-      2,
-    );
+    assert.equal(writes.at(-1).path, "/api/processes/action");
+    assert.equal(writes.at(-1).body.action, "stop_selected");
+    assert.equal(writes.at(-1).body.process.key, "monitor-key");
     assert.equal(
       monitor.status,
       "running",
-      "Cancellation preserves the active process",
+      "The stop request does not claim that the process exited",
     );
+    const lostReply = writes.at(-1).body;
+    await page
+      .getByText(
+        "The stop reply is unknown. Check its receipt before another stop.",
+      )
+      .waitFor();
+    await page.reload();
+    await page.getByRole("heading", { name: /Release lead/ }).waitFor();
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator("#tasks-toggle").click();
+    rejectNextReceiptLookup = true;
+    await drawer
+      .getByRole("button", { name: "Check stop result", exact: true })
+      .click();
+    await page
+      .getByText(
+        "The stop result is still unknown. Check its receipt again later.",
+      )
+      .waitFor();
+    assert.equal(receiptLookupCount, 1);
+    assert.equal(selectedStopDispatches, 1);
+    assert.equal(
+      writes.filter((write) => write.body.requestId === lostReply.requestId)
+        .length,
+      1,
+    );
+    await drawer
+      .getByRole("button", { name: "Check stop result", exact: true })
+      .click();
+    await page.getByText("Stop result: requested", { exact: true }).waitFor();
+    assert.equal(receiptLookupCount, 2);
+    assert.equal(selectedStopDispatches, 1);
     await drawer.locator('[data-task="native-task"]').click();
     await drawer
       .getByRole("button", { name: "Send via agent", exact: true })
@@ -320,11 +606,13 @@ test("Background controls", async ({ context }) => {
       body: { id: "native-task", text: "continue\n", action: "input" },
     });
     await drawer
-      .getByRole("button", { name: "Stop command", exact: true })
+      .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1), {
-      path: "/api/native-command",
-      body: { id: "native-task", action: "cancel" },
+    assert.equal(writes.at(-1).path, "/api/processes/action");
+    assert.equal(writes.at(-1).body.action, "stop_selected");
+    assert.equal(writes.at(-1).body.process.key, "native-key");
+    await page.screenshot({
+      path: testInfo.outputPath("native-command-controls.png"),
     });
     assert.equal(
       writes.some(
@@ -332,6 +620,18 @@ test("Background controls", async ({ context }) => {
       ),
       false,
     );
+    emptyProcessList = true;
+    await page.reload();
+    await page.getByRole("heading", { name: /Release lead/ }).waitFor();
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator("#tasks-toggle").click();
+    await expect(
+      page
+        .getByRole("dialog", { name: /Current activity/ })
+        .getByRole("button", { name: "Stop owned processes", exact: true }),
+    ).toBeDisabled();
     agent.status = "starting";
     agent.startAttempt = {
       prepareError: "Thread preparation acknowledgement pending",
@@ -369,6 +669,7 @@ test("Background controls", async ({ context }) => {
     assert.deepEqual(errors, []);
     console.log(`PASS background controls browser contract. Evidence: ${root}`);
   } finally {
+    server.closeAllConnections();
     await page?.close();
     await new Promise((r) => server.close(r));
   }

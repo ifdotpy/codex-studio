@@ -764,6 +764,7 @@ class Watcher:
         self.pending: dict[Path, set[str] | None] = {}
         self.last: dict[Path, float] = {}
         self.guard = threading.Lock()
+        self.ready = threading.Event()
 
     def available(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -792,6 +793,11 @@ class Watcher:
                 try:
                     event = json.loads(line)
                 except ValueError:
+                    continue
+                if process is not self.process:
+                    return
+                if event.get('ready') == list(map(str, self.roots)):
+                    self.ready.set()
                     continue
                 value = event.get('path') or event.get('rescan')
                 if not isinstance(value, str):
@@ -825,6 +831,7 @@ class Watcher:
             except subprocess.TimeoutExpired:
                 self.process.kill()
         self.process = None
+        self.ready.clear()
 
 
 def watcher_helper() -> Path:

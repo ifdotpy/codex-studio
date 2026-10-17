@@ -188,10 +188,10 @@ class SupervisorWriteReduction(unittest.TestCase):
         runtime, agent = self.runtime_fixture()
         record_task = runtime.record_task
 
-        def fail_second(db, a, method, params, stale):
+        def fail_second(db, a, method, params, stale, **source):
             if params['item']['id'] == 'reasoning-2':
                 raise RuntimeError('fixture effect failure')
-            return record_task(db, a, method, params, stale)
+            return record_task(db, a, method, params, stale, **source)
 
         runtime.record_task = fail_second
         dispatcher = self.dispatcher(runtime)

@@ -35,6 +35,8 @@ use studio_runtime_store::supervisor_journal::{
 
 const MAX_REQUEST_BYTES: u64 = crate::transport::MAX_FRAME_BYTES as u64;
 const MAX_CONNECTIONS: usize = 512;
+/// Pause after an accept error before the listener tries again.
+const ACCEPT_RETRY: Duration = Duration::from_millis(50);
 const MAX_CHILDREN: usize = 128;
 const FRAME_BUDGET: Duration = Duration::from_secs(10);
 const OPERATOR_CLOSED: &str = "Closed by operator after verified test/unknown-client ownership";
@@ -677,7 +679,15 @@ fn read_frame(
                     ))
             })
             .transpose()?;
-        reader.get_ref().set_read_timeout(remaining)?;
+        match reader.get_ref().set_read_timeout(remaining) {
+            Ok(()) => {}
+            // macOS refuses socket options with EINVAL once both directions
+            // are shut down; a read then returns buffered bytes or EOF without
+            // blocking, so the buffered frame is still read as on Linux.
+            Err(e) if cfg!(target_os = "macos") && e.kind() == std::io::ErrorKind::InvalidInput => {
+            }
+            Err(e) => return Err(e.into()),
+        }
         let chunk = match reader.fill_buf() {
             Ok(chunk) => chunk,
             Err(e)
@@ -1025,7 +1035,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
 
 /// Serve only the explicitly selected directory. Does not install or connect to another service.
 pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(Error::Refused(
             "Not implemented: requires native supervisor process identity for this platform",
         ));
@@ -1123,10 +1133,16 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     for socket in listener.incoming() {
-        let mut socket = socket?;
+        let Some(mut socket) = accepted(socket) else {
+            continue;
+        };
         if supervisor.connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
             supervisor.connections.fetch_sub(1, Ordering::AcqRel);
-            socket.set_write_timeout(Some(Duration::from_secs(1)))?;
+            if socket
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .is_err()
+            { /* The rejected connection may already have closed; keep listening. */
+            }
             if write_frame(
                 &mut socket,
                 &json!({"error":"Supervisor connection capacity reached"}),
@@ -1140,6 +1156,20 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     }
     drop(lease);
     Ok(())
+}
+
+/// One accepted connection, or `None` after an accept error. Children stay owned only while the
+/// listener runs, so an accept error (EMFILE at the descriptor limit, ECONNABORTED) must not end
+/// it; Python's socketserver also keeps serving. The pause keeps a lasting error from spinning.
+fn accepted(socket: std::io::Result<UnixStream>) -> Option<UnixStream> {
+    match socket {
+        Ok(socket) => Some(socket),
+        Err(error) => {
+            eprintln!("supervisor could not accept a connection: {error}");
+            thread::sleep(ACCEPT_RETRY);
+            None
+        }
+    }
 }
 
 #[cfg(test)]

@@ -59,8 +59,23 @@
 }
 
 .tasks-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   padding: 10px 16px;
   gap: 8px;
+}
+.tasks-process-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.process-control-results {
+  margin: 0;
+  padding: 4px 16px 8px 32px;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
 }
 .tasks-filter-help {
   font-size: var(--studio-text-meta);

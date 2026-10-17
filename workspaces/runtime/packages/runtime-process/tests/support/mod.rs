@@ -34,7 +34,9 @@ pub(crate) struct DisposableState(pub(crate) PathBuf, tempfile::TempDir);
 impl DisposableState {
     pub(crate) fn new() -> Self {
         let directory = tempfile::Builder::new().prefix("rp-").tempdir().unwrap();
-        let path = directory.path().to_path_buf();
+        // Supervisors compare the handshake state directory with their resolved
+        // root; macOS temporary directories sit behind the /var symlink.
+        let path = directory.path().canonicalize().unwrap();
         assert_outside_runtime_state(&path);
         assert_socket_path_fits(&path.join(SOCKET));
         Self(path, directory)
@@ -98,8 +100,13 @@ impl SupervisorProcess {
             Path::new(SUPERVISOR).is_file(),
             "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
         );
+        // The Rust retained-child daemon has Linux process identity support.
+        // Keep v1 compatibility tests on the supported Python daemon elsewhere.
+        #[cfg(target_os = "linux")]
         let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
             .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into));
+        #[cfg(not(target_os = "linux"))]
+        let binary: Option<std::ffi::OsString> = None;
         let (command, description) = if let Some(binary) = binary {
             (Command::new(binary), "configured supervisor")
         } else {
@@ -294,6 +301,13 @@ pub(crate) fn child_environment(root: &Path) -> BTreeMap<String, String> {
         let path = root.join(dir);
         std::fs::create_dir_all(&path).unwrap();
         env.insert(name.into(), path.to_string_lossy().into_owned());
+    }
+    // A macOS launcher stub (Homebrew Python) re-executes itself after
+    // CoreFoundation adds this ambient value when it is absent. A desktop
+    // backend always passes it, so pass it here to keep the launch exact.
+    #[cfg(target_os = "macos")]
+    if let Ok(value) = std::env::var("__CF_USER_TEXT_ENCODING") {
+        env.insert("__CF_USER_TEXT_ENCODING".into(), value);
     }
     env
 }

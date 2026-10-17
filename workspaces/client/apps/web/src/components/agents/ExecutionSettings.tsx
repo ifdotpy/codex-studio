@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
@@ -11,7 +12,6 @@ import {
 import { ChevronDown } from "lucide-react";
 import {
   useCallback,
-  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -19,18 +19,11 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  post,
-  ApiError,
-  errorText,
-  save,
-  saved,
-  type PostBody,
-} from "../../api";
+import { ApiError, errorText, type PostBody } from "../../api";
 import { busy, type Agent, type Json, type JsonValue } from "../../types";
 import {
   isDaybreakAlias,
-  ModelCatalogReader,
+  useModelCatalogReader,
   readWorkerModels,
   supportsDaybreakMode,
   useWorkerModels,
@@ -289,6 +282,8 @@ function ScopedExecutionSettings({
   opened: boolean;
   setOpened: (opened: boolean) => void;
 }) {
+  const { post, save, saved } = useServerApi();
+
   const [permissionsTarget, setPermissionsTarget] =
     useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -474,7 +469,7 @@ function ScopedExecutionSettings({
     crossProvider && (opened || !!settingsRow),
     true,
   );
-  const catalogReader = useContext(ModelCatalogReader);
+  const catalogReader = useModelCatalogReader();
   const existingElsewhere = (team || []).filter(
     (member) =>
       member.rootId === agent.id &&

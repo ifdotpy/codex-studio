@@ -1,5 +1,6 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef } from "react";
-import { saved, save } from "../api";
+import "../api";
 import { limitRecovered } from "../usage/limitRecovery";
 import type { Agent, Json } from "../types";
 
@@ -8,6 +9,8 @@ export function useRecoveredLimit(
   limits: Json | null,
   now: number,
 ) {
+  const { saved, save } = useServerApi();
+
   const storageKey = `studio-recovered-limit:${JSON.stringify([
     agent.id,
     agent.accountKey,

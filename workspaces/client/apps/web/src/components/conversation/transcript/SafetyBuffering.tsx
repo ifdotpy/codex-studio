@@ -1,11 +1,14 @@
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import ErrorDescription from "../../ErrorDescription";
 import { useRef, useState } from "react";
 import { Button, Modal } from "@mantine/core";
 import { Clock3 } from "lucide-react";
-import { post, errorText } from "../../../api";
+import { errorText } from "../../../api";
 import type { Agent } from "../../../types";
 
 export default function SafetyBuffering({ agent }: { agent: Agent }) {
+  const { post } = useServerApi();
+
   const [confirm, setConfirm] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");

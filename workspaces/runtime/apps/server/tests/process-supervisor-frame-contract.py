@@ -11,6 +11,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import io
 import os
 import socket
 import threading
@@ -22,6 +23,19 @@ import codex_process_supervisor as supervisor
 
 @unittest.skipUnless(os.name == "posix", "POSIX supervisor frame contract")
 class ProcessSupervisorFrameContract(unittest.TestCase):
+    def test_large_native_history_envelope_round_trips(self):
+        payload = {"requestId": 7, "result": {"event": {
+            "sequence": 1, "kind": "stdout", "generation": 1,
+            "payload": json.dumps({"result": {"data": [
+                {"text": 'native history "quoted"\n' * 100000}
+            ]}}),
+        }}}
+        writer = io.BytesIO()
+        supervisor._write_frame(writer, payload)
+        self.assertGreater(len(writer.getvalue()), 1024 * 1024)
+        self.assertEqual(supervisor._recv(None, io.StringIO(
+            writer.getvalue().decode())), payload)
+
     def test_send_rejects_oversized_frame_before_writing(self):
         class Writer:
             def __init__(self):

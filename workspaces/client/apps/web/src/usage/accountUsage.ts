@@ -124,51 +124,68 @@ export function limitsSnapshotIsFresh(
   );
 }
 
-// The same server-scoped record is used by App and account controls.
-let cacheScope: string | undefined;
-let cache: Record<string, AccountLimitsSnapshot> = {};
-const cacheListeners = new Set<() => void>();
-export function configureLimitsCache(scope: string) {
-  if (scope === cacheScope) return;
-  cacheScope = scope;
-  cache = {};
-  try {
-    const stored = JSON.parse(
-      serverLocalStorage.getItem(`codex-limits:${scope}`) || "{}",
-    );
-    for (const [key, value] of Object.entries(stored)) {
-      const snapshot = accountLimits(value as JsonValue, key);
-      if (snapshot) cache[key] = snapshot;
+// Each server owns its in-memory snapshots, listeners, and durable namespace.
+export function createAccountLimitsCache(
+  storage: Pick<Storage, "getItem" | "setItem">,
+) {
+  let cacheScope: string | undefined;
+  let cache: Record<string, AccountLimitsSnapshot> = {};
+  const cacheListeners = new Set<() => void>();
+  function configureLimitsCache(scope: string) {
+    if (scope === cacheScope) return;
+    cacheScope = scope;
+    cache = {};
+    try {
+      const stored = JSON.parse(
+        storage.getItem(`codex-limits:${scope}`) || "{}",
+      );
+      for (const [key, value] of Object.entries(stored)) {
+        const snapshot = accountLimits(value as JsonValue, key);
+        if (snapshot) cache[key] = snapshot;
+      }
+    } catch {
+      /* Storage can be unavailable. */
     }
-  } catch {
-    /* Storage can be unavailable. */
   }
-}
-export function cachedAccountLimits(key: string, accountId?: string | null) {
-  return accountLimits(cache[key], key, accountId);
-}
-export function subscribeLimitsCache(listener: () => void) {
-  cacheListeners.add(listener);
-  return () => {
-    cacheListeners.delete(listener);
+  function cachedAccountLimits(key: string, accountId?: string | null) {
+    return accountLimits(cache[key], key, accountId);
+  }
+  function subscribeLimitsCache(listener: () => void) {
+    cacheListeners.add(listener);
+    return () => {
+      cacheListeners.delete(listener);
+    };
+  }
+  function cacheAccountLimits(snapshot: AccountLimitsSnapshot) {
+    if (cacheScope === undefined) configureLimitsCache("");
+    const previous = cache[snapshot.accountKey];
+    if (previous === snapshot) return;
+    if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return;
+    cache = { ...cache, [snapshot.accountKey]: snapshot };
+    try {
+      storage.setItem(`codex-limits:${cacheScope}`, JSON.stringify(cache));
+    } catch {
+      /* Keep the session cache when storage is unavailable. */
+    }
+    for (const listener of cacheListeners) listener();
+  }
+  function cachedLimitsByAccount() {
+    return cache;
+  }
+
+  return {
+    configureLimitsCache,
+    cachedAccountLimits,
+    subscribeLimitsCache,
+    cacheAccountLimits,
+    cachedLimitsByAccount,
   };
 }
-export function cacheAccountLimits(snapshot: AccountLimitsSnapshot) {
-  if (cacheScope === undefined) configureLimitsCache("");
-  const previous = cache[snapshot.accountKey];
-  if (previous === snapshot) return;
-  if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return;
-  cache = { ...cache, [snapshot.accountKey]: snapshot };
-  try {
-    serverLocalStorage.setItem(
-      `codex-limits:${cacheScope}`,
-      JSON.stringify(cache),
-    );
-  } catch {
-    /* Keep the session cache when storage is unavailable. */
-  }
-  for (const listener of cacheListeners) listener();
-}
-export function cachedLimitsByAccount() {
-  return cache;
-}
+
+export const {
+  configureLimitsCache,
+  cachedAccountLimits,
+  subscribeLimitsCache,
+  cacheAccountLimits,
+  cachedLimitsByAccount,
+} = createAccountLimitsCache(serverLocalStorage);

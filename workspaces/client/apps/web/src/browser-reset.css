@@ -1,0 +1,97 @@
+/* Browser defaults only. Load before Mantine and Studio component styles. */
+*,
+::before,
+::after {
+  box-sizing: border-box;
+}
+
+html {
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  tab-size: 4;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea,
+::file-selector-button {
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+button,
+select {
+  text-transform: none;
+}
+
+button,
+[type="button"],
+[type="reset"],
+[type="submit"],
+::file-selector-button {
+  -webkit-appearance: button;
+  appearance: auto;
+}
+
+/* Search decorations add unrequested padding and clear controls in WebKit. */
+[type="search"] {
+  -webkit-appearance: textfield;
+  appearance: textfield;
+  outline-offset: -2px;
+}
+
+::-webkit-search-decoration {
+  -webkit-appearance: none;
+}
+
+textarea {
+  overflow: auto;
+  resize: vertical;
+}
+
+progress {
+  vertical-align: baseline;
+}
+
+summary {
+  display: list-item;
+}
+
+table {
+  border-collapse: collapse;
+  border-color: inherit;
+  text-indent: 0;
+}
+
+hr {
+  height: 0;
+  color: inherit;
+  border: 0;
+  border-top: 1px solid;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: monospace, monospace;
+  font-size: 1em;
+}
+
+b,
+strong {
+  font-weight: bolder;
+}
+
+/* Preserve native checks, selection, disclosure markers and keyboard focus. */
+[hidden]:not([hidden="until-found"]) {
+  display: none !important;
+}

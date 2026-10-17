@@ -65,8 +65,42 @@ signal.pause()
                     os.kill(child_pid, 0)
             finally:
                 if runner.poll() is None:
-                    os.killpg(runner.pid, signal.SIGKILL)
-                    runner.wait(timeout=5)
+                    # Let the registered owner reap its separate child group even
+                    # when the readiness assertion fails.
+                    runner.send_signal(signal.SIGTERM)
+                    try:
+                        runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(runner.pid, signal.SIGKILL)
+                        runner.wait(timeout=5)
+                if runner.stderr is not None:
+                    runner.stderr.close()
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process groups')
+    def test_group_permission_error_requires_exited_child_and_closed_pipes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix='http-backend-group-') as temporary:
+            backend = http_backend_harness.BackendProcess(
+                Path(temporary), claude_bin=None, initialize_workspace=False,
+            )
+            process = mock.Mock(pid=12345)
+            backend._stdout_reader_done = mock.Mock()
+            backend._stderr_reader_done = mock.Mock()
+            try:
+                with mock.patch.object(http_backend_harness.os, 'killpg',
+                                       side_effect=PermissionError):
+                    process.poll.return_value = None
+                    with self.assertRaises(PermissionError):
+                        backend._signal_group(process, signal.SIGTERM)
+                    backend._stdout_reader_done.wait.assert_not_called()
+                    process.poll.return_value = -9
+                    backend._stdout_reader_done.wait.return_value = True
+                    backend._stderr_reader_done.wait.return_value = False
+                    with self.assertRaises(PermissionError):
+                        backend._signal_group(process, signal.SIGKILL)
+                    backend._stderr_reader_done.wait.return_value = True
+                    backend._signal_group(process, signal.SIGKILL)
+            finally:
+                backend.close()
 
     def test_not_ready_waits_for_child_exit_before_reporting_status(self) -> None:
         with tempfile.TemporaryDirectory(prefix="http-backend-exit-") as temporary:

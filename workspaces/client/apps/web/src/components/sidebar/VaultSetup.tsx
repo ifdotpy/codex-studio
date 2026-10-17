@@ -11,6 +11,7 @@ import {
   Title,
 } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useServerFileDialogs } from "../../servers/ServerServicesContext";
 import { errorText } from "../../api";
 import type { SidebarBackend } from "./services";
 import {
@@ -40,6 +41,7 @@ export default function VaultSetup({
   onClose: () => void;
   onDone: (text: string) => void;
 }) {
+  const { showVaultKeys, canShowVaultKeys } = useServerFileDialogs();
   const projectId = entry.vault.projectId;
   const [facts, setFacts] = useState<VaultSetupFacts | null>(null);
   const [prefix, setPrefix] = useState("");
@@ -97,7 +99,7 @@ export default function VaultSetup({
   const showKeys = async () => {
     setError(null);
     try {
-      await window.codexDesktop!.showVaultKeys(prefix);
+      await showVaultKeys(prefix);
       setWaitingForKeys(true);
     } catch (failure) {
       setError(errorText(failure));
@@ -151,7 +153,7 @@ export default function VaultSetup({
     job?.state === "signin" || (chosen && chosen.signedIn === false);
   const running = job?.state === "running";
   const done = job?.state === "done";
-  const desktop = !!window.codexDesktop?.showVaultKeys;
+  const desktop = canShowVaultKeys();
   return (
     <Modal opened onClose={onClose} title={`Set up a LAYR vault for ${name}`}>
       <Stack>

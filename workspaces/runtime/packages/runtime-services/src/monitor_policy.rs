@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-pub const TAIL_CHARS: usize = 12_000;
+pub const TAIL_CHARS: usize = studio_runtime_schema::shared_values::MONITOR_OUTPUT_TAIL_CODEPOINTS;
 pub const CHUNK_BYTES: usize = 65_536;
 pub const PROBE_LEASE_SECONDS: f64 = 90.0;
 pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
@@ -149,8 +149,8 @@ struct Fields {
     cancel_requested: bool,
     #[serde(default)]
     interactive: bool,
-    #[serde(default)]
-    tail: String,
+    #[serde(default, rename = "tail")]
+    _tail: String,
     #[serde(default)]
     bytes: u64,
     #[serde(default)]
@@ -288,6 +288,10 @@ impl MonitorSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
+    OutputEvent {
+        id: String,
+        payload: Value,
+    },
     ExitEvent {
         wake: bool,
     },
@@ -366,6 +370,16 @@ pub fn output(
     chunk: &[u8],
     now: f64,
 ) -> Result<Decision, MonitorError> {
+    output_stream(snapshot, operation, "stdout", chunk, now)
+}
+
+pub fn output_stream(
+    snapshot: &MonitorSnapshot,
+    operation: &Operation,
+    stream: &str,
+    chunk: &[u8],
+    now: f64,
+) -> Result<Decision, MonitorError> {
     snapshot.check_operation(operation)?;
     let mut decision = snapshot.decision();
     if snapshot.fields.status != MonitorStatus::Running {
@@ -379,12 +393,8 @@ pub fn output(
         .bytes
         .checked_add(chunk.len() as u64)
         .ok_or(MonitorError::Refused("Monitor output counter exhausted"))?;
-    let tail = format!("{}{}", snapshot.fields.tail, String::from_utf8_lossy(chunk));
-    decision.record["tail"] = json!(
-        tail.chars()
-            .skip(tail.chars().count().saturating_sub(TAIL_CHARS))
-            .collect::<String>()
-    );
+    crate::monitor_matches::append(&mut decision.record, stream, chunk, snapshot.active_owner())?;
+    output_effect(snapshot, &mut decision, now, false);
     decision.record["bytes"] = json!(bytes);
     if !chunk.is_empty() {
         decision.record["activityAt"] = json!(now);
@@ -423,6 +433,8 @@ pub fn finish(
     }
     let mut decision = snapshot.decision();
     if !snapshot.fields.status.terminal() {
+        crate::monitor_matches::flush(&mut decision.record)?;
+        output_effect(snapshot, &mut decision, now, true);
         decision.record["status"] = json!(if snapshot.fields.cancel_requested {
             MonitorStatus::Cancelled
         } else if error.is_some_and(|e| !e.is_empty())
@@ -455,9 +467,22 @@ pub fn finish(
     Ok(decision)
 }
 
+fn output_effect(snapshot: &MonitorSnapshot, decision: &mut Decision, now: f64, final_chunk: bool) {
+    if snapshot.fields.rule_id.is_none()
+        && snapshot.active_owner()
+        && let Some((id, payload)) =
+            crate::monitor_matches::pending(&mut decision.record, now, final_chunk)
+    {
+        decision.effects.push(Effect::OutputEvent { id, payload });
+    }
+}
+
 pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorError> {
     let f = &snapshot.fields;
     let mut decision = snapshot.decision();
+    if f.status == MonitorStatus::Running {
+        output_effect(snapshot, &mut decision, now, false);
+    }
     let quiet = (now - f.activity_at.or(f.created).unwrap_or(now)).max(0.0) as u64;
     if f.status != MonitorStatus::Running
         || !snapshot.active_owner()
@@ -872,7 +897,10 @@ pub fn create_record(
         .cloned()
         .unwrap_or(json!([0]));
 
+    let output_patterns = crate::monitor_matches::patterns(request.get("output_patterns"))?;
     let mut record = json!({
+        "outputPatterns": output_patterns,
+        "outputEventSequence": 0, "outputEventCount": 0, "outputEventIds": [],
         "id": id, "agent": agent, "epoch": actor.get("epoch"), "turnId": actor.get("turnId"), "requestId": request_id,
         "command": command, "cwd": actor.get("cwd"), "timeout_ms": request.get("timeout_ms").cloned().unwrap_or(json!(3600000)),
         "stallTimeoutSeconds": request.get("stall_timeout_seconds").cloned().unwrap_or(json!(1800)),
@@ -907,4 +935,6 @@ pub fn same_request(previous: &Value, proposed: &Value) -> bool {
     ]
     .iter()
     .all(|field| previous.get(*field) == proposed.get(*field))
+        && previous.get("outputPatterns").cloned().unwrap_or(json!([]))
+            == proposed.get("outputPatterns").cloned().unwrap_or(json!([]))
 }

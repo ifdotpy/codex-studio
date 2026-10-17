@@ -1,3 +1,4 @@
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import MessageDate from "../../conversation/transcript/MessageDate";
 import AgentAvatar from "../../agents/AgentAvatar";
 import {
@@ -9,7 +10,7 @@ import {
 } from "@mantine/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
-import { save, saved } from "../../../api";
+import "../../../api";
 import { useMessages } from "../../../hooks";
 import type { JsonValue, Snapshot } from "../../../types";
 import StreamingText from "../../conversation/transcript/StreamingText";
@@ -49,6 +50,8 @@ export default function TeamChats({
   refresh: () => Promise<void>;
   notify: (message: string) => void;
 }) {
+  const { save, saved } = useServerApi();
+
   const scope = `${data.stateDir}:${leadId}`;
   const [selection, setSelection] = useState({
     scope,

@@ -157,6 +157,68 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
         now: f64,
     ) -> BoxFuture<'a, Result<Value, Error>> {
         Box::pin(async move {
+            let wait_ms = match args.get("wait_timeout_ms") {
+                None => 0,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|v| {
+                        *v <= studio_runtime_schema::shared_values::MONITOR_WAIT_MAX_MILLISECONDS
+                            as u64
+                    })
+                    .ok_or(Error::Invalid("wait_timeout_ms must be 0 to 10000"))?,
+            };
+            let deadline = (wait_ms > 0)
+                .then(|| tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms));
+            let has_command = args["command"].is_string();
+            let monitor_id = args["monitor_id"].as_str();
+            if has_command == monitor_id.is_some() {
+                return Err(Error::Invalid(
+                    "Supply exactly one of command or monitor_id",
+                ));
+            }
+            let account = actor
+                .record()
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            if let Some(id) = monitor_id {
+                if id.is_empty()
+                    || id.chars().count() > 200
+                    || [
+                        "command",
+                        "output_patterns",
+                        "timeout_ms",
+                        "wake_on",
+                        "success_exit_codes",
+                        "interactive",
+                        "stall_timeout_seconds",
+                        "liveness_command",
+                    ]
+                    .iter()
+                    .any(|key| args.get(*key).is_some())
+                {
+                    return Err(Error::Invalid(
+                        "monitor_id observation accepts only monitor_id and wait_timeout_ms",
+                    ));
+                }
+                let _slot = self
+                    .runtime
+                    .observation_slot(wait_ms)
+                    .map_err(monitor_error)?;
+                return self
+                    .runtime
+                    .observe(
+                        actor.record().id.0.as_str(),
+                        actor.record().epoch,
+                        account,
+                        id,
+                        deadline,
+                        None,
+                    )
+                    .await
+                    .map_err(monitor_error);
+            }
             let log_root = store.root().join("monitor-logs");
             let log_root = log_root
                 .to_str()
@@ -172,14 +234,29 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 request: &request,
                 log_root,
             };
-            if let Some(value) =
+            if let Some(mut value) =
                 crate::monitor_runtime::stored_create_result(store, &admission, now)
                     .await
                     .map_err(monitor_error)?
             {
                 self.runtime.wake_tick();
-                return Ok(value);
+                // Admission already committed: capacity exhaustion must retain
+                // that command's identity rather than claim nothing was started.
+                let _slot = match self.runtime.observation_slot(wait_ms) {
+                    Ok(slot) => slot,
+                    Err(_) => {
+                        value["observationError"] = json!(
+                            "Monitor wait capacity is full; the existing command remains recorded"
+                        );
+                        return Ok(value);
+                    }
+                };
+                return self.observe_created(actor, value, deadline).await;
             }
+            let _slot = self
+                .runtime
+                .observation_slot(wait_ms)
+                .map_err(monitor_error)?;
             let workspace = self
                 .environment
                 .prepare_workspace(store, actor.record(), args, &request_id)
@@ -204,6 +281,11 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                         request: &admission_request,
                         log_root: &log_root,
                     };
+                    if deadline.is_some_and(|limit| tokio::time::Instant::now() >= limit) {
+                        return Err(crate::monitor_policy::MonitorError::Refused(
+                            "wait_timeout_ms expired before launch; command was not started",
+                        ));
+                    }
                     crate::monitor_runtime::create_in_transaction(
                         tx,
                         &admission,
@@ -214,8 +296,47 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 .await
                 .map_err(monitor_error)?;
             self.runtime.wake_tick();
-            Ok(value)
+            self.observe_created(actor, value, deadline).await
         })
+    }
+}
+
+impl ManagedMonitorCreateAdapter {
+    async fn observe_created(
+        &self,
+        actor: &Actor,
+        record: Value,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<Value, Error> {
+        if deadline.is_none() {
+            return Ok(record);
+        }
+        let Some(id) = record["id"].as_str() else {
+            return Ok(record);
+        };
+        let account = actor
+            .record()
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        match self
+            .runtime
+            .observe(
+                actor.record().id.0.as_str(),
+                actor.record().epoch,
+                account,
+                id,
+                deadline,
+                Some(record["outputEventSequence"].as_u64().unwrap_or(0)),
+            )
+            .await
+        {
+            Ok(value) => Ok(value),
+            Err(error) => Ok(
+                json!({"id":id,"status":"unknown","outcome":"unknown","observationError":error.to_string().chars().take(1000).collect::<String>()}),
+            ),
+        }
     }
 }
 

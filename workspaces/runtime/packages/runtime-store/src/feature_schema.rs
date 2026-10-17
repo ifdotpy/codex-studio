@@ -230,6 +230,7 @@ const FEATURE_SCHEMA: &str = r#"
                 json_extract(record,'$.threadId'), json_extract(record,'$.turnId'))
                 WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.autoWake')=1;
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup ON runtime_agents(json_extract(record,'$.contextRepair.sourceCleanup.accountKey'),json_extract(record,'$.contextRepair.sourceCleanup.threadId')) WHERE json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted');
+            CREATE TABLE IF NOT EXISTS runtime_process_actions (id TEXT PRIMARY KEY, signature TEXT NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_native_action_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL, outcome TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL);

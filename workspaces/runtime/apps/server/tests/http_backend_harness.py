@@ -570,7 +570,8 @@ class BackendProcess:
         state_root: Path | None = None,
     ):
         self.scratch_root = scratch_root.resolve(strict=True)
-        self.root = Path(tempfile.mkdtemp(prefix="http-boundary-", dir=self.scratch_root)).resolve(strict=True)
+        # Nested oracle fixtures must also fit macOS Unix socket paths.
+        self.root = Path(tempfile.mkdtemp(prefix="h-", dir=self.scratch_root)).resolve(strict=True)
         if self.scratch_root not in self.root.parents:
             raise RuntimeError("Backend state escaped the runner scratch root")
         self.state = (
@@ -1374,6 +1375,21 @@ class BackendProcess:
             return []
         return [float(line) for line in self._provider_start_log.read_text(encoding="utf-8").splitlines()]
 
+    def _signal_group(self, process: subprocess.Popen, sig: int) -> None:
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS can report EPERM for an already-reaped process group.
+            # Only accept it after the owned child and both output pipes end.
+            if process.poll() is None:
+                raise
+            if not all(done.wait(PIPE_READER_DRAIN_TIMEOUT_SECONDS) for done in (
+                self._stdout_reader_done, self._stderr_reader_done,
+            )):
+                raise
+
     def stop(self) -> None:
         process = self._process
         if process is None:
@@ -1387,10 +1403,7 @@ class BackendProcess:
                 if process.poll() is None:
                     process.terminate()
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGTERM)
             if process.poll() is None:
                 wait_started = time.monotonic()
                 process.wait(timeout=STOP_TIMEOUT_SECONDS)
@@ -1400,10 +1413,7 @@ class BackendProcess:
             if os.name == "nt":
                 process.kill()
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGKILL)
             try:
                 process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired as error:
@@ -1418,10 +1428,7 @@ class BackendProcess:
             if process.stdin is not None:
                 process.stdin.close()
             if os.name != "nt":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self._signal_group(process, signal.SIGKILL)
             stuck_readers = []
             for stream_name, reader_done in (
                 ("stdout", self._stdout_reader_done),

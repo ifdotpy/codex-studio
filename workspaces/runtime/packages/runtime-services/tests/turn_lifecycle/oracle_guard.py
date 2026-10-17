@@ -43,9 +43,13 @@ class OracleGuard:
 
     def reject_lexical(self, path):
         if isinstance(path, (str, bytes, os.PathLike)):
-            absolute = Path(os.path.abspath(os.fsdecode(path)))
-            if any(absolute == root or root in absolute.parents for root in self.forbidden):
-                raise IsolationViolation("oracle refused access to a forbidden provider home")
+            absolute = os.path.abspath(os.fsdecode(path))
+            # POSIX Path ancestry is exact equality or a separator-bounded prefix.
+            # Avoid allocating every ancestor for every recursive metadata probe.
+            for root in self.forbidden:
+                prefix = os.fspath(root)
+                if absolute == prefix or absolute.startswith(prefix + os.sep):
+                    raise IsolationViolation("oracle refused access to a forbidden provider home")
 
     def audit(self, event, args):
         if event in {"socket.connect", "socket.bind"} and self.allow_loopback:
@@ -88,6 +92,16 @@ class OracleGuard:
             alias.symlink_to(forbidden, target_is_directory=True)
             self.forbidden.add(forbidden)
             try:
+                # A sibling sharing the name prefix is outside the forbidden tree.
+                self.reject_lexical(root / "synthetic-provider-home-neighbor" / "test")
+                for lexical in (forbidden, forbidden / "test", os.fsencode(forbidden / "test"),
+                                root / "neighbor" / ".." / forbidden.name / "test"):
+                    try:
+                        self.reject_lexical(lexical)
+                    except IsolationViolation:
+                        pass
+                    else:
+                        raise AssertionError("synthetic lexical boundary guard failed")
                 for path in (forbidden / "test", alias / "test"):
                     for operation in (open, os.stat, os.lstat, os.listdir, os.scandir):
                         try:
@@ -116,7 +130,8 @@ class OracleGuard:
 def install_guard(*, block_processes=False, allow_loopback=False):
     # Give every oracle process private provider homes and scratch space even
     # when the CI parent intentionally supplies no application environment.
-    isolated = tempfile.TemporaryDirectory(prefix="runtime-oracle-")
+    # Keep nested HTTP fixture sockets within the macOS AF_UNIX path limit.
+    isolated = tempfile.TemporaryDirectory(prefix="o-")
     root = Path(isolated.name)
     os.environ["STUDIO_TEST_ISOLATION_ROOT"] = str(root)
     for variable, directory in (

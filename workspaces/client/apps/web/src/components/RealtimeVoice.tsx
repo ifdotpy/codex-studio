@@ -1,10 +1,14 @@
+import { useServerApi } from "../servers/ServerServicesContext";
+import { hasNativeClient } from "../native/client";
+import { useServerAudio } from "../servers/ServerServicesContext";
+import type { nativeVoice } from "../native/voice";
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
-import { errorText, post, type PostResult } from "../api";
+import { errorText, type PostResult } from "../api";
 import type { ResourceConnectionState } from "../sync/client";
 import "./realtime-voice.css";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { watchVoiceTransport } from "./voiceTransport";
 
 type VoiceRecords = PostResult<"/api/voice/records">;
@@ -12,10 +16,12 @@ type VoiceRecord = VoiceRecords["records"][number];
 type Session = PostResult<"/api/voice/start">;
 type Peer = {
   id: string;
-  connection: RTCPeerConnection;
+  connection?: RTCPeerConnection;
+  native?: ReturnType<typeof nativeVoice>;
+  connectionState?: string;
   stream?: MediaStream;
-  audio: HTMLAudioElement;
-  channel: RTCDataChannel;
+  audio?: HTMLAudioElement;
+  channel?: RTCDataChannel;
   remoteSet: boolean;
   ready: boolean;
   closed: boolean;
@@ -38,6 +44,10 @@ function NativeVoice({
   agentId: string;
   notify: (text: string) => void;
 }) {
+  const { dictationBridge, nativeVoice } = useServerAudio();
+  const watchResourceReads = useServerResourceReads();
+  const { post } = useServerApi();
+
   const [opened, setOpened] = useState(false);
   const [active, setActive] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -67,11 +77,12 @@ function NativeVoice({
   const end = (p: Peer) => {
     p.closed = true;
     clearTimeout(p.deadline);
-    p.channel.close();
-    p.connection.close();
+    p.channel?.close();
+    p.connection?.close();
+    void p.native?.close();
     p.stream?.getTracks().forEach((t) => t.stop());
-    p.audio.pause();
-    p.audio.srcObject = null;
+    p.audio?.pause();
+    if (p.audio) p.audio.srcObject = null;
     if (p.submitted)
       void endSession(p.id).catch((e) => {
         if (mounted.current && peer.current === null)
@@ -109,10 +120,12 @@ function NativeVoice({
     }
     if (state.sdp && !p.remoteSet) {
       p.remoteSet = true;
-      await p.connection.setRemoteDescription({
-        type: "answer",
-        sdp: state.sdp,
-      });
+      if (p.native) await p.native.answer(state.sdp);
+      else
+        await p.connection!.setRemoteDescription({
+          type: "answer",
+          sdp: state.sdp,
+        });
     }
   };
   useEffect(() => {
@@ -200,7 +213,74 @@ function NativeVoice({
       stopConnection();
       stop();
     };
-  }, [agentId, watchVoice]);
+  }, [agentId, watchVoice, watchResourceReads]);
+  const connectionChanged = (current: Peer, state: string) => {
+    current.connectionState = state;
+    if (current.closed) return;
+    if (state === "failed")
+      failure(new Error("Voice disconnected. The saved transcript remains."));
+    if (state === "disconnected") {
+      setStatus("Reconnecting. Microphone paused…");
+      void current.native?.mute(true).catch(failure);
+      current.stream?.getAudioTracks().forEach((t) => {
+        t.enabled = false;
+      });
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = setTimeout(() => {
+        if (peer.current === current && !current.closed) {
+          failure(
+            new Error(
+              "Voice could not reconnect. The microphone is off. Start voice again.",
+            ),
+          );
+          setOpened(true);
+        }
+      }, 12000);
+    }
+    if (state === "connected") {
+      clearTimeout(reconnectTimer.current);
+      void current.native?.mute(muteWanted.current).catch(failure);
+      current.stream?.getAudioTracks().forEach((t) => {
+        t.enabled = !muteWanted.current;
+      });
+      setStatus(current.ready ? "Listening" : "Connecting…");
+    }
+  };
+  const messageReceived = (current: Peer, data: string) => {
+    if (current.closed) return;
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (event.type === "error") {
+      failure(new Error(event.error?.message || "Voice failed"));
+      return;
+    }
+    if (event.type === "session.started") {
+      clearTimeout(current.deadline);
+      current.ready = true;
+      setStatus("Listening");
+    }
+    if (event.type === "input_transcript.added") {
+      setStatus("Listening");
+      setPartial(event.item?.text || "");
+    }
+    if (event.type === "output_transcript.added") {
+      setStatus("Speaking");
+      setPartial(event.item?.text || "");
+    }
+    if (event.type === "delegation.created") {
+      setStatus("Working");
+      setPartial("");
+    }
+    if (event.type === "turn.done") {
+      setPartial("");
+      setStatus("Listening");
+    }
+    // Native Core owns delegation and transcript persistence. Do not mirror either.
+  };
   const start = async () => {
     if (peer.current) return;
     const ticket = ++generation.current;
@@ -215,19 +295,19 @@ function NativeVoice({
         throw new Error(
           "Studio connection is unavailable. Try voice again when connected.",
         );
+      // Capture authorization while Start is still the user's native event.
+      const permission = hasNativeClient()
+        ? dictationBridge()!
+            .requestMicrophone()
+            .then(
+              () => ({ error: undefined }),
+              (error) => ({ error }),
+            )
+        : undefined;
       await post("/api/voice/status", { agent: agentId }, { timeoutMs: 15000 });
       if (ticket !== generation.current) return;
-      if (!window.isSecureContext || !navigator.mediaDevices)
-        throw new Error("Voice needs HTTPS or the desktop app");
-      const connection = new RTCPeerConnection();
-      const audio = new Audio();
-      audio.autoplay = true;
-      const channel = connection.createDataChannel("oai-events");
       p = {
         id: crypto.randomUUID(),
-        connection,
-        audio,
-        channel,
         remoteSet: false,
         ready: false,
         closed: false,
@@ -240,103 +320,81 @@ function NativeVoice({
       };
       peer.current = p;
       const current = p;
-      connection.ontrack = (e) => {
-        if (current.closed) return;
-        audio.srcObject = e.streams[0] || new MediaStream([e.track]);
-        void audio.play().catch(() => {
-          if (!current.closed) setBlockedAudio(true);
+      let sdp: string;
+      if (permission) {
+        const authorization = await permission;
+        if (authorization.error) throw authorization.error;
+        if (current.closed || ticket !== generation.current) return;
+        current.native = nativeVoice(current.id, (event) => {
+          if (current.closed) return;
+          if (event.type === "message" && event.data)
+            messageReceived(current, event.data);
+          else if (event.type === "state" && event.state)
+            connectionChanged(current, event.state);
+          else if (
+            event.type === "error" ||
+            (event.type === "microphone" && event.state === "ended") ||
+            (event.type === "channel" && event.state === "closed")
+          )
+            failure(
+              new Error(
+                event.message ||
+                  "Voice disconnected. The saved transcript remains.",
+              ),
+            );
         });
-      };
-      connection.onconnectionstatechange = () => {
-        if (current.closed) return;
-        if (connection.connectionState === "failed")
-          failure(
-            new Error("Voice disconnected. The saved transcript remains."),
-          );
-        if (connection.connectionState === "disconnected") {
-          setStatus("Reconnecting. Microphone paused…");
-          current.stream?.getAudioTracks().forEach((t) => {
-            t.enabled = false;
-          });
-          clearTimeout(reconnectTimer.current);
-          reconnectTimer.current = setTimeout(() => {
-            if (peer.current === current && !current.closed) {
-              failure(
-                new Error(
-                  "Voice could not reconnect. The microphone is off. Start voice again.",
-                ),
-              );
-              setOpened(true);
-            }
-          }, 12000);
-        }
-        if (connection.connectionState === "connected") {
-          clearTimeout(reconnectTimer.current);
-          current.stream?.getAudioTracks().forEach((t) => {
-            t.enabled = !muteWanted.current;
-          });
-          setStatus(current.ready ? "Listening" : "Connecting…");
-        }
-      };
-      channel.onmessage = (message) => {
-        if (current.closed) return;
-        let event;
-        try {
-          event = JSON.parse(message.data);
-        } catch {
+        sdp = await current.native.offer();
+        if (current.closed || ticket !== generation.current) {
+          void current.native.close();
           return;
         }
-        if (event.type === "error") {
-          failure(new Error(event.error?.message || "Voice failed"));
-          return;
-        }
-        if (event.type === "session.started") {
-          clearTimeout(current.deadline);
-          current.ready = true;
-          setStatus("Listening");
-        }
-        if (event.type === "input_transcript.added") {
-          setStatus("Listening");
-          setPartial(event.item?.text || "");
-        }
-        if (event.type === "output_transcript.added") {
-          setStatus("Speaking");
-          setPartial(event.item?.text || "");
-        }
-        if (event.type === "delegation.created") {
-          setStatus("Working");
-          setPartial("");
-        }
-        if (event.type === "turn.done") {
-          setPartial("");
-          setStatus("Listening");
-        }
-        // Native Core owns delegation and transcript persistence. Do not mirror either.
-      };
-      if (window.codexDesktop && !window.codexDesktop.requestMicrophone)
-        throw new Error("Update the desktop app to enable microphone access");
-      if (window.codexDesktop?.requestMicrophone)
-        await window.codexDesktop.requestMicrophone();
-      if (current.closed || ticket !== generation.current) return;
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      if (current.closed || ticket !== generation.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      current.stream = stream;
-      stream.getTracks().forEach((t) => {
-        t.enabled = !muteWanted.current;
-        t.onended = () => {
-          if (!current.closed) failure(new Error("Microphone disconnected"));
+        if (muteWanted.current) await current.native.mute(true);
+      } else {
+        if (!window.isSecureContext || !navigator.mediaDevices)
+          throw new Error("Voice needs HTTPS or the desktop app");
+        const connection = new RTCPeerConnection();
+        const audio = new Audio();
+        audio.autoplay = true;
+        const channel = connection.createDataChannel("oai-events");
+        current.connection = connection;
+        current.audio = audio;
+        current.channel = channel;
+        connection.ontrack = (e) => {
+          if (current.closed) return;
+          audio.srcObject = e.streams[0] || new MediaStream([e.track]);
+          void audio.play().catch(() => {
+            if (!current.closed) setBlockedAudio(true);
+          });
         };
-        connection.addTrack(t, stream);
-      });
-      const offer = await connection.createOffer();
-      await connection.setLocalDescription(offer);
-      if (current.closed) return;
-      const sdp = offer.sdp;
+        connection.onconnectionstatechange = () =>
+          connectionChanged(current, connection.connectionState);
+        channel.onmessage = (message) => messageReceived(current, message.data);
+        if (window.codexDesktop && !window.codexDesktop.requestMicrophone)
+          throw new Error("Update the desktop app to enable microphone access");
+        if (window.codexDesktop?.requestMicrophone)
+          await window.codexDesktop.requestMicrophone();
+        if (current.closed || ticket !== generation.current) return;
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        });
+        if (current.closed || ticket !== generation.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        current.stream = stream;
+        stream.getTracks().forEach((t) => {
+          t.enabled = !muteWanted.current;
+          t.onended = () => {
+            if (!current.closed) failure(new Error("Microphone disconnected"));
+          };
+          connection.addTrack(t, stream);
+        });
+        const offer = await connection.createOffer();
+        await connection.setLocalDescription(offer);
+        if (current.closed) return;
+        sdp = offer.sdp || "";
+        if (!sdp) throw new Error("Voice offer has no session description.");
+      }
       if (!sdp) throw new Error("Voice offer has no session description.");
       current.submitted = true;
       const result = await post(
@@ -372,9 +430,11 @@ function NativeVoice({
     const next = !muted;
     muteWanted.current = next;
     peer.current?.stream?.getAudioTracks().forEach((t) => {
-      t.enabled =
-        !next && peer.current?.connection.connectionState !== "disconnected";
+      t.enabled = !next && peer.current?.connectionState !== "disconnected";
     });
+    void peer.current?.native
+      ?.mute(next || peer.current.connectionState === "disconnected")
+      .catch(failure);
     setMuted(next);
   };
   return (
@@ -440,7 +500,7 @@ function NativeVoice({
                 type="button"
                 onClick={() =>
                   void peer.current?.audio
-                    .play()
+                    ?.play()
                     .then(() => setBlockedAudio(false))
                     .catch((e) => setError(errorText(e)))
                 }

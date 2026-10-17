@@ -1,0 +1,9 @@
+# Allow the installed Codex sandbox to create its user and network namespaces.
+# Keep Ubuntu's restriction for other executables. Codex still applies its
+# filesystem and network policy inside these namespaces.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile studio-codex /opt/codex-studio/codex/bin/codex flags=(unconfined) {
+  userns,
+}

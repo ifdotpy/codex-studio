@@ -1,54 +1,83 @@
-import { serverLocalStorage as localStorage } from "./servers/storage";
+import { serverLocalStorage } from "./servers/storage";
 import type { Json } from "./types";
 
 const requestPrefix = (key: string) => `${key}:request:`;
 
-export function pendingChatCreations(key: string): Json[] {
-  const requests = new Map<string, Json>();
-  const read = (name: string) => {
-    const request = JSON.parse(localStorage.getItem(name) || "null");
-    if (request === null) return;
-    if (
-      typeof request !== "object" ||
-      typeof request.id !== "string" ||
-      !request.id
-    )
-      throw new Error("The saved chat request is invalid.");
-    const existing = requests.get(request.id);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(request))
-      throw new Error("The saved chat requests have conflicting identities.");
-    requests.set(request.id, request);
-  };
-  // Retain the old single request until its exact receipt is confirmed.
-  read(key);
-  const prefix = requestPrefix(key);
-  for (let index = 0; index < localStorage.length; index++) {
-    const name = localStorage.key(index);
-    if (name?.startsWith(prefix)) read(name);
+export function createChatCreationStore(localStorage: Storage) {
+  function pendingChatCreations(key: string): Json[] {
+    const requests = new Map<string, Json>();
+    const read = (name: string) => {
+      const request = JSON.parse(localStorage.getItem(name) || "null");
+      if (request === null) return;
+      if (
+        typeof request !== "object" ||
+        typeof request.id !== "string" ||
+        !request.id
+      )
+        throw new Error("The saved chat request is invalid.");
+      const existing = requests.get(request.id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(request))
+        throw new Error("The saved chat requests have conflicting identities.");
+      requests.set(request.id, request);
+    };
+    // Retain the old single request until its exact receipt is confirmed.
+    read(key);
+    const prefix = requestPrefix(key);
+    for (let index = 0; index < localStorage.length; index++) {
+      const name = localStorage.key(index);
+      if (name?.startsWith(prefix)) read(name);
+    }
+    return [...requests.values()];
   }
-  return [...requests.values()];
+
+  function saveChatCreation(key: string, request: Json): void {
+    // Separate records preserve other projects and requests from other tabs.
+    localStorage.setItem(
+      requestPrefix(key) + request.id,
+      JSON.stringify(request),
+    );
+  }
+
+  function confirmChatCreation(key: string, id: string): void {
+    localStorage.removeItem(requestPrefix(key) + id);
+    const legacy = JSON.parse(localStorage.getItem(key) || "null");
+    if (legacy?.id === id) localStorage.removeItem(key);
+  }
+
+  function confirmChatCreationResponse(
+    key: string,
+    requestId: string,
+    responseId: string,
+  ): boolean {
+    if (requestId !== responseId) return false;
+    confirmChatCreation(key, requestId);
+    return true;
+  }
+
+  function rejectChatCreation(key: string, id: string, reason: string): void {
+    const request = pendingChatCreations(key).find((item) => item.id === id);
+    if (!request) return;
+    // Preserve the exact body before removing a proven non-applied attempt.
+    localStorage.setItem(
+      `${key}:rejected:${id}`,
+      JSON.stringify({ request, outcome: "not_applied", reason }),
+    );
+    confirmChatCreation(key, id);
+  }
+
+  return {
+    pendingChatCreations,
+    saveChatCreation,
+    confirmChatCreation,
+    confirmChatCreationResponse,
+    rejectChatCreation,
+  };
 }
 
-export function saveChatCreation(key: string, request: Json): void {
-  // Separate records preserve other projects and requests from other tabs.
-  localStorage.setItem(
-    requestPrefix(key) + request.id,
-    JSON.stringify(request),
-  );
-}
-
-export function confirmChatCreation(key: string, id: string): void {
-  localStorage.removeItem(requestPrefix(key) + id);
-  const legacy = JSON.parse(localStorage.getItem(key) || "null");
-  if (legacy?.id === id) localStorage.removeItem(key);
-}
-
-export function confirmChatCreationResponse(
-  key: string,
-  requestId: string,
-  responseId: string,
-): boolean {
-  if (requestId !== responseId) return false;
-  confirmChatCreation(key, requestId);
-  return true;
-}
+export const {
+  pendingChatCreations,
+  saveChatCreation,
+  confirmChatCreation,
+  confirmChatCreationResponse,
+  rejectChatCreation,
+} = createChatCreationStore(serverLocalStorage);

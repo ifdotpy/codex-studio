@@ -78,7 +78,7 @@ test-rust-runtime-corpora-mutations *args:
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
-[doc("Run all three manually classified heavy server suites.")]
+[doc("Run all manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
 
@@ -107,6 +107,17 @@ rust-http-conformance-ledger:
 test-browser:
     @node {{quote(facade)}} test-browser
 
+[doc("Manual heavy check: combined multi-server browser routing and offline recovery.")]
+test-browser-multi-server:
+    @pnpm --filter codex-agents-web run build
+    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec.mjs --workers=1
+
+[doc("Manual client interaction benchmark: five cumulative builds, one browser worker, three samples each; no synthetic load. Output must be outside the checkout.")]
+benchmark-client-interactions baseline output:
+    @pnpm --filter codex-agents-web run build:wasm
+    @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
+    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
+
 [doc("Run the browser smoke subset included in the fast tier.")]
 test-browser-smoke:
     @node {{quote(facade)}} test-browser-smoke
@@ -130,3 +141,17 @@ test-rust-rules-mutations target *args:
 [doc("Run the full isolated continuation corpus and store fault matrix; no provider requests.")]
 test-rust-usage-resume-corpora:
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/^continuation_(corpus|recovery)$/)'
+
+[doc("Manual heavy check: migrate an isolated Electron profile with hidden windows.")]
+test-native-profile-migration:
+    @pnpm --filter codex-agents-desktop run test:profile-migration
+
+[doc("Manual heavy check: compile the macOS file event helper and verify real FSEvents delivery.")]
+test-native-file-events:
+    @node {{quote(facade)}} test server workspaces/runtime/apps/server/tests/native-fs-events-contract.py
+
+[doc("Manual heavy check: build the Rust desktop host and run isolated hidden WebViews.")]
+test-native-webview:
+    @pnpm --filter codex-agents-web run build
+    @cargo build -p studio-native-client --features native-check --locked
+    @python3 workspaces/client/apps/native/check-native.py

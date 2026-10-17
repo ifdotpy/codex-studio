@@ -5,6 +5,7 @@ import {
 } from "../generated/apiSchema";
 import {
   mergePreferenceFields,
+  canonicalPreferenceJson,
   type PreferenceFields,
 } from "./uiPreferenceMerge";
 import {
@@ -83,7 +84,19 @@ function backend(origin: string, initial: PreferenceFields) {
       value = { token: "fixture" };
     } else if (url.pathname === "/api/sync/preferences") {
       expect(request.headers.get("X-Canvas-Token")).toBe("fixture");
-      const body = await request.json();
+      const raw = await request.text();
+      const body = JSON.parse(raw);
+      expect(raw).toBe(canonicalPreferenceJson(body));
+      const hash = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(raw),
+      );
+      expect(request.headers.get("X-Studio-Request-Id")).toBe(
+        "ui-preferences:v2:" +
+          Array.from(new Uint8Array(hash), (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join(""),
+      );
       fields = mergePreferenceFields(fields, body.fields);
       writes.push({
         fields: body.fields,
@@ -1032,6 +1045,32 @@ describe("paired server preference replication", () => {
       stop();
       vi.useRealTimers();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes failed preference replies before each scheduled retry", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const fetch = vi.fn(
+      async () =>
+        new Response(new ReadableStream({ cancel }), {
+          status: 503,
+          headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
+        }),
+    );
+    const origin = "https://failed-preferences.invalid";
+    const stop = connectUiPreferences(origin, fetch, storage());
+    try {
+      emitStateFrame(origin, initialFrame(origin, 1));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let attempt = 1; attempt <= 40; attempt++) {
+        expect(fetch).toHaveBeenCalledTimes(attempt);
+        expect(cancel).toHaveBeenCalledTimes(attempt);
+        if (attempt < 40) await vi.advanceTimersByTimeAsync(3000);
+      }
+    } finally {
+      stop();
+      vi.useRealTimers();
     }
   });
 

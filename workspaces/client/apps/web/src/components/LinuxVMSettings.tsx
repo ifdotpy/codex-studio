@@ -1,11 +1,14 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
-import { get, errorText, post, type GetResult } from "../api";
+import { errorText, type GetResult } from "../api";
 
 type Configuration = GetResult<"/api/linux-vm/settings">;
 const GiB = 1024 ** 3;
 
 export function LinuxVMSettings({ active }: { active: boolean }) {
+  const { get, post } = useServerApi();
+
   const [configuration, setConfiguration] = useState<Configuration | null>(
     null,
   );

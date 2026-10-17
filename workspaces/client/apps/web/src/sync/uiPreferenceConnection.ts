@@ -100,6 +100,7 @@ export function connectUiPreferences(
     }
     if (isApiSchemaMismatchResponse(response, request)) {
       stopForSchemaMismatch();
+      await response.body?.cancel().catch(() => {});
       throw new ApiSchemaMismatchError(true);
     }
     return response;
@@ -110,13 +111,14 @@ export function connectUiPreferences(
   let token = "";
   const request = async (path: string, body?: unknown) => {
     let requestId = "";
-    if (body) {
+    const serializedBody = body ? canonicalPreferenceJson(body) : undefined;
+    if (serializedBody) {
       const hash = await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(canonicalPreferenceJson(body)),
+        new TextEncoder().encode(serializedBody),
       );
       requestId =
-        "ui-preferences:" +
+        "ui-preferences:v2:" +
         Array.from(new Uint8Array(hash), (byte) =>
           byte.toString(16).padStart(2, "0"),
         ).join("");
@@ -133,14 +135,17 @@ export function connectUiPreferences(
           : {}),
       },
       method: body ? "POST" : "GET",
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(serializedBody ? { body: serializedBody } : {}),
       signal: controller.signal,
       redirect: "error",
       cache: "no-store",
     });
     if (stopped) throw new ApiSchemaMismatchError();
     const response = await fetchWithSchemaGate(outgoing);
-    if (!response.ok) throw new Error("Preferences are unavailable.");
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error("Preferences are unavailable.");
+    }
     return response.json();
   };
   const scheduleRetry = () => {

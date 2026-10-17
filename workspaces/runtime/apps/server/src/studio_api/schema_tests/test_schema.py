@@ -576,7 +576,9 @@ class SchemaContractTests(unittest.TestCase):
             operation_keys(baseline_document) - operation_keys(committed_document),
             expected_removals,
         )
-        self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), set())
+        self.assertEqual(operation_keys(committed_document) - operation_keys(baseline_document), {
+            "GET /api/processes", "GET /api/processes/action", "POST /api/processes/action",
+        })
         reviewed_baseline = copy.deepcopy(baseline_document)
         paths = reviewed_baseline["paths"]
         for operation in expected_removals:
@@ -593,7 +595,7 @@ class SchemaContractTests(unittest.TestCase):
             {(item["pointer"], item["constraint"]) for item in loosenings},
             self._reviewed_schema_additions(),
             "only reviewed diagnostics, execution-effect statuses, and the "
-            "MultiServerResource, disk space and image cleanup retry additions may loosen the schema",
+            "MultiServerResource, disk space, image cleanup retry and process-control additions may loosen the schema",
         )
 
 
@@ -705,6 +707,47 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("_syncEntities", "_syncEntitiesAfter"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+        # New process-panel operations introduce optional output/error details,
+        # action-specific targets, and the standard response sync envelope.
+        # Existing operation constraints remain unchanged.
+        for schema in ("ManagedProcessRecord", "ProcessActionResult", "ProcessCapabilities",
+                       "ProcessList", "ProcessReceipt"):
+            for field in ("_syncEntities", "_syncEntitiesAfter"):
+                add(f"/components/schemas/{schema}/properties/{field}", "@nullable", "@nullableBranch")
+        for prefix in (
+            "/components/schemas/ManagedProcessRecord/properties",
+            "/components/schemas/ProcessList/properties/processes/items/properties",
+        ):
+            fields: tuple[str, ...] = ("command", "cwd", "error", "log", "output", "stdinError",
+                      "capabilities/properties/_syncEntities", "capabilities/properties/_syncEntitiesAfter")
+            if "/processes/items/" in prefix:
+                fields += ("_syncEntities", "_syncEntitiesAfter")
+            for field in fields:
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+        for schema, fields in (("ProcessActionResult", ("error", "response")),
+                               ("ProcessList", ("responseTarget",)),
+                               ("ProcessReceipt", ("result",))):
+            for field in fields:
+                add(f"/components/schemas/{schema}/properties/{field}", "@nullable", "@nullableBranch")
+        for prefix in (
+            "/components/schemas/ProcessControlRequest/properties",
+            "/paths/~1api~1processes~1action/post/requestBody/content/application~1json/schema/properties",
+        ):
+            for field in ("process", "responseTarget"):
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Work results submitted before result files existed keep their text
+        # inline and have no resultFile, wherever a work result is embedded.
+        for pointer in (
+            "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
+            "/components/schemas/WorkItem/properties/results/items",
+            "/components/schemas/WorkList/properties/items/items/properties/results/items",
+            "/components/schemas/WorkList/properties/tasks/items/properties/results/items",
+            "/components/schemas/WorkResultRecord",
+            "/components/schemas/WorkResultRecordResponse",
+            "/components/schemas/WorkViewRecordResponse/properties/results/items",
+        ):
+            add(pointer, "required")
 
         # Stored provider data: an exec call's command can be its argument vector,
         # and a turn error can be the provider's error object.

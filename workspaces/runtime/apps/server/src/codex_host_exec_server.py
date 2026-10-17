@@ -171,7 +171,35 @@ class HostService:
 
     @staticmethod
     def used_at(slot: Path) -> float:
-        return float(json.loads((slot / "slot.json").read_text()).get("usedAt", 0))
+        try:
+            metadata = json.loads((slot / "slot.json").read_text())
+            require(isinstance(metadata, dict) and isinstance(metadata.get("generation"), str),
+                    f"The host slot metadata is invalid: {slot}", "slot_invalid")
+            return float(metadata.get("usedAt", 0))
+        except (OSError, ValueError, TypeError) as exc:
+            raise HostExecError("slot_invalid", f"The host slot metadata needs recovery: {slot}") from exc
+
+    @staticmethod
+    def require_no_retirement(project: Path) -> None:
+        require(not any(project.glob(".retiring-*.json")),
+                f"An interrupted host slot cleanup needs recovery: {project}", "slot_cleanup_failed")
+
+    def remove_slot(self, slot: Path) -> None:
+        """Record retirement outside the tree before deletion can remove its metadata.
+
+        A failed or interrupted deletion must not make the remaining tree reusable.
+        Its marker also preserves the old generation for an explicit recovery.
+        """
+        require(not (slot / "lease.json").exists(), "The host slot is leased", "busy")
+        self.used_at(slot)
+        marker = slot.parent / (".retiring-" + slot.name + ".json")
+        atomic(marker, {"slotId": slot.name, "metadata": json.loads((slot / "slot.json").read_text())})
+        try:
+            shutil.rmtree(slot)
+            marker.unlink()
+        except OSError as exc:
+            raise HostExecError("slot_cleanup_failed",
+                                f"Host slot cleanup stopped (errno {exc.errno}); preserve its remaining files and recover it: {slot}"[:1000]) from exc
 
     @staticmethod
     def size(path: Path) -> int:
@@ -188,13 +216,15 @@ class HostService:
         """Remove idle slots, least recently used first, until `reserve` more bytes fit in the
         budget. Returns the bytes in use."""
         require(0 <= reserve <= budget, "The sources exceed the project disk budget", "disk_budget")
+        self.require_no_retirement(project)
         candidates = [path for path in project.iterdir() if path.is_dir() and path != exclude and not (path / "lease.json").exists()]
         candidates.sort(key=self.used_at)
         used = self.size(project)
         while used + reserve > budget and candidates:
             victim = candidates.pop(0)
-            used -= self.size(victim)
-            shutil.rmtree(victim)
+            size = self.size(victim)
+            self.remove_slot(victim)
+            used -= size
         self.usage[str(project)] = used
         require(used + reserve <= budget, "The project disk budget has no free slot capacity", "disk_budget")
         return used
@@ -493,7 +523,7 @@ class HostService:
             # A smaller slot count removes idle slots, the least recently used first.
             while len(existing) > settings["slots"] and free:
                 victim = free.pop(0)
-                shutil.rmtree(victim)
+                self.remove_slot(victim)
                 existing.remove(victim)
             if free:
                 slot = free[-1]

@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { post, errorText } from "../api";
+import { errorText } from "../api";
 import type { Agent } from "../types";
 import { nativeThreadError } from "../nativeErrors";
 
@@ -49,6 +50,8 @@ export default function ConnectionRecovery({
   agentId: string;
   refresh: () => Promise<void>;
 }) {
+  const { post } = useServerApi();
+
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const [details, setDetails] = useState("");

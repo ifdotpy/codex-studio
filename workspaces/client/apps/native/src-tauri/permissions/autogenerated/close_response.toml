@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-response"
+description = "Enables the close_response command without any pre-configured scope."
+commands.allow = ["close_response"]
+
+[[permission]]
+identifier = "deny-close-response"
+description = "Denies the close_response command without any pre-configured scope."
+commands.deny = ["close_response"]

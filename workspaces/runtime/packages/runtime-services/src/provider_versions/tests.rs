@@ -26,8 +26,12 @@ struct PythonFixture {
 fn isolated_tempdir() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("provider-versions-")
-        .tempdir_in("/dev/shm")
-        .expect("tmpfs test directory")
+        .tempdir_in(if cfg!(target_os = "linux") {
+            std::path::PathBuf::from("/dev/shm")
+        } else {
+            std::env::temp_dir()
+        })
+        .expect("isolated test directory")
 }
 
 struct MutableConnections(Mutex<Vec<ProviderProfile>>, tokio::sync::watch::Sender<u64>);

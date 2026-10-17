@@ -16,6 +16,8 @@ fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
     (root, supervisor)
 }
 
+// The durable supervisor uses Linux kernel process identities.
+#[cfg(target_os = "linux")]
 #[test]
 fn blocked_write_on_one_handle_does_not_block_another_handle() {
     let (_root, supervisor) = fixture();
@@ -229,13 +231,11 @@ fn stalled_handshake_and_started_frame_release_connection_slot() {
                 )
                 .is_ok()
         );
-        let error = read_frame(
-            &mut reader,
-            Some(Instant::now() + Duration::from_secs(5)),
-            FRAME_BUDGET,
-        )
-        .unwrap()
-        .unwrap();
+        // The worker has closed its socket. Darwin rejects changing SO_RCVTIMEO
+        // after peer shutdown; use the five-second timeout installed above.
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let error: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(
             error["error"], "Supervisor handshake or frame deadline exceeded",
             "{phase}"
@@ -304,6 +304,8 @@ fn expired_frame_budget_is_not_rearmed_by_buffered_bytes() {
     ));
 }
 
+// This exercises a real retained child with Linux kernel process identity.
+#[cfg(target_os = "linux")]
 #[test]
 fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
     use std::io::{BufRead, Write};
@@ -443,6 +445,8 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
     child.reap().unwrap();
 }
 
+// This exercises a real retained child with Linux kernel process identity.
+#[cfg(target_os = "linux")]
 #[test]
 fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
     let (root, supervisor) = fixture();
@@ -515,6 +519,8 @@ fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
     assert_eq!(last.0.return_code, Some(0));
 }
 
+// This exercises a real retained child with Linux kernel process identity.
+#[cfg(target_os = "linux")]
 #[test]
 fn empty_batch_queried_before_exit_commit_is_not_terminal_after_commit() {
     let (root, supervisor) = fixture();
@@ -634,4 +640,12 @@ fn frame_trimming_cannot_hide_terminal_exit_or_succeed_with_oversized_first_even
     )];
     result.return_code = None;
     assert!(batch_response(Some(2), 0, None, result).is_err());
+}
+
+#[test]
+fn an_accept_error_skips_one_connection_and_keeps_listening() {
+    let error = std::io::Error::from(rustix::io::Errno::MFILE);
+    assert!(accepted(Err(error)).is_none());
+    let (left, _right) = UnixStream::pair().unwrap();
+    assert!(accepted(Ok(left)).is_some());
 }

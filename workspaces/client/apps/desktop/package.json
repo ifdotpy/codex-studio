@@ -17,7 +17,9 @@
     "test:server-access": "pnpm exec install-electron && pnpm exec node server-access-native.mjs",
     "test:package": "pnpm exec node package-test.mjs",
     "test:unit": "vitest run --config vitest.config.mjs",
-    "check:focused": "vitest run --config vitest.config.mjs"
+    "check:focused": "vitest run --config vitest.config.mjs",
+    "test:profile-migration": "pnpm exec install-electron && pnpm exec node profile-export-test.mjs",
+    "profile:export": "pnpm exec install-electron && pnpm exec electron export-profile.mjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",

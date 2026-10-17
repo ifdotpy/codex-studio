@@ -121,17 +121,6 @@ test("accounts settings show per-server state and provider choices", async ({
   };
   await pair(remote);
   await pair(empty);
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() =>
-          window.__studioAccountMessages.some(
-            (message) => message.accounts.length > 0,
-          ),
-        ),
-      { timeout: 20000 },
-    )
-    .toBe(true);
   await page
     .getByRole("complementary", { name: "Conversations" })
     .getByRole("button", { name: "Studio settings", exact: true })
@@ -190,13 +179,13 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
   await expect(settings).toBeHidden();
-  const profileFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const profileFrame = page;
   const profile = profileFrame.getByRole("dialog", {
     name: "Configure Claude",
     exact: true,
   });
   await expect(profile).toBeVisible();
-  await expect(page.locator('iframe[title="Studio on Remote"]')).toBeVisible();
+  await expect(page.locator(".server-views")).toBeVisible();
   await profile
     .getByLabel("Custom models", { exact: true })
     .fill("remote-model | Remote Model");
@@ -304,12 +293,10 @@ test("accounts settings show per-server state and provider choices", async ({
   await add.getByLabel("Email (optional)").fill("new@example.test");
   await add.getByRole("button", { name: "Continue" }).click();
   await expect(
-    page
-      .frameLocator('iframe[title="Studio on Remote"]')
-      .getByRole("dialog", { name: /Sign in to Claude · New Claude/ }),
+    page.getByRole("dialog", { name: /Sign in to Claude · New Claude/ }),
   ).toBeVisible();
   await expect(settings).toBeHidden();
-  const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const remoteFrame = page;
   const claudeSignIn = remoteFrame.getByRole("dialog", {
     name: /Sign in to Claude · New Claude/,
   });
@@ -370,6 +357,7 @@ test("accounts settings show per-server state and provider choices", async ({
   let codeWasSubmitted = false;
   let statusConfirmsCodeSubmission = false;
   let verificationReady = false;
+  let finalStatusBarrier;
   const loginRequestId = addStarts[0]?.loginId;
   const codeAttempts = [];
   await page.route("**/api/accounts/claude/login/code", async (route) => {
@@ -400,6 +388,7 @@ test("accounts settings show per-server state and provider choices", async ({
       url.searchParams.get("request_id") !== loginRequestId
     )
       return route.continue();
+    await finalStatusBarrier;
     await route.fulfill({
       json: {
         requestId: loginRequestId,
@@ -469,8 +458,18 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(claudeSignIn).toContainText(
     "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again.",
   );
-  verificationReady = true;
-  await checkStatus.click();
+  // An account event may schedule a read while Playwright waits for the button
+  // to settle. Keep that read pending until the manual refresh is dispatched.
+  let releaseFinalStatus;
+  finalStatusBarrier = new Promise((resolve) => {
+    releaseFinalStatus = resolve;
+  });
+  try {
+    await checkStatus.click();
+    verificationReady = true;
+  } finally {
+    releaseFinalStatus();
+  }
   await expect(claudeSignIn).toContainText("Signed in as new@example.test");
   expect(remote.accountWrites).toEqual(
     expect.arrayContaining([

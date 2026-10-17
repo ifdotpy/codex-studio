@@ -1,5 +1,5 @@
 import { useServerActivity } from "../servers/activity";
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import { useServerStorage } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Mic } from "lucide-react";
@@ -35,6 +35,7 @@ export function BrowserDictation({
   onInsert: (text: string) => void;
   disabled?: boolean;
 }) {
+  const localStorage = useServerStorage();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(false);
   const [storageFailed, setStorageFailed] = useState(false);
