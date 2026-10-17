@@ -22,6 +22,12 @@ from studio_api.schema import openapi_document
 # A JSON Schema cannot express the UTF-8 byte count of a string. Keep this
 # validator in Python until the API uses a byte-oriented field representation.
 SCHEMA_EXCEPTIONS = {
+    ("studio_api.io.models.ProcessControlRequest", "validate_action_scope"): (
+        "The action selects one process, an owned-process snapshot, or a response identity. "
+        "These branches can be expressed with a discriminated union; equality of the nested "
+        "response owner/account/epoch with the outer owner cannot be expressed by standard "
+        "JSON Schema. Python and Rust both validate the complete scope before claiming an action."
+    ),
     ("studio_api.agents.models.ConversationRequest", "validate_excluded_account_keys"): (
         "The Pydantic field validator rejects duplicate array members before dispatch. "
         "Pydantic does not infer JSON Schema uniqueItems from a list validator, so the "

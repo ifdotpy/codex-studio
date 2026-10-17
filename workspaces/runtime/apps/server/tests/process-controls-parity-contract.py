@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Cross-backend witnesses for process generations and retained output matching."""
 from __future__ import annotations
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
 import json
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import unittest
 from codex_layout import REPOSITORY_ROOT
 from codex_process_controls import _record_process

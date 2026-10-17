@@ -10773,7 +10773,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             from codex_monitor_output import OUTPUT_WAKE_COOLDOWN_SECONDS, pending_output_event
             for row in db.execute(
-                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running' "):
+                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running' "
+                    "AND EXISTS (SELECT 1 FROM json_each(record,'$.outputMatchesPending') WHERE value>0) "
+                    "AND COALESCE(json_extract(record,'$.outputWakeAt'),0)+?<=?",
+                    (OUTPUT_WAKE_COOLDOWN_SECONDS, now)):
                 monitor = json.loads(row[0])
                 if (not monitor.get("outputMatchesPending")
                         or now - monitor.get("outputWakeAt", 0) < OUTPUT_WAKE_COOLDOWN_SECONDS):

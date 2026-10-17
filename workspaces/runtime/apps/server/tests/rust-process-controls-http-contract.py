@@ -6,6 +6,9 @@ isolate_supervisor_environment()
 import json
 import sqlite3
 import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from urllib.parse import urlencode
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from studio_api.persisted_models import PersistedAgentRecord, PersistedMonitorRecord
