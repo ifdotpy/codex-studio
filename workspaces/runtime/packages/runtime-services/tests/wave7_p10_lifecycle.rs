@@ -757,6 +757,10 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
     )
     .await;
+    store
+        .checkpoint_wal_passive()
+        .await
+        .expect("seed database checkpoint");
     drop(store);
     for (table, operation) in [
         ("runtime_agents", "UPDATE"),
