@@ -562,7 +562,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
                       'content': json.dumps(manifest)})
     skills = REPOSITORY_ROOT / '.agents/skills'
     for name in ('codex-orchestrator/SKILL.md', 'codex-subagent/SKILL.md',
-                 'codex-workspace/SKILL.md', 'codex-workspace/references/layr.md'):
+                 'codex-workspace/SKILL.md', 'codex-workspace/references/layr.md', 'layr/SKILL.md'):
         source = skills / name
         if source.is_file() and not source.is_symlink():
             files.append({'path': '/opt/codex-studio/.agents/skills/' + name,
