@@ -96,8 +96,8 @@ fn write_marker(root: &Path, marker: &Path, backend_build: &str) -> io::Result<(
         fs::rename(&temporary, marker)?;
         fs::File::open(root)?.sync_all()
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    if result.is_err() && fs::remove_file(&temporary).is_err() {
+        // The next claim replaces a temporary file that could not be removed here.
     }
     result
 }
