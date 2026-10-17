@@ -2148,7 +2148,9 @@ impl OrchestrationDriver {
             if state == "running" && !peer_replay_safe(&envelope.action) {
                 continue;
             }
-            let _ = self
+            // One row that cannot be delivered must not hold back the rows after it
+            // (Python delivers each queued row on its own).
+            match self
                 .exchange(
                     &server,
                     &envelope.action,
@@ -2156,8 +2158,16 @@ impl OrchestrationDriver {
                     &envelope.key,
                     now,
                 )
-                .await?;
-            count += 1;
+                .await
+            {
+                Ok(_) => count += 1,
+                Err(error) => {
+                    eprintln!(
+                        "orchestration delivery of {} ({}) failed: {error}",
+                        envelope.key, envelope.action
+                    );
+                }
+            }
         }
         Ok(count)
     }
@@ -2331,8 +2341,11 @@ fn outbox_next_due_at(
            json_extract(body,'$.action') IN ({}))",
         peer_replay_safe_sql_values()
     );
+    // Python stores next_at as float seconds. Round up so the scheduler never wakes
+    // before the row is due and spins until the next whole second.
     connection
-        .query_row(&sql, [], |row| row.get(0))
+        .query_row(&sql, [], |row| row.get::<_, Option<f64>>(0))
+        .map(|at| at.map(|at| at.ceil() as i64))
         .map_err(Into::into)
 }
 
@@ -2465,6 +2478,26 @@ mod tests {
         assert_eq!(
             outbox_next_due_at(&connection).expect("deadline query"),
             Some(7)
+        );
+    }
+
+    #[test]
+    fn next_due_reads_python_float_deadlines() {
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at REAL);",
+            )
+            .expect("outbox table");
+        connection
+            .execute(
+                "INSERT INTO runtime_server_outbox(server,body,state,next_at) VALUES('peer',?1,'queued',?2)",
+                params![serde_json::json!({"action":"message"}).to_string(), 1792224926.4847271],
+            )
+            .expect("Python-written outbox row");
+        assert_eq!(
+            outbox_next_due_at(&connection).expect("deadline query"),
+            Some(1792224927)
         );
     }
 
