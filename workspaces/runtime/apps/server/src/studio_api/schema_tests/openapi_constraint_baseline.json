@@ -1247,6 +1247,48 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/WalCheckpoint\"}']"
     },
     {
+      "pointer": "/components/schemas/WorkInboxEntry/properties/work/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkItem/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkList/properties/items/items/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkList/properties/tasks/items/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkResultRecord",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkResultRecordResponse",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
+      "pointer": "/components/schemas/WorkViewRecordResponse/properties/results/items",
+      "constraint": "required",
+      "baseline": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created', 'resultFile']",
+      "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
+    },
+    {
       "pointer": "/paths/~1api~1processes~1action/post/requestBody/content/application~1json/schema/properties/process",
       "constraint": "@nullable",
       "baseline": "None",

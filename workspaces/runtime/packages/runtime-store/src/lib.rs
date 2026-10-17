@@ -7,6 +7,7 @@ mod records;
 mod repositories;
 mod schema;
 mod sqlite_actor;
+pub mod state_owner;
 pub mod supervisor_journal;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
@@ -959,6 +960,22 @@ impl RuntimeStore {
 
     /// Open an existing state directory, bootstrapping the sync family on first open.
     pub async fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
+        Self::open_inner(state_dir, None).await
+    }
+
+    /// Open the state as its serving owner: after `runtime.lock` is held and before the first
+    /// write, record the Rust owner marker that fences Python (`state_owner.rs`).
+    pub async fn open_claiming(
+        state_dir: Option<&Path>,
+        owner: &state_owner::StateOwnerClaim,
+    ) -> StoreResult<Self> {
+        Self::open_inner(state_dir, Some(owner)).await
+    }
+
+    async fn open_inner(
+        state_dir: Option<&Path>,
+        owner: Option<&state_owner::StateOwnerClaim>,
+    ) -> StoreResult<Self> {
         let root = match state_dir {
             Some(path) => path::resolve_explicit_state_dir(path)?,
             None => resolve_state_dir()?,
@@ -967,6 +984,9 @@ impl RuntimeStore {
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
         let runtime_lock = Arc::new(RuntimeLock::acquire(&root)?);
+        if let Some(owner) = owner {
+            state_owner::claim(&root, owner)?;
+        }
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 

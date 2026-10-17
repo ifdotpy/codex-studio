@@ -169,6 +169,53 @@ async fn foreign_files_are_refused_without_creating_any_state_files() {
 }
 
 #[tokio::test]
+async fn serving_open_claims_the_state_and_a_foreign_owner_is_refused_before_writes() {
+    use studio_runtime_store::state_owner::{STATE_OWNER_FILE, StateOwnerClaim};
+    let state = temporary_state("serving-owner");
+    let first = StateOwnerClaim {
+        backend_build: "a".repeat(64),
+    };
+    let store = RuntimeStore::open_claiming(Some(&state), &first)
+        .await
+        .expect("a serving Rust open claims a fresh state");
+    drop(store);
+    let marker: Value =
+        serde_json::from_slice(&fs::read(state.join(STATE_OWNER_FILE)).expect("marker"))
+            .expect("marker JSON");
+    assert_eq!(
+        marker,
+        json!({"runtime":"rust","formatVersion":1,"backendBuild":"a".repeat(64)})
+    );
+    let update = StateOwnerClaim {
+        backend_build: "b".repeat(64),
+    };
+    drop(
+        RuntimeStore::open_claiming(Some(&state), &update)
+            .await
+            .expect("a later Rust build with the same state format opens its state"),
+    );
+
+    let foreign = temporary_state("foreign-owner");
+    let prior = json!({"runtime":"rust","formatVersion":2,"backendBuild":"c".repeat(64)});
+    fs::write(foreign.join(STATE_OWNER_FILE), prior.to_string()).expect("foreign marker");
+    let before = filesystem_snapshot(&foreign);
+    let refused = RuntimeStore::open_claiming(Some(&foreign), &first).await;
+    assert!(matches!(refused, Err(StoreError::SchemaMismatch(message))
+        if message.contains(STATE_OWNER_FILE)));
+    let after: BTreeMap<_, _> = filesystem_snapshot(&foreign)
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("runtime.lock"))
+        .collect();
+    let before: BTreeMap<_, _> = before
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("runtime.lock"))
+        .collect();
+    assert_eq!(after, before, "a refused claim creates no database");
+    cleanup(state);
+    cleanup(foreign);
+}
+
+#[tokio::test]
 async fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
     let state = temporary_state("desktop-rust-owner");
     let owner = state.join("rust-state-owner.json");

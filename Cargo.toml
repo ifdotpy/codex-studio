@@ -13,6 +13,7 @@ members = [
     "workspaces/runtime/packages/operations-python",
     "workspaces/runtime/packages/runtime-providers",
     "workspaces/runtime/packages/runtime-priority-sys",
+    "workspaces/runtime/packages/runtime-proc-sys",
     "workspaces/runtime/packages/runtime-process",
     "workspaces/runtime/packages/runtime-http",
     "workspaces/runtime/packages/runtime-services",

@@ -21,13 +21,17 @@ const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
     "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
     "CODEX_NODE",
 ];
-#[cfg(target_os = "linux")]
+/// The variable a macOS Python launcher stub adds before it re-executes the
+/// interpreter; the accepted launch environment does not contain it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const PYTHON_LAUNCHER_MARKER: &str = "__PYVENV_LAUNCHER__";
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
     "PATH",
     "LANG",
     "LC_CTYPE",
     "LC_ALL",
-    "__PYVENV_LAUNCHER__",
+    PYTHON_LAUNCHER_MARKER,
     "COMMAND_MODE",
     "MallocNanoZone",
     "XPC_SERVICE_NAME",
@@ -42,7 +46,7 @@ pub(crate) fn clean_environment(requested: &BTreeMap<String, String>) -> BTreeMa
     clean
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn verify_environment(
     original: &BTreeMap<String, String>,
     clean: &BTreeMap<String, String>,
@@ -63,7 +67,62 @@ pub(crate) fn verify_environment(
     Ok(())
 }
 
+/// Upper bound in bytes for one retained child's launch environment record.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const PROCESS_ENVIRONMENT_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Read a retained child's launch environment from `/proc/<pid>/environ`.
 #[cfg(target_os = "linux")]
+pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(format!("/proc/{pid}/environ"))?
+        .take(PROCESS_ENVIRONMENT_LIMIT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > PROCESS_ENVIRONMENT_LIMIT_BYTES {
+        return Err(io::Error::other("environment exceeds limit"));
+    }
+    parse_process_environment(&bytes)
+}
+
+/// Read a retained child's launch environment from `KERN_PROCARGS2`, as the
+/// Python supervisor's `process_launch_environment` does on macOS.
+#[cfg(target_os = "macos")]
+pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
+    let raw = studio_runtime_proc_sys::process_arguments(pid, PROCESS_ENVIRONMENT_LIMIT_BYTES)?;
+    parse_process_environment(procargs_environment(&raw)?)
+}
+
+/// Skip `argc`, the executable path, its NUL padding and `argc` argument
+/// strings of a `KERN_PROCARGS2` record. The environment strings follow; an
+/// empty string ends them before the Apple strings.
+#[cfg(target_os = "macos")]
+fn procargs_environment(raw: &[u8]) -> io::Result<&[u8]> {
+    const MAX_ARGUMENTS: i32 = 4096;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid process launch record");
+    let (count, rest) = raw.split_first_chunk::<4>().ok_or_else(invalid)?;
+    let count = i32::from_ne_bytes(*count);
+    if !(1..=MAX_ARGUMENTS).contains(&count) {
+        return Err(invalid());
+    }
+    let skip_string = |bytes: &[u8]| -> io::Result<usize> {
+        bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|end| end + 1)
+            .ok_or_else(invalid)
+    };
+    let mut position = skip_string(rest)?;
+    while rest.get(position) == Some(&0) {
+        position += 1;
+    }
+    for _ in 0..count {
+        position += skip_string(rest.get(position..).ok_or_else(invalid)?)?;
+    }
+    rest.get(position..).ok_or_else(invalid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn parse_process_environment(raw: &[u8]) -> io::Result<BTreeMap<String, String>> {
     let mut environment = BTreeMap::new();
     for entry in raw
@@ -355,4 +414,70 @@ pub(crate) fn assign_reply_id(
         local_id.unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote_id}"))),
     );
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_environment_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{procargs_environment, read_process_environment};
+    use std::collections::BTreeMap;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn procargs_record_skips_path_padding_and_arguments() {
+        let mut raw = 2_i32.to_ne_bytes().to_vec();
+        raw.extend_from_slice(
+            b"/bin/tool\0\0\0\0tool\0--flag\0A=1\0B=2\0\0executable_path=/bin/tool\0",
+        );
+        assert_eq!(
+            procargs_environment(&raw).unwrap(),
+            b"A=1\0B=2\0\0executable_path=/bin/tool\0"
+        );
+        assert!(procargs_environment(&0_i32.to_ne_bytes()).is_err());
+        let mut truncated = 3_i32.to_ne_bytes().to_vec();
+        truncated.extend_from_slice(b"/bin/tool\0tool\0");
+        assert!(procargs_environment(&truncated).is_err());
+    }
+
+    /// Child half of the test below: block until the parent kills it.
+    #[test]
+    #[ignore = "runs only as the child of live_child_environment_is_read_exactly"]
+    fn environment_probe_child() {
+        if std::env::var_os("STUDIO_TEST_A").is_some() {
+            std::io::Read::read(&mut std::io::stdin(), &mut [0]).unwrap();
+        }
+    }
+
+    #[test]
+    fn live_child_environment_is_read_exactly() {
+        // macOS omits the environment of restricted platform binaries such as
+        // /bin/sleep from KERN_PROCARGS2, so the probe is this test binary, as
+        // a provider child is a third-party binary.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "provider_shared::macos_environment_tests::environment_probe_child",
+            ])
+            .env_clear()
+            .env("STUDIO_TEST_A", "1")
+            .env("STUDIO_TEST_B", "two words=and equals")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let read = read_process_environment(child.id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            read.unwrap(),
+            BTreeMap::from([
+                ("STUDIO_TEST_A".to_owned(), "1".to_owned()),
+                (
+                    "STUDIO_TEST_B".to_owned(),
+                    "two words=and equals".to_owned()
+                ),
+            ])
+        );
+    }
 }

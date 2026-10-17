@@ -1583,8 +1583,9 @@ class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore
 
 
 class WorkResultRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
-    # Read-only runtime_work audit: these eight keys occurred in all 862 results;
-    # runId and attemptId were both absent from 30 of those results.
+    # Read-only runtime_work audit: seven keys occur in every result. Results submitted
+    # before result files existed keep their text inline and have no resultFile
+    # (2,990 of 4,112 on 2026-10-17); runId and attemptId are also often absent.
     layrProjectId: NotRequired[str]
     layrLine: NotRequired[str]
     layrStateId: NotRequired[str]
@@ -1595,7 +1596,7 @@ class WorkResultRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-a
     revision: str
     files: list[str]
     created: float
-    resultFile: str
+    resultFile: NotRequired[str]
     runId: NotRequired[str]
     attemptId: NotRequired[str | None]
 
