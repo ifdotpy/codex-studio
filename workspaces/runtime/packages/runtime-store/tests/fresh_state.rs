@@ -230,6 +230,129 @@ async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
     cleanup(state);
 }
 
+/// launchd or systemd can start the supervisor before the first backend. The
+/// files below are the ones `supervisor_daemon::serve` creates (lease, open WAL
+/// journal and socket) plus the launch agent's supervisor.log.
+#[cfg(unix)]
+#[tokio::test]
+async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
+    use std::os::unix::fs::MetadataExt;
+
+    // A short name keeps the socket path under the macOS 104-byte limit.
+    let state = temporary_state("rsup");
+    let journal = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&state)
+        .expect("supervisor journal opens first");
+    journal
+        .reserve("server-command:kept", "signature", 1.0)
+        .expect("supervisor reserves a handle");
+    journal
+        .opened("server-command:kept", "signature", 4242, "start")
+        .expect("supervisor records the child");
+    fs::write(
+        state.join("supervisor.lock"),
+        br#"{"pid":4242,"startTime":"start"}"#,
+    )
+    .expect("supervisor lease writes");
+    fs::write(state.join("supervisor.log"), b"supervisor started\n")
+        .expect("launch agent log writes");
+    let listener = std::os::unix::net::UnixListener::bind(state.join("supervisor.sock"))
+        .expect("supervisor socket binds");
+    for sidecar in ["supervisor.sqlite3-wal", "supervisor.sqlite3-shm"] {
+        assert!(
+            state.join(sidecar).is_file(),
+            "the open journal has its {sidecar} file"
+        );
+    }
+    let journal_inode = fs::metadata(state.join("supervisor.sqlite3"))
+        .expect("journal metadata")
+        .ino();
+
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("a fresh state with only supervisor files opens");
+    drop(store);
+
+    assert!(state.join("canvas.sqlite3").is_file());
+    assert!(state.join("analytics.sqlite3").is_file());
+    assert_eq!(
+        fs::metadata(state.join("supervisor.sqlite3"))
+            .expect("journal metadata")
+            .ino(),
+        journal_inode,
+        "the running supervisor's journal is not replaced"
+    );
+    assert!(
+        journal
+            .handle("server-command:kept")
+            .expect("journal still reads")
+            .is_some(),
+        "the supervisor keeps its recorded handle"
+    );
+    assert!(
+        fs::read_dir(&state)
+            .expect("state entries")
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rust-state-bootstrap-")),
+        "the staging directory is removed"
+    );
+    drop(listener);
+    drop(journal);
+    cleanup(state);
+}
+
+#[tokio::test]
+async fn fresh_state_without_supervisor_still_creates_the_supervisor_journal() {
+    let state = temporary_state("no-supervisor");
+    let store = RuntimeStore::open(Some(&state))
+        .await
+        .expect("an empty state opens");
+    drop(store);
+    assert!(state.join("supervisor.sqlite3").is_file());
+    cleanup(state);
+}
+
+#[tokio::test]
+async fn supervisor_files_do_not_hide_partial_or_foreign_state() {
+    let cases: [(&str, &[&str], &str); 3] = [
+        (
+            "one-core-database",
+            &["supervisor.sqlite3", "canvas.sqlite3"],
+            "partial state database",
+        ),
+        (
+            "stray-wal",
+            &["supervisor.lock", "supervisor.sqlite3-wal"],
+            "supervisor.sqlite3-wal",
+        ),
+        (
+            "foreign-file",
+            &["supervisor.sqlite3", "supervisor.lock", "notes.txt"],
+            "notes.txt",
+        ),
+    ];
+    for (name, files, message) in cases {
+        let state = temporary_state(name);
+        for file in files {
+            fs::write(state.join(file), b"sentinel").expect("fixture file writes");
+        }
+        let before = filesystem_snapshot(&state);
+        let error = match RuntimeStore::open(Some(&state)).await {
+            Ok(_) => panic!("{name}: state must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, StoreError::SchemaMismatch(text) if text.contains(message)),
+            "{name}: unexpected refusal {error}"
+        );
+        assert_eq!(filesystem_snapshot(&state), before, "{name}: files changed");
+        assert!(!state.join("runtime.lock").exists(), "{name}: lock created");
+        cleanup(state);
+    }
+}
+
 fn create_python_state(root: &Path, feature_schema: &Path) -> Value {
     python(root, feature_schema, PYTHON_CREATE)
 }
