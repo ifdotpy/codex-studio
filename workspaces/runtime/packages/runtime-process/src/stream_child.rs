@@ -199,9 +199,14 @@ impl StreamChild {
             }
             Ok(Ok(())) => {}
         }
+        if empty_close {
+            // No input exists whose delivery could be uncertain. The owner applies queued
+            // requests in order, and its exit drops the pipe, so stdin reaches EOF either way.
+            // The acknowledgement measures only owner scheduling; it must not fail the child.
+            return Ok(());
+        }
         match timeout(INPUT_DEADLINE, response).await {
             Err(_) => Err(ChildError::Unknown),
-            Ok(Err(_)) if empty_close => Ok(()),
             Ok(Err(_)) => Err(ChildError::Unknown),
             Ok(Ok(result)) => result,
         }
@@ -426,6 +431,37 @@ mod tests {
             .await
             .expect("empty stdin closes successfully");
         child.close().await.expect("child closes successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_stdin_close_does_not_wait_for_owner_acknowledgement() {
+        // The test holds the owner's queue and never reads it: an acknowledgement would
+        // arrive after any deadline, as when the owner thread is not scheduled in time.
+        let (input, mut queued) = mpsc::channel(INPUT_SLOTS);
+        let (_output_tx, output) = mpsc::channel(OUTPUT_SLOTS);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        let (_done_tx, completion) = watch::channel(None);
+        let child = StreamChild {
+            input,
+            output,
+            cancel,
+            completion,
+            exit_delivered: false,
+            pid: None,
+            owner: None,
+        };
+
+        assert_eq!(child.write(Vec::new(), true).await, Ok(()));
+        let close = queued
+            .try_recv()
+            .expect("the close stays queued for the owner");
+        assert!(close.bytes.is_empty() && close.close);
+
+        // Real input keeps its unknown outcome when the owner does not acknowledge it.
+        assert_eq!(
+            child.write(b"words\n".to_vec(), true).await,
+            Err(ChildError::Unknown)
+        );
     }
 
     fn spec(command: &str, root: &std::path::Path) -> ChildSpec {
