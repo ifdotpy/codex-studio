@@ -113,13 +113,23 @@ impl Default for SqliteState {
 }
 
 /// Observe one serialized store transaction for the SQLite contention view.
-pub fn record_store_transaction(wait: Duration, hold: Duration) {
+/// `wait` includes the writer actor queue; `hold` is the SQLite job alone.
+pub fn record_store_transaction(
+    wait: Duration,
+    hold: Duration,
+    origin: &'static std::panic::Location<'static>,
+) {
     let _ = try_with_state(state(), |state| {
-        record_store_transaction_in_state(state, wait, hold);
+        record_store_transaction_in_state(state, wait, hold, origin);
     });
 }
 
-fn record_store_transaction_in_state(state: &mut SqliteState, wait: Duration, hold: Duration) {
+fn record_store_transaction_in_state(
+    state: &mut SqliteState,
+    wait: Duration,
+    hold: Duration,
+    origin: &'static std::panic::Location<'static>,
+) {
     let wait_ms = wait.as_secs_f64() * 1000.0;
     let hold_ms = hold.as_secs_f64() * 1000.0;
     state.transaction_count = state.transaction_count.saturating_add(1);
@@ -152,9 +162,13 @@ fn record_store_transaction_in_state(state: &mut SqliteState, wait: Duration, ho
             "threadId": thread_id,
             "nativeThreadId": thread_id,
             "threadName": "runtime",
-            "originFrames": [],
+            "originFrames": [{
+                "file": origin.file(),
+                "function": "store writer caller",
+                "line": origin.line(),
+            }],
             "firstStatement": SqliteStatement::Begin,
-            "originRecorded": false,
+            "originRecorded": true,
             "startedAtMonotonic": process_monotonic_seconds() - elapsed_seconds,
             "startedAt": finished_at - elapsed_seconds,
             "finishedAt": finished_at,
@@ -584,7 +598,12 @@ mod tests {
     #[test]
     fn transaction_record_contains_only_closed_metadata() {
         let mut state = SqliteState::default();
-        record_store_transaction_in_state(&mut state, Duration::ZERO, Duration::from_secs(2));
+        record_store_transaction_in_state(
+            &mut state,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            std::panic::Location::caller(),
+        );
         let value = sqlite_history_from_state(&state);
         let text = value.to_string();
         assert!(!text.contains("SELECT"));
@@ -662,7 +681,12 @@ mod tests {
     fn actual_writer_transactions_fill_only_bounded_slow_history() {
         let mut state = SqliteState::default();
         for _ in 0..=HISTORY_LIMIT {
-            record_store_transaction_in_state(&mut state, Duration::ZERO, Duration::from_secs(2));
+            record_store_transaction_in_state(
+                &mut state,
+                Duration::ZERO,
+                Duration::from_secs(2),
+                std::panic::Location::caller(),
+            );
         }
         let history = sqlite_history_from_state(&state);
         let recent = history["recent"]
@@ -673,6 +697,12 @@ mod tests {
         assert_eq!(entry["database"], "canvas.sqlite3");
         assert_eq!(entry["firstStatement"], "BEGIN");
         assert_eq!(entry["state"], "ended");
+        assert_eq!(entry["originRecorded"], true);
+        assert!(
+            entry["originFrames"][0]["file"]
+                .as_str()
+                .is_some_and(|file| file.ends_with("diagnostics/sqlite.rs"))
+        );
         assert_eq!(recent.len(), HISTORY_LIMIT);
         assert_eq!(
             history["longest"].as_array().map(Vec::len),
