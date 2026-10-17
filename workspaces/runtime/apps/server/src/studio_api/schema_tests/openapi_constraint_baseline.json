@@ -89,6 +89,24 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/ComplaintDetailResponse/properties/sourceType",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/ComplaintDetailResponse/properties/sourceType",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ComplaintDetailResponse/properties/sourceType",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/DesktopResponse/properties/diskSpace",
       "constraint": "property",
       "baseline": "absent from closed object",

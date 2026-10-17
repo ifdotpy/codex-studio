@@ -735,6 +735,9 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("process", "responseTarget"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+        # Stored lead messages and user task replies carry their source type.
+        add("/components/schemas/ComplaintDetailResponse/properties/sourceType",
+            "property", "@nullable", "@nullableBranch")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

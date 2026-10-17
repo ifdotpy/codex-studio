@@ -10200,6 +10200,11 @@ export interface components {
       recipient?: ("user" | "lead") | null;
       /** Responses */
       responses: components["schemas"]["ComplaintResponseDto"][];
+      /**
+       * Sourcetype
+       * @default null
+       */
+      sourceType?: ("message" | "user_task") | null;
       /** @default null */
       status?: components["schemas"]["ComplaintStatus"] | null;
       /** Text */
