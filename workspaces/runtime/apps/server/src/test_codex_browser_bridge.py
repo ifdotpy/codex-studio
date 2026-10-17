@@ -716,6 +716,49 @@ class NativeChats(unittest.TestCase):
         self.assertFalse(client.is_alive(), "closing the host bridge must release its control RPC")
         self.assertTrue(errors)
 
+    def test_close_refuses_a_control_call_whose_handler_starts_after_shutdown_began(self) -> None:
+        # asyncio accepts a connection and starts its handler task in later loop steps, so
+        # close() can snapshot control_tasks before the handler registers. Hold the handler
+        # until the control server is closed: that is the same step as the snapshot.
+        from codex_browser_host import HostGuest
+        original = HostGuest.control_client
+        entered = threading.Event()
+        release: list[asyncio.Event] = []
+
+        async def held_client(guest: Any, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            release.append(asyncio.Event())
+            entered.set()
+            await release[0].wait()
+            await original(guest, reader, writer)
+
+        self.guest.close()
+        with patch.object(HostGuest, "control_client", held_client):
+            self.guest = HostGuest(self.runtime, listeners=lambda: [])
+        server = self.guest.control_server
+        close_server = server.close
+
+        def close_then_release() -> None:
+            close_server()
+            release[0].set()
+        server.close = close_then_release  # type: ignore[method-assign]
+        errors: list[Exception] = []
+
+        def wait_for_browser() -> None:
+            try:
+                self.guest.call("browser.wait", {"after": 0, "waitSeconds": 20}, timeout=35)
+            except Exception as error:
+                errors.append(error)
+
+        client = threading.Thread(target=wait_for_browser, daemon=True)
+        client.start()
+        self.assertTrue(entered.wait(5))
+        started = time.monotonic()
+        self.guest.close()
+        self.assertLess(time.monotonic() - started, 2)
+        client.join(timeout=2)
+        self.assertFalse(client.is_alive(), "closing the host bridge must refuse a late control RPC")
+        self.assertTrue(errors)
+
     def test_a_window_on_another_mac_relays_through_its_own_server(self) -> None:
         tool, result = self.launch(self.agent_id)
         self.assertEqual(result.returncode, 0, result.stderr)
