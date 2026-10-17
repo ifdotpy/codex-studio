@@ -367,7 +367,7 @@ fn execute_decision(
         repository::write(transaction, &write.table, &write.record)?;
     }
     for agent in &decision.cancel_pending {
-        repository::cancel_pending(transaction, agent)?;
+        repository::settle_inputs(transaction, agent)?;
     }
     if let Some(ports) = ports {
         for effect in &decision.effects {

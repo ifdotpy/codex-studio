@@ -210,10 +210,57 @@ pub fn write(transaction: &Transaction<'_>, table: &str, record: &Value) -> Stor
     }
 }
 
-pub fn cancel_pending(transaction: &Transaction<'_>, agent: &str) -> StoreResult<()> {
+/// SQL predicate over `runtime_agents.record` selecting soft-deleted agents. Single owner.
+pub const DELETED_AGENT_SQL: &str = "(json_extract(record,'$.deletedAt') IS NOT NULL AND json_extract(record,'$.deletedAt') NOT IN (0,''))";
+
+const ABANDONED_INPUT_ERROR: &str = "Agent deleted; delivery outcome unknown";
+
+/// Settle the unsettled input rows of an agent that was just stopped or deleted.
+///
+/// Pending rows are always cancelled. When the agent is deleted, nothing will ever
+/// consume its rows, so reserved rows (provably not submitted) are cancelled too, and
+/// dispatching or uncertain rows become `failed` with the uncertainty kept in `error`:
+/// they are never marked delivered and never resent.
+pub fn settle_inputs(transaction: &Transaction<'_>, agent: &str) -> StoreResult<()> {
     transaction.execute(
         "UPDATE runtime_events SET status='cancelled' WHERE agent=?1 AND status='pending'",
         [agent],
+    )?;
+    settle_deleted_inputs(transaction, Some(agent))
+}
+
+/// Startup sweep: apply the deleted-agent rule to rows left by earlier versions.
+/// Also cancels pending rows stamped with an epoch older than their agent's current
+/// epoch, which the scheduler can never select.
+pub fn settle_orphaned_inputs(transaction: &Transaction<'_>) -> StoreResult<()> {
+    settle_deleted_inputs(transaction, None)?;
+    transaction.execute(
+        "UPDATE runtime_events SET status='cancelled',error='Superseded by a newer agent epoch' \
+         WHERE status='pending' AND epoch < (SELECT json_extract(a.record,'$.epoch') \
+         FROM runtime_agents a WHERE a.id=runtime_events.agent)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn settle_deleted_inputs(transaction: &Transaction<'_>, agent: Option<&str>) -> StoreResult<()> {
+    let deleted = format!(
+        "agent IN (SELECT id FROM runtime_agents WHERE {DELETED_AGENT_SQL}) \
+         AND (?1 IS NULL OR agent=?1)"
+    );
+    transaction.execute(
+        &format!(
+            "UPDATE runtime_events SET status='cancelled',error='Agent deleted' \
+             WHERE status IN ('pending','reserved') AND {deleted}"
+        ),
+        [agent],
+    )?;
+    transaction.execute(
+        &format!(
+            "UPDATE runtime_events SET status='failed',error=?2 \
+             WHERE status IN ('dispatching','uncertain') AND {deleted}"
+        ),
+        rusqlite::params![agent, ABANDONED_INPUT_ERROR],
     )?;
     Ok(())
 }

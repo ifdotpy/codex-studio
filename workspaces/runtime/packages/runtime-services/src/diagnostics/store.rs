@@ -62,13 +62,22 @@ pub fn execution_ledger(connection: &Connection) -> Result<Value, rusqlite::Erro
     Ok(json!({"runs": runs, "limit": RUN_LIMIT, "relatedLimit": RELATED_LIMIT}))
 }
 
-/// Count durable pending input rows using the Python route's accepted states.
+/// Count durable input rows that can still be delivered: unsettled rows of agents that
+/// are not deleted. Rows of deleted agents are settled by `settle_inputs` and the startup sweep.
 pub fn durable_input_pending(connection: &Connection) -> Result<i64, rusqlite::Error> {
     if !table_exists(connection, "runtime_events")? {
         return Ok(0);
     }
+    let deleted = if table_exists(connection, "runtime_agents")? {
+        format!(
+            "AND agent NOT IN (SELECT id FROM runtime_agents WHERE {})",
+            studio_runtime_store::agent_management::DELETED_AGENT_SQL
+        )
+    } else {
+        String::new()
+    };
     connection.query_row(
-        "SELECT COUNT(*) FROM runtime_events WHERE status IN ('pending','reserved','dispatching','uncertain')",
+        &format!("SELECT COUNT(*) FROM runtime_events WHERE status IN ('pending','reserved','dispatching','uncertain') {deleted}"),
         [],
         |row| row.get(0),
     )
