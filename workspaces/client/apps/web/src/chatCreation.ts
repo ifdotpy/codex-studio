@@ -1,7 +1,25 @@
+import { ApiError } from "./api";
 import { serverLocalStorage } from "./servers/storage";
 import type { Json } from "./types";
 
 const requestPrefix = (key: string) => `${key}:request:`;
+
+/** HTTP 408 Request Timeout: the server did not finish reading the request, so it is
+ * the one client-error status that leaves the creation outcome unknown. */
+const REQUEST_TIMEOUT_STATUS = 408;
+
+/** Whether a failed creation attempt has a definitive server answer proving that this
+ * request ID created nothing: an explicit not-applied outcome or a client-error refusal.
+ * Network failures, timeouts and server errors leave the outcome unknown. */
+export function isDefinitiveCreationRefusal(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.outcome === "not_applied" ||
+      (error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== REQUEST_TIMEOUT_STATUS))
+  );
+}
 
 export function createChatCreationStore(localStorage: Storage) {
   function pendingChatCreations(key: string): Json[] {
@@ -54,15 +72,50 @@ export function createChatCreationStore(localStorage: Storage) {
     return true;
   }
 
-  function rejectChatCreation(key: string, id: string, reason: string): void {
+  function archiveChatCreation(
+    key: string,
+    id: string,
+    archive: "rejected" | "dismissed",
+    outcome: "not_applied" | "unknown",
+    reason: string,
+  ): void {
     const request = pendingChatCreations(key).find((item) => item.id === id);
     if (!request) return;
-    // Preserve the exact body before removing a proven non-applied attempt.
+    // Preserve the exact body before the pending record stops being tracked.
     localStorage.setItem(
-      `${key}:rejected:${id}`,
-      JSON.stringify({ request, outcome: "not_applied", reason }),
+      `${key}:${archive}:${id}`,
+      JSON.stringify({ request, outcome, reason }),
     );
     confirmChatCreation(key, id);
+  }
+
+  function rejectChatCreation(key: string, id: string, reason: string): void {
+    archiveChatCreation(key, id, "rejected", "not_applied", reason);
+  }
+
+  /** Settle a failed attempt. A definitive refusal ends the pending request; a lost
+   * response keeps it for an exact-ID retry. Returns whether it was settled. */
+  function settleFailedChatCreation(
+    key: string,
+    id: string,
+    error: unknown,
+    reason: string,
+  ): boolean {
+    if (!isDefinitiveCreationRefusal(error)) return false;
+    rejectChatCreation(key, id, reason);
+    return true;
+  }
+
+  /** The user stops tracking a request whose outcome is unknown. A chat it created
+   * still appears in the chat list; Studio no longer retries this request ID. */
+  function dismissChatCreation(key: string, id: string): void {
+    archiveChatCreation(
+      key,
+      id,
+      "dismissed",
+      "unknown",
+      "Dismissed by the user",
+    );
   }
 
   return {
@@ -71,6 +124,8 @@ export function createChatCreationStore(localStorage: Storage) {
     confirmChatCreation,
     confirmChatCreationResponse,
     rejectChatCreation,
+    settleFailedChatCreation,
+    dismissChatCreation,
   };
 }
 
@@ -80,4 +135,6 @@ export const {
   confirmChatCreation,
   confirmChatCreationResponse,
   rejectChatCreation,
+  settleFailedChatCreation,
+  dismissChatCreation,
 } = createChatCreationStore(serverLocalStorage);
