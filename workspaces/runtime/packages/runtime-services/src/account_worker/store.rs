@@ -762,7 +762,7 @@ pub(super) async fn outcome(
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let i = &context.intent;
         if context.method()? == Method::TurnSteer {
-            steer::outcome(tx, &context, &outcome)?;
+            let wake = steer::outcome(tx, &context, &outcome)?;
             if let SessionOutcome::Write {
                 outcome: WriteOutcome::Written,
                 recovery: Some(request),
@@ -782,7 +782,10 @@ pub(super) async fn outcome(
             if retired {
                 forget_request(tx, &context.operation)?;
             }
-            return Ok((retired, None));
+            return Ok((
+                retired,
+                wake.map(|(agent, epoch)| Effect::Wake(agent, epoch)),
+            ));
         }
         let mut effect = None;
         let retired = match outcome {

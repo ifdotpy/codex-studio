@@ -476,6 +476,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pass_runs_on_the_older_python_marker_table_without_status_columns() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        {
+            let store = RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store");
+            // Python states created before the status columns keep this shape.
+            store
+                .transaction(|transaction| {
+                    transaction.execute_batch(
+                        "DROP TABLE runtime_payload_migrations;
+                         CREATE TABLE runtime_payload_migrations (name TEXT PRIMARY KEY,\
+                         cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0);
+                         INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',9,1);",
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("install older marker table");
+        }
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("reopen runtime store on the older marker table"),
+        );
+        store.verify_schema().expect("upgraded marker verifies");
+        let tail = long_tail();
+        let tasks = (0..=TASK_NEWEST_PER_AGENT)
+            .map(|index| {
+                json!({"id":format!("t-{index:04}"),"agent":"a","status":"completed",
+                    "created":OLD - index as f64,"tail":tail})
+            })
+            .collect::<Vec<_>>();
+        insert_tasks(&store, tasks).await;
+
+        run_pass(&store, NOW).await.expect("retention pass");
+
+        let (cursor, complete, status, error) = marker(&store).await.expect("marker");
+        assert_eq!(
+            (cursor, complete, status.as_str(), error),
+            (TASK_NEWEST_PER_AGENT + 1, 1, "complete", None)
+        );
+        assert_eq!(
+            task(&store, "t-0100").await["tail"],
+            json!(crate::payload_blobs::task_preview(&tail))
+        );
+    }
+
+    #[tokio::test]
     async fn batch_saves_a_resumable_cursor_and_a_repeated_window_is_a_no_op() {
         let (_directory, store) = store().await;
         let tail = long_tail();

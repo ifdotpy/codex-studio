@@ -1,8 +1,12 @@
 use super::*;
 
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v2";
-/// The previous index name; its predicate lacked busy Claude steer candidates.
-const RETIRED_ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates";
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v3";
+/// Earlier index names: the first lacked busy steer candidates, and `_v2`
+/// limited them to Claude turns.
+const RETIRED_ACCOUNT_WAKE_INDEXES: [&str; 2] = [
+    "runtime_agent_account_wake_candidates",
+    "runtime_agent_account_wake_candidates_v2",
+];
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
@@ -37,12 +41,11 @@ fn account_wake_queued_candidate(record: &str) -> String {
     )
 }
 
-/// A running Claude turn that may receive queued user input by `turn/steer`.
+/// A running turn that may receive queued user input by `turn/steer`.
 /// `SchedulerRepository::claim_steer` owns the exact eligibility check.
 fn account_wake_steer_candidate(record: &str) -> String {
     format!(
-        "(json_extract({record},'$.provider')='claude' \
-         AND json_extract({record},'$.status')='running' \
+        "(json_extract({record},'$.status')='running' \
          AND json_extract({record},'$.autoWake')=1 \
          AND json_extract({record},'$.inFlight')=1 \
          AND json_type({record},'$.turnId')='text' \
@@ -225,9 +228,9 @@ impl SchedulerRepository {
     /// deliberately contains only agent-record predicates; pending-event and
     /// invalid-agent-hold receipt checks remain in the consuming queries.
     pub(crate) fn prepare_account_wake_index(transaction: &Transaction<'_>) -> StoreResult<()> {
-        transaction.execute_batch(&format!(
-            "DROP INDEX IF EXISTS {RETIRED_ACCOUNT_WAKE_INDEX}"
-        ))?;
+        for retired in RETIRED_ACCOUNT_WAKE_INDEXES {
+            transaction.execute_batch(&format!("DROP INDEX IF EXISTS {retired}"))?;
+        }
         transaction.execute_batch(&Self::account_wake_index_definition().create_sql)?;
         Ok(())
     }

@@ -1,14 +1,15 @@
-//! Claude busy-turn input: queued user input reaches a running turn through
-//! `turn/steer`. `SchedulerRepository::claim_steer` owns the durable states and
+//! Busy-turn input: queued user input reaches a running Codex or Claude turn
+//! through `turn/steer`. `SchedulerRepository::claim_steer` owns the durable states and
 //! their fail-point matrix; this module adapts them to the account worker.
 //!
 //! Exactly-once rules:
 //! - The input is written to the provider at most once: the request identity is
 //!   durable (`steer_submitted` plus the worker `submitted` receipt) before the
 //!   write, and no path resubmits a `dispatching` or unconfirmed input.
-//! - Delivery is recorded only from the bridge acknowledgement, an
-//!   `item/completed` userMessage whose `clientId` is the first input id. The
-//!   bridge emits it when Claude echoes that exact input inside the turn.
+//! - Delivery is recorded only from the provider acknowledgement, an
+//!   `item/completed` userMessage whose `clientId` is the first input id. Codex
+//!   app-server and the Claude bridge emit it when the turn records that exact
+//!   input.
 //! - A definite rejection or a turn-end report of unread input returns the input
 //!   to the queue once; anything else unresolved becomes visibly unconfirmed.
 use super::*;
@@ -24,7 +25,7 @@ pub(super) fn operation(account: &str, steer_id: &str) -> String {
     )
 }
 
-/// Claim queued user input for the agent's running Claude turn.
+/// Claim queued user input for the agent's running turn.
 pub(super) fn claim(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
@@ -54,7 +55,7 @@ pub(super) fn claim(
         epoch,
         attempt_id: steer_id.into(),
         account_key: field("accountKey").unwrap_or("default").into(),
-        provider: "claude".into(),
+        provider: field("provider").unwrap_or("codex").into(),
         thread_id: Some(claimed.thread_id.clone()),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
@@ -80,7 +81,7 @@ fn text<'a>(texts: impl Iterator<Item = &'a str>) -> String {
     texts.collect::<Vec<_>>().join("\n\n")
 }
 
-/// Bridge `turn/steer` parameters. `expectedTurnId` makes a finished turn a
+/// Provider `turn/steer` parameters. `expectedTurnId` makes a finished turn a
 /// definite rejection instead of a new turn.
 pub(super) fn params(intent: &TurnIntent, turn: &str) -> Value {
     json!({
@@ -118,18 +119,21 @@ pub(super) fn submitted(
     Ok(true)
 }
 
-/// Apply a transport or reply outcome of a steer request.
+/// Apply a transport or reply outcome of a steer request. Returns the agent
+/// and epoch to wake when the turn had already ended and the returned input
+/// queued the agent again; nothing else would start its next turn.
 pub(super) fn outcome(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     outcome: &SessionOutcome,
-) -> Result<(), WorkerError> {
+) -> Result<Option<(String, i64)>, WorkerError> {
     let (agent, steer) = (&context.intent.agent_id, &context.intent.attempt_id);
+    let wake = |requeued: bool| requeued.then(|| (agent.clone(), context.intent.epoch));
     match outcome {
         SessionOutcome::Write {
             outcome: WriteOutcome::NotSent,
             ..
-        } => SchedulerRepository::steer_not_sent(tx, agent, steer)?,
+        } => return Ok(wake(SchedulerRepository::steer_not_sent(tx, agent, steer)?)),
         SessionOutcome::Write {
             outcome: WriteOutcome::Unknown,
             ..
@@ -145,14 +149,16 @@ pub(super) fn outcome(
             ResponseBody::Result(_) => {
                 SchedulerRepository::steer_response(tx, agent, steer, "accepted")?
             }
-            ResponseBody::Error(_) => SchedulerRepository::steer_rejected(tx, agent, steer)?,
+            ResponseBody::Error(_) => {
+                return Ok(wake(SchedulerRepository::steer_rejected(tx, agent, steer)?));
+            }
         },
         _ => {}
     }
-    Ok(())
+    Ok(None)
 }
 
-/// Apply a bridge acknowledgement. Returns the agent and epoch whose input was
+/// Apply a provider acknowledgement. Returns the agent and epoch whose input was
 /// delivered so the caller can wake it for the next queued input.
 pub(super) fn acknowledge(
     tx: &studio_runtime_store::Transaction<'_>,
@@ -173,8 +179,7 @@ pub(super) fn acknowledge(
     }
     let mut statement = tx.prepare_cached(
         "SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?1 \
-         AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 \
-         AND COALESCE(json_extract(record,'$.provider'),'codex')='claude' LIMIT 2",
+         AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 LIMIT 2",
     )?;
     let agents = statement
         .query_map(rusqlite::params![thread, account], |row| {
@@ -233,13 +238,13 @@ pub(super) fn acknowledge(
 pub(super) enum WakeClaim {
     /// Input claimed for the running turn, and that turn's id.
     Steer(Box<TurnIntent>, String),
-    /// A running Claude turn with nothing to steer now; its queue waits.
+    /// A running turn with nothing to steer now; its queue waits.
     Busy,
-    /// Not a running Claude turn: the ordinary turn claim applies.
+    /// Not a running turn: the ordinary turn claim applies.
     Idle,
 }
 
-/// Claim busy-turn input when the agent is a running Claude turn. Other agents
+/// Claim busy-turn input when the agent is a running turn. Other agents
 /// return `Idle`, and a running turn with nothing claimable returns `Busy`,
 /// after one read, without a write transaction.
 pub(super) async fn claim_for_wake(
@@ -260,7 +265,6 @@ pub(super) async fn claim_for_wake(
             .filter(|record| {
                 record.epoch == epoch
                     && record.status == studio_runtime_store::AgentStatus::Running
-                    && record.extra.get("provider").and_then(Value::as_str) == Some("claude")
                     && record
                         .extra
                         .get("accountKey")

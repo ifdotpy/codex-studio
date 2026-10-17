@@ -1,13 +1,38 @@
-//! Account-worker witnesses for Claude busy-turn input (`turn/steer`). Each
-//! test starts from a real accepted turn and drives one fail point through the
-//! worker: write, reply, acknowledgement, turn end and restart.
+//! Account-worker witnesses for busy-turn input (`turn/steer`). Each test
+//! starts from a real accepted turn and drives one fail point through the
+//! worker: write, reply, acknowledgement, turn end and restart. Scenarios the
+//! two providers share run once per provider through `per_provider!`.
 use super::*;
 
 const INPUT: &str = "steer-input";
 const TEXT: &str = "Please also check the tests";
 
-/// An accepted, running turn whose agent is a Claude agent with queued input.
-async fn running_claude_turn() -> (State, Peer, AccountHandle) {
+/// Generate one test per provider from `async fn name(provider)`.
+macro_rules! per_provider {
+    ($($name:ident),* $(,)?) => {$(
+        mod $name {
+            #[tokio::test]
+            async fn codex() {
+                super::$name("codex").await;
+            }
+            #[tokio::test]
+            async fn claude() {
+                super::$name("claude").await;
+            }
+        }
+    )*};
+}
+
+per_provider!(
+    acknowledged_steer_is_delivered_to_the_running_turn_once,
+    rejected_steer_waits_for_the_next_turn_and_is_sent_once,
+    turn_end_without_acknowledgement_is_unconfirmed_and_never_resent,
+    transport_close_before_reply_is_unconfirmed_and_never_resent,
+    turn_ending_before_a_rejection_starts_the_next_turn_once,
+);
+
+/// An accepted, running turn of a `provider` agent with queued input.
+async fn running_turn(provider: &'static str) -> (State, Peer, AccountHandle) {
     let state = State::new().await;
     let mut peer = Peer::new();
     let worker = peer.worker(state.bridge.clone()).await;
@@ -22,7 +47,7 @@ async fn running_claude_turn() -> (State, Peer, AccountHandle) {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
                         .expect("agent");
                     assert_eq!(record.status, studio_runtime_store::AgentStatus::Running);
-                    record.extra.insert("provider".into(), json!("claude"));
+                    record.extra.insert("provider".into(), json!(provider));
                     AgentRepository::put(tx, &record)?;
                     tx.execute(
                         "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
@@ -148,9 +173,8 @@ fn finished(unapplied: &[&str]) -> Value {
         "turn":{"id":"turn","status":"completed","unappliedSteers":unapplied}}})
 }
 
-#[tokio::test]
-async fn acknowledged_steer_is_delivered_to_the_running_turn_once() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+async fn acknowledged_steer_is_delivered_to_the_running_turn_once(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn(provider).await;
     let request = steer(&state, &mut peer, &worker).await;
     assert_eq!(request["params"]["expectedTurnId"], "turn");
     assert_eq!(request["params"]["threadId"], "fake-thread-0");
@@ -180,15 +204,14 @@ async fn acknowledged_steer_is_delivered_to_the_running_turn_once() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn rejected_steer_waits_for_the_next_turn_and_is_sent_once() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+fn rejection(request: &Value) -> Value {
+    json!({"id":request["id"],"error":{"code":-32600,"message":"expected active turn id `turn` but found none"}})
+}
+
+async fn rejected_steer_waits_for_the_next_turn_and_is_sent_once(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn(provider).await;
     let request = steer(&state, &mut peer, &worker).await;
-    frame(
-        &mut peer,
-        json!({"id":request["id"],"error":{"code":-32000,"message":"The steer belongs to a different Claude turn"}}),
-    )
-    .await;
+    frame(&mut peer, rejection(&request)).await;
     assert_eq!(input(&state).await.0, "pending");
     assert_eq!(state.record().await["steerRejectedTurnId"], "turn");
     state.wake(&worker).await;
@@ -202,9 +225,35 @@ async fn rejected_steer_waits_for_the_next_turn_and_is_sent_once() {
     worker.shutdown().await.unwrap();
 }
 
+/// The turn ends while the steer is in flight; the provider then rejects it.
+/// The input is unconfirmed until the rejection proves it unread, and the
+/// worker starts the next turn with it exactly once.
+async fn turn_ending_before_a_rejection_starts_the_next_turn_once(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn(provider).await;
+    let request = steer(&state, &mut peer, &worker).await;
+    set_provider(&state, "codex").await;
+    frame(&mut peer, finished(&[])).await;
+    assert_eq!(input(&state).await.0, "failed");
+    no_write(&mut peer).await;
+    frame(&mut peer, rejection(&request)).await;
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let next = peer.write("turn/start").await;
+    assert!(
+        next.to_string().contains(TEXT),
+        "the next turn carries the input"
+    );
+    assert_eq!(input(&state).await.0, "dispatching");
+    frame(&mut peer, rejection(&request)).await;
+    no_write(&mut peer).await;
+    worker.shutdown().await.unwrap();
+}
+
+/// Claude bridge only: Codex app-server does not report unread steers.
 #[tokio::test]
 async fn turn_end_reporting_unread_input_requeues_it_once() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+    let (state, mut peer, mut worker) = running_turn("claude").await;
     let request = steer(&state, &mut peer, &worker).await;
     peer.reply(&request, json!({"turnId":"turn"})).await;
     let next = next_turn(&state, &mut peer, finished(&[INPUT])).await;
@@ -220,9 +269,8 @@ async fn turn_end_reporting_unread_input_requeues_it_once() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn turn_end_without_acknowledgement_is_unconfirmed_and_never_resent() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+async fn turn_end_without_acknowledgement_is_unconfirmed_and_never_resent(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn(provider).await;
     let request = steer(&state, &mut peer, &worker).await;
     peer.reply(&request, json!({"turnId":"turn"})).await;
     frame(&mut peer, finished(&[])).await;
@@ -237,9 +285,8 @@ async fn turn_end_without_acknowledgement_is_unconfirmed_and_never_resent() {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn transport_close_before_reply_is_unconfirmed_and_never_resent() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+async fn transport_close_before_reply_is_unconfirmed_and_never_resent(provider: &'static str) {
+    let (state, mut peer, mut worker) = running_turn(provider).await;
     let _request = steer(&state, &mut peer, &worker).await;
     // The closed generation can no longer acknowledge the written input.
     worker.shutdown().await.unwrap();
@@ -257,7 +304,7 @@ async fn transport_close_before_reply_is_unconfirmed_and_never_resent() {
 /// turn, which turns `dispatching` rows `uncertain`.
 #[tokio::test]
 async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+    let (state, mut peer, mut worker) = running_turn("claude").await;
     let _request = steer(&state, &mut peer, &worker).await;
     let stage = state
         .bridge
@@ -287,7 +334,7 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
 /// unconfirmed.
 #[tokio::test]
 async fn closing_during_submission_returns_the_input_unsent() {
-    let (state, mut peer, mut worker) = running_claude_turn().await;
+    let (state, mut peer, mut worker) = running_turn("claude").await;
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("steer_submitted".into());
     state.wake(&worker).await;
     tokio::time::timeout(

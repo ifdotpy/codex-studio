@@ -14,6 +14,7 @@
 //! | submitted; turn ends, bridge reports it unread   | `pending`, once                        |
 //! | submitted; turn ends without ack                 | `failed` unconfirmed, never resent     |
 //! | unconfirmed; late ack / definite rejection       | `delivered` / `pending`                |
+//! | turn ended; rejection or not-sent returns input  | `pending`, idle agent `queued` to wake |
 //! | submitted; stop, then turn ends unread           | `cancelled`                            |
 //! | submitted; transport generation closes           | `failed` unconfirmed                   |
 //! | submitted; restart: `recover()` reconciles turn  | `failed` unconfirmed, before `uncertain` |
@@ -199,7 +200,7 @@ const UNCONFIRMED: [&str; 4] = ["failed", "failed", "pending", "pending"];
 #[test]
 fn claim_takes_the_ordered_steerable_prefix_once() {
     let mut connection = database();
-    let claimed = claim(&mut connection, "s1").expect("running Claude turn claims");
+    let claimed = claim(&mut connection, "s1").expect("running turn claims");
     assert_eq!(claimed.turn_id, TURN);
     assert_eq!(claimed.thread_id, "thread");
     let ids = claimed
@@ -225,12 +226,24 @@ fn claim_takes_the_ordered_steerable_prefix_once() {
 }
 
 #[test]
+fn codex_and_unlabelled_turns_are_steered_like_claude() {
+    for provider in [Some("codex"), None] {
+        let mut connection = database();
+        let mut record = running();
+        match provider {
+            Some(provider) => record.extra.insert("provider".into(), json!(provider)),
+            None => record.extra.remove("provider"),
+        };
+        put_agent(&connection, record);
+        let claimed = claim(&mut connection, "s1").expect("running turn claims");
+        assert_eq!(claimed.turn_id, TURN, "{provider:?}");
+    }
+}
+
+#[test]
 fn claim_refuses_every_ineligible_agent_state() {
     type Change = fn(&mut AgentRecord);
-    let cases: [(&str, Change); 7] = [
-        ("codex", |a| {
-            a.extra.insert("provider".into(), json!("codex"));
-        }),
+    let cases: [(&str, Change); 6] = [
         ("queued", |a| a.status = AgentStatus::Queued),
         ("rejected-this-turn", |a| {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
@@ -312,9 +325,10 @@ fn transport_not_sent_returns_input_once() {
     submit(&mut connection, "s1");
     assert_eq!(statuses(&connection), SENT);
     for _ in 0..2 {
-        settle(&mut connection, |tx| {
-            SchedulerRepository::steer_not_sent(tx, AGENT, "s1")
+        let requeued = with(&mut connection, |tx| {
+            SchedulerRepository::steer_not_sent(tx, AGENT, "s1").expect("release executes")
         });
+        assert!(!requeued, "the running turn keeps the agent busy");
         assert_eq!(statuses(&connection), QUEUED);
     }
     assert_eq!(open_receipts(&connection), 0);
@@ -391,9 +405,8 @@ fn rejection_requeues_once_and_blocks_this_turn() {
     let mut connection = database();
     submit(&mut connection, "s1");
     for _ in 0..2 {
-        settle(&mut connection, |tx| {
-            SchedulerRepository::steer_rejected(tx, AGENT, "s1")
-        });
+        let requeued = with(&mut connection, reject);
+        assert!(!requeued, "the running turn keeps the agent busy");
         assert_eq!(statuses(&connection), QUEUED);
     }
     assert_eq!(agent(&connection).extra["steerRejectedTurnId"], TURN);
@@ -486,11 +499,27 @@ fn definite_rejection_after_unconfirmed_requeues_once() {
     let mut connection = database();
     submit(&mut connection, "s1");
     terminal(&mut connection, &[]);
-    settle(&mut connection, |tx| {
-        SchedulerRepository::steer_rejected(tx, AGENT, "s1")
-    });
+    // The turn ended first: `settle_terminal` left the agent idle.
+    let mut idle = agent(&connection);
+    idle.status = AgentStatus::Completed;
+    idle.extra.insert("inFlight".into(), json!(false));
+    idle.extra.insert("turnId".into(), Value::Null);
+    put_agent(&connection, idle);
+    assert!(
+        with(&mut connection, reject),
+        "the idle agent is queued to wake"
+    );
     assert_eq!(statuses(&connection), QUEUED);
+    assert_eq!(agent(&connection).status, AgentStatus::Queued);
+    assert!(
+        !with(&mut connection, reject),
+        "a repeated reply changes nothing"
+    );
     assert!(acknowledge(&mut connection).is_none());
+}
+
+fn reject(tx: &Transaction<'_>) -> bool {
+    SchedulerRepository::steer_rejected(tx, AGENT, "s1").expect("rejection executes")
 }
 
 #[test]
@@ -526,7 +555,7 @@ fn closed_generation_unconfirms_only_older_submissions() {
 }
 
 #[test]
-fn wake_page_selects_running_claude_turns_with_queued_user_input() {
+fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
     let page = |connection: &Connection| {
         SchedulerRepository::account_wake_page(connection, "", &BTreeMap::new(), 4, 4, 0.0)
             .expect("wake page reads")
@@ -544,7 +573,11 @@ fn wake_page_selects_running_claude_turns_with_queued_user_input() {
     // A submitted Codex attempt with a generation is a recovery candidate.
     codex.extra.get_mut("startAttempt").expect("attempt")["connectionGeneration"] = Value::Null;
     put_agent(&connection, codex);
-    assert!(page(&connection).is_empty());
+    assert_eq!(
+        page(&connection)["acct"][0].0,
+        AGENT,
+        "Codex turns are steered too"
+    );
     put_agent(&connection, running());
     connection
         .execute("UPDATE runtime_events SET kind='followup'", [])
