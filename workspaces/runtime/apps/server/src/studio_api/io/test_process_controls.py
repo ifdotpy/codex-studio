@@ -779,8 +779,8 @@ class BackgroundCommandTests(unittest.TestCase):
                     rt.put("runtime_agents", "lead", current)
             return original(owner)
 
-        rt.agent_connection = replace_turn_at_dispatch  # type: ignore[method-assign]
-        result = action(rt, request)
+        with patch.object(rt, "agent_connection", replace_turn_at_dispatch):
+            result = action(rt, request)
         self.assertEqual(result["response"]["status"], "stale")
         self.assertEqual(self.background_calls(rt), [])
 
