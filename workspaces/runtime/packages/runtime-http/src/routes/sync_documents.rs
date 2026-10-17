@@ -139,110 +139,133 @@ pub(crate) async fn pull(
         >(response)?))
         .into_response());
     }
-    let worker_store = store.clone();
-    let worker_validators = validators.clone();
-    let worker_state_dir = state_dir.clone();
-    let worker_priority_id = priority_id.clone();
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_documents",
-        move || -> Result<EntityPullResult, ApiError> {
-            let store = worker_store;
-            let validators = worker_validators;
-            let state_dir = worker_state_dir;
-            let priority_id = worker_priority_id;
-            let generation = store.generation().map_err(|_| ApiError::internal())?;
-            if scope == "drafts" {
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                let workspace_id = SyncDocumentsRepository::workspace_id(&connection)
-                    .map_err(|_| ApiError::internal())?;
-                let documents = SyncDocumentsRepository::pull_drafts(&connection, after, limit)
-                    .map_err(|_| ApiError::internal())?;
-                for document in &documents {
-                    if sync_policy::contains_unrepresentable_integer(&document.payload) {
-                        return Err(invalid_stored_draft(&document.id));
+    let check_store = store.clone();
+    let check_validators = validators.clone();
+    let check_state_dir = state_dir.clone();
+    let check = store
+        .read_async(
+            "runtime-http/routes/sync_documents",
+            move |connection| -> Result<EntityPullCheck, ApiError> {
+                let store = check_store;
+                let validators = check_validators;
+                let generation = store.generation().map_err(|_| ApiError::internal())?;
+                if scope == "drafts" {
+                    let workspace_id = SyncDocumentsRepository::workspace_id(connection)
+                        .map_err(|_| ApiError::internal())?;
+                    let documents = SyncDocumentsRepository::pull_drafts(connection, after, limit)
+                        .map_err(|_| ApiError::internal())?;
+                    for document in &documents {
+                        if sync_policy::contains_unrepresentable_integer(&document.payload) {
+                            return Err(invalid_stored_draft(&document.id));
+                        }
+                        let payload: Value = serde_json::from_str(&document.payload)
+                            .map_err(|_| invalid_stored_draft(&document.id))?;
+                        validate_draft_value(&validators, &document.id, &payload)
+                            .map_err(|_| invalid_stored_draft(&document.id))?;
                     }
-                    let payload: Value = serde_json::from_str(&document.payload)
-                        .map_err(|_| invalid_stored_draft(&document.id))?;
-                    validate_draft_value(&validators, &document.id, &payload)
-                        .map_err(|_| invalid_stored_draft(&document.id))?;
+                    let checkpoint = documents.last().map_or(after, |document| document.sequence);
+                    let response = crate::generated::SyncPullResponse {
+                        sync_entities: None,
+                        sync_entities_after: None,
+                        checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
+                        documents: documents
+                            .into_iter()
+                            .map(|document| crate::generated::SyncDocument {
+                                id: document.id,
+                                payload: document.payload,
+                                seq: document.sequence,
+                                deleted: document.deleted,
+                            })
+                            .collect(),
+                        floor: None,
+                        generation,
+                        initial_high: None,
+                        max_seq: None,
+                        reset: None,
+                        workspace_id,
+                    };
+                    if !validate_generated("SyncPullResponse", &response, &validators) {
+                        return Err(invalid_stored_draft("page"));
+                    }
+                    return Ok(EntityPullCheck::Done(EntityPullResult::Response(
+                        SyncPullResponseBody::Page(response),
+                    )));
                 }
-                let checkpoint = documents.last().map_or(after, |document| document.sequence);
-                let response = crate::generated::SyncPullResponse {
-                    sync_entities: None,
-                    sync_entities_after: None,
-                    checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
-                    documents: documents
-                        .into_iter()
-                        .map(|document| crate::generated::SyncDocument {
-                            id: document.id,
-                            payload: document.payload,
-                            seq: document.sequence,
-                            deleted: document.deleted,
-                        })
-                        .collect(),
-                    floor: None,
-                    generation,
-                    initial_high: None,
-                    max_seq: None,
-                    reset: None,
-                    workspace_id,
-                };
-                if !validate_generated("SyncPullResponse", &response, &validators) {
-                    return Err(invalid_stored_draft("page"));
-                }
-                return Ok(EntityPullResult::Response(SyncPullResponseBody::Page(
-                    response,
-                )));
-            }
-            let generation_before_vault_read = store.committed_change_generation();
-            let (_, vault_snapshot) = capture_project_vault_snapshot(&store, &state_dir)?;
-            let vault_signature = vault_snapshot.signature();
-            drop(vault_snapshot);
-            let observed_generation = store.committed_change_generation();
-            if generation_before_vault_read != observed_generation
-                || store
-                    .entity_projections_need_maintenance(&vault_signature)
-                    .map_err(map_sync_store_error)?
-            {
-                return Ok(EntityPullResult::NeedsMaintenance(generation));
-            }
-            let read_result = store.read_transaction(|transaction| {
-                pull_entities(
-                    transaction,
-                    &state_dir,
-                    false,
-                    None,
-                    None,
-                    None,
-                    after,
-                    limit,
-                    fresh,
-                    initial_high,
-                    reset_support,
-                    priority_id.as_deref(),
-                    generation,
-                    &validators,
+                let generation_before_vault_read = store.committed_change_generation();
+                let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
+                    std::path::Path::new(&check_state_dir),
+                    connection,
                 )
-            });
-            match read_result {
-                Ok(response) if store.committed_change_generation() == observed_generation => {
-                    Ok(EntityPullResult::Response(response))
+                .map_err(map_sync_store_error)?;
+                let vault_signature = vault_snapshot.signature();
+                drop(vault_snapshot);
+                let observed_generation = store.committed_change_generation();
+                if generation_before_vault_read != observed_generation
+                    || store
+                        .entity_projections_need_maintenance(&vault_signature)
+                        .map_err(map_sync_store_error)?
+                {
+                    return Ok(EntityPullCheck::Done(EntityPullResult::NeedsMaintenance(
+                        generation,
+                    )));
                 }
-                Ok(_) => Ok(EntityPullResult::NeedsMaintenance(generation)),
-                Err(StoreError::Sqlite(studio_runtime_store::SqliteError::SqliteFailure(
+                Ok(EntityPullCheck::Read {
+                    generation,
+                    observed_generation,
+                })
+            },
+        )
+        .await?;
+    let result = match check {
+        EntityPullCheck::Done(result) => result,
+        EntityPullCheck::Read {
+            generation,
+            observed_generation,
+        } => {
+            let read_validators = validators.clone();
+            let read_state_dir = state_dir.clone();
+            let read_priority_id = priority_id.clone();
+            // A separate snapshot, as before: the vault check reader is released
+            // before the entity page is read.
+            let read_result = store
+                .read_async(
+                    "runtime-http/routes/sync_documents",
+                    move |transaction| -> Result<_, ApiError> {
+                        Ok(pull_entities(
+                            transaction,
+                            &read_state_dir,
+                            false,
+                            None,
+                            None,
+                            None,
+                            after,
+                            limit,
+                            fresh,
+                            initial_high,
+                            reset_support,
+                            read_priority_id.as_deref(),
+                            generation,
+                            &read_validators,
+                        ))
+                    },
+                )
+                .await;
+            match read_result {
+                Ok(Ok(response)) if store.committed_change_generation() == observed_generation => {
+                    EntityPullResult::Response(response)
+                }
+                Ok(Ok(_)) => EntityPullResult::NeedsMaintenance(generation),
+                Ok(Err(StoreError::Sqlite(studio_runtime_store::SqliteError::SqliteFailure(
                     error,
                     _,
-                ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
-                    let _ = observed_generation;
-                    let _ = vault_signature;
-                    Ok(EntityPullResult::NeedsMaintenance(generation))
+                )))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
+                    EntityPullResult::NeedsMaintenance(generation)
                 }
-                Err(error) => Err(map_sync_store_error(error)),
+                Ok(Err(error)) => return Err(map_sync_store_error(error)),
+                Err(error) => return Err(error),
             }
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        }
+    };
     match result {
         EntityPullResult::Response(response) => Ok(Json(response).into_response()),
         EntityPullResult::NeedsMaintenance(generation) => {
@@ -552,6 +575,16 @@ pub(crate) enum SyncPullResponseBody {
 enum EntityPullResult {
     Response(SyncPullResponseBody),
     NeedsMaintenance(i64),
+}
+
+/// Outcome of the first pull snapshot: a finished result, or the generations
+/// that the entity page read must still observe.
+enum EntityPullCheck {
+    Done(EntityPullResult),
+    Read {
+        generation: i64,
+        observed_generation: u64,
+    },
 }
 
 #[derive(Debug, Deserialize)]

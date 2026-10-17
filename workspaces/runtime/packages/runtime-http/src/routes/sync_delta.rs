@@ -20,15 +20,11 @@ where
     E: From<StoreError> + Send + 'static,
 {
     let sequence_store = store.clone();
-    let sequence = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_delta",
-        move || {
-            let before = sequence_store.read().map_err(|_| ApiError::internal())?;
-            SyncDocumentsRepository::entity_sequence(&before).map_err(|_| ApiError::internal())
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let sequence = sequence_store
+        .read_async("runtime-http/routes/sync_delta", |connection| {
+            SyncDocumentsRepository::entity_sequence(connection).map_err(|_| ApiError::internal())
+        })
+        .await?;
     let page_limit = usize::try_from(SYNC_ENTITY_PAGE_LIMIT).map_err(|_| ApiError::internal())?;
     let fetch_limit = SYNC_ENTITY_PAGE_LIMIT
         .checked_add(1)
@@ -38,19 +34,15 @@ where
         .await
         .map_err(map_error)?;
     let read_store = Arc::clone(&store);
-    let (rows, floor) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_delta",
-        move || {
-            let connection = read_store.read().map_err(|_| ApiError::internal())?;
-            let rows = SyncDocumentsRepository::entities_after(&connection, sequence, fetch_limit)
+    let (rows, floor) = read_store
+        .read_async("runtime-http/routes/sync_delta", move |connection| {
+            let rows = SyncDocumentsRepository::entities_after(connection, sequence, fetch_limit)
                 .map_err(|_| ApiError::internal())?;
-            let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
+            let floor = SyncDocumentsRepository::entity_tombstone_floor(connection)
                 .map_err(|_| ApiError::internal())?;
             Ok::<_, ApiError>((rows, floor))
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     let sync_after = (rows.len() <= page_limit && floor <= sequence).then_some(sequence);
     Ok(attach(result, rows, sync_after, page_limit))
 }
@@ -65,33 +57,25 @@ where
     F: Future<Output = Result<Value, E>> + Send,
 {
     let sequence_store = Arc::clone(&store);
-    let sequence = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_delta",
-        move || {
-            let before = sequence_store.read().map_err(|_| ApiError::internal())?;
-            SyncDocumentsRepository::entity_sequence(&before).map_err(|_| ApiError::internal())
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+    let sequence = sequence_store
+        .read_async("runtime-http/routes/sync_delta", |connection| {
+            SyncDocumentsRepository::entity_sequence(connection).map_err(|_| ApiError::internal())
+        })
+        .await?;
     let page_limit = usize::try_from(SYNC_ENTITY_PAGE_LIMIT).map_err(|_| ApiError::internal())?;
     let fetch_limit = SYNC_ENTITY_PAGE_LIMIT
         .checked_add(1)
         .ok_or_else(ApiError::internal)?;
     let result = operation().await.map_err(map_error)?;
-    let (rows, floor) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/sync_delta",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let rows = SyncDocumentsRepository::entities_after(&connection, sequence, fetch_limit)
+    let (rows, floor) = store
+        .read_async("runtime-http/routes/sync_delta", move |connection| {
+            let rows = SyncDocumentsRepository::entities_after(connection, sequence, fetch_limit)
                 .map_err(|_| ApiError::internal())?;
-            let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
+            let floor = SyncDocumentsRepository::entity_tombstone_floor(connection)
                 .map_err(|_| ApiError::internal())?;
             Ok::<_, ApiError>((rows, floor))
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     let sync_after = (rows.len() <= page_limit && floor <= sequence).then_some(sequence);
     Ok(attach(result, rows, sync_after, page_limit))
 }

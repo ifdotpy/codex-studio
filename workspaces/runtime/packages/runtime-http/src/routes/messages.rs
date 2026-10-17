@@ -62,16 +62,12 @@ async fn messages(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let value = coordination::history(&connection, &room).map_err(coordination_error)?;
+    let result = store
+        .read_async("runtime-http/routes/messages", move |connection| {
+            let value = coordination::history(connection, &room).map_err(coordination_error)?;
             super::generated_json::<Vec<crate::generated::MessageRecord>>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     Ok(Json(result))
 }
 
@@ -258,20 +254,15 @@ async fn agent_chat(
         ]));
     }
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            let mut connection = store.read().map_err(|_| ApiError::internal())?;
-            let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+    let value = store
+        .read_async("runtime-http/routes/messages", move |tx| {
             let value = studio_runtime_services::coordination_reads::chat_read(
-                &tx, &room, before, after, limit,
+                tx, &room, before, after, limit,
             )
             .map_err(coordination_error)?;
             super::generated_json::<crate::generated::ChatRead>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     Ok(Json(value))
 }
 async fn receipts(
@@ -292,20 +283,15 @@ async fn receipts(
     })?;
     let workspace = state.workspace_id;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/messages",
-        move || {
-            let mut connection = store.read().map_err(|_| ApiError::internal())?;
-            let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+    let value = store
+        .read_async("runtime-http/routes/messages", move |tx| {
             let mut value =
-                studio_runtime_services::coordination_reads::delivery_receipts(&tx, &agent, &ids)
+                studio_runtime_services::coordination_reads::delivery_receipts(tx, &agent, &ids)
                     .map_err(coordination_error)?;
             value["workspaceId"] = Value::String(workspace);
             super::generated_json::<crate::generated::MessageReceipts>(value)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal())??;
+        })
+        .await?;
     Ok(Json(value))
 }
 async fn delete_room(
