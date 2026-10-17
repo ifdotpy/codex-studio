@@ -179,6 +179,12 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["derivedData"], second["derivedData"])
         self.assertEqual(second["transferredBytes"], 0)
 
+    async def test_the_command_knows_the_layr_state_of_its_slot(self):
+        result = await self.execute("state", 'import os; print("state=" + os.environ["HOST_EXEC_STATE"])')
+        self.assertEqual(result["exitCode"], 0)
+        # The fake guest layr names this state for the saved line (rev-parse HEAD@{0}).
+        self.assertIn("state=0123456789abcdef0123456789abcdef", "".join(row.get("text", "") for row in self.events))
+
     async def test_exact_retry_and_changed_content(self):
         params = {"operationId": "retry", "agentId": "agent", "projectId": "project", "linePath": str(self.line)}
         request = {"id": "acquire", "method": "acquire", "params": params, "token": "a" * 64}

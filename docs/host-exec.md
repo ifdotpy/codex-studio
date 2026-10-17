@@ -9,6 +9,10 @@ Use these environment variables for output outside the source folder:
 - `HOST_EXEC_PACKAGE_CACHE`: the slot's stable package folder.
 - `HOST_EXEC_ARTIFACTS`: files to return to the agent.
 
+`HOST_EXEC_STATE` is the ID of the layr state that the slot holds: the guest saves the line
+and writes that state into the slot before the command. The `.git` folder of the slot is the
+line's git layer and can name an older commit; use this ID to identify the sources.
+
 For example:
 
 ```json

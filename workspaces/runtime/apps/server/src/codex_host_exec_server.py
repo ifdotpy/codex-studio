@@ -660,6 +660,11 @@ class HostService:
             require(isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and 0 < timeout <= 3600, "Invalid command timeout")
             # Cache folders of the line: the Mac receives them, and its changes there never return.
             caches = self.cache_list(params.get("caches", []))
+            # The layr state that the guest wrote into the slot; an older guest sends none.
+            layr_state = params.get("layrState")
+            require(layr_state is None or (isinstance(layr_state, str) and 7 <= len(layr_state) <= 64
+                                           and all(c in "0123456789abcdef" for c in layr_state)),
+                    "Invalid layr state ID")
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
                 source = await asyncio.to_thread(self.scan_slot, slot, mac_only)
                 # The scan let other requests run: the operation must still be leased.
@@ -675,7 +680,8 @@ class HostService:
                     cwd = inside(cwd, params["cwd"], leaf=True)
                     require(cwd.is_dir(), "The command cwd is not a directory")
                 self.evict(slot.parent, self.budget_of(op), exclude=slot)
-                op.update(state="running", startedAt=time.time(), caches=caches)
+                op.update(state="running", startedAt=time.time(), caches=caches,
+                          **({"layrState": layr_state} if layr_state else {}))
                 self.save(identity, op)
                 self.commands[identity] = asyncio.create_task(self.command(identity, dict(op), argv, cwd, timeout, source))
                 return op
@@ -744,7 +750,8 @@ class HostService:
         child = None
         slot = self.slot(op)
         environment = {**os.environ, "HOST_EXEC_DERIVED_DATA": op["derivedData"],
-                       "HOST_EXEC_PACKAGE_CACHE": op["packageCache"], "HOST_EXEC_ARTIFACTS": op["artifactsPath"]}
+                       "HOST_EXEC_PACKAGE_CACHE": op["packageCache"], "HOST_EXEC_ARTIFACTS": op["artifactsPath"],
+                       **({"HOST_EXEC_STATE": op["layrState"]} if op.get("layrState") else {})}
         async def drain(pipe: asyncio.StreamReader, stream: str) -> None:
             nonlocal output_bytes, reason
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
