@@ -92,6 +92,12 @@ shows as `cache`.
 | `line '<x>' is protected`            | The line changes only with `layr merge <line> --expect <state>`. |
 | Not in a line                        | `cd` into `<root>/projects/<project>/lines/<line>`               |
 
+## Git in a line
+
+The `.git` folder of a line points to the newest state that has a git commit: a state that
+was imported from git or exported by `layr push`. `layr commit` does not move git HEAD, so a
+tool that reads git HEAD sees an older commit than the line.
+
 ## Send work to the git remote
 
 `layr push origin <branch>` exports each new commit of the line as a git commit.
