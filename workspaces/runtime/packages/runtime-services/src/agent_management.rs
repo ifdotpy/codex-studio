@@ -1276,6 +1276,97 @@ mod lifecycle_scope_parity_tests {
         }
     }
 
+    #[test]
+    fn scoped_restore_and_inspect_match_full_snapshot_for_a_worker_with_descendants() {
+        let mut archived = agent("archived", "lead", Some("lead"), false);
+        archived["deletedAt"] = json!(5.0);
+        archived["agentArchive"] = json!({"at":5.0,"epoch":1});
+        let mut archived_child = agent("archived-child", "lead", Some("archived"), false);
+        archived_child["deletedAt"] = json!(5.0);
+        archived_child["agentArchive"] = json!({"at":5.0,"epoch":1});
+        let full = Records {
+            tables: BTreeMap::from([
+                (
+                    "runtime_agents".to_owned(),
+                    vec![
+                        agent("lead", "lead", None, true),
+                        agent("worker", "lead", Some("lead"), false),
+                        agent("nested", "lead", Some("worker"), false),
+                        archived,
+                        archived_child,
+                        agent("other-lead", "other-lead", None, true),
+                    ],
+                ),
+                (
+                    "runtime_tool_requests".to_owned(),
+                    vec![
+                        json!({"id":"nested-tool","agent":"nested","stage":"running","outcome":"pending"}),
+                        json!({"id":"unrelated-tool","agent":"other-lead","stage":"running","outcome":"pending"}),
+                    ],
+                ),
+                (
+                    "runtime_tasks".to_owned(),
+                    vec![
+                        json!({"id":"nested-task","agent":"nested","status":"running"}),
+                        json!({"id":"archived-child-task","agent":"archived-child","status":"completed"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "voice_sessions".to_owned(),
+                    vec![
+                        json!({"id":"nested-voice","agent":"nested","state":"running"}),
+                        json!({"id":"unrelated-voice","agent":"other-lead","state":"running"}),
+                    ],
+                ),
+            ]),
+        };
+        let full_snapshot = ManagementSnapshot::from_records(full.clone()).expect("full snapshot");
+        let scoped_for = |target: &str| {
+            let owners = full_snapshot.owner_scope(target).expect("owner scope");
+            ManagementSnapshot::from_records(scoped_records(&full, &owners))
+                .expect("scoped snapshot")
+        };
+        assert!(
+            full_snapshot
+                .owner_scope("worker")
+                .expect("worker scope")
+                .contains("nested"),
+            "the worker's scope includes its descendants"
+        );
+
+        let restore = Action::Restore {
+            actor: "lead".to_owned(),
+            epoch: 1,
+            target: "archived".to_owned(),
+        };
+        let restored = decide_with_effects(&full_snapshot, &restore, 10.0).expect("restore");
+        assert_eq!(restored.result["status"], "restored");
+        assert_same_decision(&full_snapshot, &scoped_for("archived"), &restore);
+
+        for target in ["worker", "nested"] {
+            let inspect = Action::Inspect {
+                actor: "lead".to_owned(),
+                epoch: 1,
+                target: target.to_owned(),
+            };
+            assert_same_decision(&full_snapshot, &scoped_for(target), &inspect);
+        }
+        // The descendant's own tool request decides its inspection in both.
+        let inspect_nested = Action::Inspect {
+            actor: "lead".to_owned(),
+            epoch: 1,
+            target: "nested".to_owned(),
+        };
+        let Err(refusal) = decide_with_effects(&scoped_for("nested"), &inspect_nested, 10.0) else {
+            panic!("inspection is unavailable");
+        };
+        assert!(
+            format!("{refusal:?}").contains("tool-driver/archive-reconciliation"),
+            "{refusal:?}"
+        );
+    }
+
     fn assert_same_decision(
         full: &ManagementSnapshot,
         scoped: &ManagementSnapshot,

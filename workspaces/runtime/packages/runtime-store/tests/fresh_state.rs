@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    ReviewerArchiveRepository, RuntimeStore, SchedulerRepository, StoreError, check_state_readonly,
+    ReviewerArchiveRepository, RuntimeStore, SchedulerRepository, StoreError, TaskRepository,
+    check_state_readonly,
 };
 
 // Rust-owned feature indexes stay outside Python lazy DDL. The runtime-owned
@@ -43,6 +44,7 @@ async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migr
     let rust_catalog = catalog_snapshot(&rust_state);
     assert_rust_owned_feature_schema_objects(&rust_catalog, &feature_schema);
     assert_rust_owned_runtime_indexes(&rust_catalog);
+    assert_shared_task_indexes_match_python(&expected["databases"]);
     assert_valid_markers(&expected["markers"]);
     assert_eq!(
         catalog_without_rust_owned_indexes(&rust_catalog),
@@ -92,6 +94,40 @@ async fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migr
     );
 
     cleanup(rust_state);
+}
+
+#[tokio::test]
+async fn open_recreates_the_task_indexes_rust_readers_rely_on() {
+    let state = temporary_state("task-index");
+    drop(
+        RuntimeStore::open(Some(&state))
+            .await
+            .expect("Rust creates an empty state"),
+    );
+    let index_exists = || {
+        Connection::open(state.join("canvas.sqlite3"))
+            .expect("canvas opens")
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+                 WHERE type='index' AND name='runtime_task_agent_created_id')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("catalog reads")
+    };
+    assert!(index_exists());
+    Connection::open(state.join("canvas.sqlite3"))
+        .expect("canvas opens")
+        .execute_batch("DROP INDEX runtime_task_agent_created_id")
+        .expect("index drops");
+    assert!(!index_exists());
+    drop(
+        RuntimeStore::open(Some(&state))
+            .await
+            .expect("Rust reopens the state"),
+    );
+    assert!(index_exists(), "open recreates the index");
+    cleanup(state);
 }
 
 #[tokio::test]
@@ -246,6 +282,28 @@ fn owned_runtime_indexes() -> Vec<studio_runtime_store::OwnedRuntimeIndexDefinit
     definitions.extend(ReviewerArchiveRepository::index_definitions());
     definitions.sort_by_key(|definition| definition.name);
     definitions
+}
+
+/// Task indexes that Rust readers rely on are also created by Python startup;
+/// Rust's `IF NOT EXISTS` DDL must name the same definition.
+fn assert_shared_task_indexes_match_python(python_databases: &Value) {
+    for definition in TaskRepository::index_definitions() {
+        let python = python_databases["canvas.sqlite3"]["sqlite_master"]
+            .as_array()
+            .and_then(|objects| {
+                objects
+                    .iter()
+                    .find(|object| object["name"] == definition.name)
+            })
+            .unwrap_or_else(|| panic!("Python creates {}", definition.name));
+        assert_eq!(python["table"], definition.table, "{}", definition.name);
+        assert_eq!(
+            normalize_schema_sql(python["sql"].as_str().expect("index SQL is present")),
+            normalize_schema_sql(&definition.create_sql.replace("IF NOT EXISTS ", "")),
+            "{} matches the Python definition",
+            definition.name
+        );
+    }
 }
 
 fn assert_rust_owned_runtime_indexes(catalog: &Value) {

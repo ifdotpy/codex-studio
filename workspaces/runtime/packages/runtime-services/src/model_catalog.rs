@@ -37,6 +37,10 @@ const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
 pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
+/// Dependency name reported when no fresh model catalog can be read for an
+/// admission decision. The condition is transient: a later read can succeed.
+pub const MODEL_CATALOG_DEPENDENCY: &str = "provider-session/model-list";
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ModelListError {
     #[error("Unknown account")]

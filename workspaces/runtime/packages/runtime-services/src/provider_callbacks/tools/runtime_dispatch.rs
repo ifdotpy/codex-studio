@@ -88,7 +88,7 @@ pub fn select_worker_account(
                 return Ok((candidate.account_key.clone(), candidate.identity.clone()));
             }
             Ok(false) => saw_catalog = true,
-            Err(CreationError::Unavailable("provider-session/model-list")) => {}
+            Err(CreationError::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY)) => {}
             Err(error) => return Err(error),
         }
     }
@@ -97,7 +97,9 @@ pub fn select_worker_account(
             "This model is not available for the selected worker accounts",
         ));
     }
-    Err(CreationError::Unavailable("provider-session/model-list"))
+    Err(CreationError::Unavailable(
+        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+    ))
 }
 
 /// Apply Python's explicit subagent model-provider and cached-price limits.
@@ -622,10 +624,21 @@ fn child_creation_refusal(
     Ok(not_sent(error))
 }
 
+/// Refusal text saved for a request that a transient model-catalog outage
+/// stopped before any write. The not-applied receipt is final for this request
+/// identity, so the caller must retry under a new one.
+const MODEL_CATALOG_RETRY: &str = "The model catalog was temporarily unavailable, so nothing was created. Retry with a new request_id; replaying this request_id returns this refusal.";
+
 fn not_sent(error: Error) -> DispatchedOperation {
+    let value = match error {
+        Error::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY) => {
+            json!(MODEL_CATALOG_RETRY)
+        }
+        error => json!(error.to_string()),
+    };
     DispatchedOperation {
         result: OperationResult {
-            value: json!(error.to_string()),
+            value,
             signals: Vec::new(),
         },
         certainty: DeliveryCertainty::NotSent,
@@ -671,6 +684,25 @@ mod tests {
     };
     use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
+
+    #[test]
+    fn transient_catalog_refusal_tells_the_caller_to_retry_with_a_new_request_id() {
+        let refusal = super::not_sent(crate::managed_host_tools::Error::Unavailable(
+            crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+        ));
+        assert_eq!(refusal.certainty, DeliveryCertainty::NotSent);
+        assert_eq!(refusal.applied, Some(false));
+        let text = refusal.result.value.as_str().expect("refusal text");
+        assert!(text.contains("temporarily unavailable"), "{text}");
+        assert!(text.contains("new request_id"), "{text}");
+        let other = super::not_sent(crate::managed_host_tools::Error::Unavailable(
+            "agent-create/managed-environment",
+        ));
+        assert_eq!(
+            other.result.value,
+            json!("Not implemented: requires agent-create/managed-environment")
+        );
+    }
 
     #[test]
     fn uncertain_guest_save_remains_unknown_at_the_tool_boundary() {

@@ -28,8 +28,10 @@ pub const RETENTION_BATCH_PAUSE: Duration = Duration::from_millis(25);
 pub const RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 const TASK_MARKER: &str = "payload-v1:tasks";
-/// Task statuses whose output can still change; they are never trimmed.
-const ACTIVE_TASK_STATUSES: &[&str] = &["running", "starting", "pending", "unknown"];
+/// Task statuses that are final, so their output can no longer change. Task
+/// status is free-form; any other value (including active, approval, lost or
+/// future statuses) keeps its full output.
+const TRIMMABLE_TASK_STATUSES: &[&str] = &["completed", "failed", "interrupted"];
 
 /// Outcome of one task retention scan window.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -201,12 +203,12 @@ fn scan_window(
     Ok((candidates, next_cursor, done))
 }
 
-/// A malformed, active, recent, or already short record is not a candidate;
+/// A malformed, non-final, recent, or already short record is not a candidate;
 /// in particular a missing or null `created` never ages out.
 fn candidate(rowid: i64, id: String, raw: String, now: f64) -> Option<Candidate> {
     let record: Value = serde_json::from_str(&raw).ok()?;
-    let status = record.get("status").and_then(Value::as_str);
-    if status.is_none_or(|status| ACTIVE_TASK_STATUSES.contains(&status)) {
+    let status = record.get("status").and_then(Value::as_str)?;
+    if !TRIMMABLE_TASK_STATUSES.contains(&status) {
         return None;
     }
     let created = record.get("created").and_then(Value::as_f64)?;
@@ -245,7 +247,8 @@ fn apply_candidates(transaction: &Transaction<'_>, candidates: &[Candidate]) -> 
         }
         if !newest.contains_key(candidate.agent.as_str()) {
             let mut statement = transaction.prepare_cached(
-                "SELECT id FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
+                "SELECT id FROM runtime_tasks INDEXED BY runtime_task_agent_created_id \
+                 WHERE json_extract(record,'$.agent')=?1 \
                  ORDER BY json_extract(record,'$.created') DESC,id DESC LIMIT ?2",
             )?;
             let ids = statement
@@ -390,6 +393,11 @@ mod tests {
             json!({"id":"old-running","agent":"a","status":"running","created":OLD - 900.0,"tail":tail}),
             json!({"id":"old-null-created","agent":"a","status":"failed","created":null,"tail":tail}),
             json!({"id":"old-short","agent":"a","status":"failed","created":OLD - 800.0,"tail":"short"}),
+            json!({"id":"old-interrupted","agent":"a","status":"interrupted","created":OLD - 700.0,"tail":tail}),
+            // Free-form non-final statuses keep their output.
+            json!({"id":"old-approval","agent":"a","status":"approval","created":OLD - 600.0,"tail":tail}),
+            json!({"id":"old-lost","agent":"a","status":"lost","created":OLD - 500.0,"tail":tail}),
+            json!({"id":"old-no-status","agent":"a","created":OLD - 400.0,"tail":tail}),
             json!({"id":"recent-done","agent":"b","status":"completed","created":NOW - 60.0,"tail":tail}),
         ];
         // Agent "c" has one more old task than its newest-task window.
@@ -429,12 +437,18 @@ mod tests {
         );
         assert_eq!(trimmed["outputPreviewOnly"], json!(true));
         assert_eq!(trimmed["outputTruncated"], json!(true));
-        assert_eq!(
-            task(&store, "c-000").await["outputPreviewOnly"],
-            json!(true)
-        );
+        for trimmed in ["c-000", "old-interrupted"] {
+            assert_eq!(
+                task(&store, trimmed).await["outputPreviewOnly"],
+                json!(true),
+                "{trimmed}"
+            );
+        }
         for kept in [
             "old-running",
+            "old-approval",
+            "old-lost",
+            "old-no-status",
             "old-null-created",
             "recent-done",
             "c-001",
@@ -496,7 +510,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writer_skips_a_task_changed_after_the_reader_scan() {
+        let (_directory, store) = store().await;
+        let tail = long_tail();
+        let mut tasks = vec![
+            json!({"id":"changed","agent":"a","status":"completed","created":OLD,"tail":tail}),
+        ];
+        // Newer tasks push "changed" out of agent "a"'s newest window.
+        for index in 0..TASK_NEWEST_PER_AGENT {
+            tasks.push(
+                json!({"id":format!("new-{index:03}"),"agent":"a","status":"completed",
+                "created":NOW - 100.0 + index as f64,"tail":"x"}),
+            );
+        }
+        insert_tasks(&store, tasks).await;
+        let (candidates, _, _) = read(&store, |connection| scan_window(connection, 0, NOW))
+            .await
+            .expect("scan");
+        assert_eq!(candidates.len(), 1);
+
+        // A writer appends output between the scan and the retention batch.
+        let newer = format!("{tail} and more");
+        let replacement =
+            json!({"id":"changed","agent":"a","status":"completed","created":OLD,"tail":newer});
+        store
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "UPDATE runtime_tasks SET record=?1 WHERE id='changed'",
+                    [replacement.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("update task after scan");
+
+        let trimmed = store
+            .transaction(move |transaction| apply_candidates(transaction, &candidates))
+            .await
+            .expect("apply scanned candidates");
+        assert_eq!(trimmed, 0, "a stale scanned record is never written back");
+        assert_eq!(task(&store, "changed").await["tail"], json!(newer));
+    }
+
+    #[tokio::test]
     async fn tombstone_pruning_keeps_the_limit_and_raises_the_floor() {
+        const TRANSCRIPT_TOMBSTONES: i64 = 50;
         let (_directory, store) = store().await;
         let excess = ENTITY_TOMBSTONE_PRUNE_BATCH + 100;
         let total = ENTITY_TOMBSTONE_LIMIT + excess;
@@ -508,6 +566,16 @@ mod tests {
                 )?;
                 for index in 0..total {
                     statement.execute(params![format!("gone-{index:05}"), 1_000 + index])?;
+                }
+                // Transcript tombstones are older than every entity tombstone
+                // but belong to transcript sync; pruning never counts or
+                // removes them.
+                let mut transcript = transaction.prepare(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+                     VALUES('transcript:agent',?1,?2,'h',NULL,1)",
+                )?;
+                for index in 0..TRANSCRIPT_TOMBSTONES {
+                    transcript.execute(params![format!("item-{index:03}"), 1 + index])?;
                 }
                 Ok(())
             })
@@ -523,10 +591,18 @@ mod tests {
                 |row| row.get(0),
             )?;
             let remaining: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM sync_entities WHERE deleted=1",
+                "SELECT COUNT(*) FROM sync_entities \
+                 WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
                 [],
                 |row| row.get(0),
             )?;
+            let transcript: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM sync_entities \
+                 WHERE deleted=1 AND collection LIKE 'transcript:%'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(transcript, TRANSCRIPT_TOMBSTONES);
             Ok((
                 count,
                 SyncDocumentsRepository::entity_tombstone_floor(connection)?,
@@ -538,5 +614,29 @@ mod tests {
         assert_eq!(count, ENTITY_TOMBSTONE_LIMIT.to_string());
         assert_eq!(remaining, ENTITY_TOMBSTONE_LIMIT);
         assert_eq!(floor, 1_000 + excess - 1);
+
+        // A client whose cursor predates a pruned deletion resets instead of
+        // silently missing it; a client at the floor already saw every one.
+        let (behind, current) = store
+            .transaction(move |transaction| {
+                let pull = |after| {
+                    SyncDocumentsRepository::pull_entities(
+                        transaction,
+                        after,
+                        10,
+                        false,
+                        0,
+                        true,
+                        None,
+                    )
+                };
+                Ok((pull(1_000)?, pull(floor)?))
+            })
+            .await
+            .expect("pull entities");
+        assert!(behind.reset, "a cursor below the floor resets");
+        assert_eq!(behind.tombstone_floor, floor);
+        assert!(!current.reset, "a cursor at the floor continues");
+        assert!(current.rows.iter().all(|row| row.sequence > floor));
     }
 }
