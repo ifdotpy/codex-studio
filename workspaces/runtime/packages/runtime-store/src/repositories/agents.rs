@@ -68,6 +68,22 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 impl AgentRepository {
+    /// Seed the singleton rows the change-journal triggers update when a
+    /// schema-only state lacks them; without them no change is journaled.
+    pub(crate) fn prepare_change_journal(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> StoreResult<()> {
+        if crate::schema::table_exists(transaction, "runtime_agent_record_generation")?
+            && crate::schema::table_exists(transaction, "runtime_scheduler_agent_change_state")?
+        {
+            transaction.execute_batch(
+                "INSERT OR IGNORE INTO runtime_agent_record_generation(id,value) VALUES(1,0);
+                 INSERT OR IGNORE INTO runtime_scheduler_agent_change_state(id,floor,generation,entries,total) VALUES(1,0,0,0,0);",
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn get_raw(connection: &Connection, id: &AgentId) -> StoreResult<Option<String>> {
         Ok(Table::<AgentRecord>::new(connection)
             .get_with_raw(id)?

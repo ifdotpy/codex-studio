@@ -189,70 +189,100 @@ pub(crate) fn settle_user_message_receipt_in_transaction(
 /// Lifecycle writes and canonical renderer publication share the writer transaction.
 /// The existing agent change journal supplies exactly the changed IDs, so replay
 /// neither republishes an agent nor scans unrelated stored payloads.
-pub async fn lifecycle_transaction<T>(
+/// Writer diagnostics attribute the transaction to this function's caller.
+#[track_caller]
+pub fn lifecycle_transaction<T>(
     store: &RuntimeStore,
     change: impl for<'transaction> FnOnce(
         &rusqlite::Transaction<'transaction>,
     ) -> studio_runtime_store::StoreResult<T>
     + Send
     + 'static,
-) -> studio_runtime_store::StoreResult<T>
+) -> impl std::future::Future<Output = studio_runtime_store::StoreResult<T>> + Send + '_
 where
     T: Send + 'static,
 {
-    lifecycle_transaction_with(store, change).await
+    lifecycle_transaction_with(store, change)
 }
 
-pub(crate) async fn lifecycle_transaction_with<T, E>(
+#[track_caller]
+pub(crate) fn lifecycle_transaction_with<T, E>(
     store: &RuntimeStore,
     change: impl for<'transaction> FnOnce(&rusqlite::Transaction<'transaction>) -> Result<T, E>
     + Send
     + 'static,
-) -> Result<T, E>
+) -> impl std::future::Future<Output = Result<T, E>> + Send + '_
 where
     T: Send + 'static,
     E: From<StoreError> + Send + 'static,
 {
-    let server_id = store.local_server_id()?;
+    let server_id = store.local_server_id();
     store.transaction_with(move |tx| {
-        let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0)).map_err(StoreError::from)?;
+        let server_id = server_id?;
+        let generation = crate::sync_policy::agent_record_generation(tx)?;
         let result = change(tx)?;
-        let mut statement = tx.prepare_cached("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id").map_err(StoreError::from)?;
-        let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(StoreError::from)?;
-        for (row_id,raw) in rows {
-            let agent = match AgentRepository::get(tx, &AgentId::from(row_id.as_str())) {
-                Ok(Some(record)) => record.value(),
-                Ok(None) => return Err(StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:row_id.clone()}.into()),
-                Err(error) => {
-                    let parsed = serde_json::from_str::<Value>(&raw).ok();
-                    let Some(parsed) = parsed else {
-                        return Err(error.into());
-                    };
-                    let held = parsed.get("status").and_then(Value::as_str) == Some("failed")
-                        && parsed.get("nativeFailureHold") == Some(&Value::Bool(true))
-                        && parsed.get("autoWake") == Some(&Value::Bool(false));
-                    let is_agent_error = matches!(
-                        &error,
-                        StoreError::InvalidSyncObjectField { scope, id, .. }
-                            if scope == "runtime_agents" && id == &row_id
-                    );
-                    let Some(message) = parsed.get("error").and_then(Value::as_str).filter(|_| held) else {
-                        return Err(error.into());
-                    };
-                    if !is_agent_error {
-                        return Err(error.into());
-                    }
-                    // Keep a valid, privacy-safe sync projection for the held
-                    // row while preserving the malformed source for repair.
-                    crate::sync_views::invalid_agent_view(&row_id, &parsed, message)
+        let mut changes = crate::sync_policy::EntityChanges::default();
+        for (row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
+            let error = match AgentRepository::get(tx, &AgentId::from(row_id.as_str())) {
+                Ok(Some(_)) => {
+                    changes.agents.insert(row_id);
+                    continue;
                 }
+                Ok(None) => {
+                    return Err(StoreError::InvalidSyncObject {
+                        scope: "runtime_agents".into(),
+                        id: row_id,
+                    }
+                    .into());
+                }
+                Err(error) => error,
             };
-            let context = crate::sync_entity_context::agent_view_context(tx,&agent,server_id.as_deref())?;
-            let projection = crate::sync_views::agent_entity_view(&agent,&context).ok_or_else(||StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:row_id.clone()})?;
-            studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"agent",&row_id,projection,crate::event_write::truthy(agent.get("deletedAt")))?;
+            let parsed = serde_json::from_str::<Value>(&raw).ok();
+            let Some(parsed) = parsed else {
+                return Err(error.into());
+            };
+            let held = parsed.get("status").and_then(Value::as_str) == Some("failed")
+                && parsed.get("nativeFailureHold") == Some(&Value::Bool(true))
+                && parsed.get("autoWake") == Some(&Value::Bool(false));
+            let is_agent_error = matches!(
+                &error,
+                StoreError::InvalidSyncObjectField { scope, id, .. }
+                    if scope == "runtime_agents" && id == &row_id
+            );
+            let Some(message) = parsed.get("error").and_then(Value::as_str).filter(|_| held) else {
+                return Err(error.into());
+            };
+            if !is_agent_error {
+                return Err(error.into());
+            }
+            // Keep a valid, privacy-safe sync projection for the held
+            // row while preserving the malformed source for repair.
+            let agent = crate::sync_views::invalid_agent_view(&row_id, &parsed, message);
+            let context =
+                crate::sync_entity_context::agent_view_context(tx, &agent, server_id.as_deref())?;
+            let projection =
+                crate::sync_views::agent_entity_view(&agent, &context).ok_or_else(|| {
+                    StoreError::InvalidSyncObject {
+                        scope: "runtime_agents".into(),
+                        id: row_id.clone(),
+                    }
+                })?;
+            studio_runtime_store::SyncDocumentsRepository::put_entity(
+                tx,
+                "agent",
+                &row_id,
+                projection,
+                crate::event_write::truthy(agent.get("deletedAt")),
+            )?;
         }
+        crate::sync_policy::publish_entity_changes(
+            tx,
+            &changes,
+            server_id.as_deref(),
+            &|_, _, _, _| true,
+        )?;
         Ok(result)
-    }).await
+    })
 }
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.

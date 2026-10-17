@@ -461,10 +461,6 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
         .to_owned();
     let store = fixtures::store(root.path(), "lifecycle-cancel").await;
     fixtures::seed(&store, &case).await;
-    let reader = store.read().expect("prepare lifecycle room snapshot");
-    let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
-        .expect("prepare room directory before transaction");
-    drop(reader);
     let wake = Arc::new(Notify::new());
     let lifecycle = MonitorLifecyclePorts::new(wake);
     store
@@ -480,8 +476,6 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
                 },
                 2000.0,
                 &lifecycle,
-                &rooms,
-                &studio_runtime_services::sync_policy::ProjectVaultSnapshot::default(),
             )
         })
         .await

@@ -1,6 +1,8 @@
 #[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
+#[path = "support/projections.rs"]
+mod projections;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{
@@ -101,6 +103,7 @@ async fn seed(store: &RuntimeStore, records: Records) {
         }
         Ok(())
     }).await.expect("Python rows seed");
+    projections::full_rebuild(store).await;
 }
 
 /// Runs the production adapter through its public async lifecycle entry point.
@@ -386,7 +389,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
         "runtime_work".to_owned(),
         vec![json!({
             "id":"deleted-worker-task", "rootId":"lead", "owner":"worker",
-            "status":"ready", "title":"Return task", "description":"",
+            "status":"running", "title":"Return task", "description":"",
             "created":1.0, "updated":1.0, "version":1, "dependencies":[],
             "results":[], "decisions":[], "createdBy":"lead"
         })],
@@ -426,6 +429,17 @@ async fn production_delete_releases_deleted_worker_work_item() {
     assert!(work["owner"].is_null());
     assert_eq!(work["status"], "ready");
     assert_eq!(work["version"], 2);
+    let payload: String = db
+        .query_row(
+            "SELECT payload FROM sync_entities WHERE collection='work' \
+             AND id='deleted-worker-task' AND deleted=0",
+            [],
+            |row| row.get(0),
+        )
+        .expect("released work entity");
+    let entity: Value = serde_json::from_str(&payload).expect("entity JSON");
+    // The renderer view carries the released status, not the owner.
+    assert_eq!(entity["value"]["status"], "ready");
 }
 
 fn state(store: &RuntimeStore) -> Value {
@@ -720,17 +734,25 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         }
         assert_eq!(actual, expected, "{} {table}", case["name"]);
     }
+    let mut expected_sync = case["expected"]["syncEntities"]
+        .as_array()
+        .expect("Python sync projection oracle")
+        .clone();
+    // The Python oracle starts without projections, so it has no tombstone
+    // for a row the seeded Rust projection published and the action retired.
     let actual_sync = saved["sync"]
         .as_array()
         .expect("sync projection rows")
         .iter()
         .filter(|row| row[0] != "workspace")
+        .filter(|row| {
+            row[5] == 0
+                || expected_sync
+                    .iter()
+                    .any(|expected| expected[0] == row[0] && expected[1] == row[1])
+        })
         .map(|row| json!([row[0], row[1], row[4], row[5]]))
         .collect::<Vec<_>>();
-    let mut expected_sync = case["expected"]["syncEntities"]
-        .as_array()
-        .expect("Python sync projection oracle")
-        .clone();
     expected_sync.iter_mut().for_each(|row| {
         *row = json!([row[0], row[1], row[2], row[3]]);
     });
@@ -830,7 +852,8 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
         ("runtime_agents", "UPDATE"),
         ("runtime_requests", "UPDATE"),
         ("runtime_events", "UPDATE"),
-        ("sync_entities", "INSERT"),
+        // Seeded projections exist, so the action updates entity rows.
+        ("sync_entities", "UPDATE"),
     ] {
         for boundary in ["BEFORE", "AFTER"] {
             let root = tempfile::tempdir().expect("case");
@@ -966,7 +989,8 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
             store
             .transaction(move |tx| {
                 tx.execute_batch(&format!(
-                    "CREATE TRIGGER interrupt_projection_fail {boundary} INSERT ON sync_entities BEGIN SELECT RAISE(ABORT,'projection failure'); END"
+                    "CREATE TRIGGER interrupt_projection_fail {boundary} INSERT ON sync_entities BEGIN SELECT RAISE(ABORT,'projection failure'); END; \
+                     CREATE TRIGGER interrupt_projection_update_fail {boundary} UPDATE ON sync_entities BEGIN SELECT RAISE(ABORT,'projection failure'); END"
                 ))?;
                 Ok(())
             }).await
@@ -1002,7 +1026,9 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
             assert!(broker.calls.lock().expect("calls lock").is_empty());
             store
                 .transaction(|tx| {
-                    tx.execute_batch("DROP TRIGGER interrupt_projection_fail")?;
+                    tx.execute_batch(
+                        "DROP TRIGGER interrupt_projection_fail; DROP TRIGGER interrupt_projection_update_fail",
+                    )?;
                     Ok(())
                 })
                 .await

@@ -32,14 +32,35 @@ impl TaskRepository {
     /// Canonical DDL for the task repository's owned indexes.
     #[doc(hidden)]
     pub fn index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
-        vec![crate::OwnedRuntimeIndexDefinition {
-            name: "runtime_task_agent_created_id",
-            table: "runtime_tasks",
-            create_sql: "CREATE INDEX IF NOT EXISTS runtime_task_agent_created_id \
-                ON runtime_tasks(json_extract(record,'$.agent'), \
-                json_extract(record,'$.created') DESC, id DESC)"
-                .to_owned(),
-        }]
+        vec![
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_task_agent_created_id",
+                table: "runtime_tasks",
+                create_sql: "CREATE INDEX IF NOT EXISTS runtime_task_agent_created_id \
+                    ON runtime_tasks(json_extract(record,'$.agent'), \
+                    json_extract(record,'$.created') DESC, id DESC)"
+                    .to_owned(),
+            },
+            // Running tasks and status reads of the renderer task window.
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_task_status",
+                table: "runtime_tasks",
+                create_sql: "CREATE INDEX IF NOT EXISTS runtime_task_status \
+                    ON runtime_tasks(json_extract(record,'$.status'), \
+                    json_extract(record,'$.created'))"
+                    .to_owned(),
+            },
+            // Newest finished tasks of the renderer task window and history reads.
+            crate::OwnedRuntimeIndexDefinition {
+                name: "runtime_task_history",
+                table: "runtime_tasks",
+                create_sql: "CREATE INDEX IF NOT EXISTS runtime_task_history \
+                    ON runtime_tasks(json_extract(record,'$.created') DESC, \
+                    json_extract(record,'$.agent')) \
+                    WHERE json_extract(record,'$.status')!='running'"
+                    .to_owned(),
+            },
+        ]
     }
 
     pub fn get(connection: &Connection, id: &TaskId) -> StoreResult<Option<TaskRecord>> {

@@ -1080,6 +1080,7 @@ impl RuntimeStore {
             .transaction(move |transaction| {
                 bootstrap::prepare_sync_schema(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
+                AgentRepository::prepare_change_journal(transaction)?;
                 feature_schema::prepare(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)
