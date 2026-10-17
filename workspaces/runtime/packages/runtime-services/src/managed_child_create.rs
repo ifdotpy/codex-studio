@@ -1222,9 +1222,11 @@ fn resolve_child_base(
     }
     match crate::host_worker_create::resolve_worker_base(host_cwd, base_ref_request) {
         Ok(base) => Ok((worktree, base)),
-        Err(crate::agents_create::CreateError::InvalidCreation(
-            crate::host_worker_create::BASE_UNRESOLVED,
-        )) if worktree && base_ref_request.is_none() => Ok((false, Default::default())),
+        Err(crate::agents_create::CreateError::BaseUnresolved)
+            if worktree && base_ref_request.is_none() =>
+        {
+            Ok((false, Default::default()))
+        }
         Err(error) => Err(map_create_error(error)),
     }
 }
@@ -1233,6 +1235,9 @@ fn map_create_error(error: crate::agents_create::CreateError) -> Error {
     match error {
         crate::agents_create::CreateError::CapabilityUnavailable(name) => Error::Unavailable(name),
         crate::agents_create::CreateError::Store(error) => Error::Store(error),
+        crate::agents_create::CreateError::BaseUnresolved => Error::Managed(
+            crate::managed_host_tools::Error::Invalid("base commit could not be resolved"),
+        ),
         crate::agents_create::CreateError::InvalidCreation(message) => {
             Error::Managed(crate::managed_host_tools::Error::Invalid(message))
         }

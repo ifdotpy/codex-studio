@@ -20,8 +20,6 @@ use studio_runtime_schema::agent_limits_generated::{
 use studio_runtime_store::{AgentId, AgentRecord, AgentStatus, ProjectsRepository, Transaction};
 
 const MAX_ACCOUNT_KEY_CHARS: usize = 255;
-/// Error message when the project folder has no resolvable base commit.
-pub const BASE_UNRESOLVED: &str = "base commit could not be resolved";
 const COMMIT_HEX_LENGTHS: [usize; 2] = [40, 64];
 
 /// Freeze the parent repository's current commit before the caller opens a writer.
@@ -96,7 +94,7 @@ fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
         stderr_limit: 256,
         timeout: Duration::from_secs(10),
     })
-    .map_err(|_| CreateError::InvalidCreation(BASE_UNRESOLVED))?;
+    .map_err(|_| CreateError::BaseUnresolved)?;
     let value = String::from_utf8(output.stdout.bytes)
         .map_err(|_| CreateError::InvalidCreation("base commit is invalid"))?
         .trim()
