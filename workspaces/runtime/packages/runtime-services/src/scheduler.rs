@@ -593,6 +593,18 @@ pub(crate) fn settle_terminal_in_transaction(
                 id: identity.attempt_id.clone(),
             });
     }
+    // Busy-turn input still open for this turn is decided before the turn's
+    // continuation check: unread input is queued again, the rest is unconfirmed.
+    let unapplied = params["turn"]["unappliedSteers"]
+        .as_array()
+        .map(|ids| ids.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    SchedulerRepository::resolve_steers_at_terminal(
+        transaction,
+        &identity.agent_id,
+        turn_id,
+        &unapplied,
+    )?;
     let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
         .map_err(|_| StoreError::InvalidSyncObject {
             scope: "runtime_agents".into(),

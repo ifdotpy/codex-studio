@@ -794,6 +794,20 @@ function turnEvent(s, turn, method, item, tokenRateUsage, receiptTimes) {
     ...receiptTimes,
   });
 }
+// A submitted steer whose echo arrives after its turn ended.
+function submittedSteer(s, nativeId) {
+  for (const turn of s.turns.slice(-8).reverse()) {
+    const item = turn.items.find(
+      (i) =>
+        i.type === "userMessage" &&
+        i.delivery === "steer" &&
+        i.deliveryStatus === "submitted" &&
+        i.nativeId === nativeId,
+    );
+    if (item) return { turn, item };
+  }
+  return null;
+}
 function finishItem(s, turn, item, tokenRateUsage, receiptTimes) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
@@ -902,6 +916,22 @@ async function finishTurn(s, active, result, error) {
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
+  // Steer input still queued here was never read by Claude. Withdraw it so a
+  // later turn cannot consume it, and report it; Studio queues it again once.
+  // Input already handed to Claude without an echo has an unknown outcome.
+  const unappliedSteers = [];
+  for (const item of turn.items) {
+    if (item.delivery !== "steer" || item.deliveryStatus !== "submitted")
+      continue;
+    const queued = active.input.values.findIndex(
+      (input) => input.studioInputIdentity === item.id,
+    );
+    if (queued < 0) continue;
+    active.input.values.splice(queued, 1);
+    item.deliveryStatus = "not_applied";
+    item.error = "Claude finished before reading this steer";
+    unappliedSteers.push(item.id);
+  }
   for (const response of active.responseUsages.values()) {
     const total =
       response.requestUsage.inputTokens +
@@ -986,6 +1016,7 @@ async function finishTurn(s, active, result, error) {
       id: turn.id,
       status: turn.status,
       error: turn.error,
+      ...(unappliedSteers.length ? { unappliedSteers } : {}),
       ...(turn.startOutcome === "not_applied"
         ? {
             startOutcome: "not_applied",
@@ -1188,6 +1219,20 @@ async function startSession(s, active, p) {
           item.nativeId = m.uuid;
           active.pendingSteers.delete(item.id);
           active.deferredResult = null;
+        }
+        // Claude echoed this exact steer input: it is delivered. The echo can
+        // follow the end of its turn, so earlier turns are searched as well.
+        const steer =
+          item?.delivery === "steer"
+            ? { turn: active.turn, item }
+            : submittedSteer(s, m.uuid);
+        if (steer?.item.deliveryStatus === "submitted") {
+          steer.item.deliveryStatus = "delivered";
+          turnEvent(s, steer.turn, "item/completed", {
+            ...steer.item,
+            clientId: steer.item.id,
+          });
+          await persist(s);
         }
         continue;
       }

@@ -2,6 +2,7 @@
 mod auth_wait_schedule;
 mod claude_preparation;
 mod retained;
+mod steer;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
