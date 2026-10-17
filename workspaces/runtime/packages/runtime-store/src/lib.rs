@@ -1958,6 +1958,69 @@ mod read_pool_tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_reads_take_blocking_threads_only_up_to_reader_capacity() {
+        const WAITING_READS_PER_READER: usize = 4;
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        let reads = READ_CONNECTION_POOL_CAPACITY * WAITING_READS_PER_READER;
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let tasks = (0..reads)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let (running, peak) = (Arc::clone(&running), Arc::clone(&peak));
+                let entered_tx = entered_tx.clone();
+                let release_rx = Arc::clone(&release_rx);
+                tokio::spawn(async move {
+                    store
+                        .read_async("runtime-store/tests/read_async", move |tx| {
+                            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, Ordering::SeqCst);
+                            entered_tx.send(()).expect("report entered read");
+                            release_rx
+                                .lock()
+                                .expect("release gate")
+                                .recv()
+                                .expect("release read");
+                            running.fetch_sub(1, Ordering::SeqCst);
+                            tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                                .map_err(StoreError::from)
+                        })
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+            entered_rx.recv().await.expect("a reader enters");
+        }
+        for _ in 0..reads {
+            tokio::task::yield_now().await;
+        }
+        // Every permit is held by a gated closure; the other reads wait as
+        // futures and have not been submitted to the blocking pool.
+        assert_eq!(store.read_admission.available_permits(), 0);
+        assert_eq!(
+            running.load(Ordering::SeqCst),
+            READ_CONNECTION_POOL_CAPACITY
+        );
+        assert!(entered_rx.try_recv().is_err());
+        for _ in 0..reads {
+            release_tx.send(()).expect("gate is open");
+        }
+        for task in tasks {
+            assert_eq!(task.await.expect("read task joins").expect("read"), 1);
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), READ_CONNECTION_POOL_CAPACITY);
+    }
+
     #[tokio::test]
     async fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
         let directory = tempfile::tempdir().expect("temporary state directory");
