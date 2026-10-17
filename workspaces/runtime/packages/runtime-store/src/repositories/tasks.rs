@@ -19,6 +19,29 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 impl TaskRepository {
+    /// Create the task indexes Rust readers rely on. The newest-tasks-per-agent
+    /// order serves storage retention and agent task history; Python startup
+    /// creates the same index, so existing state directories keep theirs.
+    pub(crate) fn prepare_indexes(transaction: &rusqlite::Transaction<'_>) -> StoreResult<()> {
+        for definition in Self::index_definitions() {
+            transaction.execute_batch(&definition.create_sql)?;
+        }
+        Ok(())
+    }
+
+    /// Canonical DDL for the task repository's owned indexes.
+    #[doc(hidden)]
+    pub fn index_definitions() -> Vec<crate::OwnedRuntimeIndexDefinition> {
+        vec![crate::OwnedRuntimeIndexDefinition {
+            name: "runtime_task_agent_created_id",
+            table: "runtime_tasks",
+            create_sql: "CREATE INDEX IF NOT EXISTS runtime_task_agent_created_id \
+                ON runtime_tasks(json_extract(record,'$.agent'), \
+                json_extract(record,'$.created') DESC, id DESC)"
+                .to_owned(),
+        }]
+    }
+
     pub fn get(connection: &Connection, id: &TaskId) -> StoreResult<Option<TaskRecord>> {
         Table::<TaskRecord>::new(connection).get(id)
     }

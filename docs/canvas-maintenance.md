@@ -10,9 +10,11 @@ every `RETENTION_PASS_INTERVAL` (one hour). Each step is a short writer
 transaction with a pause between batches, so interactive writes keep the
 writer actor.
 
-- **Task output.** A finished task (status not `running`, `starting`,
-  `pending` or `unknown`) created more than `TASK_RETENTION_SECONDS` (seven
-  days) ago, and outside its agent's `TASK_NEWEST_PER_AGENT` (100) newest tasks,
+- **Task output.** A finished task (status in `TRIMMABLE_TASK_STATUSES`:
+  `completed`, `failed` or `interrupted`; any other status keeps its output)
+  created more than `TASK_RETENTION_SECONDS` (seven days) ago, and outside its
+  agent's `TASK_NEWEST_PER_AGENT` (100) newest tasks (read through the
+  `runtime_task_agent_created_id` index, which Rust startup creates if missing),
   keeps only the last `TASK_PREVIEW_BYTES` (512) bytes of `tail` and is marked
   `outputTruncated` and `outputPreviewOnly`. Progress is stored in the
   `payload-v1:tasks` row of `runtime_payload_migrations`. A restart resumes from
