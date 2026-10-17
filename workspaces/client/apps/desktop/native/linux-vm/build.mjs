@@ -10,6 +10,7 @@ export function buildLinuxVM(output, identity = signingIdentity()) {
     [
       "swiftc",
       path.join(source, "main.swift"),
+      path.join(source, "shared_values_generated.swift"),
       "-O",
       "-target",
       "arm64-apple-macos13.0",

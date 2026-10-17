@@ -34,6 +34,9 @@ GUEST_UPDATE_KEY_PATH = "/etc/codex-studio/update-key"
 GUEST_PAYLOAD_RECORD_PATH = "/var/lib/codex-studio/guest-payload.json"
 # The largest raw file part in one update.stage request (base64 must fit the 2 MiB guest frame).
 GUEST_UPDATE_PART_BYTES = 1024 * 1024
+# The virtiofs tag of the Rosetta for Linux directory share (docs/linux-vm-workspaces.md,
+# "x86_64 binaries"). The VM helper attaches the share with this tag; the guest mounts it.
+LINUX_VM_ROSETTA_TAG = "rosetta"
 
 # Codex model/list catalog response contract; byte values count encoded UTF-8.
 MODEL_CATALOG_MAX_FRAME_BYTES = 2 * 1024 * 1024
