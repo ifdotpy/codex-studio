@@ -48,6 +48,58 @@ const UNSAFE_RUST_ALLOWLIST = [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
+  [
+    "workspaces/client/apps/native/src-tauri/src/lib.rs",
+    "Single-instance flock on the native client lock file.",
+  ],
+  [
+    "workspaces/client/packages/client-core/examples/voice_playback_check.rs",
+    "macOS AVAudioEngine offline render buffers for the opt-in voice check.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/desktop.rs",
+    "macOS AppKit/Foundation calls for native desktop windows and panels.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/media.rs",
+    "macOS AVFoundation capture-permission calls through objc2.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/native.rs",
+    "Single-instance flock and macOS SO_NOSIGPIPE on the UI socket.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/notifications.rs",
+    "macOS UserNotifications calls through objc2.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/pdf.rs",
+    "macOS CoreGraphics PDF rendering over CFData.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/platform.rs",
+    "getentropy and macOS Foundation process info.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/quick_look.rs",
+    "macOS Quick Look preview panel through objc2.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/rich_document.rs",
+    "macOS WebKit hidden document renderer through objc2.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/startup.rs",
+    "setsid in pre_exec, process liveness probe and fixture reaping.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/voice.rs",
+    "libopus encoder/decoder FFI and getentropy.",
+  ],
+  [
+    "workspaces/client/packages/client-core/src/voice_audio.rs",
+    "macOS AVAudioEngine realtime voice I/O through objc2.",
+  ],
 ];
 const UNSAFE_RUST_ALLOWLIST_BY_FILE = new Map(UNSAFE_RUST_ALLOWLIST);
 const DECLARATION_SECTIONS = [
@@ -57,6 +109,13 @@ const DECLARATION_SECTIONS = [
   "optionalDependencies",
 ];
 const BOUNDARY_ALLOWLIST = [
+  {
+    importer: "codex-agents-desktop",
+    file: "profile-export-test.mjs",
+    specifier: "../web/src/native/*BrowserProfile*.mjs",
+    reason:
+      "The profile export scenario checks the renderer's browser-profile import and merge helpers it exports to.",
+  },
   {
     importer: "codex-agents-desktop",
     file: "bridge.d.ts",
@@ -1659,7 +1718,9 @@ function packageName(specifier) {
 }
 
 function declaredDependencies(item) {
-  const manifest = item.manifest ? manifestFor(item) : {};
+  // Cargo packages can embed JavaScript (include_str!); only package.json declares imports.
+  const manifest =
+    item.manifest && item.ecosystem === "pnpm" ? manifestFor(item) : {};
   return new Set(
     DECLARATION_SECTIONS.flatMap((section) =>
       Object.keys(manifest[section] ?? {}),

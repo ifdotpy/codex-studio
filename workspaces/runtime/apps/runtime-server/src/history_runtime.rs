@@ -1160,6 +1160,10 @@ mod tests {
         std::fs::create_dir_all(&sessions).expect("fixture sessions");
         std::fs::create_dir_all(&state).expect("fixture state");
 
+        // Create the databases first: a fresh state directory accepts only a
+        // private accounts directory, and this fixture writes it with the umask.
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+
         // Use the production registry path so the watcher observes accounts,
         // rather than falling back to the parent containing SQLite WAL files.
         let account_path = state.join("accounts/registry.json");
@@ -1179,7 +1183,6 @@ mod tests {
         )
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
-        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
         let agent = json!({
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
