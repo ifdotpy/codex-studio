@@ -10,6 +10,10 @@ use crate::event_write::truthy;
 use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
+/// Lead ids bound into one `IN (...)` lookup while building agent contexts,
+/// kept below SQLite's host-parameter limit. Unit: rows (ids) per statement.
+const LEAD_LOOKUP_CHUNK_ROWS: usize = 500;
+
 /// Work performed by one bulk projection-context pass, exposed for deterministic tests.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AgentContextWork {
@@ -34,15 +38,6 @@ pub(crate) fn agent_view_contexts(
                 .map(|value| (id, value))
         })
         .collect::<Vec<_>>();
-    let parent_ids = parsed_agents
-        .iter()
-        .filter_map(|(_, record)| {
-            record
-                .get("parentId")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect::<std::collections::HashSet<_>>();
     let lead_ids = parsed_agents
         .iter()
         .filter_map(|(id, record)| {
@@ -55,6 +50,23 @@ pub(crate) fn agent_view_contexts(
             eligible.then_some(id.as_str())
         })
         .collect::<Vec<_>>();
+    // Children decide `empty_lead` even when the caller passes only changed
+    // agents, so the parent lookup reads the indexed table, not the slice.
+    let mut parent_ids = std::collections::HashSet::new();
+    for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT DISTINCT json_extract(record,'$.parentId') FROM runtime_agents \
+             WHERE json_extract(record,'$.parentId') IN ({placeholders})"
+        ))?;
+        parent_ids.extend(
+            statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
     // `empty_lead` only needs to know whether each eligible lead owns any
     // monitor. The agent-key index bounds this lookup to the small lead set;
     // capturing every historical monitor row would rescan the full journal on
@@ -69,7 +81,7 @@ pub(crate) fn agent_view_contexts(
         if has_owner_index {
             // The indexed JSON expression rejects malformed rows at write
             // time, so this bounded owner lookup is safe and index-backed.
-            for chunk in lead_ids.chunks(500) {
+            for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
                 let placeholders = vec!["?"; chunk.len()].join(",");
                 let mut statement = transaction.prepare(&format!(
                     "SELECT DISTINCT json_extract(record,'$.agent') FROM runtime_monitors \
@@ -107,7 +119,7 @@ pub(crate) fn agent_view_contexts(
     let mut event_agents = std::collections::HashSet::new();
     let mut event_rows_scanned = 0;
     if !lead_ids.is_empty() && table_exists(transaction, "runtime_events")? {
-        for chunk in lead_ids.chunks(500) {
+        for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
             let placeholders = vec!["?"; chunk.len()].join(",");
             let mut statement = transaction.prepare(&format!(
                 "SELECT agent FROM runtime_events WHERE agent IN ({placeholders})"
@@ -123,7 +135,7 @@ pub(crate) fn agent_view_contexts(
     }
     let mut item_agents = std::collections::HashSet::new();
     if !lead_ids.is_empty() && table_exists(transaction, "runtime_items")? {
-        for chunk in lead_ids.chunks(500) {
+        for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
             let placeholders = vec!["?"; chunk.len()].join(",");
             let mut statement = transaction.prepare(&format!(
                 "SELECT DISTINCT agent FROM runtime_items WHERE agent IN ({placeholders})"
@@ -183,7 +195,7 @@ pub(crate) fn agent_view_contexts(
             && !truthy(record.get("prompt"))
             && !event_agents.contains(id)
             && !item_agents.contains(id)
-            && !parent_ids.contains(id.as_str())
+            && !parent_ids.contains(id)
             && !monitor_agents.contains(id);
         contexts.insert(
             id.clone(),
@@ -376,6 +388,15 @@ impl RoomDirectory {
             peers: Arc::new(peers),
             active_agent_indices: Arc::new(active_agent_indices),
         })
+    }
+    /// Build the sync context inside a writer transaction, skipping malformed
+    /// rows like `prepare_for_sync`. Only agent liveness changes take this
+    /// path, so path resolution under the writer stays rare.
+    pub(crate) fn load_for_sync(tx: &Connection) -> StoreResult<Self> {
+        Self::resolve(
+            crate::sync_policy::projection_values(tx, "runtime_agents")?,
+            crate::sync_policy::projection_values(tx, "runtime_projects")?,
+        )
     }
     /// Recheck persisted inputs in the consumer's snapshot without resolving paths again.
     pub fn matches(&self, connection: &Connection) -> StoreResult<bool> {
@@ -614,7 +635,8 @@ mod room_preparation_tests {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
                      json_extract(record,'$.agent'),json_extract(record,'$.status'));
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);

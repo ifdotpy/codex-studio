@@ -273,20 +273,6 @@ pub fn maintain_entity_projections_with_server_id(
             .ok_or(StoreError::RecordContract(
                 "entity projection source snapshot is incomplete",
             ))?;
-    let agent_contexts =
-        crate::diagnostics::measure_runtime_stage("projection.agent_contexts", || {
-            crate::sync_entity_context::agent_view_contexts(
-                transaction,
-                peer_agents,
-                source_records
-                    .get("runtime_work")
-                    .ok_or(StoreError::RecordContract(
-                        "entity projection source snapshot is incomplete",
-                    ))?,
-                project_server_id,
-            )
-        })?
-        .0;
     crate::diagnostics::measure_runtime_stage("projection.peer_team_entities", || {
         maintain_peer_team_entities(
             transaction,
@@ -295,10 +281,22 @@ pub fn maintain_entity_projections_with_server_id(
             &validate_projection,
         )
     })?;
+    crate::diagnostics::measure_runtime_stage("projection.agent_entities", || {
+        publish_agents(
+            transaction,
+            peer_agents,
+            source_records
+                .get("runtime_work")
+                .ok_or(StoreError::RecordContract(
+                    "entity projection source snapshot is incomplete",
+                ))?,
+            project_server_id,
+            &validate_projection,
+        )
+    })?;
     let mut current_rooms = BTreeSet::new();
     crate::diagnostics::measure_runtime_stage("projection.direct_entities", || {
         for (table, collection) in [
-            ("runtime_agents", "agent"),
             ("runtime_rooms", "room"),
             ("runtime_complaints", "complaint"),
             ("runtime_projects", "project"),
@@ -310,24 +308,12 @@ pub fn maintain_entity_projections_with_server_id(
                 "entity projection source snapshot is incomplete",
             ))?;
             for (id, raw) in records {
+                if matches!(collection, "request" | "rule" | "work") {
+                    publish_direct(transaction, collection, id, raw, &validate_projection)?;
+                    continue;
+                }
                 let record = serde_json::from_str::<Value>(raw)?;
-                if collection == "agent" && truthy(record.get("deletedAt")) {
-                    retire_if_live(transaction, collection, id, &validate_projection)?;
-                    continue;
-                }
-                if collection == "request"
-                    && record.get("status").and_then(Value::as_str) != Some("pending")
-                {
-                    retire_if_live(transaction, collection, id, &validate_projection)?;
-                    continue;
-                }
                 let projected = match collection {
-                    "agent" => agent_entity_view(
-                        &record,
-                        agent_contexts.get(id).ok_or(StoreError::RecordContract(
-                            "agent projection context snapshot is incomplete",
-                        ))?,
-                    ),
                     "room" => {
                         let context = rooms.for_room(transaction, &record, true)?;
                         room_entity_view(&record, &context)
@@ -368,7 +354,7 @@ pub fn maintain_entity_projections_with_server_id(
                             vault,
                         )
                     }
-                    _ => project_persisted_record(collection, &record),
+                    _ => unreachable!("the loop lists every directly projected collection"),
                 };
                 if let Some(projected) = projected {
                     if collection == "room" {
@@ -440,6 +426,243 @@ pub fn maintain_entity_projections_with_server_id(
             false,
             &validate_projection,
         )?;
+    }
+    Ok(())
+}
+
+/// Source rows one writer transaction changed, by table. Writers pass these
+/// ids so projection work is bounded by the change, not by stored history.
+#[derive(Clone, Debug, Default)]
+pub struct EntityChanges {
+    pub agents: BTreeSet<String>,
+    pub requests: BTreeSet<String>,
+    pub work: BTreeSet<String>,
+    /// Whether runtime_events rows changed, which moves the event window.
+    pub events: bool,
+}
+
+/// Publish the renderer views that depend on `changes`, using the same view
+/// code as the full rebuild. A full rebuild afterwards changes nothing, except
+/// that a deleted team's broadcast room keeps its last view (Python retains
+/// it). Agent liveness changes also refresh peer teams, rooms naming those
+/// agents, and the task and monitor windows that filter by owner liveness.
+pub fn publish_entity_changes(
+    transaction: &Transaction<'_>,
+    changes: &EntityChanges,
+    project_server_id: Option<&str>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let work = records_by_id(transaction, "runtime_work", &changes.work)?;
+    let mut agent_ids = changes.agents.clone();
+    for (_, raw) in &work {
+        let record = serde_json::from_str::<Value>(raw)?;
+        if let Some(owner) = record.get("owner").and_then(Value::as_str) {
+            agent_ids.insert(owner.to_owned());
+        }
+    }
+    let agents = records_by_id(transaction, "runtime_agents", &agent_ids)?;
+    let mut liveness_changed = BTreeSet::new();
+    let mut changed_roots = BTreeSet::new();
+    for (id, raw) in &agents {
+        let record = serde_json::from_str::<Value>(raw)?;
+        let projected_live: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if projected_live == truthy(record.get("deletedAt")) {
+            liveness_changed.insert(id.clone());
+            if let Some(root) = record.get("rootId").and_then(Value::as_str) {
+                changed_roots.insert(root.to_owned());
+            }
+        }
+    }
+    if !liveness_changed.is_empty() {
+        maintain_peer_team_entities(
+            transaction,
+            &projection_records(transaction, "runtime_agents")?,
+            &projection_records(transaction, "runtime_projects")?,
+            validate,
+        )?;
+    }
+    let mut owned_work = Vec::new();
+    if table_exists(transaction, "runtime_work")? {
+        // The runtime_work_owner_status index serves this owner lookup.
+        let mut statement = transaction.prepare_cached(
+            "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=?1 ORDER BY rowid",
+        )?;
+        for owner in &agent_ids {
+            for row in statement.query_map([owner], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })? {
+                let (id, raw) = row?;
+                if valid_stored_record("runtime_work", &id, &raw) {
+                    owned_work.push((id, raw));
+                }
+            }
+        }
+    }
+    publish_agents(
+        transaction,
+        &agents,
+        &owned_work,
+        project_server_id,
+        validate,
+    )?;
+    if !liveness_changed.is_empty() {
+        publish_rooms_of(transaction, &liveness_changed, &changed_roots, validate)?;
+    }
+    for (id, raw) in records_by_id(transaction, "runtime_requests", &changes.requests)? {
+        publish_direct(transaction, "request", &id, &raw, validate)?;
+    }
+    for (id, raw) in &work {
+        publish_direct(transaction, "work", id, raw, validate)?;
+    }
+    if !liveness_changed.is_empty() {
+        maintain_task_window(transaction, validate)?;
+        maintain_monitor_window(transaction, validate)?;
+    }
+    if changes.events {
+        maintain_event_window(transaction, validate)?;
+    }
+    Ok(())
+}
+
+/// The writer-local agent record generation, advanced by runtime_agents triggers.
+pub(crate) fn agent_record_generation(transaction: &Transaction<'_>) -> StoreResult<i64> {
+    Ok(transaction.query_row(
+        "SELECT value FROM runtime_agent_record_generation WHERE id=1",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// Existing agent rows the trigger journal records as changed after `generation`.
+pub(crate) fn agents_changed_since(
+    transaction: &Transaction<'_>,
+    generation: i64,
+) -> StoreResult<Vec<(String, String)>> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c \
+         ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id",
+    )?;
+    let rows = statement.query_map([generation], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Valid stored rows for `ids`, in rowid order like the full rebuild.
+fn records_by_id(
+    transaction: &Transaction<'_>,
+    table: &str,
+    ids: &BTreeSet<String>,
+) -> StoreResult<Vec<(String, String)>> {
+    if ids.is_empty() || !table_exists(transaction, table)? {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        transaction.prepare_cached(&format!("SELECT rowid,record FROM {table} WHERE id=?1"))?;
+    let mut rows = Vec::new();
+    for id in ids {
+        if let Some((rowid, raw)) = statement
+            .query_row([id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()?
+            && valid_stored_record(table, id, &raw)
+        {
+            rows.push((rowid, id.clone(), raw));
+        }
+    }
+    rows.sort_unstable_by_key(|(rowid, _, _)| *rowid);
+    Ok(rows.into_iter().map(|(_, id, raw)| (id, raw)).collect())
+}
+
+/// Publish agent views; `work` must hold every work item the agents own.
+fn publish_agents(
+    transaction: &Transaction<'_>,
+    agents: &[(String, String)],
+    work: &[(String, String)],
+    project_server_id: Option<&str>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let contexts = crate::sync_entity_context::agent_view_contexts(
+        transaction,
+        agents,
+        work,
+        project_server_id,
+    )?
+    .0;
+    for (id, raw) in agents {
+        let record = serde_json::from_str::<Value>(raw)?;
+        if truthy(record.get("deletedAt")) {
+            retire_if_live(transaction, "agent", id, validate)?;
+            continue;
+        }
+        let context = contexts.get(id).ok_or(StoreError::RecordContract(
+            "agent projection context snapshot is incomplete",
+        ))?;
+        if let Some(projected) = agent_entity_view(&record, context) {
+            put_projection(transaction, "agent", id, projected, false, validate)?;
+        }
+    }
+    Ok(())
+}
+
+/// Publish one request, rule or work row; only pending requests stay live.
+fn publish_direct(
+    transaction: &Transaction<'_>,
+    collection: &str,
+    id: &str,
+    raw: &str,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "request" && record.get("status").and_then(Value::as_str) != Some("pending") {
+        return retire_if_live(transaction, collection, id, validate);
+    }
+    match project_persisted_record(collection, &record) {
+        Some(projected) => put_projection(transaction, collection, id, projected, false, validate),
+        None => Ok(()),
+    }
+}
+
+/// Reproject rooms whose view can name an agent whose liveness changed.
+fn publish_rooms_of(
+    transaction: &Transaction<'_>,
+    agents: &BTreeSet<String>,
+    roots: &BTreeSet<String>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let directory = crate::sync_entity_context::RoomDirectory::load_for_sync(transaction)?;
+    for (id, raw) in projection_records(transaction, "runtime_rooms")? {
+        let room = serde_json::from_str::<Value>(&raw)?;
+        let root = room.get("rootId").and_then(Value::as_str);
+        let affected = match room.get("kind").and_then(Value::as_str) {
+            Some("broadcast") => root.is_some_and(|root| root == "all" || roots.contains(root)),
+            // Federated membership lives in another table; these rooms are few.
+            Some("federated") => true,
+            _ => room
+                .get("members")
+                .and_then(Value::as_array)
+                .is_some_and(|members| {
+                    members
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|member| agents.contains(member))
+                }),
+        };
+        if !affected {
+            continue;
+        }
+        let context = directory.for_room(transaction, &room, true)?;
+        match room_entity_view(&room, &context) {
+            Some(view) => put_projection(transaction, "room", &id, view, false, validate)?,
+            // Python retains a deleted team's broadcast view.
+            None if room.get("kind").and_then(Value::as_str) == Some("broadcast") => {}
+            None => retire_if_live(transaction, "room", &id, validate)?,
+        }
     }
     Ok(())
 }
@@ -640,13 +863,16 @@ pub(crate) fn maintain_task_window(
     {
         return Ok(());
     }
+    // CROSS JOIN keeps tasks as the outer loop, so the runtime_task_status
+    // and runtime_task_history indexes bound both parts instead of a sort
+    // over every task of every live agent.
     let mut rows = transaction.prepare(
-        "SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents a \
+        "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents a \
          ON json_extract(t.record,'$.agent')=a.id \
          WHERE json_extract(a.record,'$.deletedAt') IS NULL \
          AND json_extract(t.record,'$.status')='running' \
          UNION ALL SELECT id,record FROM (SELECT t.id,t.record FROM runtime_tasks t \
-         JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
+         CROSS JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
          WHERE json_extract(a.record,'$.deletedAt') IS NULL \
          AND json_extract(t.record,'$.status')!='running' \
          ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)",
@@ -2060,7 +2286,7 @@ mod tests {
             .expect("maintain canonical task projection");
 
         assert!(statements.iter().any(|sql| {
-            sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents")
+            sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents")
         }));
         assert!(
             !statements
@@ -2194,7 +2420,9 @@ mod tests {
         let full_window_was_traced = || {
             TRACED_SQL.with_borrow(|statements| {
                 statements.iter().any(|sql| {
-                    sql.starts_with("SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents")
+                    sql.starts_with(
+                        "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents",
+                    )
                 })
             })
         };
@@ -2302,7 +2530,7 @@ mod tests {
                     TRACED_SQL.with_borrow(|statements| {
                         statements.iter().any(|sql| {
                             sql.starts_with(
-                                "SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents",
+                                "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents",
                             )
                         })
                     })

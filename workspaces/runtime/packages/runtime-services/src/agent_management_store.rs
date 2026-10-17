@@ -5,13 +5,7 @@ use crate::agent_management::{
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use studio_runtime_store::{
-    ProjectsRepository, RuntimeStore, Transaction, agent_management as repository,
-};
-
-/// Maximum complete lifecycle preparation attempts before returning a conflict.
-/// Unit: attempts (including the first capture).
-const MAX_PREPARED_INPUT_ATTEMPTS: usize = 3;
+use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
 
 /// HTTP stop/delete and the tool dispatcher's archive/restore share this entry.
 /// Preconditions, decision, writes and renderer changes commit together. No
@@ -21,8 +15,7 @@ pub async fn execute(
     action: &Action,
     now: f64,
 ) -> Result<Value, ManagementError> {
-    let mut result =
-        execute_prepared(std::sync::Arc::clone(&store), action, now, None, || {}).await?;
+    let mut result = execute_prepared(std::sync::Arc::clone(&store), action, now, None).await?;
     if matches!(action, Action::Delete { .. } | Action::Archive { .. }) {
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
             .await
@@ -70,102 +63,13 @@ pub(crate) async fn execute_prepared(
     action: &Action,
     now: f64,
     ports: Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
-    mut on_attempt_boundary: impl FnMut() + Send,
 ) -> Result<Value, ManagementError> {
-    for attempt_index in 0..MAX_PREPARED_INPUT_ATTEMPTS {
-        if attempt_index + 1 == MAX_PREPARED_INPUT_ATTEMPTS {
-            // The final bounded capture stays inside the sync actor callback.
-            // This preserves the original guarantee that a continuously
-            // changing database cannot invalidate every filesystem-prepared
-            // snapshot before the lifecycle transaction gets writer access.
-            on_attempt_boundary();
-            let action = action.clone();
-            let ports = ports.clone();
-            let state_dir = store.root().to_path_buf();
-            let outcome = store
-                .transaction_with_error(move |transaction| {
-                    let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
-                    let projects = ProjectsRepository::list(transaction)?;
-                    let vault_snapshot =
-                        crate::sync_policy::ProjectVaultSnapshot::capture(&state_dir, &projects);
-                    match ports.as_deref() {
-                        Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
-                            transaction,
-                            &action,
-                            now,
-                            ports,
-                            &rooms,
-                            &vault_snapshot,
-                        ),
-                        None => execute_in_transaction(
-                            transaction,
-                            &action,
-                            now,
-                            &rooms,
-                            &vault_snapshot,
-                        ),
-                    }
-                })
-                .await;
-            return match outcome {
-                Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
-                    "agent management inputs changed after filesystem preparation",
-                ))) => Err(ManagementError::Invalid(
-                    "Agent state kept changing while preparing stop; reload and retry",
-                )),
-                result => result,
-            };
-        }
-
-        let capture_store = std::sync::Arc::clone(&store);
-        let state_dir = store.root().to_path_buf();
-        let (rooms, vault_snapshot) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/agent_management/prepared_inputs",
-            move || {
-                let reader = capture_store.read()?;
-                let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-                let projects = ProjectsRepository::list(&reader)?;
-                let vault_snapshot =
-                    crate::sync_policy::ProjectVaultSnapshot::capture(&state_dir, &projects);
-                drop(reader);
-                Ok::<_, studio_runtime_store::StoreError>((rooms, vault_snapshot))
-            },
-        )
+    let action = action.clone();
+    store
+        .transaction_with_error(move |transaction| {
+            execute_decision(transaction, &action, now, ports.as_deref())
+        })
         .await
-        .map_err(|_| {
-            studio_runtime_store::StoreError::RecordContract(
-                "Agent management input preparation worker failed",
-            )
-        })??;
-        on_attempt_boundary();
-
-        let action = action.clone();
-        let ports = ports.clone();
-        let attempt = store
-            .transaction_with_error(move |transaction| match ports.as_deref() {
-                Some(ports) => crate::agent_lifecycle_runtime::execute_in_transaction(
-                    transaction,
-                    &action,
-                    now,
-                    ports,
-                    &rooms,
-                    &vault_snapshot,
-                ),
-                None => execute_in_transaction(transaction, &action, now, &rooms, &vault_snapshot),
-            })
-            .await;
-        match attempt {
-            Err(ManagementError::Store(studio_runtime_store::StoreError::RecordContract(
-                "agent management inputs changed after filesystem preparation",
-            ))) => {
-                // Repeat only the read-only store/filesystem capture. The
-                // rejected transaction detected the changed snapshot before
-                // any writes or lifecycle effects were staged.
-            }
-            result => return result,
-        }
-    }
-    unreachable!("the final prepared-input attempt returns from its writer transaction")
 }
 
 /// Archive a worker after its accepted result has been merged and verified on
@@ -204,37 +108,26 @@ pub fn execute_in_transaction(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
-    rooms: &crate::sync_entity_context::RoomDirectory,
-    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, rooms, vault_snapshot, None)
+    execute_decision(transaction, action, now, None)
 }
 
 pub(crate) fn execute_with_ports(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
-    rooms: &crate::sync_entity_context::RoomDirectory,
-    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
     ports: &dyn crate::agent_lifecycle_runtime::LifecyclePorts,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, rooms, vault_snapshot, Some(ports))
+    execute_decision(transaction, action, now, Some(ports))
 }
 
 fn execute_decision(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
-    rooms: &crate::sync_entity_context::RoomDirectory,
-    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
     ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
 ) -> Result<Value, ManagementError> {
-    if !rooms.matches(transaction)? {
-        return Err(studio_runtime_store::StoreError::RecordContract(
-            "agent management inputs changed after filesystem preparation",
-        )
-        .into());
-    }
+    let generation = crate::sync_policy::agent_record_generation(transaction)?;
     if let Action::RemoteStop {
         principal,
         link,
@@ -285,8 +178,7 @@ fn execute_decision(
             .unwrap_or_else(|_| std::collections::BTreeSet::from([target.to_owned()]));
         repository::read_for_agents(transaction, Some(&owners))?
     };
-    let records = Records { tables };
-    let snapshot = ManagementSnapshot::from_records(records.clone())?;
+    let snapshot = ManagementSnapshot::from_records(Records { tables })?;
     let decision = if ports.is_some() {
         decide_with_effects(&snapshot, action, now)?
     } else {
@@ -295,71 +187,47 @@ fn execute_decision(
     if decision.writes.is_empty() && decision.cancel_pending.is_empty() {
         return Ok(decision.result);
     }
-    let mut fallback_rooms = Vec::new();
-    // Python retains a deleted team's broadcast projection, including on later
-    // unrelated writes. Preserve those views through the shared rebuild.
-    for (_, raw) in crate::sync_policy::stored_records(transaction, "runtime_rooms")? {
-        let room: Value =
-            serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-        let deleted_root = records
-            .tables
-            .get("runtime_agents")
-            .into_iter()
-            .flatten()
-            .any(|agent| {
-                agent.get("id") == room.get("rootId")
-                    && crate::event_write::truthy(agent.get("deletedAt"))
-            });
-        if room.get("kind").and_then(Value::as_str) != Some("broadcast") || !deleted_root {
-            continue;
-        }
-        let id = room["id"]
-            .as_str()
-            .ok_or(ManagementError::Invalid("Invalid room identity"))?;
-        let prior: Option<String> = transaction
-            .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='room' AND id=?1 AND deleted=0",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if let Some(prior) = prior {
-            let payload: Value =
-                serde_json::from_str(&prior).map_err(studio_runtime_store::StoreError::from)?;
-            if let Some(view) = payload.get("value") {
-                fallback_rooms.push((id.to_owned(), view.clone()));
-            }
-        }
-    }
+    // Python keeps a deleted team's broadcast room, listing only the root.
+    // Build that view from the pre-delete directory before the rows change.
+    let mut retained_broadcasts = Vec::new();
     if let Action::Delete { .. } = action {
         let deleted = decision.result["deleted"]
             .as_array()
             .ok_or(ManagementError::Invalid("Invalid deletion decision"))?;
-        for (_, raw) in crate::sync_policy::stored_records(transaction, "runtime_rooms")? {
-            let room: Value =
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            if room.get("kind").and_then(Value::as_str) != Some("broadcast")
-                || !room
-                    .get("rootId")
-                    .is_some_and(|root| deleted.contains(root))
-            {
-                continue;
-            }
-            let context = rooms.for_room(transaction, &room, true)?;
-            if let Some(mut view) = crate::sync_views::room_entity_view(&room, &context) {
-                if let Some(members) = view.get_mut("members").and_then(Value::as_array_mut) {
-                    members.retain(|member| {
-                        !deleted.contains(member) || Some(member) == room.get("rootId")
-                    });
+        let mut directory = None;
+        // The runtime_room_root index serves this lookup.
+        let mut statement = transaction
+            .prepare_cached(
+                "SELECT record FROM runtime_rooms WHERE json_extract(record,'$.rootId')=?1 \
+                 AND json_extract(record,'$.kind')='broadcast' ORDER BY rowid",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        for root in deleted.iter().filter_map(Value::as_str) {
+            let rooms = statement
+                .query_map([root], |row| row.get::<_, String>(0))
+                .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            for raw in rooms {
+                let room: Value =
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+                if directory.is_none() {
+                    directory = Some(crate::sync_entity_context::RoomDirectory::load(
+                        transaction,
+                    )?);
                 }
-                fallback_rooms.push((
-                    room["id"]
+                let context = directory
+                    .as_ref()
+                    .expect("directory loaded above")
+                    .for_room(transaction, &room, true)?;
+                if let Some(mut view) = crate::sync_views::room_entity_view(&room, &context) {
+                    if let Some(members) = view.get_mut("members").and_then(Value::as_array_mut) {
+                        members.retain(|member| !deleted.contains(member) || *member == root);
+                    }
+                    let id = room["id"]
                         .as_str()
-                        .ok_or(ManagementError::Invalid("Invalid room identity"))?
-                        .to_owned(),
-                    view,
-                ));
+                        .ok_or(ManagementError::Invalid("Invalid room identity"))?;
+                    retained_broadcasts.push((id.to_owned(), view));
+                }
             }
         }
     }
@@ -435,20 +303,24 @@ fn execute_decision(
             }
         }
     }
-    // Reuse the canonical views, including room membership and tombstones.
-    let state_dir = transaction
-        .path()
-        .and_then(|p| std::path::Path::new(p).parent())
-        .and_then(|p| p.to_str())
-        .unwrap_or_default();
-    crate::sync_policy::maintain_entity_projections(
+    // Publish only the changed rows and the views that depend on them.
+    let changes = crate::sync_policy::EntityChanges {
+        agents: crate::sync_policy::agents_changed_since(transaction, generation)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect(),
+        requests: written_ids(&decision.writes, "runtime_requests"),
+        work: written_ids(&decision.writes, "runtime_work"),
+        events: !decision.cancel_pending.is_empty(),
+    };
+    let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+    crate::sync_policy::publish_entity_changes(
         transaction,
-        state_dir,
-        vault_snapshot,
-        rooms,
-        |_, _, _, _| true,
+        &changes,
+        server_id.as_deref(),
+        &|_, _, _, _| true,
     )?;
-    for (id, view) in fallback_rooms {
+    for (id, view) in retained_broadcasts {
         studio_runtime_store::SyncDocumentsRepository::put_entity(
             transaction,
             "room",
@@ -458,6 +330,18 @@ fn execute_decision(
         )?;
     }
     Ok(decision.result)
+}
+
+fn written_ids(
+    writes: &[crate::agent_management::RowWrite],
+    table: &str,
+) -> std::collections::BTreeSet<String> {
+    writes
+        .iter()
+        .filter(|write| write.table == table)
+        .filter_map(|write| write.record.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn same_attempt_except_interrupt(current: &Value, expected: &Value) -> bool {

@@ -201,7 +201,6 @@ impl ProductionLifecyclePorts {
             action,
             now,
             Some(lifecycle_ports),
-            || {},
         )
         .await?;
         self.committed().await?;

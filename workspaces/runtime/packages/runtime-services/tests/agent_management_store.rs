@@ -1,6 +1,9 @@
 #[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
+#[path = "support/projections.rs"]
+mod projections;
+use projections::full_rebuild;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
@@ -549,4 +552,265 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
         );
     }
     assert_ne!(after_delete, saved);
+}
+
+/// Teams in the parity fixture. Unit: rows (lead agents).
+const PARITY_TEAMS_ROWS: usize = 4;
+/// Task history in the parity fixture; above the 100-row task window so a
+/// delete must backfill it. Unit: rows (tasks).
+const PARITY_TASKS_ROWS: usize = 400;
+/// Teams in the manual benchmark fixture. Unit: rows (lead agents).
+const BENCHMARK_TEAMS_ROWS: usize = 500;
+/// Task history in the manual benchmark fixture. Unit: rows (tasks).
+const BENCHMARK_TASKS_ROWS: usize = 300_000;
+/// Tasks per monitor and per event row in the synthetic fixture. Unit: rows.
+const TASKS_PER_HISTORY_ROW: usize = 50;
+/// Lifecycle decision time used by the synthetic fixtures. Unit: seconds.
+const SYNTHETIC_NOW_SECS: f64 = 1234567.5;
+
+/// Synthetic conversation state: `leads` teams of one lead and three workers,
+/// one broadcast room per team, a private room between consecutive leads,
+/// `tasks` task rows spread over all agents (one running task per team),
+/// and proportional monitor and event history. Projections are seeded by
+/// one full rebuild so later lifecycle actions start from current views.
+async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::Arc<RuntimeStore> {
+    if !root.join("canvas.sqlite3").exists() {
+        template(root);
+    }
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root)).await.expect("open"));
+    let cwd = root.to_string_lossy().into_owned();
+    store
+        .transaction(move |tx| {
+            let mut agents = Vec::new();
+            for lead in 0..leads {
+                let root_id = format!("lead-{lead:04}");
+                agents.push(root_id.clone());
+                let lead_record = json!({"id":root_id,"rootId":root_id,"epoch":1,"status":"idle",
+                    "isLead":true,"autoWake":true,"name":format!("Lead {lead}"),"cwd":cwd,"threadId":format!("thread-{root_id}")});
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    params![root_id, lead_record.to_string()],
+                )?;
+                for worker in 0..3 {
+                    let id = format!("worker-{lead:04}-{worker}");
+                    agents.push(id.clone());
+                    let record = json!({"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
+                        "status":"idle","name":format!("Worker {lead}.{worker}"),"cwd":cwd});
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        params![id, record.to_string()],
+                    )?;
+                }
+                let broadcast = format!("broadcast-{lead:04}");
+                tx.execute(
+                    "INSERT INTO runtime_rooms(id,record) VALUES(?1,?2)",
+                    params![
+                        broadcast,
+                        json!({"id":broadcast,"kind":"broadcast","rootId":root_id}).to_string()
+                    ],
+                )?;
+                if lead > 0 {
+                    let private = format!("private-{lead:04}");
+                    let other = format!("lead-{:04}", lead - 1);
+                    tx.execute(
+                        "INSERT INTO runtime_rooms(id,record) VALUES(?1,?2)",
+                        params![
+                            private,
+                            json!({"id":private,"kind":"private","members":[other,root_id]})
+                                .to_string()
+                        ],
+                    )?;
+                }
+                let work = format!("work-{lead:04}");
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+                    params![
+                        work,
+                        json!({"id":work,"owner":format!("worker-{lead:04}-0"),"rootId":root_id,
+                            "status":"active","title":"work"})
+                        .to_string()
+                    ],
+                )?;
+            }
+            let mut task = tx.prepare("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)")?;
+            for index in 0..tasks {
+                let agent = &agents[index % agents.len()];
+                let status = if index < leads { "running" } else { "completed" };
+                let id = format!("task-{index:07}");
+                task.execute(params![
+                    id,
+                    json!({"id":id,"agent":agent,"kind":"command","status":status,"created":index as f64})
+                        .to_string()
+                ])?;
+            }
+            let mut monitor =
+                tx.prepare("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)")?;
+            let mut event = tx.prepare(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                 VALUES(?1,?2,'user','input','delivered',?3,1)",
+            )?;
+            for index in 0..tasks / TASKS_PER_HISTORY_ROW {
+                let agent = &agents[index % agents.len()];
+                let id = format!("monitor-{index:06}");
+                monitor.execute(params![
+                    id,
+                    json!({"id":id,"agent":agent,"status":"completed","created":index as f64})
+                        .to_string()
+                ])?;
+                event.execute(params![format!("event-{index:06}"), agent, index as f64])?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("synthetic rows");
+    full_rebuild(&store).await;
+    store
+}
+
+/// Current entity hashes and tombstone flags, keyed by collection and id.
+fn entities(store: &RuntimeStore) -> std::collections::BTreeMap<(String, String), (String, i64)> {
+    let db = store.read().expect("reader");
+    let mut statement = db
+        .prepare("SELECT collection,id,hash,deleted FROM sync_entities")
+        .expect("entity read");
+    statement
+        .query_map([], |r| Ok(((r.get(0)?, r.get(1)?), (r.get(2)?, r.get(3)?))))
+        .expect("entity rows")
+        .collect::<Result<_, _>>()
+        .expect("entity values")
+}
+
+/// Lifecycle actions publish only the changed rows and their dependent views,
+/// yet a later full rebuild of the committed state changes nothing except
+/// the broadcast room Python retains for a deleted team.
+#[tokio::test]
+async fn incremental_lifecycle_projection_matches_full_rebuild() {
+    let root = tempfile::tempdir().expect("root");
+    let store = synthetic_store(root.path(), PARITY_TEAMS_ROWS, PARITY_TASKS_ROWS).await;
+    let epoch = 1;
+    for (action, retained) in [
+        (
+            Action::Stop {
+                target: "lead-0001".to_owned(),
+                descendants: true,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            None,
+        ),
+        (
+            Action::Archive {
+                actor: "lead-0002".to_owned(),
+                epoch,
+                target: "worker-0002-0".to_owned(),
+                reason: "done".to_owned(),
+                unassign_work: true,
+            },
+            None,
+        ),
+        (
+            Action::Restore {
+                actor: "lead-0002".to_owned(),
+                epoch,
+                target: "worker-0002-0".to_owned(),
+            },
+            None,
+        ),
+        (
+            Action::Delete {
+                target: "lead-0003".to_owned(),
+            },
+            Some("broadcast-0003"),
+        ),
+    ] {
+        let before = entities(&store);
+        // Archive and restore also settle workspace cleanup; leads with a
+        // native thread need the effect ports for their interrupt.
+        let result = if matches!(action, Action::Archive { .. } | Action::Restore { .. }) {
+            execute(std::sync::Arc::clone(&store), &action, SYNTHETIC_NOW_SECS).await
+        } else {
+            agent_lifecycle_runtime::execute(
+                std::sync::Arc::clone(&store),
+                &action,
+                SYNTHETIC_NOW_SECS,
+                std::sync::Arc::new(AcceptLifecycleEffects),
+            )
+            .await
+        };
+        let result = result.unwrap_or_else(|error| panic!("{action:?}: {error:?}"));
+        assert!(result.get("status") != Some(&json!("blocked")), "{result}");
+        let incremental = entities(&store);
+        assert_ne!(incremental, before, "{action:?} publishes its changes");
+        full_rebuild(&store).await;
+        let rebuilt = entities(&store);
+        let differences = rebuilt
+            .iter()
+            .filter(|(key, value)| incremental.get(*key) != Some(*value))
+            .map(|(key, _)| key.clone())
+            .chain(
+                incremental
+                    .keys()
+                    .filter(|key| !rebuilt.contains_key(*key))
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        let expected = retained
+            .map(|room| vec![("room".to_owned(), room.to_owned())])
+            .unwrap_or_default();
+        assert_eq!(differences, expected, "{action:?}");
+    }
+}
+
+/// Manual measurement, not a check: run with `--ignored --nocapture` and
+/// `CODEX_RUNTIME_STAGE_TIMINGS=1`. It reports lifecycle transaction times on
+/// a synthetic 300k-task state and asserts no timing.
+#[tokio::test]
+#[ignore = "manual projection benchmark on a 300k-task synthetic state"]
+async fn lifecycle_projection_benchmark_on_large_state() {
+    let scratch = std::env::var_os("TMPDIR").unwrap_or_else(|| "/dev/shm".into());
+    // The live schema fixture carries Python-created task indexes; a state
+    // directory created only by Rust has just the indexes Rust owns.
+    for drop_unowned_task_indexes in [false, true] {
+        let root = tempfile::tempdir_in(&scratch).expect("root");
+        if drop_unowned_task_indexes {
+            template(root.path());
+            Connection::open(root.path().join("canvas.sqlite3"))
+                .expect("fixture db")
+                .execute_batch("DROP INDEX runtime_task_status; DROP INDEX runtime_task_history;")
+                .expect("drop indexes Rust did not own");
+        }
+        let started = std::time::Instant::now();
+        let store = synthetic_store(root.path(), BENCHMARK_TEAMS_ROWS, BENCHMARK_TASKS_ROWS).await;
+        eprintln!(
+            "benchmark drop_unowned_task_indexes={drop_unowned_task_indexes} fixture_ms={}",
+            started.elapsed().as_millis()
+        );
+        for action in [
+            Action::Stop {
+                target: "lead-0010".to_owned(),
+                descendants: true,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            Action::Delete {
+                target: "lead-0011".to_owned(),
+            },
+        ] {
+            let started = std::time::Instant::now();
+            agent_lifecycle_runtime::execute(
+                std::sync::Arc::clone(&store),
+                &action,
+                SYNTHETIC_NOW_SECS,
+                std::sync::Arc::new(AcceptLifecycleEffects),
+            )
+            .await
+            .expect("lifecycle action");
+            eprintln!(
+                "benchmark action={action:?} elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+        }
+    }
 }
