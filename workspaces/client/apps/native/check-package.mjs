@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
+import {
+  runtimeBinaries,
+  runtimeBinaryName,
+} from "../desktop/runtime-binaries.mjs";
 
 const application = process.argv[2];
 if (!application) throw new Error("Supply the packaged .app path.");
@@ -61,6 +66,11 @@ for (const file of [
   "install_update.py",
 ])
   await access(path.join(resources, file));
+for (const { binary } of runtimeBinaries)
+  await access(
+    path.join(workspace, "bin", runtimeBinaryName(binary)),
+    constants.X_OK,
+  );
 const stamp = JSON.parse(
   await readFile(path.join(resources, "studio-build.json"), "utf8"),
 );
@@ -90,6 +100,6 @@ console.log(
     executable,
     commit: stamp.commit,
     checks:
-      "bundle resources, desktop icon, native Python adapter import, code signature",
+      "bundle resources, Rust runtime executables, desktop icon, native Python adapter import, code signature",
   }),
 );

@@ -1,6 +1,7 @@
 import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { setBundleDisplayName } from "./bundle-name.mjs";
+import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
@@ -38,8 +39,7 @@ if (!uiOnly) {
         "build",
         "--locked",
         "--release",
-        "-p",
-        "studio-runtime-server",
+        ...runtimeBinaries.flatMap((entry) => ["-p", entry.package]),
         "-p",
         "studio-diagnostics",
         "-p",
@@ -174,22 +174,12 @@ try {
         !source.endsWith(".pyc"),
     });
     await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
-    await cp(
-      path.join(
-        cargoTargetDirectory,
-        "release",
-        process.platform === "win32"
-          ? "studio-runtime-server.exe"
-          : "studio-runtime-server",
-      ),
-      path.join(
-        resources,
-        "bin",
-        process.platform === "win32"
-          ? "studio-runtime-server.exe"
-          : "studio-runtime-server",
-      ),
-    );
+    for (const { binary } of runtimeBinaries) {
+      const name = runtimeBinaryName(binary);
+      const destination = path.join(resources, "bin", name);
+      await cp(path.join(cargoTargetDirectory, "release", name), destination);
+      signCode(destination, identity);
+    }
     // The QUIC link to paired servers (docs/peer-link.md).
     const peerLink = path.join(resources, "bin/studio-peer-link");
     await cp(
