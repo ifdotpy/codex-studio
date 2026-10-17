@@ -68,6 +68,12 @@ pub struct RequestCommand {
     request: SessionRequest,
     reply: Reply,
 }
+impl RequestCommand {
+    /// Answer a request the closing worker never sent.
+    pub(super) fn not_sent(self) {
+        let _ignored = self.reply.send(Err(PortError::NotSent));
+    }
+}
 pub struct BarrierCommand {
     scope: ConnectionScope,
     deadline: Instant,
@@ -697,6 +703,12 @@ pub(super) struct PendingRequest {
     reply: Option<Reply>,
     result: Option<RequestResult>,
     result_cursor: u64,
+}
+impl PendingRequest {
+    /// The thread this request names, if any.
+    pub(super) fn thread_id(&self) -> Option<&str> {
+        self.call.params.get("threadId").and_then(Value::as_str)
+    }
 }
 pub(super) struct PendingBarrier {
     cursor: u64,

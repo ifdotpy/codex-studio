@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 mod auth_wait_schedule;
 mod claude_preparation;
+mod idle_unload;
 mod retained;
 mod steer;
 use super::*;

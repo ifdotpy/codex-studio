@@ -34,6 +34,7 @@ use tokio::{
 pub mod callback;
 mod connection_recovery;
 pub(crate) mod history;
+mod idle_unload;
 pub mod preparation;
 pub(crate) mod restart_recovery;
 pub mod retained;
@@ -382,6 +383,9 @@ pub enum AccountCommand {
     },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
+    /// Run the idle sweep now as if the clock read the given instant.
+    #[cfg(test)]
+    IdleSweep(tokio::time::Instant),
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
     Wake {
         agent_id: String,
@@ -641,7 +645,10 @@ pub async fn start_account_worker_with_publication_sink(
         vm_incarnation_counter: 0,
         resolving_vm_actors: BTreeSet::new(),
         vm_event_forwarders: Vec::new(),
-        vm_request_waiters: BTreeMap::new(),
+        request_waiters: BTreeMap::new(),
+        idle_sweep_at: tokio::time::Instant::now() + idle_unload::IDLE_SWEEP_INTERVAL,
+        idle_clocks: idle_unload::IdleClocks::default(),
+        idle_stopped: false,
         stop: stop.subscribe(),
         inbox,
         commands: commands.clone(),
@@ -791,7 +798,12 @@ struct Worker {
     vm_incarnation_counter: u64,
     resolving_vm_actors: BTreeSet<String>,
     vm_event_forwarders: Vec<JoinHandle<()>>,
-    vm_request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
+    /// Replies to requests the worker sends for itself, by operation.
+    request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
+    idle_sweep_at: tokio::time::Instant,
+    idle_clocks: idle_unload::IdleClocks,
+    /// The worker closed its session because nothing used it.
+    idle_stopped: bool,
     stop: watch::Receiver<bool>,
     inbox: mpsc::Receiver<AccountCommand>,
     commands: mpsc::Sender<AccountCommand>,
@@ -848,6 +860,7 @@ enum ServeSignal {
     ConnectionRecovery,
     ManagedCallback(Option<Result<ManagedCallbackResult, tokio::task::JoinError>>),
     SessionStatusChanged(bool),
+    IdleSweep,
 }
 
 struct ActorProviderSession {
@@ -1050,7 +1063,11 @@ impl Worker {
             .mark_shutdown_phase("account state finished");
         let cleanup = cleanup.and_then(|()| vm_cleanup_error.map_or(Ok(()), Err));
         match cleanup.and(result) {
-            Err(WorkerError::Session(SessionTaskError::Closed)) if *self.stop.borrow() => Ok(()),
+            Err(WorkerError::Session(SessionTaskError::Closed))
+                if *self.stop.borrow() || self.idle_stopped =>
+            {
+                Ok(())
+            }
             result => result,
         }
     }
@@ -1153,6 +1170,7 @@ impl Worker {
             _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => ServeSignal::ConnectionRecovery,
             callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => ServeSignal::ManagedCallback(callback),
             changed = self.session.status.changed() => ServeSignal::SessionStatusChanged(changed.is_ok()),
+            _ = tokio::time::sleep_until(self.idle_sweep_at) => ServeSignal::IdleSweep,
         }
     }
     async fn dispatch_serve_signal(&mut self, signal: ServeSignal) -> Result<bool, WorkerError> {
@@ -1185,6 +1203,7 @@ impl Worker {
             }
             ServeSignal::SessionStatusChanged(false) => return Ok(false),
             ServeSignal::SessionStatusChanged(true) => {}
+            ServeSignal::IdleSweep => self.idle_sweep(tokio::time::Instant::now()).await?,
         }
         Ok(true)
     }
@@ -1199,6 +1218,8 @@ impl Worker {
                         .load(std::sync::atomic::Ordering::SeqCst),
                 );
             }
+            #[cfg(test)]
+            AccountCommand::IdleSweep(now) => self.idle_sweep(now).await?,
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
@@ -1369,6 +1390,28 @@ impl Worker {
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
                     Some(command) => self.queued_commands.push_back(command),
                     None => { self.closing=true; self.control.cancel(); }
+                },
+            }
+        }
+    }
+    /// Commit provider events while the worker waits for its own request.
+    /// Other commands wait in the queue, so none of them can send a request
+    /// to the provider before `future` completes.
+    async fn pump_until<T>(&mut self, future: impl Future<Output = T>) -> Result<T, WorkerError> {
+        tokio::pin!(future);
+        loop {
+            tokio::select! {
+                _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
+                output = &mut future => return Ok(output),
+                event = self.vm_events.recv() => match event {
+                    Some(event) => self.handle_vm_message(event).await?,
+                    None => return Err(WorkerError::Closed),
+                },
+                event = self.events.recv() => self.event(event.ok_or(WorkerError::Closed)?).await?,
+                command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
+                    Some(command) => self.queued_commands.push_back(command),
+                    None => return Err(WorkerError::Closed),
                 },
             }
         }
@@ -1664,6 +1707,9 @@ impl Worker {
         if self.closing {
             return Ok(());
         }
+        if let Some(thread) = intent.thread_id.as_deref() {
+            self.idle_clocks.touch(thread);
+        }
         // A recovered durable effect may outlive its submitted request. Check
         // that receipt before preparation, which requires an unsubmitted owner.
         if method == Method::TurnStart {
@@ -1948,6 +1994,9 @@ impl Worker {
         let id = RequestId::String(operation.clone());
         let params = steer::params(&intent, &turn);
         let thread_id = intent.thread_id.clone();
+        if let Some(thread) = thread_id.as_deref() {
+            self.idle_clocks.touch(thread);
+        }
         let context = Pending {
             thread: None,
             compiled: None,
@@ -2393,28 +2442,16 @@ impl Worker {
                 timeout_ms: self.timeout_ms,
             })
             .await?;
-        let (reply, mut response) = tokio::sync::oneshot::channel();
-        self.vm_request_waiters.insert(operation.clone(), reply);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.request_waiters.insert(operation.clone(), reply);
         if let Err(error) = self.drive(control.submit(prepared)).await {
-            self.vm_request_waiters.remove(&operation);
+            self.request_waiters.remove(&operation);
             return Err(error);
         }
-        let outcome = loop {
-            tokio::select! {
-                _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
-                response = &mut response => break response.map_err(|_| WorkerError::CallbackUnknown)?,
-                event = self.vm_events.recv() => match event {
-                    Some(event) => self.handle_vm_message(event).await?,
-                    None => return Err(WorkerError::Closed),
-                },
-                event = self.events.recv() => self.event(event.ok_or(WorkerError::Closed)?).await?,
-                command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
-                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
-                    Some(command) => self.queued_commands.push_back(command),
-                    None => return Err(WorkerError::Closed),
-                },
-            }
-        };
+        let outcome = self
+            .pump_until(response)
+            .await?
+            .map_err(|_| WorkerError::CallbackUnknown)?;
         match outcome {
             RequestOutcome::Reply {
                 body: ResponseBody::Result(_),
@@ -2592,7 +2629,7 @@ impl Worker {
             }
             if let SessionOutcome::Resolved { ticket, outcome } = &outcome {
                 let operation = store::id_string(&ticket.id);
-                if let Some(waiter) = self.vm_request_waiters.remove(&operation) {
+                if let Some(waiter) = self.request_waiters.remove(&operation) {
                     let _sent = waiter.send(outcome.clone());
                 }
             }
