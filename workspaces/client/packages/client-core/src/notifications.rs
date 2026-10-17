@@ -1,4 +1,9 @@
 //! Desktop notifications for new Messages. A click opens the target chat.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,

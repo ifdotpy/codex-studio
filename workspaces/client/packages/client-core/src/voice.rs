@@ -1,6 +1,11 @@
 //! Realtime voice peer. Rust owns WebRTC, Opus and the audio frames.
 //! The UI sends start, answer, mute and end commands and receives events.
 //! The server keeps signaling: the UI posts this offer to /api/voice/start.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_assignments, unused_imports, unused_variables)
+)]
 use bytes::Bytes;
 use rtc::media::Sample;
 use rtc::rtp_transceiver::rtp_sender::{

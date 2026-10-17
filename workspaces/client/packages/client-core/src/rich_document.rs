@@ -1,5 +1,10 @@
 //! Static HTML presentation outside the Attar UI runtime.
 //! The system renderer has no Studio bridge, cookies, file grant or network grant.
+// The native paths here run only on macOS; other targets build the module for checks.
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, unused_imports, unused_variables)
+)]
 use crate::protocol::{Request, Response};
 use serde_json::Value;
 
