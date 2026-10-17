@@ -2928,7 +2928,6 @@ mod artifact_tests {
     #[cfg(unix)]
     #[test]
     fn replay_of_fifo_is_bounded_and_does_not_leave_a_temporary_file() {
-        use rustix::fs::{Mode, mkfifoat};
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -2936,9 +2935,13 @@ mod artifact_tests {
         let state = temporary.path().join("state");
         let parent = state.join("results/task");
         fs::create_dir_all(&parent).expect("artifact parent creates");
-        let directory = fs::File::open(&parent).expect("artifact parent opens");
-        mkfifoat(&directory, "result.md", Mode::from_raw_mode(0o600))
-            .expect("FIFO artifact creates");
+        // rustix has no mkfifoat on Apple platforms; mkfifo(1) exists on Linux and macOS.
+        let created = std::process::Command::new("mkfifo")
+            .args(["-m", "600"])
+            .arg(parent.join("result.md"))
+            .status()
+            .expect("mkfifo runs");
+        assert!(created.success(), "FIFO artifact creates");
         let artifact = ResultArtifact {
             state_dir: state,
             path: parent.join("result.md"),

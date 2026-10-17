@@ -559,7 +559,7 @@ async fn create(
     .await?;
     if existing.is_some() {
         let validate = std::sync::Arc::clone(&validate);
-        let id = id.clone();
+        let replay_id = id.clone();
         let signature = signature.clone();
         let intent = intent.clone();
         let replayed = context
@@ -568,9 +568,9 @@ async fn create(
                 let validate = |schema: &str, value: &Value| validate(schema, value);
                 let replay = |connection: &Connection| {
                     if draft {
-                        replay_lead(connection, &id, &signature, validate)
+                        replay_lead(connection, &replay_id, &signature, validate)
                     } else {
-                        replay_agent(connection, &id, &intent, validate)
+                        replay_agent(connection, &replay_id, &intent, validate)
                     }
                 };
                 let current = replay(tx)?.ok_or(CreateError::Conflict)?;
@@ -1294,7 +1294,7 @@ async fn create_child(
     .await?;
     #[cfg(target_os = "macos")]
     let result = if workspace == "image" {
-        provision_image_workspace(context, &result, id).await?
+        provision_image_workspace(context, &result, &id).await?
     } else {
         result
     };
@@ -1458,7 +1458,7 @@ async fn provision_image_workspace(
             let _ = remove_image_workspace(id.to_owned()).await;
             persist_image_provision_failure(
                 context.store.as_ref(),
-                id,
+                &id,
                 expected_epoch,
                 &error.to_string(),
             )
@@ -1472,7 +1472,7 @@ async fn provision_image_workspace(
         let _ = remove_image_workspace(id.to_owned()).await;
         persist_image_provision_failure(
             context.store.as_ref(),
-            id,
+            &id,
             expected_epoch,
             "Image workspace provider returned no path",
         )
@@ -1481,14 +1481,14 @@ async fn provision_image_workspace(
             "workspace-state/image-provisioning",
         ));
     };
-    let id = id.to_owned();
+    let agent_id = id.to_owned();
     let cwd = cwd.to_owned();
     let projection = context
         .store
         .transaction(move |tx| {
             let Some(agent) = studio_runtime_store::AgentRepository::get(
                 tx,
-                &studio_runtime_store::AgentId::from(id.clone()),
+                &studio_runtime_store::AgentId::from(agent_id.clone()),
             )?
             else {
                 return Ok(None);
@@ -1503,7 +1503,7 @@ async fn provision_image_workspace(
             let agent = studio_runtime_store::AgentRecord::from_value(value).map_err(|_| {
                 StoreError::InvalidStoredObject {
                     table: "runtime_agents",
-                    id: id.to_owned(),
+                    id: agent_id.to_owned(),
                 }
             })?;
             value = agent.value();
@@ -1526,6 +1526,7 @@ async fn remove_image_workspace(id: String) -> Result<(), OperationError> {
         "runtime-services/agents_create/image_workspace_remove",
         move || {
             crate::image_workspace::remove_workspace(&id, true)
+                .map(|_| ())
                 .map_err(|_| OperationError::Internal)
         },
     )
