@@ -389,7 +389,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
         "runtime_work".to_owned(),
         vec![json!({
             "id":"deleted-worker-task", "rootId":"lead", "owner":"worker",
-            "status":"ready", "title":"Return task", "description":"",
+            "status":"running", "title":"Return task", "description":"",
             "created":1.0, "updated":1.0, "version":1, "dependencies":[],
             "results":[], "decisions":[], "createdBy":"lead"
         })],
@@ -429,6 +429,17 @@ async fn production_delete_releases_deleted_worker_work_item() {
     assert!(work["owner"].is_null());
     assert_eq!(work["status"], "ready");
     assert_eq!(work["version"], 2);
+    let payload: String = db
+        .query_row(
+            "SELECT payload FROM sync_entities WHERE collection='work' \
+             AND id='deleted-worker-task' AND deleted=0",
+            [],
+            |row| row.get(0),
+        )
+        .expect("released work entity");
+    let entity: Value = serde_json::from_str(&payload).expect("entity JSON");
+    // The renderer view carries the released status, not the owner.
+    assert_eq!(entity["value"]["status"], "ready");
 }
 
 fn state(store: &RuntimeStore) -> Value {

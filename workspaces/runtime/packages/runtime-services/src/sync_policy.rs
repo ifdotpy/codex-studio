@@ -30,6 +30,13 @@ const MONITOR_FINAL_WINDOW: usize = 100;
 const MONITOR_ACTIVE_STATUSES: [&str; 3] = ["running", "starting", "approval"];
 const MONITOR_TERMINAL_STATUSES: [&str; 4] = ["completed", "failed", "cancelled", "lost"];
 const TASK_RETIRE_BATCH: usize = 100;
+/// Newest finished tasks the renderer task window keeps beside running ones;
+/// the workspace entity advertises it as `tasksHistoryLimit`. Unit: rows.
+pub const TASK_WINDOW_HISTORY_ROWS: usize = 100;
+/// Newest runtime events the renderer event window keeps. Unit: rows. The
+/// runtime_events triggers in runtime-store's sync_schema.sql use the same
+/// bound; a parity test below checks every `LIMIT` there.
+pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
@@ -417,7 +424,9 @@ pub fn maintain_entity_projections_with_server_id(
             .entry("projectOrganizationVersion")
             .or_insert(json!(1));
         workspace.entry("peerTeamsVersion").or_insert(json!(1));
-        workspace.entry("tasksHistoryLimit").or_insert(json!(100));
+        workspace
+            .entry("tasksHistoryLimit")
+            .or_insert(json!(TASK_WINDOW_HISTORY_ROWS));
         put_projection(
             transaction,
             "workspace",
@@ -437,8 +446,6 @@ pub struct EntityChanges {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
     pub work: BTreeSet<String>,
-    /// Whether runtime_events rows changed, which moves the event window.
-    pub events: bool,
 }
 
 /// Publish the renderer views that depend on `changes`, using the same view
@@ -522,9 +529,7 @@ pub fn publish_entity_changes(
         maintain_task_window(transaction, validate)?;
         maintain_monitor_window(transaction, validate)?;
     }
-    if changes.events {
-        maintain_event_window(transaction, validate)?;
-    }
+    // runtime_events triggers keep the event window current on every write.
     Ok(())
 }
 
@@ -692,7 +697,7 @@ pub fn seed_workspace_projection(
             "connected": false,
             "projectOrganizationVersion": 1,
             "peerTeamsVersion": 1,
-            "tasksHistoryLimit": 100,
+            "tasksHistoryLimit": TASK_WINDOW_HISTORY_ROWS,
         }),
         false,
         &validate_projection,
@@ -866,7 +871,7 @@ pub(crate) fn maintain_task_window(
     // CROSS JOIN keeps tasks as the outer loop, so the runtime_task_status
     // and runtime_task_history indexes bound both parts instead of a sort
     // over every task of every live agent.
-    let mut rows = transaction.prepare(
+    let mut rows = transaction.prepare(&format!(
         "SELECT t.id,t.record FROM runtime_tasks t CROSS JOIN runtime_agents a \
          ON json_extract(t.record,'$.agent')=a.id \
          WHERE json_extract(a.record,'$.deletedAt') IS NULL \
@@ -875,8 +880,8 @@ pub(crate) fn maintain_task_window(
          CROSS JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
          WHERE json_extract(a.record,'$.deletedAt') IS NULL \
          AND json_extract(t.record,'$.status')!='running' \
-         ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)",
-    )?;
+         ORDER BY json_extract(t.record,'$.created') DESC LIMIT {TASK_WINDOW_HISTORY_ROWS})"
+    ))?;
     let eligible = rows
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1204,7 +1209,7 @@ fn maintain_event_window(
         return Ok(());
     }
     let mut statement = transaction.prepare(
-        "SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC,id LIMIT 200",
+        &format!("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC,id LIMIT {EVENT_WINDOW_ROWS}"),
     )?;
     let events = statement
         .query_map([], |row| {
@@ -1881,6 +1886,18 @@ pub async fn push_preferences(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn event_window_triggers_use_the_event_window_owner() {
+        let sql = include_str!("../../runtime-store/src/sync_schema.sql");
+        let limits = sql.match_indices("LIMIT ").count();
+        assert!(limits > 0, "event window triggers declare a bound");
+        assert_eq!(
+            sql.matches(&format!("LIMIT {EVENT_WINDOW_ROWS})")).count(),
+            limits,
+            "every sync_schema.sql LIMIT is EVENT_WINDOW_ROWS"
+        );
+    }
+
     use super::*;
     use rusqlite::Connection;
     use rusqlite::trace::{TraceEvent, TraceEventCodes};

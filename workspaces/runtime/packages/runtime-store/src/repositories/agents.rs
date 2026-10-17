@@ -78,7 +78,7 @@ impl AgentRepository {
         {
             transaction.execute_batch(
                 "INSERT OR IGNORE INTO runtime_agent_record_generation(id,value) VALUES(1,0);
-                 INSERT OR IGNORE INTO runtime_scheduler_agent_change_state VALUES(1,0,0,0,0);",
+                 INSERT OR IGNORE INTO runtime_scheduler_agent_change_state(id,floor,generation,entries,total) VALUES(1,0,0,0,0);",
             )?;
         }
         Ok(())

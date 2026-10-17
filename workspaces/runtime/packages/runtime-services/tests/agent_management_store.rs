@@ -8,11 +8,15 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
+    account_session_runtime::AccountSessionPort,
     agent_lifecycle_runtime::{self, LifecycleEffect, LifecyclePorts},
     agent_management::{Action, ManagementError, Records},
     agent_management_store::execute,
+    lifecycle_effects::ProductionLifecyclePorts,
+    sync_policy::{EVENT_WINDOW_ROWS, TASK_WINDOW_HISTORY_ROWS},
 };
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
+use tokio::sync::Notify;
 
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
@@ -654,23 +658,30 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
 
 /// Teams in the parity fixture. Unit: rows (lead agents).
 const PARITY_TEAMS_ROWS: usize = 4;
-/// Task history in the parity fixture; above the 100-row task window so a
-/// delete must backfill it. Unit: rows (tasks).
-const PARITY_TASKS_ROWS: usize = 400;
+/// Task history in the parity fixture: several task windows, so a delete
+/// must backfill the window. Unit: rows (tasks).
+const PARITY_TASKS_ROWS: usize = 4 * TASK_WINDOW_HISTORY_ROWS;
+/// Workers under each synthetic lead. Unit: rows (agents) per team.
+const WORKERS_PER_TEAM_ROWS: usize = 3;
 /// Teams in the manual benchmark fixture. Unit: rows (lead agents).
 const BENCHMARK_TEAMS_ROWS: usize = 500;
 /// Task history in the manual benchmark fixture. Unit: rows (tasks).
 const BENCHMARK_TASKS_ROWS: usize = 300_000;
-/// Tasks per monitor and per event row in the synthetic fixture. Unit: rows.
+/// Tasks per monitor and per event row in the synthetic fixture; the event
+/// history always exceeds the event window by one row. Unit: rows.
 const TASKS_PER_HISTORY_ROW: usize = 50;
 /// Lifecycle decision time used by the synthetic fixtures. Unit: seconds.
 const SYNTHETIC_NOW_SECS: f64 = 1234567.5;
 
-/// Synthetic conversation state: `leads` teams of one lead and three workers,
-/// one broadcast room per team, a private room between consecutive leads,
+/// Synthetic conversation state: `leads` teams of one lead and
+/// `WORKERS_PER_TEAM_ROWS` workers, one broadcast room per team, a private
+/// room between consecutive leads, one project peer team of all leads, an
+/// active and a running work item per team (release makes it `ready`),
 /// `tasks` task rows spread over all agents (one running task per team),
-/// and proportional monitor and event history. Projections are seeded by
-/// one full rebuild so later lifecycle actions start from current views.
+/// proportional monitor and event history,
+/// and one oldest undelivered event per team outside the event window.
+/// Projections are seeded by one full rebuild so lifecycle actions start
+/// from current views.
 async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::Arc<RuntimeStore> {
     if !root.join("canvas.sqlite3").exists() {
         template(root);
@@ -689,7 +700,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     params![root_id, lead_record.to_string()],
                 )?;
-                for worker in 0..3 {
+                for worker in 0..WORKERS_PER_TEAM_ROWS {
                     let id = format!("worker-{lead:04}-{worker}");
                     agents.push(id.clone());
                     let record = json!({"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
@@ -719,6 +730,23 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                         ],
                     )?;
                 }
+                let ready = format!("ready-{lead:04}");
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+                    params![
+                        ready,
+                        json!({"id":ready,"rootId":root_id,"owner":format!("worker-{lead:04}-1"),
+                            "status":"running","title":"Return task","description":"",
+                            "created":1.0,"updated":1.0,"version":1,"dependencies":[],
+                            "results":[],"decisions":[],"createdBy":root_id})
+                        .to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                     VALUES(?1,?2,'user','input','pending',-1,1)",
+                    params![format!("pending-{lead:04}"), format!("worker-{lead:04}-2")],
+                )?;
                 let work = format!("work-{lead:04}");
                 tx.execute(
                     "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
@@ -730,6 +758,16 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                     ],
                 )?;
             }
+            let leads_only = agents
+                .iter()
+                .filter(|id| id.starts_with("lead-"))
+                .collect::<Vec<_>>();
+            tx.execute(
+                "INSERT INTO runtime_projects(id,record) VALUES('project',?1)",
+                [json!({"id":"project","name":"Project","path":cwd,
+                    "peerTeams":[{"id":"team","name":"Team","members":leads_only}]})
+                .to_string()],
+            )?;
             let mut task = tx.prepare("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)")?;
             for index in 0..tasks {
                 let agent = &agents[index % agents.len()];
@@ -747,7 +785,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
                  VALUES(?1,?2,'user','input','delivered',?3,1)",
             )?;
-            for index in 0..tasks / TASKS_PER_HISTORY_ROW {
+            for index in 0..(tasks / TASKS_PER_HISTORY_ROW).max(EVENT_WINDOW_ROWS + 1) {
                 let agent = &agents[index % agents.len()];
                 let id = format!("monitor-{index:06}");
                 monitor.execute(params![
@@ -783,6 +821,8 @@ fn entities(store: &RuntimeStore) -> std::collections::BTreeMap<(String, String)
 /// the broadcast room Python retains for a deleted team.
 #[tokio::test]
 async fn incremental_lifecycle_projection_matches_full_rebuild() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
     let root = tempfile::tempdir().expect("root");
     let store = synthetic_store(root.path(), PARITY_TEAMS_ROWS, PARITY_TASKS_ROWS).await;
     let epoch = 1;
@@ -823,8 +863,8 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
         ),
     ] {
         let before = entities(&store);
-        // Archive and restore also settle workspace cleanup; leads with a
-        // native thread need the effect ports for their interrupt.
+        // Archive and restore also settle workspace cleanup; stop and delete
+        // run the production effect adapter, which releases deleted work.
         let result = if matches!(action, Action::Archive { .. } | Action::Restore { .. }) {
             execute(std::sync::Arc::clone(&store), &action, SYNTHETIC_NOW_SECS).await
         } else {
@@ -832,7 +872,13 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
                 std::sync::Arc::clone(&store),
                 &action,
                 SYNTHETIC_NOW_SECS,
-                std::sync::Arc::new(AcceptLifecycleEffects),
+                std::sync::Arc::new(ProductionLifecyclePorts::new(
+                    std::sync::Arc::clone(&store),
+                    std::sync::Arc::new(Notify::new()),
+                    std::sync::Arc::new(Notify::new()),
+                    std::sync::Arc::new(NoBroker),
+                    None,
+                )),
             )
             .await
         };

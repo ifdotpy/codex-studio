@@ -231,6 +231,12 @@ fn execute_decision(
             }
         }
     }
+    // Release effects clear the owner of these rows, so capture them first.
+    let mut changed_work = written_ids(&decision.writes, "runtime_work");
+    changed_work.extend(work_owned_by(
+        transaction,
+        &written_ids(&decision.writes, "runtime_agents"),
+    )?);
     for write in &decision.writes {
         repository::write(transaction, &write.table, &write.record)?;
     }
@@ -310,8 +316,7 @@ fn execute_decision(
             .map(|(id, _)| id)
             .collect(),
         requests: written_ids(&decision.writes, "runtime_requests"),
-        work: written_ids(&decision.writes, "runtime_work"),
-        events: !decision.cancel_pending.is_empty(),
+        work: changed_work,
     };
     let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     crate::sync_policy::publish_entity_changes(
@@ -342,6 +347,28 @@ fn written_ids(
         .filter_map(|write| write.record.get("id").and_then(Value::as_str))
         .map(str::to_owned)
         .collect()
+}
+
+/// Work item ids owned by `agents`; the runtime_work_owner_status index serves it.
+fn work_owned_by(
+    transaction: &Transaction<'_>,
+    agents: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>, ManagementError> {
+    let mut ids = std::collections::BTreeSet::new();
+    if agents.is_empty() || !crate::sync_policy::table_exists(transaction, "runtime_work")? {
+        return Ok(ids);
+    }
+    let mut statement = transaction
+        .prepare_cached("SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    for agent in agents {
+        let rows = statement
+            .query_map([agent], |row| row.get::<_, String>(0))
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        ids.extend(rows);
+    }
+    Ok(ids)
 }
 
 fn same_attempt_except_interrupt(current: &Value, expected: &Value) -> bool {
