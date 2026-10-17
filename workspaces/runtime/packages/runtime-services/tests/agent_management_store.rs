@@ -667,6 +667,12 @@ const WORKERS_PER_TEAM_ROWS: usize = 3;
 const BENCHMARK_TEAMS_ROWS: usize = 500;
 /// Task history in the manual benchmark fixture. Unit: rows (tasks).
 const BENCHMARK_TASKS_ROWS: usize = 300_000;
+/// Padding added to each agent record of the live-shaped benchmark. Unit: bytes
+/// (the live state averages about 13 KB per agent record).
+const LIVE_AGENT_RECORD_PAD_BYTES: usize = 13_000;
+/// Leads left undeleted in the live-shaped benchmark; the live state keeps
+/// every other agent as a tombstone. Unit: rows (lead agents).
+const LIVE_UNDELETED_LEADS_ROWS: usize = 20;
 /// Tasks per monitor and per event row in the synthetic fixture; the event
 /// history always exceeds the event window by one row. Unit: rows.
 const TASKS_PER_HISTORY_ROW: usize = 50;
@@ -957,4 +963,54 @@ async fn lifecycle_projection_benchmark_on_large_state() {
             );
         }
     }
+}
+
+/// Manual measurement, not a check: a delete on a state shaped like the live
+/// one (fat agent records, nearly every agent already a tombstone). Run with
+/// `--ignored --nocapture` and `CODEX_RUNTIME_STAGE_TIMINGS=1`.
+#[tokio::test]
+#[ignore = "manual delete latency benchmark on a live-shaped synthetic state"]
+async fn delete_latency_on_live_shaped_state() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    let scratch = std::env::var_os("TMPDIR").unwrap_or_else(|| "/dev/shm".into());
+    let root = tempfile::tempdir_in(&scratch).expect("root");
+    let store = synthetic_store(root.path(), BENCHMARK_TEAMS_ROWS, BENCHMARK_TASKS_ROWS).await;
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.pad',\
+                 substr(replace(hex(zeroblob(?1)),'0','x'),1,?1))",
+                [LIVE_AGENT_RECORD_PAD_BYTES as i64],
+            )?;
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) \
+                 WHERE json_extract(record,'$.rootId')>?1",
+                [format!("lead-{:04}", LIVE_UNDELETED_LEADS_ROWS)],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("live-shaped rows");
+    let started = std::time::Instant::now();
+    agent_lifecycle_runtime::execute(
+        std::sync::Arc::clone(&store),
+        &Action::Delete {
+            target: "lead-0011".to_owned(),
+        },
+        SYNTHETIC_NOW_SECS,
+        std::sync::Arc::new(ProductionLifecyclePorts::new(
+            std::sync::Arc::clone(&store),
+            std::sync::Arc::new(Notify::new()),
+            std::sync::Arc::new(Notify::new()),
+            std::sync::Arc::new(NoBroker),
+            None,
+        )),
+    )
+    .await
+    .expect("delete");
+    eprintln!(
+        "benchmark live_shaped_delete_ms={}",
+        started.elapsed().as_millis()
+    );
 }

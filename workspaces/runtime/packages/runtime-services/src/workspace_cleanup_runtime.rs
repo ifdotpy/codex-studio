@@ -362,16 +362,7 @@ fn pending_cleanup_rows(
     store: &RuntimeStore,
 ) -> Result<Vec<(String, String)>, WorkspaceCleanupError> {
     let reader = store.read()?;
-    let mut statement = reader.prepare(
-        "SELECT id,record FROM runtime_agents WHERE json_type(record, '$.workspaceCleanupIntent')='object' ORDER BY id",
-    ).map_err(StoreError::from)?;
-    Ok(statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(StoreError::from)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)?)
+    Ok(studio_runtime_store::StartupRecoveryRepository::agents_with_cleanup_intent(&reader)?)
 }
 
 fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, WorkspaceCleanupError> {

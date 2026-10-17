@@ -20,6 +20,8 @@ use studio_runtime_store::{
 const RUST_OWNED_FEATURE_SCHEMA_INDEXES: &[&str] = &["runtime_agent_callback_context"];
 const RUST_OWNED_RUNTIME_INDEX_NAMES: &[&str] = &[
     "runtime_agent_account_wake_candidates_v2",
+    "runtime_agent_cleanup_intent",
+    "runtime_agent_deleted_unsettled",
     "runtime_agent_reviewer_archive_pending",
     "runtime_agent_reviewer_archive_retry_due",
     "runtime_agent_valid_parent",

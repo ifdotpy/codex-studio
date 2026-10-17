@@ -389,12 +389,23 @@ impl RoomDirectory {
             active_agent_indices: Arc::new(active_agent_indices),
         })
     }
-    /// Build the sync context inside a writer transaction, skipping malformed
-    /// rows like `prepare_for_sync`. Only agent liveness changes take this
-    /// path, so path resolution under the writer stays rare.
-    pub(crate) fn load_for_sync(tx: &Connection) -> StoreResult<Self> {
+    /// Directory of live agents only, which is all a room view reads: peers,
+    /// broadcast members and member names all exclude deleted agents.
+    pub(crate) fn load_live(tx: &Connection) -> StoreResult<Self> {
         Self::resolve(
-            crate::sync_policy::projection_values(tx, "runtime_agents")?,
+            records::live_agents(tx)?,
+            records::all(tx, "runtime_projects")?,
+        )
+    }
+    /// Build the live-agent sync context inside a writer transaction, skipping
+    /// malformed rows like `prepare_for_sync`. Only agent liveness changes take
+    /// this path, so path resolution under the writer stays rare.
+    pub(crate) fn load_live_for_sync(tx: &Connection) -> StoreResult<Self> {
+        Self::resolve(
+            crate::sync_policy::live_agent_records(tx)?
+                .into_iter()
+                .map(|(_, raw)| serde_json::from_str(&raw))
+                .collect::<Result<Vec<Value>, _>>()?,
             crate::sync_policy::projection_values(tx, "runtime_projects")?,
         )
     }
