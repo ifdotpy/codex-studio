@@ -49,12 +49,37 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
             else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
-            match self
-                .catalog
-                .service
-                .wait_for_admission_catalog(account_key, home, provider)
-                .await
-            {
+            // Worker selection reads every candidate's catalog synchronously, so
+            // refresh the other eligible accounts within the same bounded wait.
+            let workers = DriverManagedAccountRead(self.accounts.as_ref())
+                .worker_accounts()
+                .map(|listing| listing.accounts)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|row| {
+                    row.account_key != account_key
+                        && !row.disconnected
+                        && !row.deleted
+                        && !row.duplicate
+                        && (row.ready || row.can_attempt_native_proof)
+                })
+                .filter_map(|row| {
+                    let worker = host_account_identity(&row.identity);
+                    Some((row.account_key, worker.home?, worker.provider?))
+                })
+                .collect::<Vec<_>>();
+            let (parent, _) = futures_util::future::join(
+                self.catalog
+                    .service
+                    .wait_for_admission_catalog(account_key, home, provider),
+                futures_util::future::join_all(workers.iter().map(|(key, home, provider)| {
+                    self.catalog
+                        .service
+                        .wait_for_admission_catalog(key, home, provider)
+                })),
+            )
+            .await;
+            match parent {
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
                     Ok(())
                 }
@@ -129,8 +154,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
         studio_runtime_services::provider_callbacks::validate_worker_model_choice(
             requested, default, None,
-        )
-        .map_err(|_| E::Invalid("Choose a model from the provider selected in chat settings"))?;
+        )?;
         if requested == default {
             return Ok(());
         }

@@ -317,6 +317,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store).await?;
     studio_runtime_services::monitor_runtime::recover_on_startup(&store, startup_recovery_time)
         .await?;
+    studio_runtime_services::provider_callbacks::recover_tool_requests_on_startup(
+        &store,
+        startup_recovery_time,
+    )
+    .await?;
     startup_trace("store-recovery-completed");
     let workspace_id =
         studio_runtime_store::SyncDocumentsRepository::workspace_id(&*store.read()?)?;
@@ -805,6 +810,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         monitor_runtime,
         monitor_shutdown.subscribe(),
     );
+    let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1115,6 +1124,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     history_cleanup.map_err(std::io::Error::other)??;
     shutdown_join("federation delivery task", federation_task).await??;
     shutdown_join("continuation scheduler task", continuation_task).await??;
+    shutdown_join("storage retention task", retention_task).await??;
     if let Some(task) = orchestration_task {
         shutdown_join("orchestration driver task", task).await??;
     }

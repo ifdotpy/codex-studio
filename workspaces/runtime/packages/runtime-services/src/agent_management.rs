@@ -92,6 +92,20 @@ pub enum Action {
     },
 }
 
+impl Action {
+    /// The agent whose descendant tree scopes this action's history reads.
+    pub fn target(&self) -> &str {
+        match self {
+            Self::Stop { target, .. }
+            | Self::RemoteStop { target, .. }
+            | Self::Delete { target }
+            | Self::Archive { target, .. }
+            | Self::Restore { target, .. }
+            | Self::Inspect { target, .. } => target,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Identity {
@@ -338,12 +352,10 @@ impl ManagementSnapshot {
             .filter(|a| ids.contains(a.id()))
             .collect())
     }
-    /// Owner scope needed by delete to retain the same complete recursive
-    /// descendant set while avoiding unrelated lifecycle history reads.
-    pub(crate) fn delete_owner_scope(
-        &self,
-        target: &str,
-    ) -> Result<BTreeSet<String>, ManagementError> {
+    /// Owner scope of every lifecycle decision: the target and its complete
+    /// recursive descendant set. Decisions consult owned history only for
+    /// these agents, so unrelated lifecycle history is never read.
+    pub(crate) fn owner_scope(&self, target: &str) -> Result<BTreeSet<String>, ManagementError> {
         Ok(self
             .descendants(target, true)?
             .into_iter()
@@ -1097,7 +1109,7 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
 }
 
 #[cfg(test)]
-mod delete_scope_parity_tests {
+mod lifecycle_scope_parity_tests {
     use super::{Action, ManagementSnapshot, Records, decide_with_effects};
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1117,16 +1129,11 @@ mod delete_scope_parity_tests {
         record
     }
 
-    fn scoped_delete_records(records: &Records, owners: &BTreeSet<String>) -> Records {
+    fn scoped_records(records: &Records, owners: &BTreeSet<String>) -> Records {
         let mut tables = BTreeMap::new();
         for (table, rows) in &records.tables {
             if table == "runtime_agents" {
                 tables.insert(table.clone(), rows.clone());
-                continue;
-            }
-            if table.starts_with("voice_") {
-                // Delete skips voice liveness checks; saved voice rows are
-                // removed transactionally after the lifecycle decision.
                 continue;
             }
             let field = if table == "runtime_work" {
@@ -1164,7 +1171,7 @@ mod delete_scope_parity_tests {
     }
 
     #[test]
-    fn scoped_delete_decision_matches_full_snapshot_with_unrelated_history() {
+    fn scoped_lifecycle_decisions_match_full_snapshot_with_unrelated_history() {
         let full = Records {
             tables: BTreeMap::from([
                 (
@@ -1220,29 +1227,166 @@ mod delete_scope_parity_tests {
                 ),
                 (
                     "voice_sessions".to_owned(),
-                    vec![json!({"id":"worker-voice","agent":"worker","state":"running"})],
+                    vec![
+                        json!({"id":"worker-voice","agent":"worker","state":"running"}),
+                        json!({"id":"unrelated-voice","agent":"other-lead","state":"running"}),
+                    ],
                 ),
             ]),
         };
         let full_snapshot = ManagementSnapshot::from_records(full.clone()).expect("full snapshot");
         let owners = full_snapshot
-            .delete_owner_scope("lead")
+            .owner_scope("lead")
             .expect("complete descendant set");
         assert_eq!(
             owners,
             BTreeSet::from(["lead".to_owned(), "nested".to_owned(), "worker".to_owned()])
         );
 
-        let scoped = scoped_delete_records(&full, &owners);
+        let scoped = scoped_records(&full, &owners);
         let scoped_snapshot = ManagementSnapshot::from_records(scoped).expect("scoped snapshot");
         let action = Action::Delete {
             target: "lead".to_owned(),
         };
-        let full_decision =
-            decide_with_effects(&full_snapshot, &action, 10.0).expect("full decision");
-        let scoped_decision =
-            decide_with_effects(&scoped_snapshot, &action, 10.0).expect("scoped decision");
+        assert_same_decision(&full_snapshot, &scoped_snapshot, &action);
 
+        // Non-delete actions scope history to their target's descendant tree.
+        let worker_owners = full_snapshot
+            .owner_scope("worker")
+            .expect("worker descendant set");
+        let worker_scoped = ManagementSnapshot::from_records(scoped_records(&full, &worker_owners))
+            .expect("worker scoped snapshot");
+        for action in [
+            Action::Stop {
+                target: "worker".to_owned(),
+                descendants: true,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            Action::Archive {
+                actor: "lead".to_owned(),
+                epoch: 1,
+                target: "worker".to_owned(),
+                reason: "done".to_owned(),
+                unassign_work: true,
+            },
+        ] {
+            assert_same_decision(&full_snapshot, &worker_scoped, &action);
+        }
+    }
+
+    #[test]
+    fn scoped_restore_and_inspect_match_full_snapshot_for_a_worker_with_descendants() {
+        let mut archived = agent("archived", "lead", Some("lead"), false);
+        archived["deletedAt"] = json!(5.0);
+        archived["agentArchive"] = json!({"at":5.0,"epoch":1});
+        let mut archived_child = agent("archived-child", "lead", Some("archived"), false);
+        archived_child["deletedAt"] = json!(5.0);
+        archived_child["agentArchive"] = json!({"at":5.0,"epoch":1});
+        let full = Records {
+            tables: BTreeMap::from([
+                (
+                    "runtime_agents".to_owned(),
+                    vec![
+                        agent("lead", "lead", None, true),
+                        agent("worker", "lead", Some("lead"), false),
+                        agent("nested", "lead", Some("worker"), false),
+                        archived,
+                        archived_child,
+                        agent("other-lead", "other-lead", None, true),
+                    ],
+                ),
+                (
+                    "runtime_tool_requests".to_owned(),
+                    vec![
+                        json!({"id":"nested-tool","agent":"nested","stage":"running","outcome":"pending"}),
+                        json!({"id":"unrelated-tool","agent":"other-lead","stage":"running","outcome":"pending"}),
+                    ],
+                ),
+                (
+                    "runtime_tasks".to_owned(),
+                    vec![
+                        json!({"id":"nested-task","agent":"nested","status":"running"}),
+                        json!({"id":"archived-child-task","agent":"archived-child","status":"completed"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                    ],
+                ),
+                (
+                    "voice_sessions".to_owned(),
+                    vec![
+                        json!({"id":"nested-voice","agent":"nested","state":"running"}),
+                        json!({"id":"unrelated-voice","agent":"other-lead","state":"running"}),
+                    ],
+                ),
+            ]),
+        };
+        let full_snapshot = ManagementSnapshot::from_records(full.clone()).expect("full snapshot");
+        let scoped_for = |target: &str| {
+            let owners = full_snapshot.owner_scope(target).expect("owner scope");
+            ManagementSnapshot::from_records(scoped_records(&full, &owners))
+                .expect("scoped snapshot")
+        };
+        assert!(
+            full_snapshot
+                .owner_scope("worker")
+                .expect("worker scope")
+                .contains("nested"),
+            "the worker's scope includes its descendants"
+        );
+
+        let restore = Action::Restore {
+            actor: "lead".to_owned(),
+            epoch: 1,
+            target: "archived".to_owned(),
+        };
+        let restored = decide_with_effects(&full_snapshot, &restore, 10.0).expect("restore");
+        assert_eq!(restored.result["status"], "restored");
+        assert_same_decision(&full_snapshot, &scoped_for("archived"), &restore);
+
+        for target in ["worker", "nested"] {
+            let inspect = Action::Inspect {
+                actor: "lead".to_owned(),
+                epoch: 1,
+                target: target.to_owned(),
+            };
+            assert_same_decision(&full_snapshot, &scoped_for(target), &inspect);
+        }
+        // The descendant's own tool request decides its inspection in both.
+        let inspect_nested = Action::Inspect {
+            actor: "lead".to_owned(),
+            epoch: 1,
+            target: "nested".to_owned(),
+        };
+        let Err(refusal) = decide_with_effects(&scoped_for("nested"), &inspect_nested, 10.0) else {
+            panic!("inspection is unavailable");
+        };
+        assert!(
+            format!("{refusal:?}").contains("tool-driver/archive-reconciliation"),
+            "{refusal:?}"
+        );
+    }
+
+    fn assert_same_decision(
+        full: &ManagementSnapshot,
+        scoped: &ManagementSnapshot,
+        action: &Action,
+    ) {
+        let (full_decision, scoped_decision) = match (
+            decide_with_effects(full, action, 10.0),
+            decide_with_effects(scoped, action, 10.0),
+        ) {
+            (Ok(full), Ok(scoped)) => (full, scoped),
+            (Err(full), Err(scoped)) => {
+                assert_eq!(format!("{full:?}"), format!("{scoped:?}"));
+                return;
+            }
+            (full, scoped) => panic!(
+                "scoped decision diverged: full ok={} scoped ok={}",
+                full.is_ok(),
+                scoped.is_ok()
+            ),
+        };
         assert_eq!(full_decision.result, scoped_decision.result);
         assert_eq!(
             serde_json::to_value(&full_decision.writes).expect("full writes"),

@@ -38,6 +38,7 @@ pub mod preparation;
 pub(crate) mod restart_recovery;
 pub mod retained;
 pub mod retained_frame;
+mod steer;
 pub(crate) mod store;
 
 impl From<rusqlite::Error> for WorkerError {
@@ -1571,6 +1572,18 @@ impl Worker {
         if self.closing || self.pending.len() >= MAX_PENDING_RESPONSES {
             return Ok(());
         }
+        let account = self.account.clone();
+        let steer_agent = agent.clone();
+        match self
+            .db("claim_steer", move |store| async move {
+                steer::claim_for_wake(store, &account, &steer_agent, epoch).await
+            })
+            .await?
+        {
+            steer::WakeClaim::Steer(intent, turn) => return self.steer(*intent, turn).await,
+            steer::WakeClaim::Busy => return Ok(()),
+            steer::WakeClaim::Idle => {}
+        }
         let candidate = loop {
             let account = self.account.clone();
             let claim_agent = agent.clone();
@@ -1923,6 +1936,80 @@ impl Worker {
                 })
                 .await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Write one claimed busy-turn input batch to the running Claude turn. The
+    /// durable `submitted` boundary commits before the write; delivery waits
+    /// for the bridge acknowledgement (see `steer`).
+    async fn steer(&mut self, intent: TurnIntent, turn: String) -> Result<(), WorkerError> {
+        let operation = steer::operation(&self.account, &intent.attempt_id);
+        let id = RequestId::String(operation.clone());
+        let params = steer::params(&intent, &turn);
+        let thread_id = intent.thread_id.clone();
+        let context = Pending {
+            thread: None,
+            compiled: None,
+            intent,
+            method: Method::TurnSteer.as_str().into(),
+            operation: operation.clone(),
+        };
+        let control = self.control.clone();
+        let prepared = self
+            .drive(control.prepare(RequestSpec {
+                id: id.clone(),
+                operation_id: OperationId(operation),
+                method: Method::TurnSteer,
+                params,
+                thread_id,
+                lightweight: false,
+                timeout_ms: self.timeout_ms,
+            }))
+            .await?;
+        if self.closing {
+            return Ok(());
+        }
+        let recovery = prepared.recovery_record();
+        let save_context = context.clone();
+        let authorized = self
+            .db("steer_submitted", move |store| async move {
+                scheduler::lifecycle_transaction_with(&store, move |tx| {
+                    steer::submitted(tx, &save_context, &recovery)
+                })
+                .await
+            })
+            .await?;
+        if !authorized {
+            return Ok(());
+        }
+        self.pending.insert(id.clone(), context);
+        // A worker that began closing during the durable boundary never writes:
+        // that proves the request not sent, so the input returns to the queue.
+        let outcome = if self.closing {
+            Some(WriteOutcome::NotSent)
+        } else {
+            match self.drive(control.submit(prepared)).await {
+                Ok(_) => None,
+                Err(error) if definite_rejection(&error) => Some(WriteOutcome::NotSent),
+                Err(_) => Some(WriteOutcome::Unknown),
+            }
+        };
+        if let Some(outcome) = outcome {
+            self.event(SessionEvent {
+                journal: None,
+                outcomes: vec![SessionOutcome::Write {
+                    operation_id: OperationId(String::new()),
+                    ticket: Some(studio_runtime_providers::RequestTicket {
+                        id,
+                        generation: self.generation.0,
+                        method: Method::TurnSteer,
+                    }),
+                    outcome,
+                    recovery: None,
+                }],
+            })
+            .await?;
         }
         Ok(())
     }

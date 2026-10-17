@@ -64,7 +64,12 @@ and scoped scanning with a deterministic helper. A native delivery timeout is
 reported as a failed manual check; it is not converted into a skip or a retry.
 
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
-per test process and Python-written SQLite seed backups. Default nextest runs
+per test process and Python-written SQLite seed backups. Suites that use the
+shared `disposable_state_dir` test helper keep SQLite state and oracle scratch
+on a memory filesystem
+(`STUDIO_RUNTIME_CORPUS_TMP`, else Linux `/dev/shm`, else the temporary
+directory), because per-commit fsync on a disk-backed `TMPDIR` dominates their
+run time under shared I/O load. Default nextest runs
 explicit fast witnesses; its account-worker crash matrix covers four deterministic
 scenarios (normal transcript commit, submitted-before-written recovery, pending
 text recovery, and workspace retry after restart), with one named boundary per

@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;
-const TASK_PREVIEW_BYTES: usize = 512;
+/// Finished task output kept as the preview of a trimmed tail. Unit: UTF-8 bytes.
+pub const TASK_PREVIEW_BYTES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq)]
 enum OrderedValue {

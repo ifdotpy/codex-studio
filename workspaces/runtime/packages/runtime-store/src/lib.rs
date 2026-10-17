@@ -99,10 +99,12 @@ pub use repositories::reviewer_archive::ReviewerArchiveRepository;
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
-    AccountWakePage, ClaimedEvents, SchedulerRepository, TurnAttemptIdentity,
+    AccountWakePage, AcknowledgedSteer, ClaimedEvents, ClaimedSteer, STEER_UNCONFIRMED_ERROR,
+    SchedulerRepository, TurnAttemptIdentity,
 };
 pub use repositories::sync_documents::{
-    EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
+    ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,
+    SyncDocumentsRepository,
 };
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
@@ -285,9 +287,13 @@ pub enum StoreDiagnosticsEvent {
         peak_waiters: usize,
         opened_connections: usize,
     },
+    /// One serialized writer job. `wait` covers admission plus the actor
+    /// queue; `hold` covers only the job's SQLite transaction on the actor
+    /// thread. `origin` is the caller that submitted the job.
     WriterTransaction {
         wait: Duration,
         hold: Duration,
+        origin: &'static std::panic::Location<'static>,
     },
     SqlProfile {
         database: StoreDatabaseKind,
@@ -383,6 +389,10 @@ fn fire_resource_change_observers(observers: &Mutex<Vec<ChangeObserver>>) {
             // Resource observers are hints and cannot report panics to their caller.
         }
     }
+}
+
+fn saturating_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn transaction_has_resource_change(total_changes: Option<u64>, receipt_updates: u64) -> bool {
@@ -1331,6 +1341,7 @@ impl RuntimeStore {
     /// Admission waits cancellably when the named actor capacity is exhausted. A
     /// canceled wait submits no SQL; cancellation after submission cannot retract
     /// the job, so callers must resolve a lost response through their receipt path.
+    #[track_caller]
     pub fn transaction<T>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> StoreResult<T>
@@ -1345,6 +1356,7 @@ impl RuntimeStore {
 
     /// Run one durable transaction with a domain error type that preserves
     /// operation refusals while still reporting store and commit failures.
+    #[track_caller]
     pub fn transaction_with<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
@@ -1356,8 +1368,9 @@ impl RuntimeStore {
         E: From<StoreError> + Send + 'static,
     {
         let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
+        let origin = std::panic::Location::caller();
         async move {
-            self.transaction_with_post_commit_boxed(operation, |_| {})
+            self.transaction_with_post_commit_boxed(operation, |_| {}, origin)
                 .await
                 .map(|(value, _)| value)
         }
@@ -1365,6 +1378,7 @@ impl RuntimeStore {
 
     /// Run a write transaction and return its committed change generation.
     /// The generation unit is one committed transaction with row changes.
+    #[track_caller]
     pub fn transaction_with_commit_generation<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
@@ -1376,7 +1390,7 @@ impl RuntimeStore {
         E: From<StoreError> + Send + 'static,
     {
         let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
-        self.transaction_with_post_commit_boxed(operation, |_| {})
+        self.transaction_with_post_commit_boxed(operation, |_| {}, std::panic::Location::caller())
     }
 
     /// Run a write transaction and invoke `post_commit` exactly once after a
@@ -1385,6 +1399,7 @@ impl RuntimeStore {
     /// transaction and admission permit; keep it bounded and free of database
     /// or provider I/O. Errors, rollback, and cancellation before submission
     /// do not invoke it.
+    #[track_caller]
     pub fn transaction_with_post_commit<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
@@ -1397,13 +1412,18 @@ impl RuntimeStore {
         E: From<StoreError> + Send + 'static,
     {
         let operation: BoxedTransactionOperation<T, E> = Box::new(operation);
-        self.transaction_with_post_commit_boxed(operation, post_commit)
+        self.transaction_with_post_commit_boxed(
+            operation,
+            post_commit,
+            std::panic::Location::caller(),
+        )
     }
 
     async fn transaction_with_post_commit_boxed<T, E>(
         &self,
         operation: BoxedTransactionOperation<T, E>,
         post_commit: impl FnOnce(&T) + Send + 'static,
+        origin: &'static std::panic::Location<'static>,
     ) -> Result<(T, u64), E>
     where
         T: Send + 'static,
@@ -1434,7 +1454,11 @@ impl RuntimeStore {
                 peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
             });
         }
-        let holding = diagnostics_enabled.then(Instant::now);
+        // Measured on the actor thread so queued jobs are not reported as
+        // transaction hold time; unit: nanoseconds.
+        let submitted = diagnostics_enabled.then(Instant::now);
+        let actor_timing = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+        let job_timing = Arc::clone(&actor_timing);
         let generation = Arc::clone(&self.committed_change_generation);
         let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
         let table_change_flags = Arc::clone(&self.table_change_flags);
@@ -1442,7 +1466,7 @@ impl RuntimeStore {
         #[cfg(test)]
         let simulate_unknown_commit_after_success =
             Arc::clone(&self.simulate_unknown_commit_after_success);
-        let operation =
+        let transaction_job =
             move |writer: &mut Connection| -> Result<WriterTransactionOutcome<T, E>, StoreError> {
                 let _account_worker_operation_lease = account_worker_operation_lease;
                 let _identity_registry_lease = identity_registry_lease;
@@ -1515,6 +1539,15 @@ impl RuntimeStore {
                     }
                 }
             };
+        let operation = move |writer: &mut Connection| {
+            let started = submitted.map(|submitted| (submitted.elapsed(), Instant::now()));
+            let outcome = transaction_job(writer);
+            if let Some((queued, started)) = started {
+                job_timing[0].store(saturating_nanos(queued), Ordering::Relaxed);
+                job_timing[1].store(saturating_nanos(started.elapsed()), Ordering::Relaxed);
+            }
+            outcome
+        };
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_checkpoint_requested);
         let table_commit_observers = Arc::clone(&self.table_commit_observers);
@@ -1578,9 +1611,14 @@ impl RuntimeStore {
                 }
             })
             .await;
-        let hold = holding.map_or(Duration::ZERO, |started| started.elapsed());
         if diagnostics_enabled {
-            emit_diagnostic(StoreDiagnosticsEvent::WriterTransaction { wait, hold });
+            let queued = Duration::from_nanos(actor_timing[0].load(Ordering::Relaxed));
+            let hold = Duration::from_nanos(actor_timing[1].load(Ordering::Relaxed));
+            emit_diagnostic(StoreDiagnosticsEvent::WriterTransaction {
+                wait: wait.saturating_add(queued),
+                hold,
+                origin,
+            });
         }
         let actor_response = actor_outcome
             .map_err(actor_transport_outcome_unknown)
@@ -1603,6 +1641,7 @@ impl RuntimeStore {
         }
     }
 
+    #[track_caller]
     pub fn transaction_with_error<T, E>(
         &self,
         operation: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<T, E>
@@ -2073,6 +2112,71 @@ mod diagnostics_hook_tests {
             EVENTS.lock().expect("diagnostic events lock").len(),
             previous
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_writer_job_reports_queue_as_wait_and_its_caller_origin() {
+        const BLOCKED: Duration = Duration::from_millis(150);
+        let _test_guard = TEST_LOCK.lock().await;
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open runtime store"),
+        );
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store
+            .set_diagnostics_callback(Some(record_event))
+            .await
+            .expect("install diagnostics callback");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let slow_store = Arc::clone(&store);
+        let slow = tokio::spawn(async move {
+            slow_store
+                .transaction(move |_| {
+                    entered_tx.send(()).expect("report entered writer");
+                    release_rx.recv().expect("release blocked writer");
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv().expect("slow job entered"))
+            .await
+            .expect("entered wait");
+        let queued_store = Arc::clone(&store);
+        let queued_line = line!() + 3;
+        let queued = tokio::spawn(async move {
+            queued_store
+                .transaction(|transaction| Ok(transaction.execute("SELECT 1", []).is_err()))
+                .await
+        });
+        while store.writer.available_admissions() > sqlite_actor::MAX_PENDING_WRITES - 2 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(BLOCKED).await;
+        release_tx.send(()).expect("release slow job");
+        slow.await.expect("slow task").expect("slow job");
+        queued.await.expect("queued task").expect("queued job");
+        store
+            .set_diagnostics_callback(None)
+            .await
+            .expect("clear diagnostics callback");
+        let events = EVENTS.lock().expect("diagnostic events lock");
+        let queued_event = events
+            .iter()
+            .find_map(|event| match event {
+                StoreDiagnosticsEvent::WriterTransaction { wait, hold, origin }
+                    if origin.line() == queued_line =>
+                {
+                    Some((*wait, *hold, origin.file()))
+                }
+                _ => None,
+            })
+            .expect("queued writer job event");
+        assert!(queued_event.0 >= BLOCKED, "actor queue time is wait time");
+        assert!(queued_event.1 < BLOCKED, "queued time is not hold time");
+        assert!(queued_event.2.ends_with("runtime-store/src/lib.rs"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

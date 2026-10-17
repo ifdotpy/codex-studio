@@ -214,10 +214,11 @@ impl RuntimeStore {
             });
         }
 
-        let holding = diagnostics_enabled.then(std::time::Instant::now);
+        let submitted = diagnostics_enabled.then(std::time::Instant::now);
+        let origin = std::panic::Location::caller();
         let analytics = std::sync::Arc::clone(&self.analytics);
         let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
-        let operation = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
+        let transaction_job = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -240,17 +241,25 @@ impl RuntimeStore {
                 }
             }
         };
+        // Measure on the actor thread so queued jobs are not reported as hold time.
+        let operation = move |canvas: &mut Connection| {
+            let started =
+                submitted.map(|submitted| (submitted.elapsed(), std::time::Instant::now()));
+            let outcome = transaction_job(canvas);
+            if let Some((queued, started)) = started {
+                crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
+                    wait: wait.saturating_add(queued),
+                    hold: started.elapsed(),
+                    origin,
+                });
+            }
+            outcome
+        };
         let response = self
             .writer
             .call_admitted_with_completion(permit, operation, move |result, _disposition| {
                 if result.as_ref().is_ok_and(Result::is_ok) {
                     checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
-                }
-                if let Some(started) = holding {
-                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterTransaction {
-                        wait,
-                        hold: started.elapsed(),
-                    });
                 }
             })
             .await

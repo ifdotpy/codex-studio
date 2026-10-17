@@ -268,17 +268,22 @@ fn execute_decision(
             ));
         }
     }
-    let tables = if let Action::Delete { target } = action {
+    // Every action decides only from the complete agent directory and the
+    // history owned by the target's descendant tree. Reading unrelated task
+    // history held the sole writer for seconds on large state directories.
+    let tables = {
         let mut agents = BTreeMap::new();
         agents.insert(
             "runtime_agents".to_owned(),
             repository::read_agent_directory(transaction)?,
         );
         let directory = ManagementSnapshot::from_records(Records { tables: agents })?;
-        let owners = directory.delete_owner_scope(target)?;
+        let target = action.target();
+        // An unknown target keeps the decision's own refusal and its ordering.
+        let owners = directory
+            .owner_scope(target)
+            .unwrap_or_else(|_| std::collections::BTreeSet::from([target.to_owned()]));
         repository::read_for_agents(transaction, Some(&owners))?
-    } else {
-        repository::read(transaction)?
     };
     let records = Records { tables };
     let snapshot = ManagementSnapshot::from_records(records.clone())?;
