@@ -147,18 +147,16 @@ pub fn event(window: &tauri::Window, event: &WindowEvent) {
         return;
     };
     pending.value.maximized = maximized;
-    if !maximized {
-        if let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) {
-            if size.width == 0 || size.height == 0 {
-                return;
-            }
-            pending.value.bounds = Bounds {
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-            };
+    if !maximized && let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) {
+        if size.width == 0 || size.height == 0 {
+            return;
         }
+        pending.value.bounds = Bounds {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        };
     }
     if let Some(timer) = pending.timer.take() {
         timer.abort();
@@ -166,10 +164,10 @@ pub fn event(window: &tauri::Window, event: &WindowEvent) {
     let shared = state.0.clone();
     pending.timer = Some(tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        if let Ok(pending) = shared.lock() {
-            if let Err(error) = write(&pending) {
-                eprintln!("Cannot save window geometry: {error}");
-            }
+        if let Ok(pending) = shared.lock()
+            && let Err(error) = write(&pending)
+        {
+            eprintln!("Cannot save window geometry: {error}");
         }
     }));
 }
